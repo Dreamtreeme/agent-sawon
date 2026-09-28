@@ -1,8 +1,9 @@
 # 에이전트 사원 · 비공개 구현
 
 화면을 관찰하여 선적 레코드를 사내 전산에 입력하는 사무 에이전트입니다.
-비공개 구현은 **M1 / 0단계 준비**, 공개 벤치마크는 **M1 / 1단계 가상 전산**까지
-구현했습니다. 신체 중계와 두뇌의 GUI 실행 루프는 2단계 범위입니다.
+현재 **M1 / 2단계 두뇌·중계·기준선·실행 하네스 구현**을 마쳤습니다.
+실제 모델 연결은 확인했고, 전체 화면 업무와 개발 시드 비교 실측은 사용자 요청으로
+보류했습니다. 2단계의 실험 완료 기준은 아직 충족하지 않았습니다.
 진행 기준은 [CODEX_BRIEF.md](CODEX_BRIEF.md)입니다.
 
 ## 실행 준비
@@ -37,7 +38,12 @@ import하는 의존성은 없습니다. 두 저장소는 로컬 Git으로 관리
 
 - `models/`: ModelClient, Gemini, replay, 성공/실패 호출 측정, 토큰/추정 비용/지연 기록.
 - `brain/runtime/`: 덧붙이기 전용 실행 로그와 명시적 상태 전환, 원자적 상태 저장.
-- `config/models.toml`, `config/pricing.toml`: 제공자, 모델, 가격 설정.
+- `brain/graph/`: LangGraph 계획→관찰→선택→실행→검증, 중복 조회와 저장 후 대조.
+- `brain/observe/`: `flat_fields` / `label_grouped` 관찰 요약.
+- `brain/relay.py`, `brain/run.py`: 인증 HTTP 중계 클라이언트와 건별 실행 CLI.
+- `models/budget.py`: 호출 전 비용 예약, 비용 미상·예산 초과 시 중단.
+- `config/brain.toml`, `config/models.toml`, `config/pricing.toml`: 제한·요약·모델·가격 설정.
+- `config/harness_agents.json`: 공개 하네스가 두 요약 전략을 실행하는 외부 CLI 설정.
 - `tests/`: 실제 API 호출 없는 모델 테스트, 손상 로그/동시 쓰기/상태 저장 테스트.
 
 ```powershell
@@ -54,6 +60,38 @@ Gemini는 `.env.example`을 `.env`로 복사하여 키를 채운 뒤
 명시적으로 로드합니다. 테스트와 기본 재생 예제는 실제 API를 호출하지 않습니다.
 가격은 호출 전에 확인하고 `config/pricing.toml`을 갱신합니다. 측정할 수 없는 실패 비용은
 null이며 0으로 취급하지 않습니다. 자세한 예제는 [모델 계층 설명](models/README.md)을 봅니다.
+
+## 2단계 실행과 검증
+
+두뇌는 `sawon_interfaces` 계약과 HTTP 관찰만 사용합니다. 전산 DB·변형 시드·배치
+파일은 받지 않으며, ERP 라벨·AutomationId·좌표·탭 순서를 코드에 고정하지 않습니다.
+공개 하네스와의 경계는 CLI 설계상의 경계이며 운영체제 파일 접근 격리는 아닙니다.
+
+기본값은 건당 선택 단계 80회, 같은 단계에서 진전 없는 실패 2회, 추정 비용 $0.50입니다.
+하네스가 보고하는 단계 수는 실제 행동 요청의 고유 action_id 수입니다.
+비용을 알 수 없는 모델 호출은 중단합니다. 성공 시 `awaiting_approval`에 멈추며
+자동 전송·승인은 수행하지 않습니다. 입력 후 읽기와 최종 조회 행의 값 대조를 검증합니다.
+
+화면 검증을 재개할 때는 공개 저장소에서 다음 순서로 새 실행을 만듭니다.
+
+```powershell
+# 공개 저장소 루트에서: 로그인한 Windows 데스크톱과 빌드된 ERP가 필요
+./.venv/Scripts/python.exe -m pip install -e '.[dev,relay]'
+./.venv/Scripts/python.exe -m harness.record_reference --output evidence/references/seed0.json
+./.venv/Scripts/python.exe -m harness.run --agent core,selector_script,coord_replay --agent-config ../agent-sawon/config/harness_agents.json --reference evidence/references/seed0.json --seeds 0,17 --modes stable,none --repeats 3 --max-cost-usd 5
+```
+
+참조 녹화는 모델을 호출하지 않습니다. 비교 명령은 실제 모델을 호출하며, 예약 예산이
+부족하거나 비용 미상 호출이 있으면 남은 모델 실행을 중단하고 미실행 행도 집계합니다.
+GUI 명령을 실행하는 동안 전산 창을 유지해야 합니다. 허용 목록 밖의 창이 전경에
+오면 중계가 중단합니다. 실패 자료는 보존하며 기존 출력 경로에 덮어쓰지 않습니다.
+자세한 절차는 공개 저장소의 `harness/README.md`에 있습니다.
+
+공개 저장소에는 수치·상태·해시만 내보내며, 비공개 모델 로그·프롬프트·캐시는
+`cases/stage2/`에 남깁니다. API 키는 무시되는 `.env`에만 저장합니다.
+현재 설정은 `gemini-3.8-flash`이며, 실제 사전 호출 1회가 성공했습니다.
+이 연결 검사는 전산 업무 성공률을 뜻하지 않습니다. D3 기본 요약은 `label_grouped`이고
+두 전략의 우열은 미측정입니다.
 
 ## 기록 보장과 한계
 
