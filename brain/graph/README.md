@@ -49,6 +49,7 @@ prevent ungrounded completion, stale target reuse, unchecked text, duplicate ent
 and missing-field saves; they are not a semantic proof of arbitrary button intent.
 The application's agent role remains the enforcement boundary for transmission.
 
-Live model GUI comparison and development-seed measurements are pending, deferred
-at the user's request. Fake/replay and local HTTP tests do not establish real GUI
+Live testing resumed. The first model planning call failed with ServerError;
+a separate measured Plan-schema diagnostic returned HTTP 503 UNAVAILABLE.
+Further model calls are stopped; live model GUI comparison is still pending. Fake/replay and local HTTP tests do not establish real GUI
 success rates or the relative performance of the two summary strategies.
