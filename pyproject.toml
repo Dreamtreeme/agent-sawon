@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-sawon-core"
+version = "0.1.0"
+description = "Private reasoning and model runtime for Agent Sawon"
+requires-python = ">=3.13"
+dependencies = [
+  "sawon-interfaces>=0.1,<0.2",
+  "pydantic>=2.11,<3",
+  "portalocker>=3,<4",
+  "structlog>=25,<27",
+  "google-genai>=1.68,<2",
+  "python-dotenv>=1,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+
+[tool.setuptools.packages.find]
+include = ["brain*", "models*", "pipeline*"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+extend-exclude = ["CODEX_BRIEF.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -m 'not gui'"
+markers = ["gui: requires a logged-in Windows desktop; excluded from CI"]

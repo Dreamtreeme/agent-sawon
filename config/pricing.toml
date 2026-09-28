@@ -1,0 +1,11 @@
+schema_version = "0.1"
+checked_on = 2026-09-28
+source = "https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash"
+# USD estimate at standard paid list prices, not an account invoice or free-tier promise.
+# Only text/image inputs and JSON text output are supported; no audio/tools/batch.
+basis = "standard_paid_text_image"
+
+[models."gemini-2.5-flash"]
+input_usd_per_million = "0.30"
+output_usd_per_million = "2.50"
+cached_input_usd_per_million = "0.03"
