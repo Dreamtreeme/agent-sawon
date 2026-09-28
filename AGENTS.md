@@ -1,7 +1,8 @@
 # Agent Sawon private repository
 
-Current scope: M1 / stage 0. Follow CODEX_BRIEF.md and track progress in the sibling
-agent-sawon-bench/docs/progress.md. Later stages are not implemented yet.
+Current scope: M1 / stage 1 (authorized by the user). Follow CODEX_BRIEF.md and track
+progress in the sibling agent-sawon-bench/docs/progress.md. Core reasoning remains
+at stage 0; stage 1 work belongs to the public benchmark.
 
 - Core may import only the public `sawon_interfaces` contract from bench.
 - The future brain accesses the environment only through relay HTTP; never read ERP internals.

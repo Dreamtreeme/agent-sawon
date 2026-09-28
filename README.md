@@ -1,8 +1,9 @@
 # 에이전트 사원 · 비공개 구현
 
 화면을 관찰하여 선적 레코드를 사내 전산에 입력하는 사무 에이전트입니다.
-현재 구현 범위는 **M1 / 0단계 준비**입니다. 가상 전산 전체, 신체 중계, 두뇌의
-GUI 실행 루프는 다음 단계에서 구현합니다. 진행 기준은 [CODEX_BRIEF.md](CODEX_BRIEF.md)입니다.
+비공개 구현은 **M1 / 0단계 준비**, 공개 벤치마크는 **M1 / 1단계 가상 전산**까지
+구현했습니다. 신체 중계와 두뇌의 GUI 실행 루프는 2단계 범위입니다.
+진행 기준은 [CODEX_BRIEF.md](CODEX_BRIEF.md)입니다.
 
 ## 실행 준비
 
@@ -68,6 +69,10 @@ GUI 비교에는 `./scripts/setup.ps1 -Gui`와 .NET 8 SDK가 필요합니다.
 실행 절차와 측정 결과는 공개 저장소의 `mock_erp/probes/README.md`,
 `docs/decisions/0001-ui-framework.md`, `docs/progress.md`에 있습니다.
 D1 기술 선택은 제안 상태로 유지합니다.
+
+가상 전산을 실행하려면 공개 저장소에서 `./scripts/start_mock_erp.ps1`을 실행합니다.
+로그인·등록·조회·수정·권한 검사, SQLite, 시드 변형, 채점기와 VM 준비 스크립트의
+재현 방법은 공개 저장소 README에 정리했습니다.
 
 ## CI
 
