@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from google.genai import types
+from google.genai import errors, types
 from pydantic import BaseModel, ValidationError
 
 from brain.runtime.storage import RunLog
@@ -117,6 +117,87 @@ def test_sdk_failure_logs_unknown_cost_without_exception_secrets(run_log: RunLog
     assert event.cost.output_tokens is None
     assert event.cost.usd is None
     assert "secret" not in event.model_dump_json()
+    sdk.models.generate_content.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "code,category,status",
+    [
+        (503, "server_error", "UNAVAILABLE"),
+        (500, "server_error", "INTERNAL"),
+        (429, "rate_limited", "RESOURCE_EXHAUSTED"),
+        (403, "authentication_or_permission", "PERMISSION_DENIED"),
+        (401, "authentication_or_permission", "UNAUTHENTICATED"),
+        (404, "client_error", "NOT_FOUND"),
+        (400, "client_error", "INVALID_ARGUMENT"),
+        (504, "timeout", "DEADLINE_EXCEEDED"),
+    ],
+)
+def test_sdk_api_failure_logs_only_allowlisted_metadata(
+    run_log: RunLog,
+    rate: PriceRate,
+    code,
+    category,
+    status,
+):
+    client, sdk = fake_gemini(run_log, rate)
+    response = SimpleNamespace(
+        text="PRIVATE_RESPONSE_BODY",
+        request=SimpleNamespace(url="https://host/?key=SECRET_KEY"),
+    )
+    exception_type = errors.ServerError if code >= 500 else errors.ClientError
+    error = exception_type(
+        code,
+        {
+            "error": {"status": status, "message": "PRIVATE_PROMPT SECRET_KEY"},
+            "details": {"headers": {"Authorization": "SECRET_BEARER"}},
+        },
+        response=response,
+    )
+    sdk.models.generate_content.side_effect = error
+    with pytest.raises(errors.APIError) as raised:
+        client.complete_json("PRIVATE_PROMPT", Answer)
+    assert raised.value is error
+    (event,) = run_log.read_all()
+    assert event.payload["http_status"] == code
+    assert event.payload["error_type"] == exception_type.__name__
+    assert event.payload["error_category"] == category
+    assert event.payload["provider_status"] == status
+    assert event.cost.usd is None
+    assert event.cost.input_tokens is None and event.cost.output_tokens is None
+    encoded = event.model_dump_json()
+    for private in ("PRIVATE_PROMPT", "SECRET_KEY", "SECRET_BEARER", "PRIVATE_RESPONSE_BODY"):
+        assert private not in encoded
+    sdk.models.generate_content.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "code,status",
+    [
+        ("503 SECRET_KEY", "UNAVAILABLE SECRET_KEY"),
+        (True, {"private": "SECRET_KEY"}),
+        (999, "https://host/?key=SECRET_KEY"),
+        (503.0, ["UNAVAILABLE", "SECRET_KEY"]),
+    ],
+)
+def test_sdk_metadata_does_not_coerce_or_publish_untrusted_values(
+    run_log: RunLog,
+    rate: PriceRate,
+    code,
+    status,
+):
+    client, sdk = fake_gemini(run_log, rate)
+    error = errors.APIError(503, {"error": {"status": "UNAVAILABLE", "message": "SECRET_KEY"}})
+    error.code, error.status = code, status
+    sdk.models.generate_content.side_effect = error
+    with pytest.raises(errors.APIError):
+        client.complete_json("private", Answer)
+    (event,) = run_log.read_all()
+    assert "http_status" not in event.payload
+    assert "error_category" not in event.payload
+    assert "provider_status" not in event.payload
+    assert "SECRET_KEY" not in event.model_dump_json()
+    assert event.cost.usd is None
     sdk.models.generate_content.assert_called_once()
 
 

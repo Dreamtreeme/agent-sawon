@@ -131,6 +131,9 @@ class MeasuredModelClient(ABC):
             payload["status"] = "success"
         except BaseException as exc:
             payload["error_type"] = type(exc).__name__
+            # Provider adapters may expose a small allowlisted metadata set, but
+            # never exception messages, response bodies, URLs, or request headers.
+            payload.update(self._failure_metadata(exc))
             raise
         finally:
             latency_ms = (perf_counter() - started) * 1000
@@ -172,3 +175,6 @@ class MeasuredModelClient(ABC):
 
     @abstractmethod
     def _cost(self, usage: TokenUsage) -> Decimal: ...
+
+    def _failure_metadata(self, error: BaseException) -> dict[str, str | int]:
+        return {}

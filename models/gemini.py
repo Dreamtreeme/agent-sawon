@@ -7,11 +7,32 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from google.genai import types
+from google.genai import errors, types
 from pydantic import BaseModel
 
 from models.base import EventSink, MeasuredModelClient, ProviderReply, TokenUsage
 from models.pricing import PriceRate
+
+_SAFE_PROVIDER_STATUSES = frozenset(
+    {
+        "CANCELLED",
+        "UNKNOWN",
+        "INVALID_ARGUMENT",
+        "DEADLINE_EXCEEDED",
+        "NOT_FOUND",
+        "ALREADY_EXISTS",
+        "PERMISSION_DENIED",
+        "UNAUTHENTICATED",
+        "RESOURCE_EXHAUSTED",
+        "FAILED_PRECONDITION",
+        "ABORTED",
+        "OUT_OF_RANGE",
+        "UNIMPLEMENTED",
+        "INTERNAL",
+        "UNAVAILABLE",
+        "DATA_LOSS",
+    }
+)
 
 
 class GeminiClient(MeasuredModelClient):
@@ -76,3 +97,30 @@ class GeminiClient(MeasuredModelClient):
 
     def _cost(self, usage: TokenUsage) -> Decimal:
         return self._price.cost(usage)
+
+    def _failure_metadata(self, error: BaseException) -> dict[str, str | int]:
+        if not isinstance(error, errors.APIError):
+            return {}
+        metadata: dict[str, str | int] = {}
+        # These SDK attributes are scalars; never inspect .details, .message,
+        # .response, request URLs, or headers, which may contain private inputs.
+        code = error.code
+        if type(code) is int and 100 <= code <= 599:
+            metadata["http_status"] = code
+            if code in {401, 403}:
+                category = "authentication_or_permission"
+            elif code == 429:
+                category = "rate_limited"
+            elif code in {408, 504}:
+                category = "timeout"
+            elif code >= 500:
+                category = "server_error"
+            elif code >= 400:
+                category = "client_error"
+            else:
+                category = "http_error"
+            metadata["error_category"] = category
+        status = error.status
+        if isinstance(status, str) and status in _SAFE_PROVIDER_STATUSES:
+            metadata["provider_status"] = status
+        return metadata
