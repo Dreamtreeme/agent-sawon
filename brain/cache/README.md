@@ -19,8 +19,31 @@ task passes its normal final verification; `finish(success=False)` discards them
 On a failed cached action/reverification call `record_failure(entry_id)`. The
 default D6 proposal permits one retry; the second failure invalidates the entry.
 The normal model flow can learn a replacement after a successful run. This is
-configurable and does not approve D6. Changed labels/context or ambiguous matches
-are cache misses; no fuzzy guessing or coordinate replay is used.
+configurable and does not approve D6. The default `matching_mode="exact"` treats
+changed labels/context or ambiguous matches as misses.
+
+## Opt-in current-screen rebinding
+
+`config/brain.m2-rebind.toml` selects `matching_mode="rebind"`. Same-role, same-label
+targets may tolerate intermediate container changes only with a matching named
+outer scope and at least `min_anchor_fields=2` distinct unambiguous learned fields.
+Conflicting field ownership, duplicate targets and invalidated descriptors are not guessed.
+
+On a remaining miss, the graph may spend `rebind_model_max_calls=1` measured calls
+per case to propose several changed-label mappings together. The prompt contains
+cached field meanings and current editable descriptors, without record values or
+coordinates. Unknown refs, stale observations, role conflicts, repeated sources
+or targets and targets already claimed by anchors invalidate the proposal.
+An empty or invalid known-cost response falls back to ordinary decisions. Unknown
+cost or exhausted budget still stops the run through the shared budget guard.
+
+Rebound entries are run-local and resolved against fresh observations before each
+action. Failure counters invalidate the local proposal without rewriting the
+original learned mapping. Only observed input verification and whole-task success
+promote the new descriptor. `cache_hit.match_mode` distinguishes `exact`,
+`label_anchor`, and `model_rebind`; the latter's mapping call remains in model costs.
+This does not claim arbitrary-layout generalization: insufficient common anchors
+or a changed outer scope uses the ordinary model path. No UI label aliases are hardcoded.
 
 Version 0.1 intentionally covers editor record text inputs only. Navigation,
 querying, credentials, login, save, approval and final completion remain uncached.

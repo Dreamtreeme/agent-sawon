@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from sawon_interfaces import Action, Observation, ShipmentRecord, UIElement
 
 from brain.cache import CacheIntegrityError, SemanticCache
+from brain.cache.rebind import RebindProposal, build_rebind_request, install_rebind_proposal
 from brain.observe import describe, redact, summarize
 from brain.observe.progress import navigation_state, navigation_target
 from brain.observe.rows import row_refs
@@ -239,7 +240,10 @@ class Brain:
             settings.cache.path,
             enabled=settings.cache.enabled,
             max_retries=settings.cache.max_retries,
+            matching_mode=settings.cache.matching_mode,
+            min_anchor_fields=settings.cache.min_anchor_fields,
         ).start_run()
+        self.cache_rebind_calls = 0
         self.cache_entry_id: str | None = None
         self.review: EvidenceReview | None = None
         self.review_decision = False
@@ -832,6 +836,44 @@ class Brain:
                     allowed_sources=allowed_sources,
                     record=self.record,
                 )
+                if (
+                    hit is None
+                    and self.phase == "enter"
+                    and self.cache_rebind_calls < self.settings.cache.rebind_model_max_calls
+                ):
+                    request = build_rebind_request(
+                        self.cache_session, self.observation, allowed_sources
+                    )
+                    if request is not None:
+                        self.cache_rebind_calls += 1
+                        installed, reason = 0, "accepted"
+                        try:
+                            proposal = self._call(request.prompt(), RebindProposal)
+                            installed = install_rebind_proposal(
+                                self.cache_session,
+                                request,
+                                proposal,
+                                self.observation,
+                                allowed_sources,
+                            )
+                        except (ValidationError, ValueError):
+                            reason = "invalid_proposal"
+                        self.log.append(
+                            "verify",
+                            payload={
+                                "check": "cache_rebind_proposal",
+                                "reason": reason,
+                                "installed_fields": installed,
+                                "call_number": self.cache_rebind_calls,
+                                "obs_id": str(self.observation.obs_id),
+                            },
+                        )
+                        hit = self.cache_session.lookup(
+                            self.observation,
+                            phase=self.phase,
+                            allowed_sources=allowed_sources,
+                            record=self.record,
+                        )
             except CacheIntegrityError:
                 # A disposable optimization cannot make the task unavailable.
                 # Preserve the corrupt evidence and disable all cache writes.
@@ -846,6 +888,7 @@ class Brain:
                     payload={
                         "entry_id": hit.entry_id,
                         "obs_id": str(self.observation.obs_id),
+                        "match_mode": hit.match_mode,
                     },
                 )
             else:

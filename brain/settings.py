@@ -12,6 +12,9 @@ class CacheSettings(BaseModel):
     enabled: bool = False
     path: Path = Path("cases/semantic-cache.json")
     max_retries: int = Field(default=1, ge=0, le=3)
+    matching_mode: Literal["exact", "rebind"] = "exact"
+    min_anchor_fields: int = Field(default=2, ge=2, le=11)
+    rebind_model_max_calls: int = Field(default=1, ge=0, le=3)
 
 
 class BrainSettings(BaseModel):

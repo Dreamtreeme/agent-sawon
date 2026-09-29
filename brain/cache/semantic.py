@@ -160,6 +160,37 @@ def matching_targets(descriptor: TargetDescriptor, observation: Observation) -> 
     ]
 
 
+def label_anchors(
+    entries: Iterable[SemanticEntry], observation: Observation, minimum: int
+) -> list[tuple[SemanticEntry, UIElement]]:
+    """Unique role/label matches sharing the outer semantic scope, across all fields."""
+    current = [(item, describe_target(item, observation)) for item in observation.elements]
+    pairs: list[tuple[SemanticEntry, UIElement]] = []
+    for entry in entries:
+        saved = entry.target_descriptor
+        if entry.invalidated or not saved.context or not saved.context[0].label:
+            continue
+        targets = [
+            item
+            for item, desc in current
+            if desc is not None
+            and desc.context
+            and desc.context[0] == saved.context[0]
+            and (desc.role, desc.label_semantics) == (saved.role, saved.label_semantics)
+        ]
+        if len(targets) == 1:
+            pairs.append((entry, targets[0]))
+    # Inspect every learned source, including already verified fields. Filtering
+    # remaining fields first could conceal a conflicting ownership claim.
+    unambiguous = [
+        (entry, target)
+        for entry, target in pairs
+        if len({other.field for other, item in pairs if item.ref == target.ref}) == 1
+        and len({item.ref for other, item in pairs if other.field == entry.field}) == 1
+    ]
+    return unambiguous if len({entry.field for entry, _ in unambiguous}) >= minimum else []
+
+
 def _contains_record_values(descriptor: TargetDescriptor, record: ShipmentRecord) -> bool:
     text = " ".join([descriptor.label_semantics, *(part.label for part in descriptor.context)])
     # Deliberately conservative even for short values: a miss is preferable to
@@ -174,11 +205,19 @@ class CacheMatch:
     entry_id: str
     obs_id: UUID
     decision: Decision
+    match_mode: Literal["exact", "label_anchor", "model_rebind"] = "exact"
 
 
 class SemanticCache:
     def __init__(
-        self, path: Path, *, enabled: bool = True, max_retries: int = 1, lock_timeout: float = 10
+        self,
+        path: Path,
+        *,
+        enabled: bool = True,
+        max_retries: int = 1,
+        lock_timeout: float = 10,
+        matching_mode: Literal["exact", "rebind"] = "exact",
+        min_anchor_fields: int = 2,
     ):
         if max_retries < 0:
             raise ValueError("max_retries must be nonnegative")
@@ -187,6 +226,10 @@ class SemanticCache:
         self.max_retries = max_retries
         self.lock_timeout = lock_timeout
         self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        if matching_mode not in {"exact", "rebind"} or not 2 <= min_anchor_fields <= 11:
+            raise ValueError("Invalid cache matching policy")
+        self.matching_mode = matching_mode
+        self.min_anchor_fields = min_anchor_fields
 
     def _read_unlocked(self) -> CacheDocument:
         if not self.path.exists():
@@ -258,6 +301,8 @@ class CacheSession:
         self._staged: dict[str, SemanticEntry] = {}
         self._closed = False
         self.last_miss_reason = "not_queried"
+        self.rebound: dict[str, SemanticEntry] = {}
+        self.rebound_modes: dict[str, str] = {}
 
     def lookup(
         self,
@@ -272,27 +317,59 @@ class CacheSession:
             self.last_miss_reason = "disabled_or_ineligible"
             return None
         allowed = set(allowed_sources)
-        matches: list[tuple[SemanticEntry, UIElement]] = []
-        for entry in self.cache.entries():
+        saved_entries = self.cache.entries()
+        entries = (*saved_entries, *self.rebound.values())
+        anchors = (
+            label_anchors(saved_entries, observation, self.cache.min_anchor_fields)
+            if self.cache.matching_mode == "rebind"
+            else []
+        )
+        matches: list[tuple[SemanticEntry, UIElement, str]] = []
+        for entry in entries:
             if entry.invalidated or entry.field not in allowed:
                 continue
             targets = matching_targets(entry.target_descriptor, observation)
+            mode = self.rebound_modes.get(entry.entry_id, "exact")
+            if not targets and self.cache.matching_mode == "rebind" and mode != "model_rebind":
+                targets = [
+                    item for candidate, item in anchors if candidate.entry_id == entry.entry_id
+                ]
+                mode = "label_anchor"
             if len(targets) != 1:
                 continue
+            if mode == "label_anchor" and entry.entry_id not in self.rebound:
+                local = entry.model_copy(
+                    update={
+                        "target_descriptor": describe_target(targets[0], observation),
+                        "failure_count": 0,
+                        "invalidated": False,
+                    }
+                )
+                if any(e.entry_id == local.entry_id and e.invalidated for e in saved_entries):
+                    continue
+                entry = self.rebound.setdefault(local.entry_id, local)
+                self.rebound_modes[entry.entry_id] = "label_anchor"
+                if entry.invalidated:
+                    continue
             if record is not None and value_matches(entry.field, targets[0].value, record):
                 continue
-            matches.append((entry, targets[0]))
+            matches.append((entry, targets[0], mode))
         # A control assigned to conflicting source fields must not be guessed.
-        for _, target in matches:
-            if len({entry.field for entry, other in matches if other.ref == target.ref}) > 1:
+        for _, target, _ in matches:
+            if len({entry.field for entry, other, _ in matches if other.ref == target.ref}) > 1:
                 self.last_miss_reason = "ambiguous_source"
+                return None
+        for entry, _, _ in matches:
+            if len({target.ref for other, target, _ in matches if other.field == entry.field}) > 1:
+                self.last_miss_reason = "ambiguous_target"
                 return None
         if not matches:
             return None
-        entry, target = sorted(matches, key=lambda pair: (pair[0].field, pair[0].entry_id))[0]
+        entry, target, mode = sorted(matches, key=lambda pair: (pair[0].field, pair[0].entry_id))[0]
         return CacheMatch(
             entry_id=entry.entry_id,
             obs_id=observation.obs_id,
+            match_mode=mode,
             decision=Decision(
                 screen_kind="editor",
                 operation="act",
@@ -356,8 +433,20 @@ class CacheSession:
     def proposed_entries(self) -> tuple[SemanticEntry, ...]:
         return tuple(self._staged.values())
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def record_failure(self, entry_id: str) -> bool:
         self._staged.pop(entry_id, None)
+        if entry_id in self.rebound:
+            entry = self.rebound[entry_id]
+            failures = entry.failure_count + 1
+            invalidated = failures > self.cache.max_retries
+            self.rebound[entry_id] = entry.model_copy(
+                update={"failure_count": failures, "invalidated": invalidated}
+            )
+            return invalidated
         return self.cache.record_failure(entry_id)
 
     def finish(self, *, success: bool) -> int:
@@ -368,6 +457,8 @@ class CacheSession:
             return self.cache._promote(self._staged.values()) if success else 0
         finally:
             self._staged.clear()
+            self.rebound.clear()
+            self.rebound_modes.clear()
 
     def install_demonstration(self) -> int:
         """Explicit installation of only converter-validated demonstration steps."""
