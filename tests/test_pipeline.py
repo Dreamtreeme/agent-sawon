@@ -122,10 +122,11 @@ def prepare(tmp_path, documents, *, ocr=None, settings=None, model_kwargs=None, 
 
 
 def test_normal_case_ready_with_measured_calls_and_provenance(tmp_path, documents):
-    result, clients = prepare(tmp_path, documents)
+    result, clients = prepare(tmp_path, documents, model_kwargs={"model_confidence": 0.01})
     assert result.ready and result.record.origin == "extracted"
     assert can_enter(result.record, result.checks)
     assert result.record.fields.hbl_no.confidence == 0.95
+    assert result.record.fields.description.confidence == 0.95
     assert result.record.fields.packages.value.count == 12
     assert result.record.fields.gross_weight_kg.source.doc.startswith("originals/hbl-")
     assert result.record.fields.gross_weight_kg.source.page == 1
@@ -139,7 +140,8 @@ def test_normal_case_ready_with_measured_calls_and_provenance(tmp_path, document
     assert all("truth" not in prompt and "TEST2600001" in prompt for prompt in clients[0].prompts)
     extracted = json.loads((case / "extracted.json").read_text(encoding="utf-8"))
     assert len(extracted["pages"]) == 3
-    assert extracted["pages"][0]["fields"][0]["model_confidence"] == 0.99
+    # Self-reported model confidence is retained separately from the rule-based score.
+    assert extracted["pages"][0]["fields"][0]["model_confidence"] == 0.01
 
 
 @pytest.mark.parametrize(
@@ -180,14 +182,6 @@ def test_missing_document_blocks_before_ocr_and_model(tmp_path, documents):
     assert result.known_cost_usd == 0
 
 
-def test_model_self_confidence_is_recorded_but_does_not_set_final_confidence(tmp_path, documents):
-    result, _ = prepare(tmp_path, documents, model_kwargs={"model_confidence": 0.01})
-    assert result.ready
-    assert result.record.fields.description.confidence == 0.95
-    extracted = json.loads((tmp_path / "case" / "extracted.json").read_text(encoding="utf-8"))
-    assert extracted["pages"][0]["fields"][0]["model_confidence"] == 0.01
-
-
 def test_high_model_confidence_cannot_override_low_ocr(tmp_path, documents):
     result, _ = prepare(tmp_path, documents, ocr=FakeOcr(confidence=0.4))
     assert not result.ready
@@ -195,21 +189,19 @@ def test_high_model_confidence_cannot_override_low_ocr(tmp_path, documents):
     assert "low_ocr_confidence" in {check.code for check in result.checks.checks}
 
 
-def test_unsubstantiated_vision_value_is_blocked(tmp_path, documents):
+@pytest.mark.parametrize(
+    ("field_index", "unsupported_value"),
+    [pytest.param(0, "INVENTED123", id="invented-value"), pytest.param(6, "100", id="substring")],
+)
+def test_unsubstantiated_vision_value_is_blocked(
+    tmp_path, documents, field_index, unsupported_value
+):
     result, _ = prepare(
         tmp_path,
         documents,
-        model_kwargs={"mutate": lambda fields: fields[0].update(value_text="INVENTED123")},
-    )
-    assert not result.ready
-    assert "unsupported_extraction" in {check.code for check in result.checks.checks}
-
-
-def test_numeric_substring_is_not_evidence(tmp_path, documents):
-    result, _ = prepare(
-        tmp_path,
-        documents,
-        model_kwargs={"mutate": lambda fields: fields[6].update(value_text="100")},
+        model_kwargs={
+            "mutate": lambda fields: fields[field_index].update(value_text=unsupported_value)
+        },
     )
     assert not result.ready
     assert "unsupported_extraction" in {check.code for check in result.checks.checks}
@@ -226,19 +218,26 @@ def test_invalid_evidence_id_stops_once_and_preserves_ocr(tmp_path, documents):
     assert list((tmp_path / "case" / "ocr").glob("*.json"))
 
 
-def test_preflight_reservation_blocks_before_any_billable_call(tmp_path, documents):
+@pytest.mark.parametrize(
+    ("reserved", "error"),
+    [
+        pytest.param(Decimal("0.6"), "pipeline_cost_reservation_exceeds_limit", id="over-limit"),
+        pytest.param(None, "live_model_reservation_required", id="missing-reservation"),
+    ],
+)
+def test_preflight_reservation_blocks_before_any_billable_call(
+    tmp_path, documents, reserved, error
+):
     result, clients = prepare(
-        tmp_path, documents, reserve=lambda *_: Decimal("0.6"), model_kwargs={"usd": 0.1}
+        tmp_path,
+        documents,
+        reserve=(lambda *_: reserved) if reserved is not None else None,
+        model_kwargs={"usd": 0.1},
     )
     assert not result.ready and result.error_type == "PipelineBudgetError"
+    assert result.error_detail == error
     assert len(clients[0].prompts) == 0
     assert result.known_cost_usd == 0
-
-
-def test_live_client_requires_image_aware_reservation(tmp_path, documents):
-    result, clients = prepare(tmp_path, documents, model_kwargs={"usd": 0.1})
-    assert not result.ready and result.error_type == "PipelineBudgetError"
-    assert not clients[0].prompts
 
 
 def test_unknown_cost_failure_preserved_and_no_retry(tmp_path, documents):

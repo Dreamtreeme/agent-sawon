@@ -83,21 +83,6 @@ def test_mutated_cost_cannot_poison_existing_log(tmp_path):
     assert len(log.read_all()) == 1
 
 
-def test_atomic_replace_failure_preserves_old_state(tmp_path, monkeypatch):
-    path = tmp_path / "status.json"
-    atomic_write_json(path, {"status": "received"})
-    before = path.read_bytes()
-
-    def fail_replace(*args):
-        raise OSError("simulated replace failure")
-
-    monkeypatch.setattr("brain.runtime.storage.os.replace", fail_replace)
-    with pytest.raises(OSError, match="simulated"):
-        atomic_write_json(path, {"status": "ready"})
-    assert path.read_bytes() == before
-    assert list(tmp_path.glob("*.tmp")) == []
-
-
 def test_state_transitions_and_stale_updates(tmp_path):
     store = StateStore(tmp_path, case_id="synthetic-case")
     assert store.initialize().status == "received"

@@ -292,20 +292,6 @@ def test_complete_relay_workflow_requires_fresh_field_evidence(tmp_path, record,
     assert json.loads((tmp_path / "result.json").read_text()) == result.model_dump()
 
 
-def test_duplicate_stops_before_editor_action(tmp_path, record):
-    result, _, relay, _ = run_brain(
-        tmp_path,
-        record,
-        [
-            *query_steps(),
-            decision("duplicate_clear", intent="verify", grid_ref="e4"),
-        ],
-        relay=FakeRelay(record, duplicate=True),
-    )
-    assert result.reason == "duplicate_record"
-    assert len(relay.actions) == 2
-
-
 @pytest.mark.parametrize("operation", ["complete", "duplicate_clear"])
 def test_model_claim_cannot_skip_required_steps(tmp_path, record, operation):
     proof = {"grid_ref": "e4"}

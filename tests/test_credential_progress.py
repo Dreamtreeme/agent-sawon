@@ -158,31 +158,6 @@ def test_hidden_password_submission_guides_login_without_claiming_authentication
     assert password_checks[0]["check"] == "protected_input_reread"
 
 
-def test_hidden_password_repeat_is_blocked_before_relay_and_bounded(tmp_path, record):
-    relay = LoginRelay(record)
-    result, brain, model = run_login(
-        tmp_path,
-        record,
-        relay,
-        [credential("credential.password")] * 3 + [decision("stop", intent="stop", kind="login")],
-    )
-    assert result.reason == "repeated_subgoal_failure:duplicate_query:decision"
-    assert result.steps == 3
-    assert len(model.prompts) == 4
-    assert relay.password_deliveries == 1
-    assert relay.login_count == 0
-    assert not relay.authenticated
-    failures = [
-        event.payload
-        for event in brain.log.read_all()
-        if event.kind == "verify" and event.payload.get("ok") is False
-    ]
-    assert [item["reason"] for item in failures] == [
-        "selection_error:ValidationError",
-        "selection_error:ValidationError",
-    ]
-
-
 @pytest.mark.parametrize(
     "invalidate,source",
     [("window", "credential.password"), ("username_clear", "credential.username")],

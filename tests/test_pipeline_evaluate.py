@@ -119,6 +119,7 @@ def test_ready_gate_rejects_mismatched_confidences_and_checks():
     blocked = report([Check(code="missing_document", severity="blocking", message="missing")])
     assert not can_enter(candidate, blocked)
     assert not can_enter(candidate.model_copy(update={"origin": "manual"}), report())
+    assert not can_enter(candidate, report().model_copy(update={"record_sha256": None}))
 
 
 @pytest.mark.parametrize("attribute", ["value", "source"])
@@ -129,4 +130,3 @@ def test_ready_gate_binds_actual_record_values_and_sources(attribute):
         "SUBSTITUTED_RECORD" if attribute == "value" else {"doc": "other.pdf", "page": 5}
     )
     assert not can_enter(ShipmentRecord.model_validate(manipulated), report())
-    assert not can_enter(candidate, report().model_copy(update={"record_sha256": None}))

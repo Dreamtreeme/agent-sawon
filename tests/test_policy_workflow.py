@@ -15,7 +15,7 @@ from test_brain import (
     text_choice,
 )
 from test_brain import record as record
-from test_credential_progress import PASSWORD, USERNAME, LoginRelay, credential
+from test_credential_progress import PASSWORD, USERNAME, LoginRelay, credential, task_state
 
 from brain.graph.engine import Brain
 from brain.graph.schemas import Plan
@@ -32,10 +32,6 @@ class PolicyModel(ScriptedModel):
         if schema is not Plan:
             self.selection_schemas.append(schema)
         return super()._generate(prompt, schema, images=images)
-
-
-def task_state(prompt):
-    return json.loads(prompt.split("\nTRUSTED_TASK=", 1)[1].split("\nUI_TEXT=", 1)[0])
 
 
 def schema_accepts(schema, response):
@@ -102,11 +98,21 @@ def test_submitted_secret_is_removed_from_model_contract_and_never_dispatched_tw
     )
     result = brain.run()
     assert result.status == "stopped"
-    assert result.reason.startswith("repeated_subgoal_failure:duplicate_query:")
+    assert result.reason == "repeated_subgoal_failure:duplicate_query:decision"
     assert result.steps == 3
+    assert len(model.prompts) == 4
     assert relay.password_deliveries == 1
     assert relay.username_deliveries == relay.login_count == 0
     assert not relay.authenticated
+    failures = [
+        event.payload
+        for event in brain.log.read_all()
+        if event.kind == "verify" and event.payload.get("ok") is False
+    ]
+    assert [item["reason"] for item in failures] == [
+        "selection_error:ValidationError",
+        "selection_error:ValidationError",
+    ]
     effects = transitions(brain)
     assert len(effects) == 1
     assert effects[0]["delivery"] == "delivered"

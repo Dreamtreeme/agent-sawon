@@ -17,6 +17,18 @@ from pipeline.render import PipelineDependencyError, render_document
 from pipeline.schemas import DocumentInput, OcrBlock, PageExtraction, PipelineSettings, RenderedPage
 
 
+@pytest.fixture
+def page(tmp_path):
+    return RenderedPage(
+        document="originals/hbl.png",
+        kind="hbl",
+        page=1,
+        image_path=tmp_path / "hbl.png",
+        width=100,
+        height=100,
+    )
+
+
 def test_paddle_v3_result_boxes_converted_to_xywh():
     fake = SimpleNamespace(
         predict=lambda _: [
@@ -71,36 +83,20 @@ def test_paddle_malformed_parallel_arrays_are_rejected():
         recognize(fake, "not-read.png")
 
 
-def test_missing_paddle_is_actionable_not_fake_ocr(monkeypatch, tmp_path):
+def test_missing_paddle_is_actionable_not_fake_ocr(monkeypatch, page):
     def missing(*_):
         raise ModuleNotFoundError("paddleocr")
 
     monkeypatch.setattr("pipeline.ocr.create_engine", missing)
-    page = RenderedPage(
-        document="originals/hbl.png",
-        kind="hbl",
-        page=1,
-        image_path=tmp_path / "hbl.png",
-        width=100,
-        height=100,
-    )
     with pytest.raises(PipelineDependencyError, match="No OCR fallback"):
         PaddleOcrEngine(PipelineSettings(ocr_execution="in_process")).read(page)
 
 
-def test_ocr_outside_page_rejected(monkeypatch, tmp_path):
+def test_ocr_outside_page_rejected(monkeypatch, page):
     monkeypatch.setattr("pipeline.ocr.create_engine", lambda *_: object())
     monkeypatch.setattr(
         "pipeline.ocr.recognize",
         lambda *_: [{"id": 0, "text": "Too wide", "confidence": 0.99, "bbox": [0, 0, 200, 40]}],
-    )
-    page = RenderedPage(
-        document="originals/hbl.png",
-        kind="hbl",
-        page=1,
-        image_path=tmp_path / "hbl.png",
-        width=100,
-        height=100,
     )
     with pytest.raises(ValueError, match="outside_page"):
         PaddleOcrEngine(PipelineSettings(ocr_execution="in_process")).read(page)
@@ -131,30 +127,15 @@ def test_multipage_image_limit_blocks(tmp_path):
         )
 
 
-def test_budget_includes_image_and_output_reservation(tmp_path):
+def test_budget_includes_image_and_output_reservation(page):
     budget = PipelineCallBudget.from_config(Path("config/models.lite.toml"))
-    page = RenderedPage(
-        document="originals/hbl.png",
-        kind="hbl",
-        page=1,
-        image_path=tmp_path / "hbl.png",
-        width=1200,
-        height=1600,
-    )
+    page = page.model_copy(update={"width": 1200, "height": 1600})
     assert budget("test", PageExtraction, page) > budget.text("test", PageExtraction)
     replay = PipelineCallBudget(text=None)
     assert replay("test", PageExtraction, page) == Decimal(0)
 
 
-def test_external_worker_uses_argument_list_hidden_no_shell(monkeypatch, tmp_path):
-    page = RenderedPage(
-        document="originals/hbl.png",
-        kind="hbl",
-        page=1,
-        image_path=tmp_path / "hbl.png",
-        width=100,
-        height=100,
-    )
+def test_external_worker_uses_argument_list_hidden_no_shell(monkeypatch, page):
     observed = []
 
     def run(arguments, **kwargs):
@@ -176,4 +157,4 @@ def test_external_worker_uses_argument_list_hidden_no_shell(monkeypatch, tmp_pat
     assert "shell" not in observed[0][1]
     assert observed[0][1]["timeout"] == 300
     assert observed[0][1]["log_path"].name == "worker.log"
-    assert not list(tmp_path.glob(".ocr-*"))
+    assert not list(page.image_path.parent.glob(".ocr-*"))

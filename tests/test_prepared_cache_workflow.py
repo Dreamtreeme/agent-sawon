@@ -41,38 +41,6 @@ def enable_cache(monkeypatch, tmp_path):
     return settings
 
 
-@pytest.mark.parametrize("mode", ["cold", "snapshot"])
-def test_prepared_isolation_finishes_real_brain_and_keeps_ocr_log(tmp_path, monkeypatch, mode):
-    case, record, state, log = prepare(tmp_path)
-    log.append("model_call", payload={"stage": "extraction"}, cost=EventCost(usd=0.01))
-    original = log.path.read_bytes()
-    options = cache_options(tmp_path, mode)
-    settings = enable_cache(monkeypatch, tmp_path)
-    call, relay, models = execute("cli", case, record, log, monkeypatch, options=options)
-    assert call() == 0
-    evidence = provenance(case)
-    assert evidence.prepared_case and evidence.complete and evidence.outcome == "success"
-    assert evidence.schema_version == "0.2" and evidence.preparation_log_preserved
-    assert evidence.preparation_log_sha256 == hashlib.sha256(original).hexdigest()
-    assert evidence.preparation_event_count == 2
-    assert log.path.read_bytes().startswith(original)
-    events = log.read_all()
-    assert [event.seq for event in events] == list(range(len(events)))
-    assert sum(event.cost.usd for event in events if event.kind == "model_call") == 0.01
-    assert state.read().status == CaseStatus.AWAITING_APPROVAL
-    assert relay.actions and models[0].prompts
-    assert not settings.cache.path.exists()
-    assert (
-        len(CacheDocument.model_validate_json((case / evidence.working_path).read_bytes()).entries)
-        >= 11
-    )
-    if mode == "snapshot":
-        assert (tmp_path / "frozen.json").read_bytes() == (
-            case / evidence.initial_path
-        ).read_bytes()
-        assert not (tmp_path / "frozen.json.lock").exists()
-
-
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -285,8 +253,10 @@ def test_workflow_uses_real_prepared_brain_with_isolation_and_combined_cap(
     tmp_path, monkeypatch, mode, extraction_cost
 ):
     argv = arguments(tmp_path) + cache_options(tmp_path, mode)
+    global_cache = tmp_path / "global.json"
     (tmp_path / "brain.toml").write_text(
-        "max_cost_usd = 0.4\n[cache]\nenabled = true\n", encoding="utf-8"
+        f"max_cost_usd = 0.4\n[cache]\nenabled = true\npath = '{global_cache.as_posix()}'\n",
+        encoding="utf-8",
     )
     (tmp_path / "pipeline.toml").write_text("max_cost_usd = 0.05\n", encoding="utf-8")
     captured = {}
@@ -303,6 +273,7 @@ def test_workflow_uses_real_prepared_brain_with_isolation_and_combined_cap(
         atomic_write_json(case_dir / "record.json", record)
         atomic_write_json(case_dir / "checks.json", report)
         log = RunLog(case_dir, case_id=case_id, agent_id="pipeline")
+        log.append("verify", payload={"check": "extraction_ready", "ready": True})
         log.append(
             "model_call", payload={"stage": "extraction"}, cost=EventCost(usd=extraction_cost)
         )
@@ -346,6 +317,28 @@ def test_workflow_uses_real_prepared_brain_with_isolation_and_combined_cap(
     evidence = provenance(case)
     assert evidence.prepared_case and evidence.complete
     assert evidence.outcome == ("success" if expected_success else "stopped")
+    assert evidence.schema_version == "0.2" and evidence.preparation_log_preserved
+    assert evidence.preparation_log_sha256 == hashlib.sha256(captured["original"]).hexdigest()
+    assert evidence.preparation_event_count == 2
+    assert not global_cache.exists()
+    if expected_success:
+        assert (
+            StateStore(case, case_id=captured["record"].case_id).read().status
+            == CaseStatus.AWAITING_APPROVAL
+        )
+        assert (
+            len(
+                CacheDocument.model_validate_json(
+                    (case / evidence.working_path).read_bytes()
+                ).entries
+            )
+            >= 11
+        )
+    if mode == "snapshot":
+        assert (tmp_path / "frozen.json").read_bytes() == (
+            case / evidence.initial_path
+        ).read_bytes()
+        assert not (tmp_path / "frozen.json.lock").exists()
     actual = ShipmentRecord.model_validate_json((case / "record.json").read_bytes())
     assert (
         actual.origin == "extracted" and actual.fields.hbl_no.value != "ORACLE-VALUE-MUST-NOT-ENTER"
@@ -353,11 +346,9 @@ def test_workflow_uses_real_prepared_brain_with_isolation_and_combined_cap(
     assert (
         json.loads((case / "pipeline_result.json").read_text())["known_cost_usd"] == extraction_cost
     )
-    calls = [
-        event
-        for event in RunLog(case, case_id=actual.case_id, agent_id="test").read_all()
-        if event.kind == "model_call"
-    ]
+    events = RunLog(case, case_id=actual.case_id, agent_id="test").read_all()
+    assert [event.seq for event in events] == list(range(len(events)))
+    calls = [event for event in events if event.kind == "model_call"]
     assert sum(event.cost.usd for event in calls) == extraction_cost
     assert all("ORACLE-VALUE-MUST-NOT-ENTER" not in prompt for prompt in captured["model"].prompts)
 
