@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -60,8 +61,27 @@ class CaseState(BaseModel):
     reason: str | None = None
 
 
+_REPLACE_RETRY_DELAYS = (0.025, 0.05, 0.1, 0.2, 0.4)
+_TRANSIENT_REPLACE_WINERRORS = frozenset({5, 32, 33})
+
+
+def _replace_with_retry(temporary: str, path: Path) -> None:
+    """Allow briefly open Windows readers to close, without a non-atomic fallback."""
+    for attempt in range(len(_REPLACE_RETRY_DELAYS) + 1):
+        try:
+            os.replace(temporary, path)
+            return
+        except OSError as exc:
+            # POSIX permission errors have no winerror and must fail immediately.
+            if getattr(exc, "winerror", None) not in _TRANSIENT_REPLACE_WINERRORS or attempt == len(
+                _REPLACE_RETRY_DELAYS
+            ):
+                raise
+            time.sleep(_REPLACE_RETRY_DELAYS[attempt])
+
+
 def atomic_write_json(path: Path, value: BaseModel | dict[str, JsonValue]) -> None:
-    """Flush a complete sibling temporary file, then atomically replace `path`."""
+    """Atomically replace `path`, with at most 0.775 s of Windows retry delays."""
     path = Path(path)
     data = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
     encoded = json.dumps(data, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
@@ -74,7 +94,7 @@ def atomic_write_json(path: Path, value: BaseModel | dict[str, JsonValue]) -> No
             stream.write(encoded)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        _replace_with_retry(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
 
