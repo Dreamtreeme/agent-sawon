@@ -1,0 +1,81 @@
+{
+  "schema_version": "0.1",
+  "agents": {
+    "core_lite": {
+      "working_directory": "..",
+      "case_root": "../cases/m1-final-20260930",
+      "max_case_usd": 0.5,
+      "command": [
+        "{agent_dir}/.venv/Scripts/python.exe",
+        "-m",
+        "brain.run",
+        "--record",
+        "{record}",
+        "--case-dir",
+        "{case_dir}",
+        "--relay-url",
+        "{relay_url}",
+        "--config",
+        "{agent_dir}/config/brain.m2-no-cache.toml",
+        "--model-config",
+        "{agent_dir}/config/models.lite.toml",
+        "--env-path",
+        "{agent_dir}/.env",
+        "--summary-strategy",
+        "label_grouped",
+        "--goal",
+        "제공된 선적 레코드를 업무 전산에 입력하고 저장하세요. 먼저 중복을 조회하고, 존재하면 추가 입력하지 말고 중단하세요. 저장 후 조회 결과를 레코드와 대조하세요. 전송이나 승인은 수행하지 마세요.",
+        "--recovery-model-config",
+        "{agent_dir}/config/models.toml"
+      ],
+      "source_directories": [
+        "brain",
+        "models"
+      ],
+      "metadata_files": [
+        "config/brain.m2-no-cache.toml",
+        "config/models.lite.toml",
+        "config/models.toml",
+        "config/pricing.toml"
+      ]
+    },
+    "core_lite_flat": {
+      "working_directory": "..",
+      "case_root": "../cases/m1-final-20260930",
+      "max_case_usd": 0.5,
+      "command": [
+        "{agent_dir}/.venv/Scripts/python.exe",
+        "-m",
+        "brain.run",
+        "--record",
+        "{record}",
+        "--case-dir",
+        "{case_dir}",
+        "--relay-url",
+        "{relay_url}",
+        "--config",
+        "{agent_dir}/config/brain.m2-no-cache.toml",
+        "--model-config",
+        "{agent_dir}/config/models.lite.toml",
+        "--env-path",
+        "{agent_dir}/.env",
+        "--summary-strategy",
+        "flat_fields",
+        "--goal",
+        "제공된 선적 레코드를 업무 전산에 입력하고 저장하세요. 먼저 중복을 조회하고, 존재하면 추가 입력하지 말고 중단하세요. 저장 후 조회 결과를 레코드와 대조하세요. 전송이나 승인은 수행하지 마세요.",
+        "--recovery-model-config",
+        "{agent_dir}/config/models.toml"
+      ],
+      "source_directories": [
+        "brain",
+        "models"
+      ],
+      "metadata_files": [
+        "config/brain.m2-no-cache.toml",
+        "config/models.lite.toml",
+        "config/models.toml",
+        "config/pricing.toml"
+      ]
+    }
+  }
+}

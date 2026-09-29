@@ -1,0 +1,34 @@
+schema_version = "0.1"
+# D7 and D8 remain proposed. The public record currently requires these ten fields.
+required_documents = ["hbl", "invoice", "packing_list"]
+required_fields = ["hbl_no", "mbl_no", "shipper", "consignee", "description", "packages", "gross_weight_kg", "container_no", "pol", "pod"]
+shared_required_fields = ["packages", "gross_weight_kg", "description"]
+source_priority = ["hbl", "packing_list", "invoice"]
+weight_absolute_tolerance_kg = 1.0
+weight_relative_tolerance = 0.005
+minimum_ocr_confidence = 0.8
+minimum_final_confidence = 0.8
+single_document_confidence = 0.8
+corroborated_confidence = 0.95
+within_tolerance_confidence = 0.85
+max_cost_usd = 0.5
+max_pages = 20
+max_document_bytes = 30000000
+max_pixels = 8000000
+render_dpi = 144
+max_ocr_blocks = 500
+max_ocr_characters = 50000
+ocr_language = "korean"
+ocr_device = "cpu"
+ocr_version = "PP-OCRv5"
+ocr_detection_model = "PP-OCRv5_mobile_det"
+ocr_execution = "subprocess"
+ocr_enable_mkldnn = false
+ocr_cpu_threads = 4
+ocr_timeout_seconds = 300
+# Optional separate environment; code remains Python 3.13.
+# ocr_python = 'C:\path\to\ocr-environment\Scripts\python.exe'
+
+# Opt-in Korean fax profile; D7/D8 thresholds are unchanged.
+ocr_median_kernel = 3
+ocr_include_original = true
