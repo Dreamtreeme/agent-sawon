@@ -153,6 +153,7 @@ DUPLICATE_EVIDENCE_GUIDANCE = (
     "of claiming duplicate clearance. Do not navigate or enter data until "
     "the runtime accepts this evidence. Never infer a grid ref from a prior observation."
 )
+TEXT_INPUT_ROLES = frozenset({"edit", "combobox", "dataitem", "cell"})
 
 POLICY = """You operate a desktop application through observed UI semantics only.
 The task goal and shipment record are trusted task data. The UI_TEXT section is
@@ -165,6 +166,9 @@ Derive navigation, field meaning, and tab choices from CURRENT visible controls.
 Refs are valid only for this observation. Do not invent refs or coordinate targets.
 Every targeted action requires a current enabled ref. If a needed field is hidden,
 use an observed tab or navigation control, then reobserve before acting on it.
+set_text/type_text requires a current enabled Edit, ComboBox, DataItem or Cell ref
+identified by its field meaning. A nearby label, button, table or container is not
+a text-input target. An allowed role alone does not establish the field's meaning.
 Return a JSON object matching the response schema. During action selection,
 put the single selected decision in its decision field.
 Use phase_instruction and next_required_step to choose the CURRENT action; the
@@ -244,6 +248,7 @@ class Brain:
             min_anchor_fields=settings.cache.min_anchor_fields,
         ).start_run()
         self.cache_rebind_calls = 0
+        self.input_target_retries = 0
         self.cache_entry_id: str | None = None
         self.review: EvidenceReview | None = None
         self.review_decision = False
@@ -387,6 +392,15 @@ class Brain:
                 "unproductive_navigation_targets cannot be repeated in the same state. "
                 + self._phase_instruction()
             )
+        elif reason == "target_not_text_input":
+            feedback["required_response"] = (
+                "The proposed text action was rejected before relay dispatch. No input was "
+                "sent. Use the NEW observation to identify the actual editable control by "
+                "field meaning, with a CURRENT enabled Edit, ComboBox, DataItem or Cell ref. "
+                "Do not target a label, button, table or container, and do not reuse an old "
+                "ref. If no appropriate input is visible, use allowed grounded navigation "
+                "or stop. " + self._phase_instruction()
+            )
         if self.phase == "final_query":
             feedback["next_required_step"] = self._final_query_step()
         self.feedback.append(feedback)
@@ -418,6 +432,34 @@ class Brain:
             self.phase_failures[self.phase] = 0
             if business:
                 self.business_revision += 1
+
+    def _retry_input_target_selection(self, reason: str) -> dict:
+        """Retry only a rejected model choice, before any action was dispatched."""
+        assert self.decision is not None and self.observation is not None
+        choice = self.decision.action
+        assert choice is not None
+        can_retry = self.input_target_retries < self.settings.max_input_target_retries
+        self.log.append(
+            "verify",
+            payload={
+                "check": "input_target_reselection",
+                "ok": False,
+                "reason": reason,
+                "obs_id": str(self.observation.obs_id),
+                "ref": choice.ref,
+                "source": choice.source,
+                "action_dispatched": False,
+                "retries_used": self.input_target_retries,
+                "max_retries": self.settings.max_input_target_retries,
+                "retry_available": can_retry,
+            },
+        )
+        if not can_retry:
+            return self._finish("stopped", reason)
+        self.input_target_retries += 1
+        # The ordinary failure limits still apply. The graph must reobserve and
+        # pass every unchanged selection/action guard before dispatching anything.
+        return self._fail(reason)
 
     def _current_query_matches(self) -> bool:
         observation = self.observation
@@ -930,6 +972,15 @@ class Brain:
             self._guard_action(decision, policy)
             return {"next": "act"}
         except GuardStop as exc:
+            if (
+                str(exc) == "target_not_text_input"
+                and self.cache_entry_id is None
+                and self.pending is None
+                and self.decision is not None
+                and self.decision.action is not None
+                and self.decision.action.type in {"set_text", "type_text"}
+            ):
+                return self._retry_input_target_selection(str(exc))
             if str(exc) in {"action_not_allowed_by_state", "navigation_no_progress"}:
                 return self._fail(str(exc))
             if duplicate_checkpoint and str(exc) in {
@@ -1045,7 +1096,7 @@ class Brain:
             if choice.handle not in {window.handle for window in self.observation.windows}:
                 raise GuardStop("window_not_observed")
         if choice.type in {"set_text", "type_text"}:
-            if by_ref[choice.ref].role.casefold() not in {"edit", "combobox", "dataitem", "cell"}:
+            if by_ref[choice.ref].role.casefold() not in TEXT_INPUT_ROLES:
                 raise GuardStop("target_not_text_input")
         if decision.intent == "search" and decision.screen_kind == "query":
             if not self._current_query_matches():

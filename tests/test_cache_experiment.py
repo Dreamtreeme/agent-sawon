@@ -326,7 +326,6 @@ def test_cli_damaged_initial_evidence_cannot_claim_complete_provenance(cli, miss
         ["--cache-isolation", "snapshot"],
         ["--cache-snapshot", "missing.json"],
         ["--cache-isolation", "cold", "--cache-snapshot", "missing.json"],
-        ["--cache-isolation", "cold", "--prepared-case"],
     ],
 )
 def test_cli_rejects_invalid_isolation_flags_before_any_case_or_client(cli, options):
@@ -335,14 +334,13 @@ def test_cli_rejects_invalid_isolation_flags_before_any_case_or_client(cli, opti
     assert error.value.code == 2 and not cli.case.exists() and cli.calls == []
 
 
-def test_cli_rejects_prepared_isolation_without_touching_existing_evidence(cli):
+def test_cli_rejects_invalid_prepared_isolation_without_touching_existing_evidence(cli):
     cli.case.mkdir()
     names = ["record.json", "status.json", "checks.json", "run_log.jsonl", "result.json"]
     for name in names:
         (cli.case / name).write_bytes(b"existing private evidence")
     before = {name: (cli.case / name).read_bytes() for name in names}
-    with pytest.raises(SystemExit):
-        run.main(cli.args + ["--cache-isolation", "cold", "--prepared-case"])
+    assert run.main(cli.args + ["--cache-isolation", "cold", "--prepared-case"]) == 2
     assert {name: (cli.case / name).read_bytes() for name in names} == before
     assert cli.calls == [] and not (cli.case / "cache-experiment").exists()
 

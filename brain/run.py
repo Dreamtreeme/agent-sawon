@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 
 from sawon_interfaces import ShipmentRecord
 
-from brain.cache.experiment import CacheExperiment, CacheOutcome
+from brain.cache.experiment import CacheExperiment, CacheOutcome, validate_prepared_case
 from brain.graph import Brain, Result
 from brain.relay import HttpRelay
 from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
@@ -31,9 +32,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prepared-case", action="store_true")
     parser.add_argument("--summary-strategy", choices=["flat_fields", "label_grouped"])
     parser.add_argument(
+        "--max-cost-usd", type=float, help="Lower total case budget, including preparation calls"
+    )
+    parser.add_argument(
         "--cache-isolation",
         choices=["cold", "snapshot"],
-        help="Use an isolated cache in a new case; prepared cases are not supported",
+        help="Use a fresh isolated cache for a new or validated prepared case",
     )
     parser.add_argument(
         "--cache-snapshot", type=Path, help="Immutable input for snapshot isolation"
@@ -41,8 +45,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if (args.cache_isolation == "snapshot") != (args.cache_snapshot is not None):
         parser.error("--cache-snapshot is required only with --cache-isolation snapshot")
-    if args.cache_isolation and args.prepared_case:
-        parser.error("Cache isolation requires a new case and cannot use --prepared-case")
+    if args.max_cost_usd is not None and (
+        not math.isfinite(args.max_cost_usd) or args.max_cost_usd < 0
+    ):
+        parser.error("--max-cost-usd must be finite and non-negative")
     case_created = False
     log = None
     experiment = None
@@ -54,6 +60,10 @@ def main(argv: list[str] | None = None) -> int:
         if record.origin == "extracted" and not args.prepared_case:
             raise ValueError("Extracted records require a validated prepared case")
         settings = BrainSettings.load(args.config)
+        if args.max_cost_usd is not None:
+            if args.max_cost_usd > settings.max_cost_usd:
+                raise ValueError("A total case budget override may only reduce the configured cap")
+            settings = settings.model_copy(update={"max_cost_usd": args.max_cost_usd})
         if args.summary_strategy:
             settings = settings.model_copy(update={"summary_strategy": args.summary_strategy})
         if args.cache_isolation:
@@ -63,38 +73,29 @@ def main(argv: list[str] | None = None) -> int:
                 mode=args.cache_isolation,
                 snapshot=args.cache_snapshot,
             )
+        # mkdir(exist_ok=False) makes retries explicitly choose a fresh case directory.
+        if args.prepared_case:
+            if args.record.resolve() != (args.case_dir / "record.json").resolve():
+                raise ValueError("Prepared extraction must use its own record path")
+            validate_prepared_case(args.case_dir, record)
+        else:
+            args.case_dir.mkdir(parents=True, exist_ok=False)
+            case_created = True
+        log = RunLog(args.case_dir, case_id=record.case_id, agent_id="brain")
+        if not args.prepared_case:
+            atomic_write_json(args.case_dir / "record.json", record)
+        if experiment is not None:
+            settings = experiment.start(prepared_record=record if args.prepared_case else None)
+        case_created = True
+        if settings.recovery_enabled and args.recovery_model_config is None:
+            raise ValueError("Recovery requires an explicit model configuration")
         relay = HttpRelay(
             args.relay_url,
             os.environ.get("SAWON_RELAY_TOKEN", ""),
             timeout=settings.http_timeout_seconds,
             max_depth=settings.observation_max_depth,
         )
-        # mkdir(exist_ok=False) makes retries explicitly choose a fresh case directory.
-        if args.prepared_case:
-            from pipeline.checks import can_enter
-            from pipeline.schemas import CheckReport
-
-            state = StateStore(args.case_dir, case_id=record.case_id).read()
-            report = CheckReport.model_validate_json((args.case_dir / "checks.json").read_bytes())
-            if (
-                state.status != CaseStatus.READY
-                or not can_enter(record, report)
-                or args.record.resolve() != (args.case_dir / "record.json").resolve()
-            ):
-                raise ValueError("Prepared extraction case must be ready and use its own record")
-            if (args.case_dir / "result.json").exists():
-                raise ValueError("An execution result already exists")
-        else:
-            args.case_dir.mkdir(parents=True, exist_ok=False)
-        case_created = True
-        log = RunLog(args.case_dir, case_id=record.case_id, agent_id="brain")
-        if not args.prepared_case:
-            atomic_write_json(args.case_dir / "record.json", record)
-        if experiment is not None:
-            settings = experiment.start()
         model = create_model_client(args.model_config, run_log=log, env_path=args.env_path)
-        if settings.recovery_enabled and args.recovery_model_config is None:
-            raise ValueError("Recovery requires an explicit model configuration")
         recovery_model = (
             create_model_client(args.recovery_model_config, run_log=log, env_path=args.env_path)
             if settings.recovery_enabled
@@ -126,7 +127,8 @@ def main(argv: list[str] | None = None) -> int:
         # Do not print provider exception bodies, bearer token, or password.
         reason = "setup_error:" + type(exc).__name__
         outcome, error_type = "failed", type(exc).__name__
-        if case_created and not (args.case_dir / "result.json").exists():
+        owned_case = case_created or (experiment is not None and experiment.started)
+        if owned_case and not (args.case_dir / "result.json").exists():
             result = Result(status="failed", reason=reason, steps=0, elapsed_ms=0)
             atomic_write_json(args.case_dir / "result.json", result)
             state = StateStore(args.case_dir, case_id=record.case_id)

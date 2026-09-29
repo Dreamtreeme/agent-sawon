@@ -40,6 +40,7 @@ flowchart TD
     MODEL -->|응답 계약 오류| HIGH["명시된 상위 모델 1회 복구"]
     POLICY -->|최종 근거 needs_more| HIGH
     HIGH --> G
+    G -->|모델의 비입력 대상 선택 · 재선택 한도 내| O
     G --> ACT["Act: relay HTTP로 행동 하나"]
     ACT --> VERIFY["Verify: 새 관찰·값 재읽기·행동 효과 검사"]
     VERIFY -->|통과·검증한 의미 입력 후보 저장| O
@@ -59,6 +60,11 @@ flowchart TD
 `review`는 현재 관찰의 완료 가능 여부와 제출된 업무 근거 검증을 담당하며 별도 LLM을 호출하지 않는다.
 허용 창 밖, 만료된 대상, 비용 불명 등 즉시 종료 조건은 모델 복구로 우회하지 않는다.
 
+모델이 `set_text/type_text` 대상으로 비입력 역할을 선택한 경우에는 행동을 보내지 않고
+`max_input_target_retries`(기본1,0이면 비활성,최대3) 한도에서 새 관찰과 선택을 수행한다.
+기존 하위 목표·단계·비용 한도도 적용된다. 이전 행동이 이미 전송됐거나 결과가 불명확한 경우,
+없는 참조·비활성 대상·허용 창 이탈은 이 재선택 경로로 처리하지 않는다.
+
 최종 행의 HBL이나 다른 열이 보이지 않으면 `complete`를 응답 스키마에서 제외한다.
 관찰된 창 확장·이동을 선택하여 새 근거를 얻어야 한다. 검색 입력칸의 HBL이나 과거 관찰을
 현재 행의 근거로 대신 쓰지 않는다. 실제 완료는 제출된 참조의 행 소속·필드별 값·참조 중복을 다시 검사한다.
@@ -72,7 +78,9 @@ pipeline/workflow.py
   │   ├─ MeasuredModelClient.complete_json (이미지+OCR)
   │   ├─ bind_extraction (OCR 블록→출처 위치)
   │   └─ cross_validate → can_enter → READY 또는 FAILED
-  └─ brain.run.main(--prepared-case)
+  └─ brain.run.main(--prepared-case, 선택적 cache-isolation, 전체 비용 상한)
+      ├─ READY·자기 레코드·검증 보고서·기록 정체성 확인
+      ├─ 선택적 건별 캐시 설치 (OCR 기록/비용 유지)
       └─ Brain.run()
           ├─ _plan_node → measured ModelClient
           ├─ _observe_node → relay.observe → 민감정보 제거·스냅샷 저장

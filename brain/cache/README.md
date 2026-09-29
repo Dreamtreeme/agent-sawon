@@ -65,10 +65,19 @@ the desired pair. Snapshot mode requires its explicitly configured private file.
 
 Each new case records `cache-experiment/initial.json`, mutable `working.json`,
 and atomic `provenance.json` with source/initial/final hashes and execution outcome.
+New provenance uses private schema 0.2 and also records prepared-case handoff status,
+the preparation log hash and event count. Historical 0.1 provenance remains readable;
+the semantic cache document format remains 0.1. Finalization checks the original
+preparation log prefix as well as cache evidence before declaring provenance complete.
 Changed or missing initial evidence makes provenance incomplete. The no-cache
-agent omits these flags and performs no cache I/O. Existing or `--prepared-case`
-executions cannot be reset through isolation flags. Pipeline-prepared cases need
-separate orchestration before using these comparison modes.
+agent omits these flags and performs no cache I/O. Existing executions cannot be
+reset through isolation flags. A validated `--prepared-case` may start isolated
+execution once after document preparation: its own extracted record, checks, READY
+state and log identity must agree. Its OCR ledger stays intact and contributes to
+the same total cost cap. Existing result or isolation artifacts block reuse.
+`pipeline.workflow` forwards the isolation flags after preparation; see the
+[document workflow guide](../../pipeline/README.md#isolated-document-to-erp-cache-runs)
+and `config/harness_agents.m2-workflow-cache-isolated.json` examples.
 
 Freeze the training snapshot before measuring each replicate, record training
 cost separately, and use a fresh case per attempt. Learning across repeats is a

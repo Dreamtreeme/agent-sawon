@@ -49,7 +49,7 @@ def prepare(tmp_path, *, mutation=None):
     return case_dir, record, state, log
 
 
-def execute(mode, case_dir, record, log, monkeypatch):
+def execute(mode, case_dir, record, log, monkeypatch, *, options=()):
     relay = TrackedRelay(record)
     models = []
 
@@ -91,7 +91,7 @@ def execute(mode, case_dir, record, log, monkeypatch):
         "--model-config",
         str(case_dir.parent / "fake-model.toml"),
     ]
-    return lambda: runner.main(arguments), relay, models
+    return lambda: runner.main(arguments + list(options)), relay, models
 
 
 @pytest.mark.parametrize("mode", ["engine", "cli"])

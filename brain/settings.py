@@ -23,6 +23,7 @@ class BrainSettings(BaseModel):
     summary_strategy: Literal["flat_fields", "label_grouped"] = "label_grouped"
     max_steps: int = Field(default=80, ge=1, le=500)
     max_subgoal_failures: int = Field(default=2, ge=1, le=10)
+    max_input_target_retries: int = Field(default=1, ge=0, le=3)
     max_cost_usd: float = Field(default=0.5, ge=0, allow_inf_nan=False)
     model_call_reserve_usd: float = Field(default=0.025, ge=0, allow_inf_nan=False)
     http_timeout_seconds: float = Field(default=30, gt=0, le=120)
