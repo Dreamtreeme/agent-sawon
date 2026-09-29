@@ -31,7 +31,11 @@ flowchart TD
     R -->|계속| POLICY["Select: 상태 정책·허용 응답 구성"]
     POLICY --> CACHE{"현재 의미 입력 캐시 적중?"}
     CACHE -->|적중| G["공통 가드"]
-    CACHE -->|미적중| MODEL["경량 모델 선택"]
+    CACHE -->|미적중| RB{"rebind 설정 · 공통 필드 · 호출 여유?"}
+    RB -->|아니오| MODEL["경량 모델 선택"]
+    RB -->|예| MAP["측정 모델로 묶음 대응 제안 → 전체 검증 → 임시 매핑"]
+    MAP -->|현재 대상 재조회 적중| G
+    MAP -->|빈 제안·거절·미적중| MODEL
     MODEL -->|유효 선택| G
     MODEL -->|응답 계약 오류| HIGH["명시된 상위 모델 1회 복구"]
     POLICY -->|최종 근거 needs_more| HIGH
@@ -75,7 +79,9 @@ pipeline/workflow.py
           ├─ _review_node → review_final → 완료 가능 여부
           ├─ _select_node
           │   ├─ DecisionPolicy → 현재 응답 스키마
-          │   ├─ CacheSession.lookup 또는 _choose_decision
+          │   ├─ CacheSession.lookup (정확 일치 / 선택적 공통 라벨 재매칭)
+          │   ├─ 미적중 시 선택적 build_rebind_request → 측정 호출 → install_rebind_proposal
+          │   ├─ 재조회 미적중이면 _choose_decision
           │   └─ 공통 _guard_action
           ├─ _act_node → relay.act
           ├─ _verify_node → 재관찰·값/전이 검사 → stage_validated
@@ -86,6 +92,13 @@ pipeline/workflow.py
 좌표, AutomationId, 과거 ref, 실제 입력값은 저장하지 않는다. 매번 현재 관찰의 대상을 다시 찾고
 새 레코드 값을 넣어 읽어 본다. 전체 업무 실패 시 새 후보는 승격하지 않는다.
 손상 캐시는 파일을 보존하고 해당 실행에서 비활성화하여 모델 경로로 계속한다.
+
+기본은 정확 일치다. `config/brain.m2-rebind.toml`은 같은 최상위 의미 문맥에서 유일하게 대응하는
+공통 역할·라벨의 필드2개 이상을 근거로 중간 구조 변화를 허용한다. 라벨까지 달라진 남은 필드는
+기본 최대1회 모델 호출로 묶어서 제안받는다. 응답 전체의 현재 관찰·역할·고유성을 검사한 뒤
+임시 대응을 설치한다. 실패한 임시 대응은 원본 학습 항목과 분리해 무효화한다.
+모델 대응의 의미적 정답은 보장되지 않으며 기존 값 재읽기·최종 업무 검증을 그대로 거친다.
+자세한 범위와 미측정 항목은 [재연결 계획](cache-rebinding-plan-20260929.md)에 기록했다.
 
 `relay --observation-only`는 입력 요청을 거부한다. `relay.record`가 수집한 연속 관찰과
 명시된 합성 레코드를 `brain.demo_learning`에 주면 값 변화·포커스·고유 대응을 검증한
