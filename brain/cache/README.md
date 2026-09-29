@@ -25,3 +25,31 @@ are cache misses; no fuzzy guessing or coordinate replay is used.
 Version 0.1 intentionally covers editor record text inputs only. Navigation,
 querying, credentials, login, save, approval and final completion remain uncached.
 This is a bounded semantic cache, not a claim to implement every L2C recipe type.
+
+## Isolated development comparisons
+
+The ordinary M2 configuration uses a shared cache. Its measurements describe
+that running system; they do not establish an isolated causal cache effect.
+Failures can change counters or invalidate entries before a trial succeeds.
+
+For independent cold starts, add `--cache-isolation cold` to `brain.run` with
+cache enabled. For fixed warmed comparisons, use `--cache-isolation snapshot
+--cache-snapshot <private-frozen-cache.json>`. The source snapshot is validated,
+read once and never modified. A proposal bundle is not a usable cache snapshot.
+The `config/harness_agents.cache-isolated.json` example defines cold, snapshot,
+and cache-disabled agents with matching models, recovery and limits. Select only
+the desired pair. Snapshot mode requires its explicitly configured private file.
+
+Each new case records `cache-experiment/initial.json`, mutable `working.json`,
+and atomic `provenance.json` with source/initial/final hashes and execution outcome.
+Changed or missing initial evidence makes provenance incomplete. The no-cache
+agent omits these flags and performs no cache I/O. Existing or `--prepared-case`
+executions cannot be reset through isolation flags. Pipeline-prepared cases need
+separate orchestration before using these comparison modes.
+
+Freeze the training snapshot before measuring each replicate, record training
+cost separately, and use a fresh case per attempt. Learning across repeats is a
+different experiment and is not orchestrated here. Preserve cancelled runs in
+success denominators; compare efficiency among comparable completed outcomes.
+These controls prepare the next GUI comparison; their fake tests do not measure
+live cache recovery or demonstrate an efficiency gain.

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from sawon_interfaces import ShipmentRecord
 
+from brain.cache.experiment import CacheExperiment, CacheOutcome
 from brain.graph import Brain, Result
 from brain.relay import HttpRelay
 from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
@@ -29,9 +30,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--recovery-model-config", type=Path)
     parser.add_argument("--prepared-case", action="store_true")
     parser.add_argument("--summary-strategy", choices=["flat_fields", "label_grouped"])
+    parser.add_argument(
+        "--cache-isolation",
+        choices=["cold", "snapshot"],
+        help="Use an isolated cache in a new case; prepared cases are not supported",
+    )
+    parser.add_argument(
+        "--cache-snapshot", type=Path, help="Immutable input for snapshot isolation"
+    )
     args = parser.parse_args(argv)
+    if (args.cache_isolation == "snapshot") != (args.cache_snapshot is not None):
+        parser.error("--cache-snapshot is required only with --cache-isolation snapshot")
+    if args.cache_isolation and args.prepared_case:
+        parser.error("Cache isolation requires a new case and cannot use --prepared-case")
     case_created = False
     log = None
+    experiment = None
+    outcome: CacheOutcome = "interrupted"
+    error_type = None
+    exit_code = 2
     try:
         record = ShipmentRecord.model_validate_json(args.record.read_bytes())
         if record.origin == "extracted" and not args.prepared_case:
@@ -39,6 +56,13 @@ def main(argv: list[str] | None = None) -> int:
         settings = BrainSettings.load(args.config)
         if args.summary_strategy:
             settings = settings.model_copy(update={"summary_strategy": args.summary_strategy})
+        if args.cache_isolation:
+            experiment = CacheExperiment(
+                settings,
+                case_dir=args.case_dir,
+                mode=args.cache_isolation,
+                snapshot=args.cache_snapshot,
+            )
         relay = HttpRelay(
             args.relay_url,
             os.environ.get("SAWON_RELAY_TOKEN", ""),
@@ -66,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
         log = RunLog(args.case_dir, case_id=record.case_id, agent_id="brain")
         if not args.prepared_case:
             atomic_write_json(args.case_dir / "record.json", record)
+        if experiment is not None:
+            settings = experiment.start()
         model = create_model_client(args.model_config, run_log=log, env_path=args.env_path)
         if settings.recovery_enabled and args.recovery_model_config is None:
             raise ValueError("Recovery requires an explicit model configuration")
@@ -93,11 +119,13 @@ def main(argv: list[str] | None = None) -> int:
             ),
             prepared_case=args.prepared_case,
         ).run()
+        outcome = result.status
         print(result.model_dump_json())
-        return 0 if result.status == "success" else 1
+        exit_code = 0 if result.status == "success" else 1
     except Exception as exc:
         # Do not print provider exception bodies, bearer token, or password.
         reason = "setup_error:" + type(exc).__name__
+        outcome, error_type = "failed", type(exc).__name__
         if case_created and not (args.case_dir / "result.json").exists():
             result = Result(status="failed", reason=reason, steps=0, elapsed_ms=0)
             atomic_write_json(args.case_dir / "result.json", result)
@@ -108,7 +136,19 @@ def main(argv: list[str] | None = None) -> int:
             if log is not None:
                 log.append("stop", payload={"status": "failed", "reason": reason})
         print(json.dumps({"status": "failed", "reason": reason}))
-        return 2
+    except BaseException as exc:
+        error_type = type(exc).__name__
+        raise
+    finally:
+        if experiment is not None and experiment.started:
+            try:
+                if not experiment.finish(outcome=outcome, error_type=error_type):
+                    exit_code = 2
+            except Exception as exc:
+                # Cache evidence failure must not overwrite a business result or log.
+                print(json.dumps({"cache_experiment_error": type(exc).__name__}))
+                exit_code = 2
+    return exit_code
 
 
 if __name__ == "__main__":
