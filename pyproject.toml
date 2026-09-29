@@ -11,11 +11,9 @@ dependencies = [
   "sawon-interfaces>=0.2,<0.3",
   "pydantic>=2.11,<3",
   "portalocker>=3,<4",
-  "structlog>=25,<27",
   "google-genai>=1.68,<2",
   "python-dotenv>=1,<2",
   "langgraph>=1,<2",
-  "httpx>=0.28,<1",
 ]
 
 [project.optional-dependencies]

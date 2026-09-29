@@ -7,6 +7,8 @@ from pathlib import Path
 
 from .schemas import DocumentInput, PipelineSettings, RenderedPage
 
+DOCUMENT_SUFFIXES = frozenset({".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"})
+
 
 class PipelineDependencyError(RuntimeError):
     """An explicitly requested pipeline component is unavailable."""
@@ -25,7 +27,7 @@ def render_document(
     if not path.is_file() or path.stat().st_size > settings.max_document_bytes:
         raise ValueError("document_missing_or_too_large")
     suffix = path.suffix.lower()
-    if suffix not in {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}:
+    if suffix not in DOCUMENT_SUFFIXES:
         raise ValueError("unsupported_document_type")
     output_dir.mkdir(parents=True, exist_ok=True)
     rendered: list[RenderedPage] = []

@@ -21,6 +21,7 @@ from pydantic import Field, TypeAdapter
 from brain.runtime.storage import RunLog, atomic_write_json
 from models.factory import create_model_client
 
+from .accounting import read_model_accounting
 from .evaluate import evaluate
 from .extract import PipelineCallBudget
 from .runner import PipelineResult, load_inputs, prepare_case
@@ -139,17 +140,15 @@ def _account_cost(row: dict[str, Any], folder: Path, result: PipelineResult | No
     try:
         if not (folder / "run_log.jsonl").is_file():
             raise ValueError("missing_run_log")
-        events = RunLog(folder, case_id=row["case_id"], agent_id="pipeline").read_all()
-        calls = [event for event in events if event.kind == "model_call"]
-        known = sum(
-            (Decimal(str(event.cost.usd)) for event in calls if event.cost.usd is not None),
-            start=Decimal(0),
+        accounting = read_model_accounting(
+            RunLog(folder, case_id=row["case_id"], agent_id="pipeline")
         )
-        row["known_cost_usd"] = float(known)
-        row["unknown_cost"] = any(event.cost.usd is None for event in calls)
-        row["model_calls"] = len(calls)
+        row["known_cost_usd"] = float(accounting.known_usd)
+        row["unknown_cost"] = accounting.unknown
+        row["model_calls"] = accounting.model_calls
         if result is not None and (
-            result.known_cost_usd != float(known) or result.unknown_cost != row["unknown_cost"]
+            result.known_cost_usd != row["known_cost_usd"]
+            or result.unknown_cost != row["unknown_cost"]
         ):
             row["known_cost_usd"] = max(row["known_cost_usd"], result.known_cost_usd)
             row["unknown_cost"] = True

@@ -1,4 +1,4 @@
-# 모델 경계 (M1 0단계)
+# 모델 호출과 비용 기록
 
 `ModelClient.complete_json(prompt, schema, images=...)`는 pydantic 결과와 사용량,
 USD 비용 추정치, 지연 시간을 반환한다. `GeminiClient`와 `ReplayClient` 모두
@@ -27,8 +27,10 @@ client = create_model_client(Path("config/models.toml"), run_log=log, env_path=P
 실제 API를 호출하지 않는다. SDK의 자동 재시도와 자동 함수 호출을 끄므로
 측정 한 건이 숨은 추가 요청을 만들지 않는다.
 
-`config/pricing.toml`은 표준 유료 Gemini 2.5 Flash의 텍스트/이미지 입력과
-JSON 출력 가격이다. 실제 계정 청구서나 무료 할당량을 의미하지 않는다.
+`config/pricing.toml`은 모델별 텍스트/이미지 입력과 JSON 출력의 추정 가격표다.
+사용 모델은 `config/models.toml` 또는 `config/models.lite.toml`에서 지정하며,
+가격표에 보존된 과거 모델 항목이 현재 기본 모델을 뜻하지는 않는다.
+설정의 확인 날짜·출처를 기준으로 사용하고 실제 계정 청구서나 무료 할당량과 구분한다.
 입력에서 캐시 적중 토큰을 분리하고 출력에는 응답과 생각 토큰을 합산한다.
 모델 또는 캐시 가격이 없으면 명시적으로 실패한다. 오디오, 도구 호출,
 배치, 명시적 캐시 저장은 지원하지 않는다. 가격 변경 시 설정과 확인 날짜를

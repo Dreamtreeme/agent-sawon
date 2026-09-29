@@ -380,6 +380,30 @@ def test_missing_ledger_stops_with_unknown_cost(campaign, monkeypatch):
     assert summary["rows"][0]["cost_error_type"] == "ValueError"
 
 
+@pytest.mark.parametrize(("reported_cost", "unknown_cost"), [(0.02, False), (0.01, True)])
+def test_result_disagreeing_with_ledger_stops_before_next_attempt(
+    campaign, monkeypatch, reported_cost, unknown_cost
+):
+    args, state = campaign
+    original_prepare = measure.prepare_case
+
+    def inconsistent_prepare(folder, **kwargs):
+        result = original_prepare(folder, **kwargs)
+        return result.model_copy(
+            update={"known_cost_usd": reported_cost, "unknown_cost": unknown_cost}
+        )
+
+    monkeypatch.setattr(measure, "prepare_case", inconsistent_prepare)
+    summary = measure.run_campaign(**args)
+    assert summary["unknown_cost"] and summary["stop_reason"] == "unknown_cost"
+    assert summary["known_cost_usd"] == max(state["cost"], reported_cost)
+    assert len(state["calls"]) == 1
+    assert summary["rows"][0]["model_calls"] == 1
+    assert summary["rows"][0]["cost_error_type"] == "ModelAccountingMismatch"
+    assert summary["status_counts"] == {"cost_failed": 1, "not_run_unknown_cost": 5}
+    assert summary["correct_correction_decisions"] == 0
+
+
 def test_first_three_and_all_repeats_cannot_pick_later_successful_retries(campaign):
     args, state = campaign
     state["outcomes"] = ["ok", "ok", "ok", "pipeline_error", "pipeline_error", "ok", "ok", "ok"]

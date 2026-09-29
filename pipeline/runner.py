@@ -14,11 +14,12 @@ from sawon_interfaces import ShipmentRecord
 from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from models.base import MeasuredModelClient
 
+from .accounting import read_model_accounting
 from .checks import can_enter, cross_validate
 from .extract import Reservation, extract_page, extraction_prompt
 from .ocr import OcrEngine, PaddleOcrEngine
 from .ocr_input import prepare_ocr_input, read_ocr_views
-from .render import PipelineDependencyError, render_document
+from .render import DOCUMENT_SUFFIXES, PipelineDependencyError, render_document
 from .schemas import (
     Check,
     CheckReport,
@@ -62,23 +63,12 @@ def load_inputs(manifest_path: Path) -> tuple[str, list[DocumentInput]]:
         path = (root / supplied).resolve()
         if supplied.is_absolute() or not path.is_relative_to(root):
             raise ValueError("document_path_escapes_manifest")
-        if path.suffix.lower() not in {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}:
+        if path.suffix.lower() not in DOCUMENT_SUFFIXES:
             raise ValueError("manifest_must_reference_document_images_or_pdfs")
         if hashlib.sha256(path.read_bytes()).hexdigest() != entry["sha256"]:
             raise ValueError("document_digest_mismatch")
         documents.append(DocumentInput(kind=entry["document_type"], path=path))
     return manifest["case_id"], documents
-
-
-def _costs(log: RunLog) -> tuple[Decimal, bool]:
-    calls = [event for event in log.read_all() if event.kind == "model_call"]
-    return (
-        sum(
-            (Decimal(str(event.cost.usd)) for event in calls if event.cost.usd is not None),
-            start=Decimal(0),
-        ),
-        any(event.cost.usd is None for event in calls),
-    )
 
 
 def prepare_case(
@@ -120,7 +110,7 @@ def prepare_case(
             if not original.is_file() or original.stat().st_size > settings.max_document_bytes:
                 raise ValueError("document_missing_or_too_large")
             suffix = original.suffix.lower()
-            if suffix not in {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}:
+            if suffix not in DOCUMENT_SUFFIXES:
                 raise ValueError("unsupported_document_type")
             destination = case_dir / "originals" / f"{document.kind}-{index + 1:02d}{suffix}"
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -168,8 +158,8 @@ def prepare_case(
                         model = model_factory(log)
                         if not isinstance(model, MeasuredModelClient):
                             raise TypeError("pipeline_requires_measured_model_client")
-                    known, unknown = _costs(log)
-                    if unknown:
+                    accounting = read_model_accounting(log)
+                    if accounting.unknown:
                         raise PipelineBudgetError("unknown_previous_model_cost")
                     if reservation is None and model.provider != "replay":
                         raise PipelineBudgetError("live_model_reservation_required")
@@ -179,18 +169,21 @@ def prepare_case(
                         else Decimal(0)
                     )
                     limit = Decimal(str(settings.max_cost_usd))
-                    if not reserved.is_finite() or reserved < 0 or known + reserved > limit:
+                    if (
+                        not reserved.is_finite()
+                        or reserved < 0
+                        or accounting.known_usd + reserved > limit
+                    ):
                         raise PipelineBudgetError("pipeline_cost_reservation_exceeds_limit")
                     before_calls = sum(event.kind == "model_call" for event in log.read_all())
                     extracted, charged = extract_page(model, page, blocks, case_dir=case_dir)
                     extracted = extracted.model_copy(update={"ocr_input": ocr_input})
-                    after_calls = sum(event.kind == "model_call" for event in log.read_all())
-                    if after_calls != before_calls + 1:
+                    accounting = read_model_accounting(log)
+                    if accounting.model_calls != before_calls + 1:
                         raise PipelineBudgetError("model_measurement_missing_from_case_log")
                     bundle = bundle.model_copy(update={"pages": [*bundle.pages, extracted]})
                     atomic_write_json(case_dir / "extracted.json", bundle)
-                    known, unknown = _costs(log)
-                    if unknown or charged > reserved or known > limit:
+                    if accounting.unknown or charged > reserved or accounting.known_usd > limit:
                         raise PipelineBudgetError("model_cost_exceeded_reservation_or_is_unknown")
                     log.append(
                         "verify",
@@ -236,15 +229,15 @@ def prepare_case(
             "low_priority_checks": sum(check.severity == "low" for check in report.checks),
         },
     )
-    known, unknown = _costs(log)
+    accounting = read_model_accounting(log)
     return PipelineResult(
         case_id=case_id,
         case_dir=case_dir,
         ready=ready,
         record=record,
         checks=report,
-        known_cost_usd=float(known),
-        unknown_cost=unknown,
+        known_cost_usd=float(accounting.known_usd),
+        unknown_cost=accounting.unknown,
         error_type=error_type,
         error_detail=error_detail,
     )

@@ -51,7 +51,6 @@ _RULES = {
     "An action requires an executable intent and one action": "action_intent_mismatch",
     "Evidence and stop decisions cannot include UI actions": "nonaction_has_action",
     "Non-action decision intent must match its operation": "nonaction_intent_mismatch",
-    "Duplicate verification requires a current result grid ref": "duplicate_grid_required",
     "Cached input cannot exceed all input tokens": "cached_input_out_of_range",
 }
 

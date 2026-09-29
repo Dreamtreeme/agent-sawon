@@ -135,39 +135,6 @@ class Decision(StrictModel):
         return self
 
 
-class FinalQueryPendingDecision(Decision):
-    """Fresh query input and search must occur before final proof is eligible."""
-
-    operation: Literal["act", "stop"] = Field(
-        description=(
-            "Final query prerequisites are pending. Perform the next required UI step "
-            "with act, or stop. Completion evidence cannot be submitted yet."
-        )
-    )
-
-
-class DuplicateDecision(Decision):
-    """Evidence-only checkpoint; a search cannot be followed by a UI action."""
-
-    screen_kind: Literal["query", "unknown"]
-    operation: Literal["duplicate_clear", "duplicate_found", "stop"]
-    intent: Literal["verify", "stop"]
-    action: None = None
-    grid_ref: str | None = Field(
-        default=None,
-        description="Current result grid ref; required for either duplicate decision.",
-    )
-    row_ref: None = None
-    evidence: list[Evidence] = Field(default_factory=list, max_length=0)
-
-    @model_validator(mode="after")
-    def require_duplicate_evidence(self) -> "DuplicateDecision":
-        if self.operation != "stop" and self.screen_kind != "unknown":
-            if self.intent != "verify" or not self.grid_ref or not self.grid_ref.strip():
-                raise ValueError("Duplicate verification requires a current result grid ref")
-        return self
-
-
 # Provider-facing contracts use explicit alternatives. Python model validators
 # cannot encode cross-field requirements in the JSON schema sent to the model.
 # The internal Decision/Choice API and environment-dependent guards stay intact.

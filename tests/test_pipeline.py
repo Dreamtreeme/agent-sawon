@@ -262,6 +262,26 @@ def test_cost_above_reservation_stops_further_calls(tmp_path, documents):
     assert result.error_type == "PipelineBudgetError"
 
 
+def test_measured_call_written_to_another_case_stops_before_next_page(tmp_path, documents):
+    misplaced = RunLog(tmp_path / "misplaced", case_id="other-case", agent_id="pipeline")
+    model = FakeMeasuredVision(misplaced)
+    result = prepare_case(
+        tmp_path / "case",
+        case_id="pipeline-test",
+        documents=documents,
+        ocr=FakeOcr(),
+        model_factory=lambda _: model,
+    )
+    assert not result.ready
+    assert result.error_detail == "model_measurement_missing_from_case_log"
+    assert len(model.prompts) == 1
+    assert len(misplaced.read_all()) == 1
+    assert not any(
+        event.kind == "model_call"
+        for event in RunLog(tmp_path / "case", case_id="pipeline-test", agent_id="test").read_all()
+    )
+
+
 def test_existing_case_not_overwritten(tmp_path, documents):
     prepare(tmp_path, documents)
     original = (tmp_path / "case" / "run_log.jsonl").read_bytes()
