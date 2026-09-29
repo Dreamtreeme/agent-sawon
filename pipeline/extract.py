@@ -72,6 +72,10 @@ def extraction_prompt(page: RenderedPage, blocks: list[OcrBlock]) -> str:
             "do not infer a code from a port name.",
             "Cite evidence_block_ids covering the actual value and any unit. Those blocks "
             "must contain the transcribed value. Do not cite an unrelated box.",
+            "OCR may include original and median-filtered readings of the same page. "
+            "These are alternative readings, not separate documents or corroboration. "
+            "Use the attached original image to choose accurate evidence, preserving "
+            "characters and punctuation. If neither reading supports it, omit the field.",
             "If OCR is illegible or does not support a value, omit it for human review.",
             "model_confidence is your own estimate and is recorded separately from rule checks.",
         ],

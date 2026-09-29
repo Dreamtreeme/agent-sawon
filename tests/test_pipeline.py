@@ -277,7 +277,7 @@ def test_existing_case_not_overwritten(tmp_path, documents):
         ("gross_weight_kg", "1000", "g", 1.0),
         ("gross_weight_kg", "1.5", "MT", 1500.0),
         ("gross_weight_kg", "10", "LB", 4.5359237),
-        ("hbl_no", " test 123 ", None, "TEST123"),
+        ("hbl_no", " test 123 ", None, "TEST 123"),
     ],
 )
 def test_normalization(name, raw, unit, expected):

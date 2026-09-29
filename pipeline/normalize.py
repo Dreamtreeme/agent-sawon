@@ -54,10 +54,6 @@ def normalized_text(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
 
 
-def comparable(value: str) -> str:
-    return " ".join(re.findall(r"\w+", normalized_text(value)))
-
-
 def number(value: str) -> Decimal:
     text = unicodedata.normalize("NFKC", value).strip()
     if not re.fullmatch(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?", text):
@@ -88,13 +84,13 @@ def normalize_value(
             raise ValueError("invalid_package_count")
         return PackageCount(count=int(parsed), unit=_PACKAGE_UNITS[chosen_unit])
     if name in {"hbl_no", "mbl_no", "container_no", "pol", "pod"}:
-        return text.upper().replace(" ", "")
+        return unicodedata.normalize("NFKC", value).strip().upper()
     return text
 
 
 def container_is_valid(value: str) -> bool:
     """ISO 6346 owner/category + six-digit serial + check digit."""
-    code = value.upper().replace(" ", "")
+    code = unicodedata.normalize("NFKC", value).strip().upper()
     if not re.fullmatch(r"[A-Z]{3}[UJZ][0-9]{7}", code):
         return False
     # Letter values omit multiples of 11, as required by ISO 6346.

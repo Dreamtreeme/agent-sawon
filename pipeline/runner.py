@@ -17,6 +17,7 @@ from models.base import MeasuredModelClient
 from .checks import can_enter, cross_validate
 from .extract import Reservation, extract_page, extraction_prompt
 from .ocr import OcrEngine, PaddleOcrEngine
+from .ocr_input import prepare_ocr_input, read_ocr_views
 from .render import PipelineDependencyError, render_document
 from .schemas import (
     Check,
@@ -149,7 +150,8 @@ def prepare_case(
                 if page_count > settings.max_pages:
                     raise ValueError("case_page_limit")
                 for page in pages:
-                    blocks = ocr.read(page)
+                    ocr_page, ocr_input = prepare_ocr_input(page, settings, case_dir=case_dir)
+                    blocks = read_ocr_views(ocr, page, ocr_page, settings)
                     if not blocks:
                         raise ValueError("ocr_returned_no_evidence")
                     # Persist OCR even if a later model call or schema validation fails.
@@ -158,6 +160,7 @@ def prepare_case(
                         {
                             "document": page.document,
                             "page": page.page,
+                            "ocr_input": ocr_input.model_dump(mode="json"),
                             "blocks": [block.model_dump(mode="json") for block in blocks],
                         },
                     )
@@ -180,6 +183,7 @@ def prepare_case(
                         raise PipelineBudgetError("pipeline_cost_reservation_exceeds_limit")
                     before_calls = sum(event.kind == "model_call" for event in log.read_all())
                     extracted, charged = extract_page(model, page, blocks, case_dir=case_dir)
+                    extracted = extracted.model_copy(update={"ocr_input": ocr_input})
                     after_calls = sum(event.kind == "model_call" for event in log.read_all())
                     if after_calls != before_calls + 1:
                         raise PipelineBudgetError("model_measurement_missing_from_case_log")

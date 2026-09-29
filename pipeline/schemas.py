@@ -79,9 +79,13 @@ class PipelineSettings(FrozenModel):
     ocr_cpu_threads: int = Field(default=4, ge=1, le=64)
     ocr_python: str | None = None
     ocr_timeout_seconds: int = Field(default=300, ge=1, le=1800)
+    ocr_median_kernel: Literal[0, 3, 5] = 0
+    ocr_include_original: bool = False
 
     @model_validator(mode="after")
     def consistent_configuration(self) -> Self:
+        if self.ocr_include_original and self.ocr_median_kernel == 0:
+            raise ValueError("Original OCR comparison requires a separate filtered image")
         if set(self.required_fields) != set(FIELD_NAMES):
             raise ValueError("The current public ShipmentRecord requires all ten fields")
         if len(self.required_fields) != len(FIELD_NAMES):
@@ -108,6 +112,7 @@ class OcrBlock(FrozenModel):
     confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
     # Pixel coordinates on the rendered page: x, y, width, height.
     bbox: tuple[int, int, int, int]
+    input_variant: Literal["unspecified", "original", "median"] = "unspecified"
 
     @model_validator(mode="after")
     def valid_bbox(self) -> Self:
@@ -174,8 +179,17 @@ class ExtractedField(FrozenModel):
     normalization_error: str | None = None
 
 
+class OcrInput(FrozenModel):
+    image: str
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    median_kernel: Literal[0, 3, 5] = 0
+    coordinate_mapping: Literal["identity"] = "identity"
+    original_image: str | None = None
+    original_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
 class ExtractedPage(FrozenModel):
-    schema_version: Literal["0.1"] = "0.1"
+    schema_version: Literal["0.1", "0.2"] = "0.2"
     document: str
     kind: DocumentKind
     page: int
@@ -185,6 +199,7 @@ class ExtractedPage(FrozenModel):
     bbox_coordinate_space: Literal["rendered_page_pixels"] = "rendered_page_pixels"
     blocks: list[OcrBlock]
     fields: list[ExtractedField]
+    ocr_input: OcrInput | None = None
 
 
 class ExtractionBundle(FrozenModel):

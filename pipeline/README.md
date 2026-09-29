@@ -32,6 +32,19 @@ configured deadline, and timeout cleanup kills its owned descendants as well as
 the Windows virtualenv launcher. `in_process` is an explicit option without a
 hard native-call timeout. Use `config/pipeline.korean.toml` for Korean documents.
 
+`config/pipeline.fax.toml` is an opt-in English fax profile. It reads both the
+original raster and a separate 3-pixel median-filtered copy. Filtering can remove
+isolated noise but can also damage punctuation, so both readings retain distinct
+IDs and `input_variant` labels. They are alternative OCR readings of one page,
+not corroborating documents. The measured vision model receives the original
+image and must cite supported text; validation thresholds remain unchanged.
+`ocr_median_kernel` accepts 0 (default, off), 3 or 5; `ocr_include_original=true`
+requires a nonzero kernel. Aggregate OCR resource limits cover both views.
+
+New `ExtractedPage` records use private schema 0.2 and include OCR input paths,
+hashes and identity coordinate mapping. Older 0.1 records remain readable; missing
+legacy per-block variant labels remain `unspecified` rather than inventing origin.
+
 Provider-facing extraction schemas omit large string/array upper bounds to avoid
 HTTP 400 during constrained decoding; full Pydantic validation still enforces
 those bounds locally. The original failed calls remain recorded with unknown cost.
@@ -43,6 +56,8 @@ SHA-256. Extracted records cannot use the unchecked manual-record execution path
 - `originals/`: original bytes copied under generated document names.
 - `pages/`: rendered image pages; source bounding boxes are **pixels in these
   rendered pages**, with dimensions recorded in `extracted.json`.
+- `pages/ocr-input/`: optional filtered rasters. Original pages are retained for
+  vision and review; filtering does not rotate or resize source coordinates.
 - `ocr/`: OCR text, boxes and confidence, retained even if the model fails.
 - `extracted.json`: per-document/page values, all source locations, raw units,
   OCR evidence, OCR confidence and separate model-reported confidence.
@@ -91,3 +106,24 @@ available, anomaly recall/false positives and correction-decision agreement.
 Document-to-ERP success stays `null` unless a separately measured ERP verification
 outcome is supplied to the evaluation API. D7/D8 remain proposed in private
 `docs/decisions/0007-extraction-fields.md` and `0008-confidence.md`.
+
+Document comparisons preserve punctuation. Identifier comparisons also preserve
+internal spaces, matching the benchmark's published evaluation rules. Previous
+pipeline comparisons incorrectly removed punctuation and identifier spaces;
+older evidence remains unchanged rather than being silently rescored.
+
+Repeated measured development campaigns run through the same bounded pipeline:
+
+```powershell
+python -m pipeline.measure --evaluation-manifest cases/evaluation-manifest.json --output cases/document-repeat-run --config config/pipeline.toml --model-config config/models.lite.toml --env .env --repeats 3 --max-cost-usd 1
+```
+
+The manifest contains `scenario`, explicit input `manifest`, and evaluation-only
+`truth` paths. Truth contents are read only after extraction returns. Each trial
+gets a fresh `case-NNN/repeat-NNN` directory; failures and unstarted cancellations
+remain in planned denominators. Summary 0.2 distinguishes extraction success,
+correct validation, expected review/ready outcome, and all-repeats success. A
+processing failure never earns credit merely because the document needed review.
+Anomaly and document-field rates show coverage when truth could not be evaluated.
+An unknown charge stops subsequent trials. `--repeats 1` is an explicit smoke run
+and has no three-consecutive-success estimate. These runs do not measure ERP entry.

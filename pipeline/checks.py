@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from itertools import combinations
 
 from sawon_interfaces import PackageCount, ShipmentRecord
 
-from .normalize import comparable, container_is_valid
+from .normalize import container_is_valid, normalized_text
 from .schemas import (
     FIELD_NAMES,
     Check,
@@ -24,7 +25,12 @@ def equivalent(name: FieldName, first, second) -> bool:
     if isinstance(first, PackageCount) or isinstance(second, PackageCount):
         return first == second
     if isinstance(first, str) and isinstance(second, str):
-        return comparable(first) == comparable(second)
+        if name in {"hbl_no", "mbl_no", "container_no", "pol", "pod"}:
+            return (
+                unicodedata.normalize("NFKC", first).strip().upper()
+                == unicodedata.normalize("NFKC", second).strip().upper()
+            )
+        return normalized_text(first) == normalized_text(second)
     return first == second
 
 
