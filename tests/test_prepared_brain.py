@@ -1,0 +1,134 @@
+"""Prepared extraction handoff validates its report before any environment access."""
+
+import json
+
+import pytest
+from test_brain import FakeRelay, ScriptedModel, success_steps
+from test_pipeline_evaluate import record as extracted_record
+from test_pipeline_evaluate import report as checked_report
+
+import brain.run as runner
+from brain.graph import Brain
+from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
+from brain.settings import BrainSettings
+from pipeline.schemas import Check
+
+
+class TrackedRelay(FakeRelay):
+    def __init__(self, record):
+        super().__init__(record)
+        self.health_calls = 0
+
+    def health(self):
+        self.health_calls += 1
+        return super().health()
+
+
+def prepare(tmp_path, *, mutation=None):
+    case_dir = tmp_path / "prepared"
+    record, report = extracted_record(), checked_report()
+    state = StateStore(case_dir, case_id=record.case_id)
+    state.initialize()
+    state.transition(CaseStatus.EXTRACTING, expected=CaseStatus.RECEIVED)
+    if mutation != "not_ready":
+        state.transition(CaseStatus.READY, expected=CaseStatus.EXTRACTING)
+    if mutation == "value":
+        record.fields.hbl_no.value = "UNVERIFIED-MUTATION"
+    elif mutation == "source":
+        record.fields.hbl_no.source.page = 9
+    elif mutation == "missing_hash":
+        report = report.model_copy(update={"record_sha256": None})
+    elif mutation == "blocking":
+        check = Check(code="field_disagreement", severity="blocking", message="Needs correction")
+        report = report.model_copy(update={"checks": [check]})
+        record.checks = [check.model_dump(mode="json")]
+    atomic_write_json(case_dir / "record.json", record)
+    atomic_write_json(case_dir / "checks.json", report)
+    log = RunLog(case_dir, case_id=record.case_id, agent_id="extraction-fixture")
+    log.append("verify", payload={"check": "extraction_ready", "ready": mutation is None})
+    return case_dir, record, state, log
+
+
+def execute(mode, case_dir, record, log, monkeypatch):
+    relay = TrackedRelay(record)
+    models = []
+
+    def model_factory(_config, *, run_log, env_path):
+        model = ScriptedModel(run_log, success_steps(record))
+        models.append(model)
+        return model
+
+    if mode == "engine":
+        model = model_factory(None, run_log=log, env_path=None)
+        brain = Brain(
+            record=record,
+            goal="Enter checked extraction",
+            relay=relay,
+            model=model,
+            settings=BrainSettings(),
+            case_dir=case_dir,
+            run_log=log,
+            prepared_case=True,
+        )
+        return brain.run, relay, models
+    settings = case_dir.parent / "brain.toml"
+    settings.write_text("", encoding="utf-8")
+    monkeypatch.setattr(runner, "HttpRelay", lambda *args, **kwargs: relay)
+    monkeypatch.setattr(runner, "create_model_client", model_factory)
+    monkeypatch.setattr(runner.CallBudget, "from_config", lambda _path: None)
+    arguments = [
+        "--prepared-case",
+        "--record",
+        str(case_dir / "record.json"),
+        "--case-dir",
+        str(case_dir),
+        "--relay-url",
+        "http://127.0.0.1:1",
+        "--goal",
+        "Enter checked extraction",
+        "--config",
+        str(settings),
+        "--model-config",
+        str(case_dir.parent / "fake-model.toml"),
+    ]
+    return lambda: runner.main(arguments), relay, models
+
+
+@pytest.mark.parametrize("mode", ["engine", "cli"])
+def test_prepared_case_finishes_and_appends_to_existing_log(tmp_path, monkeypatch, mode):
+    case_dir, record, state, log = prepare(tmp_path)
+    original = log.path.read_bytes()
+    original_events = log.read_all()
+    call, relay, models = execute(mode, case_dir, record, log, monkeypatch)
+    result = call()
+    assert (result.status == "success") if mode == "engine" else result == 0
+    assert state.read().status == CaseStatus.AWAITING_APPROVAL
+    assert relay.health_calls == 1 and relay.actions
+    assert models and models[0].prompts
+    assert log.path.read_bytes().startswith(original)
+    events = log.read_all()
+    assert events[: len(original_events)] == original_events
+    assert [event.seq for event in events] == list(range(len(events)))
+    assert events[-1].seq > original_events[-1].seq
+    assert json.loads((case_dir / "result.json").read_text())["status"] == "success"
+
+
+@pytest.mark.parametrize("mode", ["engine", "cli"])
+@pytest.mark.parametrize("mutation", ["value", "source", "missing_hash", "blocking", "not_ready"])
+def test_prepared_case_rejects_before_any_environment_or_model_access(
+    tmp_path, monkeypatch, mode, mutation
+):
+    case_dir, record, state, log = prepare(tmp_path, mutation=mutation)
+    before_state, before_log = state.read(), log.path.read_bytes()
+    call, relay, models = execute(mode, case_dir, record, log, monkeypatch)
+    if mode == "engine":
+        with pytest.raises(ValueError):
+            call()
+    else:
+        assert call() == 2
+    assert state.read() == before_state
+    assert state.read().status != CaseStatus.ENTERING
+    assert relay.health_calls == 0 and relay.calls == 0 and relay.actions == []
+    assert all(model.prompts == [] for model in models)
+    assert log.path.read_bytes() == before_log
+    assert not (case_dir / "result.json").exists()

@@ -12,8 +12,10 @@ from time import perf_counter
 from typing import Protocol, TypeVar
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sawon_interfaces import EventCost, RunEvent
+
+from .validation import safe_validation_errors
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -131,6 +133,8 @@ class MeasuredModelClient(ABC):
             payload["status"] = "success"
         except BaseException as exc:
             payload["error_type"] = type(exc).__name__
+            if isinstance(exc, ValidationError):
+                payload["validation_errors"] = safe_validation_errors(exc, schema)
             # Provider adapters may expose a small allowlisted metadata set, but
             # never exception messages, response bodies, URLs, or request headers.
             payload.update(self._failure_metadata(exc))

@@ -1,0 +1,9 @@
+schema_version = "0.1"
+provider = "gemini"
+model = "gemini-3.5-flash-lite"
+# Relative paths resolve against this configuration file, not the working directory.
+pricing_path = "pricing.toml"
+replay_path = "../examples/replay_responses.jsonl"
+temperature = 0.0
+max_output_tokens = 4096
+timeout_ms = 60000

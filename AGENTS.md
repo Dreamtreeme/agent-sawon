@@ -1,8 +1,10 @@
 # Agent Sawon private repository
 
-Current scope: M1 / stage 2 (authorized by the user). Follow CODEX_BRIEF.md and track
-progress in the sibling agent-sawon-bench/docs/progress.md. Implement relay-facing
-reasoning, bounded execution, observation summaries and measured development runs.
+Current scope: through M2 / stages 3–4 (authorized by the user on 2026-09-29).
+Follow CODEX_BRIEF.md and track progress in sibling agent-sawon-bench/docs/progress.md.
+Implement semantic cache, demonstration learning, document extraction and validation,
+and integrate bounded evidence review/recovery before measured development runs.
+Unfinished M1 measurements remain open; scope expansion does not approve milestone exit.
 
 - Core may import only the public `sawon_interfaces` contract from bench.
 - The future brain accesses the environment only through relay HTTP; never read ERP internals.

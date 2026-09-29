@@ -26,12 +26,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--model-config", type=Path, required=True)
     parser.add_argument("--env-path", type=Path)
+    parser.add_argument("--recovery-model-config", type=Path)
+    parser.add_argument("--prepared-case", action="store_true")
     parser.add_argument("--summary-strategy", choices=["flat_fields", "label_grouped"])
     args = parser.parse_args(argv)
     case_created = False
     log = None
     try:
         record = ShipmentRecord.model_validate_json(args.record.read_bytes())
+        if record.origin == "extracted" and not args.prepared_case:
+            raise ValueError("Extracted records require a validated prepared case")
         settings = BrainSettings.load(args.config)
         if args.summary_strategy:
             settings = settings.model_copy(update={"summary_strategy": args.summary_strategy})
@@ -42,11 +46,34 @@ def main(argv: list[str] | None = None) -> int:
             max_depth=settings.observation_max_depth,
         )
         # mkdir(exist_ok=False) makes retries explicitly choose a fresh case directory.
-        args.case_dir.mkdir(parents=True, exist_ok=False)
+        if args.prepared_case:
+            from pipeline.checks import can_enter
+            from pipeline.schemas import CheckReport
+
+            state = StateStore(args.case_dir, case_id=record.case_id).read()
+            report = CheckReport.model_validate_json((args.case_dir / "checks.json").read_bytes())
+            if (
+                state.status != CaseStatus.READY
+                or not can_enter(record, report)
+                or args.record.resolve() != (args.case_dir / "record.json").resolve()
+            ):
+                raise ValueError("Prepared extraction case must be ready and use its own record")
+            if (args.case_dir / "result.json").exists():
+                raise ValueError("An execution result already exists")
+        else:
+            args.case_dir.mkdir(parents=True, exist_ok=False)
         case_created = True
         log = RunLog(args.case_dir, case_id=record.case_id, agent_id="brain")
-        atomic_write_json(args.case_dir / "record.json", record)
+        if not args.prepared_case:
+            atomic_write_json(args.case_dir / "record.json", record)
         model = create_model_client(args.model_config, run_log=log, env_path=args.env_path)
+        if settings.recovery_enabled and args.recovery_model_config is None:
+            raise ValueError("Recovery requires an explicit model configuration")
+        recovery_model = (
+            create_model_client(args.recovery_model_config, run_log=log, env_path=args.env_path)
+            if settings.recovery_enabled
+            else None
+        )
         result = Brain(
             record=record,
             goal=args.goal,
@@ -58,6 +85,13 @@ def main(argv: list[str] | None = None) -> int:
             username=os.environ.get("SAWON_APP_USERNAME"),
             password=os.environ.get("SAWON_APP_PASSWORD"),
             call_budget=CallBudget.from_config(args.model_config),
+            recovery_model=recovery_model,
+            recovery_budget=(
+                CallBudget.from_config(args.recovery_model_config)
+                if settings.recovery_enabled
+                else None
+            ),
+            prepared_case=args.prepared_case,
         ).run()
         print(result.model_dump_json())
         return 0 if result.status == "success" else 1

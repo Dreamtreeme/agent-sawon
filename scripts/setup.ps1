@@ -12,7 +12,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Python 3.13 environment creation failed.' }
     }
     $PythonExe = Join-Path $RepoRoot '.venv/Scripts/python.exe'
-    & $PythonExe -m pip install -e "$BenchRoot/interfaces" -e "$BenchRoot[dev]" -e '.[dev]'
+    & $PythonExe -m pip install -e "$BenchRoot/interfaces" -e "$BenchRoot[dev]" -e '.[dev,pipeline]'
     if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
     if ($Gui) {
         & $PythonExe -m pip install -e "$BenchRoot[gui]"

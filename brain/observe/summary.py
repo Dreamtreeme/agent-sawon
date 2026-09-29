@@ -7,6 +7,8 @@ from typing import Literal
 
 from sawon_interfaces import Observation, UIElement
 
+from .rows import row_refs
+
 INTERACTIVE = {
     "edit",
     "button",
@@ -114,10 +116,12 @@ def summarize(
     *,
     max_elements: int = 500,
 ) -> str:
+    rows = row_refs(observation.elements)
     selected = [
         item
         for item in observation.elements
         if item.role.casefold() in INTERACTIVE
+        or item.ref in rows
         or (item.role.casefold() in {"text", "label"} and item.name)
     ]
     entries = []
@@ -131,13 +135,19 @@ def summarize(
             "focused": element.focused,
             "parent_ref": element.parent_ref,
         }
+        chain = ancestors(element, observation.elements)
+        row_ref = next((item.ref for item in reversed([*chain, element]) if item.ref in rows), None)
+        if row_ref is not None:
+            entry["row_ref"] = row_ref
+        if element.ref in rows:
+            entry["is_row"] = True
         # Stable IDs, process paths and coordinates deliberately never enter prompts.
         if strategy == "label_grouped":
             entry["label"] = _nearest_label(element, observation.elements)
             entry["region"] = [
                 {"ref": parent.ref, "role": parent.role, "name": parent.name}
-                for parent in ancestors(element, observation.elements)
-                if parent.role.casefold() in CONTAINERS
+                for parent in chain
+                if parent.role.casefold() in CONTAINERS or parent.ref in rows
             ]
         else:
             entry["label_hint"] = element.label_hint

@@ -7,3 +7,4 @@ model_call_reserve_usd = 0.025
 http_timeout_seconds = 30
 observation_max_depth = 12
 max_summary_elements = 500
+navigation_history_size = 12
