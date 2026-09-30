@@ -12,6 +12,9 @@ preserve old plans/results and do not treat notebook/human/failover tools as imp
 The user approved a visual-first plan on 2026-09-30. Follow ../agent-sawon-bench/docs/visual-first-plan-20260930.md before the old 300-run practice.
 Implement screenshot/OCR/control detection and visual verification first; UIA is optional assistance.
 Visual-only mode must exclude UIA observations and direct control patterns while retaining OS safety guards.
+The user authorized L2C-style automatic foreground activation on 2026-09-30.
+The relay may restore an allowlisted ERP before visual capture/input; foreground loss alone
+does not require a new confirmation. Observation-only recording stays passive.
 V1 isolation and V2/V3 visual perception/brain integration are implemented with fake tests; real visual completion is unverified.
 Visual cache/demo provenance and notebook/human/scoreboard tools are implemented. The user confirmed HTTP400 billing review and authorized paid resumption within the existing total $50 cap on 2026-09-30. Preserve historical unknown-cost records; run bounded visual pilots before scaling.
 See ../agent-sawon-bench/docs/visual-v1-contract-20260930.md. Preserve previous UIA evidence; do not auto-resume old runs.
