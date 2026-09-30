@@ -20,7 +20,7 @@ from sawon_interfaces import Action, Observation, ShipmentRecord, UIElement
 from brain.cache import CacheIntegrityError, SemanticCache
 from brain.cache.rebind import RebindProposal, build_rebind_request, install_rebind_proposal
 from brain.observe import describe, redact, summarize
-from brain.observe.evidence import matching_elements
+from brain.observe.evidence import is_record_input, matching_elements
 from brain.observe.progress import navigation_state, navigation_target
 from brain.observe.rows import row_refs
 from brain.observe.summary import ancestors
@@ -43,6 +43,7 @@ from .execution import ActionPlan, PendingAction, execute_plan, log_transition
 from .execution import GuardStop as GuardStop
 from .policy import DecisionPolicy, ExecutionFacts
 from .review import EvidenceReview, review_final
+from .save_review import SAVE_REVIEW_GUIDANCE, SaveReviewResponse, validate_save_review
 from .schemas import (
     Choice,
     Decision,
@@ -144,7 +145,10 @@ Refs are valid only for this observation. Do not invent refs or coordinate targe
 Every targeted action requires a current enabled ref. If a needed field is hidden,
 use an observed tab or navigation control, then reobserve before acting on it.
 set_text/type_text requires a current enabled Edit, ComboBox, DataItem or Cell ref
-identified by its field meaning. A nearby label, button, table or container is not
+identified by its field meaning. ShipmentRecord sources are flat record/form fields,
+not repeated line-item cells. Do not substitute similarly named detail-table columns
+for record fields. Use another observed tab to locate the record field instead.
+A nearby label, button, table or container is not
 a text-input target. An allowed role alone does not establish the field's meaning.
 Return a JSON object matching the response schema. During action selection,
 put the single selected decision in its decision field.
@@ -384,6 +388,7 @@ class Brain:
             "selection_error:ValidationError",
             "action_not_allowed_by_state",
             "final_query_required",
+            "save_result_required",
         }:
             feedback["required_response"] = (
                 "No UI action or completion was accepted. Correct the listed validation_errors "
@@ -404,6 +409,18 @@ class Brain:
                 "Choose a different grounded route or stop. Controls in "
                 "unproductive_navigation_targets cannot be repeated in the same state. "
                 + self._phase_instruction()
+            )
+        elif reason == "record_input_scope_mismatch":
+            feedback["required_response"] = (
+                "No record input was sent. The selected control belongs to a repeated "
+                "detail row/table, not the flat ShipmentRecord. Keep verified form fields; "
+                "choose observed tabs/navigation to find the missing record field."
+            )
+        elif reason == "save_rejected":
+            feedback["required_response"] = (
+                "The application REJECTED saving. Dismiss its error by meaning, correct "
+                "only remaining_fields in the record form, reverify and save again. "
+                "Do not proceed to final query as if saving succeeded."
             )
         elif reason == "target_not_text_input":
             feedback["required_response"] = (
@@ -640,6 +657,8 @@ class Brain:
     def _phase_instruction(self, policy: DecisionPolicy | None = None) -> str:
         policy = policy or self._decision_policy()
         step = policy.current_step
+        if step == "save_result":
+            return SAVE_REVIEW_GUIDANCE
         if step == "duplicate_result_evidence":
             return DUPLICATE_EVIDENCE_GUIDANCE
         if self.phase == "final_query":
@@ -897,7 +916,7 @@ class Brain:
             try:
                 hit = (
                     None
-                    if screen_fill or login_batch
+                    if screen_fill or login_batch or self.phase == "save_result"
                     else self.cache_session.lookup(
                         self.observation,
                         phase=self.phase,
@@ -973,7 +992,15 @@ class Brain:
                         },
                     )
                 prompt = self._decision_prompt(policy)
-                if login_batch:
+                if self.phase == "save_result":
+                    schema = SaveReviewResponse
+                    review = self._call(prompt, schema)
+                    outcome = self._apply_save_review(review)
+                    if outcome is not None:
+                        return outcome
+                    self.decision = review.next_decision.to_decision()
+                    policy = self._decision_policy()
+                elif login_batch:
                     schema = LoginScreenPlan
                     plan = self._call(prompt + LOGIN_GUIDANCE, schema)
                     if plan.fields:
@@ -1024,7 +1051,11 @@ class Brain:
                 and self.decision.action.type in {"set_text", "type_text"}
             ):
                 return self._retry_input_target_selection(str(exc))
-            if str(exc) in {"action_not_allowed_by_state", "navigation_no_progress"}:
+            if str(exc) in {
+                "action_not_allowed_by_state",
+                "navigation_no_progress",
+                "record_input_scope_mismatch",
+            }:
                 return self._fail(str(exc))
             if duplicate_checkpoint and str(exc) in {
                 "missing_query_grid_evidence",
@@ -1036,6 +1067,8 @@ class Brain:
             return self._fail(
                 "duplicate_evidence_required"
                 if duplicate_checkpoint
+                else "save_result_required"
+                if self.phase == "save_result"
                 else "final_query_required"
                 if final_query_pending
                 else "selection_error:ValidationError",
@@ -1112,13 +1145,19 @@ class Brain:
         for field, descriptor in list(self.verified.items()):
             matches = matching_elements(self.observation, descriptor)
             if len(matches) > 1 or (
-                matches and not field_matches(field, matches[0].value, self.values)
+                matches
+                and (
+                    not is_record_input(matches[0], self.observation)
+                    or not field_matches(field, matches[0].value, self.values)
+                )
             ):
                 del self.verified[field]
 
     def _record_verified_field(self, source: str, element: UIElement) -> bool:
         assert self.observation is not None
-        if not field_matches(source, element.value, self.values):
+        if not is_record_input(element, self.observation) or not field_matches(
+            source, element.value, self.values
+        ):
             return False
         self.verified[source] = describe(element, self.observation.elements)
         self._record_progress("field:" + source)
@@ -1152,6 +1191,9 @@ class Brain:
         if choice.type in {"set_text", "type_text"}:
             if by_ref[choice.ref].role.casefold() not in TEXT_INPUT_ROLES:
                 raise GuardStop("target_not_text_input")
+        if decision.intent == "fill" and decision.screen_kind == "editor":
+            if not is_record_input(by_ref[choice.ref], self.observation):
+                raise GuardStop("record_input_scope_mismatch")
         if isinstance(self.observation, SceneObservation) and choice.type == "select_option":
             raise GuardStop("visual_select_requires_click_or_keyboard")
         if decision.intent == "search" and decision.screen_kind == "query":
@@ -1256,6 +1298,8 @@ class Brain:
         try:
             return execute_plan(self, plan)
         except GuardStop as exc:
+            if str(exc) == "record_input_scope_mismatch":
+                return self._fail(str(exc))
             return self._finish("stopped", str(exc))
         except Exception as exc:
             return self._fail("action_error:" + type(exc).__name__)
@@ -1329,7 +1373,7 @@ class Brain:
                 self.query_submitted = True
             if decision.intent == "save":
                 self.save_issued = True
-                self.phase = "final_query"
+                self.phase = "save_result"
                 self.query_submitted = self.query_value_verified = False
                 self.query_descriptor = None
                 self.query_window_handle = None
@@ -1487,7 +1531,8 @@ class Brain:
                         self._record_progress("query_input")
                         new_facts.append("query_input_verified")
                     if decision.intent == "fill" and decision.screen_kind == "editor":
-                        self._record_verified_field(source, element)
+                        if not self._record_verified_field(source, element):
+                            return self._fail("record_input_scope_mismatch")
                         new_facts.append(source)
                 self.log.append(
                     "verify",
@@ -1563,6 +1608,38 @@ class Brain:
                         log_transition(self.log, delivered)
                 log_transition(self.log, pending, observation, observed_effect, tuple(new_facts))
             self.pending = None
+
+    def _apply_save_review(self, review: SaveReviewResponse) -> dict | None:
+        assert self.observation is not None
+        validate_save_review(review, self.observation)
+        self.log.append(
+            "verify",
+            payload={
+                "check": "save_result_review",
+                "obs_id": str(self.observation.obs_id),
+                "result": review.result,
+                "evidence_refs": review.evidence_refs,
+                "repair_fields": review.repair_fields,
+            },
+        )
+        if review.result == "unknown":
+            return self._finish("stopped", "save_result_unknown")
+        if review.result == "ready_for_query":
+            # Permission to verify persistence, never evidence that saving succeeded.
+            self.phase = "final_query"
+        elif review.result == "rejected":
+            self.phase = "enter"
+            self.save_issued = False
+            self.query_submitted = self.query_value_verified = False
+            self.query_descriptor = self.query_window_handle = None
+            for source in review.repair_fields:
+                self.verified.pop(source, None)
+            if not review.repair_fields:
+                return self._finish("stopped", "save_rejected_without_record_repair")
+            outcome = self._fail("save_rejected")
+            if outcome["next"] == "finish":
+                return outcome
+        return None
 
     def _check_complete(self, decision: Decision) -> dict:
         assert self.observation is not None

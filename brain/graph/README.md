@@ -57,6 +57,13 @@ rebinding and transition logging. A partial batch retains delivery records witho
 claiming unobserved values. Group plans are not promoted as single-field cache entries.
 
 Live run013 verified grouped login and two field batches, but an incorrect optional
-item row caused save rejection. Field-scope mapping and save-result handling remain
-open; see the architecture review and bench progress log. Current refactoring tests
+item row caused save rejection. Field-scope mapping and save-result handling have been revised; live verification
+remains open. See the architecture review and bench progress log. Current refactoring tests
 use replay/fakes and do not establish a new live success rate.
+
+Save delivery now enters `save_result`. The next measured selection jointly returns
+current evidence, rejected/confirmation_required/ready_for_query/unknown, and an
+eligible next action. Rejection returns to entry and invalidates only implicated
+record fields; confirmation remains pending. Neither delivery nor readiness for
+query proves persistence. Final row verification remains mandatory. Flat record
+inputs use the shared form-scope predicate, including cache and evidence paths.

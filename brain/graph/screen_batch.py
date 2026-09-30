@@ -29,6 +29,9 @@ never supply literal values or invented coordinates. Each ref/source occurs once
 The runtime fills every planned field without OCR/model calls between inputs,
 then moves focus once and rereads the whole screen to verify the assignments.
 Only include fields whose input does not open a dialog, change tabs or navigate.
+Sources belong to the flat ShipmentRecord, not repeated line items. Never use cells
+inside a table/list/row as substitutes for similarly named record-level fields.
+If remaining fields are absent from the current form, use observed tabs/navigation.
 For fields requiring lookup/dialog/selection, first fill other directly editable
 fields; handle that boundary in the next plan after verification.
 When fields is nonempty, next_decision must be null. When no remaining visible

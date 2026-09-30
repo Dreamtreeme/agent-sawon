@@ -12,7 +12,7 @@ flowchart TD
     EX --> CHECK["규칙 교차 검증·확신도·레코드 무결성"]
     CHECK -->|누락·불일치·근거 부족| FAIL["FAILED · 정정 필요 기록"]
     CHECK -->|통과| READY["READY · 추출 레코드"]
-    READY --> BRAIN["Brain: 중복 조회 → 입력 → 저장 → 재조회"]
+    READY --> BRAIN["Brain: 중복 조회 → 입력 → 저장 요청 → 결과 판단 → 재조회"]
     BRAIN -->|현재 한 행 전체 필드 검증| APPROVAL["AWAITING_APPROVAL"]
 ```
 
@@ -92,10 +92,12 @@ pipeline/workflow.py
           │   ├─ DecisionPolicy → 현재 응답 스키마
           │   ├─ CacheSession.lookup (정확 일치 / 선택적 공통 라벨 재매칭)
           │   ├─ 미적중 시 선택적 build_rebind_request → 측정 호출 → install_rebind_proposal
-          │   ├─ 재조회 미적중이면 _choose_decision
+          │   ├─ 미적중: 로그인/필드 묶음 또는 단일 결정 → ActionPlan
+          │   ├─ save_result: 현재 근거·결과·다음 행동을 한 응답으로 판단
+          │   │   └─ 거절→해당 필드 수정, 확인창→처리 후 재판정, 준비됨→최종 조회
           │   └─ 공통 _guard_action
-          ├─ _act_node → relay.act
-          ├─ _verify_node → 재관찰·값/전이 검사 → stage_validated
+          ├─ _act_node → execute_plan → 전체 계획 선검사 → 순서대로 relay.act
+          ├─ _verify_node → 한 번 재관찰·단일/묶음 값·각 행동 전이 검사
           └─ 성공 후 CacheSession.finish → 원자적 승격·결재 대기
 ```
 

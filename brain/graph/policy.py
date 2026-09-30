@@ -31,9 +31,10 @@ from brain.graph.schemas import (
     WireStopDecision,
 )
 
-Phase = Literal["duplicate_query", "enter", "final_query"]
+Phase = Literal["duplicate_query", "enter", "save_result", "final_query"]
 CredentialSource = Literal["credential.username", "credential.password"]
 CurrentStep = Literal[
+    "save_result",
     "query_input",
     "search",
     "duplicate_result_evidence",
@@ -262,6 +263,8 @@ class DecisionPolicy:
 
     @property
     def current_step(self) -> CurrentStep:
+        if self.facts.phase == "save_result":
+            return "save_result"
         if self.facts.phase == "enter":
             return "fill_fields" if self.facts.remaining_fields else "save"
         if self.facts.phase == "duplicate_query" and self.facts.query_submitted:

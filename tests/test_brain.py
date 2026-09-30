@@ -192,7 +192,16 @@ class ScriptedModel(MeasuredModelClient):
             response = next(self.decisions)
             if callable(response):
                 response = response(prompt)
-            if "decision" in schema.model_fields:
+            if schema.__name__ == "SaveReviewResponse" and "result" not in response:
+                # Existing success scripts explicitly move into the visible query.
+                # Error/confirmation tests provide their own save-review responses.
+                response = {
+                    "result": "ready_for_query",
+                    "evidence_refs": [(response.get("action") or {}).get("ref") or "e0"],
+                    "repair_fields": [],
+                    "next_decision": {"decision": response},
+                }
+            elif "decision" in schema.model_fields:
                 response = {"decision": response}
         return ProviderReply(
             text=json.dumps(response),

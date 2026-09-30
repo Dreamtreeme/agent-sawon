@@ -189,6 +189,40 @@ def test_shared_executor_checks_whole_plan_step_budget_before_delivery(
         assert brain.result.reason == "max_steps"
 
 
+@pytest.mark.parametrize("role", ["Cell", "Edit"])
+def test_detail_row_cannot_substitute_for_flat_record_field(tmp_path, record, role):
+    from test_brain import element
+
+    from brain.cache.semantic import describe_target
+
+    relay = ChangingPixelsRelay(record)
+    relay.mode = "editor"
+    brain, _, _ = make_brain(
+        tmp_path,
+        record,
+        relay,
+        [
+            {
+                "fields": [{"source": "description", "ref": "e91"}],
+                "next_decision": None,
+            }
+        ],
+    )
+    brain.phase, brain.duplicate_clear = "enter", True
+    scene = brain._observe()
+    table = element("e90", "Table", name="Optional detail lines")
+    cell = element("e91", role, name="Description", value=brain.values["description"], parent="e90")
+    brain.observation = scene.model_copy(update={"elements": [*scene.elements, table, cell]})
+    assert brain._select_node({}) == {"next": "act"}
+    assert brain._act_node({}) == {"next": "observe"}
+    assert not relay.actions
+    assert not brain._record_verified_field("description", cell)
+    assert describe_target(cell, brain.observation) is None
+    assert any(
+        e.payload.get("reason") == "record_input_scope_mismatch" for e in brain.log.read_all()
+    )
+
+
 @pytest.mark.parametrize("accept", [True, False])
 def test_login_plan_sends_two_credentials_and_click_before_any_reread(tmp_path, record, accept):
     from test_brain import element

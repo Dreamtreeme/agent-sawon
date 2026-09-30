@@ -22,6 +22,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationErro
 from sawon_interfaces import Observation, ShipmentRecord, UIElement
 
 from brain.graph.schemas import Choice, Decision, FieldName
+from brain.observe.evidence import is_record_input
 from brain.observe.summary import ancestors
 from brain.runtime.storage import atomic_write_json
 
@@ -131,7 +132,11 @@ def describe_target(element: UIElement, observation: Observation) -> TargetDescr
     """Describe only current public UI semantics, never geometry or stable IDs."""
     if observation.blocked_reason or observation.active_window is None:
         return None
-    if element not in observation.elements or not element.enabled:
+    if (
+        element not in observation.elements
+        or not element.enabled
+        or not is_record_input(element, observation)
+    ):
         return None
     role = element.role.casefold()
     label = normalized(element.label_hint or element.name)

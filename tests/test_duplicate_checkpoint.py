@@ -274,11 +274,11 @@ def test_post_save_fill_repairs_to_explicit_query_navigation_and_completes(tmp_p
         assert len(relay.actions) == save_index
         assert relay.inputs == relay.values
         state = json.loads(prompt.split("\nTRUSTED_TASK=", 1)[1].split("\nUI_TEXT=", 1)[0])
-        assert state["phase"] == "final_query"
+        assert state["phase"] == "save_result"
         assert state["save_issued"] is True
         assert state["duplicate_clear"] is True
         assert state["query_value_verified"] is False
-        assert any(item.get("reason") == "final_query_required" for item in state["feedback"])
+        assert any(item.get("reason") == "save_result_required" for item in state["feedback"])
         summary = json.loads(prompt.split("\nUI_TEXT=", 1)[1])
         assert any(item["ref"] == "e9" for item in summary["elements"])
         return decision(kind="editor", intent="navigate", action={"type": "click", "ref": "e9"})
@@ -296,7 +296,7 @@ def test_post_save_fill_repairs_to_explicit_query_navigation_and_completes(tmp_p
     assert relay.save_count == 1
     assert relay.post_save_field_writes == 0
     assert relay.inputs == relay.values
-    assert [item["reason"] for item in failures(brain)] == ["final_query_required"]
+    assert [item["reason"] for item in failures(brain)] == ["save_result_required"]
 
 
 def test_repeated_post_save_fill_stops_without_another_write_or_save(tmp_path, record):
@@ -318,10 +318,10 @@ def test_repeated_post_save_fill_stops_without_another_write_or_save(tmp_path, r
     assert relay.save_count == 1
     assert relay.post_save_field_writes == 0
     assert relay.inputs == relay.values
-    assert brain.phase == "final_query" and brain.save_issued and brain.duplicate_clear
+    assert brain.phase == "save_result" and brain.save_issued and brain.duplicate_clear
     assert [item["reason"] for item in failures(brain)] == [
-        "final_query_required",
-        "final_query_required",
+        "save_result_required",
+        "save_result_required",
     ]
 
 
@@ -335,7 +335,18 @@ def test_post_save_navigation_invalid_target_remains_fatal(tmp_path, record, tar
     # not reject the response before the current/disabled target guard runs.
     invalid = decision(kind="editor", intent="navigate", action={"type": "click", "ref": ref})
     result, brain, _, model = run_brain(
-        tmp_path, record, [*steps[: save_index + 1], invalid], relay=relay
+        tmp_path,
+        record,
+        [
+            *steps[: save_index + 1],
+            {
+                "result": "ready_for_query",
+                "evidence_refs": ["e9"],
+                "repair_fields": [],
+                "next_decision": {"decision": invalid},
+            },
+        ],
+        relay=relay,
     )
     assert result.status == "stopped"
     assert result.reason == "target_not_current_or_enabled"
@@ -627,11 +638,11 @@ def test_final_query_requires_fresh_input_before_search_and_can_recover(tmp_path
         assert relay.query == relay.values["hbl_no"]
         assert len(relay.actions) == len(steps) - 4
         state = json.loads(prompt.split("\nTRUSTED_TASK=", 1)[1].split("\nUI_TEXT=", 1)[0])
-        assert state["phase"] == "final_query"
+        assert state["phase"] == "save_result"
         assert state["query_value_verified"] is False
-        assert any(item.get("reason") == "final_query_required" for item in state["feedback"])
+        assert any(item.get("reason") == "save_result_required" for item in state["feedback"])
         policy = state["execution_policy"]
-        assert policy["current_step"] == "query_input"
+        assert policy["current_step"] == "save_result"
         assert "search" not in {rule["intent"] for rule in policy["allowed_next_choices"]}
         return steps[-3]
 
@@ -645,7 +656,7 @@ def test_final_query_requires_fresh_input_before_search_and_can_recover(tmp_path
     assert result.steps == len(steps) + 1
     assert len(model.prompts) == result.steps + 1
     assert len(relay.actions) == len(steps) - 2
-    assert [item["reason"] for item in failures(brain)] == ["final_query_required"]
+    assert [item["reason"] for item in failures(brain)] == ["save_result_required"]
 
 
 def test_premature_final_completion_repairs_through_explicit_input_search_and_evidence(
@@ -658,12 +669,13 @@ def test_premature_final_completion_repairs_through_explicit_input_search_and_ev
         assert relay.saved
         assert len(relay.actions) == len(steps) - 4
         state = json.loads(prompt.split("\nTRUSTED_TASK=", 1)[1].split("\nUI_TEXT=", 1)[0])
-        assert state["phase"] == "final_query"
+        assert state["phase"] == "save_result"
         assert state["query_submitted"] is False
         assert state["query_value_verified"] is False
-        assert state["next_required_step"] == "query_input"
-        assert state["final_required_fields"] == sorted(relay.values)
-        assert any(item.get("reason") == "final_query_required" for item in state["feedback"])
+        assert state["next_required_step"] is None
+        assert state["execution_policy"]["current_step"] == "save_result"
+        assert state["final_required_fields"] == []
+        assert any(item.get("reason") == "save_result_required" for item in state["feedback"])
         return steps[-3]
 
     def explicit_search(prompt):
@@ -690,7 +702,7 @@ def test_premature_final_completion_repairs_through_explicit_input_search_and_ev
     assert result.steps == len(steps) + 1
     assert len(model.prompts) == result.steps + 1
     assert len(relay.actions) == len(steps) - 2
-    assert [item["reason"] for item in failures(brain)] == ["final_query_required"]
+    assert [item["reason"] for item in failures(brain)] == ["save_result_required"]
 
 
 def test_repeated_premature_final_completion_stops_without_query_or_extra_save(tmp_path, record):
@@ -703,11 +715,11 @@ def test_repeated_premature_final_completion_stops_without_query_or_extra_save(t
     assert len(relay.actions) == len(steps) - 4
     assert relay.saved
     assert relay.inputs == relay.values
-    assert brain.phase == "final_query" and brain.save_issued and brain.duplicate_clear
+    assert brain.phase == "save_result" and brain.save_issued and brain.duplicate_clear
     assert not brain.query_value_verified and not brain.query_submitted
     assert [item["reason"] for item in failures(brain)] == [
-        "final_query_required",
-        "final_query_required",
+        "save_result_required",
+        "save_result_required",
     ]
 
 
@@ -804,11 +816,11 @@ def test_repeated_final_search_without_fresh_input_stops_before_search(tmp_path,
     assert len(model.prompts) == result.steps + 1
     assert len(relay.actions) == len(steps) - 4
     assert relay.saved
-    assert brain.phase == "final_query"
+    assert brain.phase == "save_result"
     assert not brain.query_value_verified
     assert [item["reason"] for item in failures(brain)] == [
-        "final_query_required",
-        "final_query_required",
+        "save_result_required",
+        "save_result_required",
     ]
 
 
