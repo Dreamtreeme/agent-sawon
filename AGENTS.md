@@ -9,6 +9,11 @@ The 2026-09-30 brief revision replaces the next 1,200-run development sweep with
 0–29 practice study and D4 scale proposal. Use ../agent-sawon-bench/docs/revised-development-plan-20260930.md;
 preserve old plans/results and do not treat notebook/human/failover tools as implemented.
 
+The user approved a visual-first plan on 2026-09-30. Follow ../agent-sawon-bench/docs/visual-first-plan-20260930.md before the old 300-run practice.
+Implement screenshot/OCR/control detection and visual verification first; UIA is optional assistance.
+Visual-only mode must exclude UIA observations and direct control patterns while retaining OS safety guards.
+The new path is not implemented yet. Preserve previous UIA evidence and re-plan counts; do not auto-resume old runs.
+
 - Core may import only the public `sawon_interfaces` contract from bench.
 - The future brain accesses the environment only through relay HTTP; never read ERP internals.
 - Do not hardcode ERP labels, coordinates, AutomationIds, navigation paths, or tab order here.
