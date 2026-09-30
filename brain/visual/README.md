@@ -72,6 +72,8 @@ OCR 블록 ID이며 각 후보의 `contained_ocr_ids`를 제공한다. 원본 �
 
 `BrainSettings.visual_detector`에 weights, python, confidence, max_dimension,
 timeout_seconds를 둔다. weights 상대 경로는 brain 설정 파일 기준이다.
+device 설정으로 추론 장치를 선택하며 현재 visual 프로필은 `cuda:0`이다.
+이전 worker의 CPU 고정값을 제거했고 기본/보완 탐지 모두 같은 장치를 사용한다.
 현재 visual 설정은 이 컴퓨터에 이미 설치된 L2C 가중치와 격리된 Python을 사용한다.
 다른 컴퓨터에서는 해당 경로를 설정해야 한다. 가중치나 L2C 환경 자체는 커밋하지 않는다.
 동일 환경 설치가 필요하면 optional extra `visual`을 사용한다. 자동 다운로드나

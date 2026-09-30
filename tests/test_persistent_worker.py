@@ -125,8 +125,10 @@ def test_detector_full_and_refinement_share_model(monkeypatch, tmp_path):
     class Model:
         def __init__(self, weights):
             loaded.append(weights)
+            self.predictor = SimpleNamespace(device="cuda:0")
 
         def __call__(self, image, **kwargs):
+            assert kwargs["device"] == "cuda:0"
             inferred.append((image.size, image.getpixel((0, 0))))
             return []
 
@@ -138,6 +140,7 @@ def test_detector_full_and_refinement_share_model(monkeypatch, tmp_path):
     Image.new("RGB", (40, 40), "black").save(second)
     request = dict(
         weights=str(weights),
+        device="cuda:0",
         image=str(first),
         confidence=0.15,
         max_dimension=640,
@@ -151,6 +154,38 @@ def test_detector_full_and_refinement_share_model(monkeypatch, tmp_path):
     assert len(loaded) == 1 and len(inferred) == 3
     assert inferred[0][1] != inferred[1][1]
     assert not session.metrics["model_initialized"]
+
+
+def test_gpu_ocr_registers_isolated_cuda_libraries_once(monkeypatch, tmp_path):
+    from pipeline import ocr_worker
+
+    cuda = tmp_path / "nvidia" / "cu13" / "bin" / "x86_64"
+    cudnn = tmp_path / "nvidia" / "cudnn" / "bin"
+    cuda.mkdir(parents=True)
+    cudnn.mkdir(parents=True)
+    registered = []
+    monkeypatch.setattr(ocr_worker.sys, "platform", "win32")
+    monkeypatch.setattr(ocr_worker.site, "getsitepackages", lambda: [str(tmp_path)])
+    monkeypatch.setattr(ocr_worker, "_DLL_HANDLES", [])
+    monkeypatch.delenv("PADDLE_CUDA_BIN_DIR", raising=False)
+    monkeypatch.delenv("PADDLE_CUDNN_BIN_DIR", raising=False)
+    monkeypatch.setenv("PATH", "original")
+    monkeypatch.setattr(
+        ocr_worker.os,
+        "add_dll_directory",
+        lambda path: registered.append(path) or object(),
+        raising=False,
+    )
+
+    def factory(**kwargs):
+        assert registered == [str(cuda), str(cudnn)]
+        assert kwargs["device"] == "gpu:0"
+        return object()
+
+    monkeypatch.setitem(sys.modules, "paddleocr", SimpleNamespace(PaddleOCR=factory))
+    ocr_worker.create_engine("en", "gpu:0")
+    ocr_worker.create_engine("en", "gpu:0")
+    assert len(registered) == 2
 
 
 @pytest.mark.parametrize("interrupt", [False, True])

@@ -19,7 +19,7 @@ render_dpi = 144
 max_ocr_blocks = 500
 max_ocr_characters = 50000
 ocr_language = "en"
-ocr_device = "cpu"
+ocr_device = "gpu:0"
 ocr_version = "PP-OCRv5"
 ocr_detection_model = "PP-OCRv5_mobile_det"
 ocr_execution = "subprocess"
@@ -28,3 +28,5 @@ ocr_cpu_threads = 4
 ocr_timeout_seconds = 300
 ocr_median_kernel = 3
 ocr_include_original = true
+
+ocr_python = "C:/Users/psg/Desktop/L2C/.venv-ocr/Scripts/python.exe"

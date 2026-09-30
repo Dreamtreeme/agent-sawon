@@ -19,12 +19,12 @@ render_dpi = 144
 max_ocr_blocks = 500
 max_ocr_characters = 50000
 ocr_language = "en"
-ocr_device = "cpu"
+ocr_device = "gpu:0"
 ocr_version = "PP-OCRv5"
 ocr_detection_model = "PP-OCRv5_mobile_det"
 ocr_execution = "subprocess"
 ocr_enable_mkldnn = false
 ocr_cpu_threads = 4
 ocr_timeout_seconds = 300
-# Optional separate environment; code remains Python 3.13.
-# ocr_python = 'C:\path\to\ocr-environment\Scripts\python.exe'
+# Existing isolated GPU environment; configure this path on another host.
+ocr_python = "C:/Users/psg/Desktop/L2C/.venv-ocr/Scripts/python.exe"

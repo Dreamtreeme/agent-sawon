@@ -17,16 +17,23 @@ never printed. Use `config/pipeline.toml` to set tolerances, confidence threshol
 document limits and cost budget. A different OCR Python may be configured with
 `ocr_python`; its fixed worker runs hidden without shell interpolation.
 
-PaddleOCR is lazy-loaded and uses CPU by default. Its first initialization may
+PaddleOCR is lazy-loaded. The checked-in Windows profiles use `gpu:0` and the
+existing L2C `.venv-ocr` Python 3.13 environment; change `ocr_python` for another
+machine. The schema default remains CPU for portable callers. Its first initialization may
 download public OCR model weights. Missing dependencies/model failures are
 reported as failures, with no replacement OCR implementation. Windows Python
 3.13 is listed in the [official PaddlePaddle installation guide](https://www.paddlepaddle.org.cn/documentation/docs/install/pip/windows-pip_en.html).
 The adapter uses the documented v3 `predict()` / `rec_texts`, `rec_scores`,
 `rec_boxes` [result format](https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/pipeline_usage/OCR.md).
 
-The measured Windows preset uses PP-OCRv5 mobile detection/recognition, four CPU
-threads and `enable_mkldnn=false`. The installed v6 medium preset raised a oneDNN
-runtime error; server detection without oneDNN was too slow for this host.
+The measured Windows GPU preset uses PP-OCRv5 mobile detection/recognition with
+PaddlePaddle GPU 3.3.1 (CUDA 13), PaddleOCR 3.7.0 and PaddleX 3.7.2. The worker
+registers CUDA/cuDNN DLL directories from its own environment before importing
+Paddle. `PADDLE_CUDA_BIN_DIR` / `PADDLE_CUDNN_BIN_DIR` can specify alternate
+runtime directories. The CPU settings (four threads, MKL-DNN disabled following
+the earlier oneDNN failure) remain available by explicitly selecting `cpu`.
+GPU failures do not silently fall back to CPU. Installing the `ocr` extra alone
+installs CPU Paddle; use a GPU runtime through `ocr_python` for these profiles.
 `ocr_execution="subprocess"` is the default: the fixed worker is hidden and reuses
 its loaded model across pages/screens while inferring each image afresh. Each
 request has a configured deadline. Failure, timeout, or task completion closes

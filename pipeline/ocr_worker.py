@@ -7,9 +7,31 @@ text and live in the case directory. No provider API is called by this worker.
 from __future__ import annotations
 
 import json
+import os
+import site
 import sys
 from pathlib import Path
 from time import perf_counter
+
+_DLL_HANDLES = []
+
+
+def configure_gpu_runtime() -> None:
+    """Register the isolated Windows Paddle runtime's CUDA/cuDNN libraries."""
+    if sys.platform != "win32" or _DLL_HANDLES:
+        return
+    candidates = [
+        Path(value)
+        for name in ("PADDLE_CUDA_BIN_DIR", "PADDLE_CUDNN_BIN_DIR")
+        if (value := os.environ.get(name))
+    ]
+    for folder in site.getsitepackages():
+        nvidia = Path(folder) / "nvidia"
+        candidates.extend((nvidia / "cu13" / "bin" / "x86_64", nvidia / "cudnn" / "bin"))
+    for path in dict.fromkeys(candidates):
+        if path.is_dir():
+            os.environ["PATH"] = str(path) + os.pathsep + os.environ.get("PATH", "")
+            _DLL_HANDLES.append(os.add_dll_directory(str(path)))
 
 
 def create_engine(
@@ -21,6 +43,8 @@ def create_engine(
     detection_model: str | None = "PP-OCRv5_mobile_det",
     recognition_model: str | None = None,
 ):
+    if device.startswith("gpu"):
+        configure_gpu_runtime()
     from paddleocr import PaddleOCR
 
     selection = {"lang": language, "ocr_version": ocr_version}
@@ -104,6 +128,7 @@ class OcrSession:
         started = perf_counter()
         blocks = recognize(self.engine, request["image"])
         self.metrics = {
+            "device": request["device"],
             "model_initialized": initialized,
             "model_init_ms": initialization_ms,
             "inference_ms": (perf_counter() - started) * 1000,

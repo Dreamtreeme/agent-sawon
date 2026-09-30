@@ -21,6 +21,7 @@ class DetectorSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     weights: Path = Path("models/omniparser/icon_detect/model.pt")
     python: str | None = None
+    device: str = "cpu"
     confidence: float = Field(default=0.15, gt=0, le=1, allow_inf_nan=False)
     max_dimension: int = Field(default=1920, ge=640, le=4096)
     timeout_seconds: float = Field(default=120, gt=0, le=300, allow_inf_nan=False)
@@ -87,6 +88,7 @@ class OmniParserDetector(MeasuredModelClient):
             {
                 "image": str(images[0].resolve()),
                 "weights": str(self.settings.weights.resolve()),
+                "device": self.settings.device,
                 "confidence": self.settings.confidence,
                 "max_dimension": self.settings.max_dimension,
                 "regions": json.loads(prompt)["regions"],

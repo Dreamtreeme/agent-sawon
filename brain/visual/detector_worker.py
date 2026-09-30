@@ -89,7 +89,7 @@ class DetectorSession:
                 view,
                 conf=request["confidence"],
                 verbose=False,
-                device="cpu",
+                device=request.get("device", "cpu"),
                 imgsz=1280 if regions else 640,
             )
             for result in results:
@@ -107,6 +107,7 @@ class DetectorSession:
                             }
                         )
         self.metrics = {
+            "device": str(self.model.predictor.device),
             "model_initialized": initialized,
             "model_init_ms": initialization_ms,
             "inference_ms": (perf_counter() - started) * 1000,
