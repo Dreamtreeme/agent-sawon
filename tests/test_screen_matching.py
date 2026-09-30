@@ -312,6 +312,7 @@ def test_query_verification_omission_is_repaired_without_reusing_old_value(tmp_p
         controls=[table, field] if mode == "present" else [table],
         operation="duplicate_clear",
         grid=table_id,
+        evidence=[{"field": "hbl_no", "target": field_id}],
     )
     if mode == "still_missing":
         with pytest.raises(GuardStop, match="required_verification_missing"):
@@ -327,5 +328,64 @@ def test_query_verification_omission_is_repaired_without_reusing_old_value(tmp_p
     else:
         assert brain._current_query_matches()
         decision = compile_match(repaired, brain.observation, DecisionResponse).to_decision()
+        assert not decision.evidence
+        assert repaired.evidence  # Retained as observations, not final completion proof.
         assert brain._check_duplicate(decision) == {"next": "observe"}
         assert brain.phase == "enter" and brain.duplicate_clear
+
+
+@pytest.mark.parametrize("operation", ["act", "stop"])
+def test_empty_action_is_completed_once_or_explicitly_stopped(tmp_path, record, operation):
+    meaning = fixture()[-1]
+    initial = response(meaning, steps=[])
+    completion = {
+        "operation": operation,
+        "steps": response(meaning)["steps"] if operation == "act" else [],
+    }
+    brain, model, _, _, _, _ = setup_brain(tmp_path, record, [initial, completion])
+    brain._observe()
+    result = brain._select_node({})
+    assert len(model.prompts) == 2
+    if operation == "act":
+        assert result == {"next": "act"}
+        assert brain.decision.action.source == "hbl_no"
+    else:
+        assert result == {"next": "finish"}
+        assert brain.result.reason == "model_requested_stop"
+
+
+def test_missing_action_completion_cannot_repeat_empty_act():
+    from pydantic import ValidationError
+
+    from brain.graph.matching import ActionCompletion
+
+    with pytest.raises(ValidationError, match="act_requires_steps"):
+        ActionCompletion(operation="act", steps=[])
+
+
+def test_final_proof_preserves_grid_row_and_field_evidence():
+    from test_brain import element
+
+    observed = wire()
+    prefix = "e" + str(observed.obs_id.int) + "0"
+    scene = SceneObservation(
+        wire=observed,
+        screen_kind="query",
+        elements=[
+            element(prefix + "1", "table"),
+            element(prefix + "2", "row", parent=prefix + "1"),
+            element(prefix + "3", "cell", parent=prefix + "2", value="test"),
+        ],
+    )
+    result = ScreenMatch(
+        screen_kind="query",
+        controls=[],
+        procedure_step="verify-final",
+        operation="complete",
+        grid=1,
+        row=2,
+        evidence=[{"field": "hbl_no", "target": 3}],
+    )
+    decision = compile_match(result, scene, DecisionResponse).to_decision()
+    assert decision.grid_ref == prefix + "1" and decision.row_ref == prefix + "2"
+    assert decision.evidence[0].ref == prefix + "3"
