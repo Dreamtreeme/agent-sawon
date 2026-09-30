@@ -16,7 +16,7 @@ class Marker(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: int = Field(ge=0)
     bbox: tuple[int, int, int, int]
-    source: Literal["ocr", "omniparser"]
+    source: Literal["ocr", "omniparser", "pixel_rectangle"]
     confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
     text_ids: tuple[int, ...] = ()
 
@@ -86,7 +86,7 @@ def build_markers(
     kept: list[Marker] = []
     for box in sorted(boxes, key=lambda b: -b.confidence):
         x, y, w, h = box.bbox
-        if box.source != "omniparser" or box.text_ids:
+        if box.source not in {"omniparser", "pixel_rectangle"} or box.text_ids:
             raise ValueError("invalid_detector_marker_source")
         if min(x, y) < 0 or min(w, h) <= 0 or x + w > width or y + h > height:
             raise ValueError("local_marker_outside_capture")

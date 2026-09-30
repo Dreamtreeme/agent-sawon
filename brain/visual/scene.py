@@ -30,9 +30,20 @@ class ControlMeaning(BaseModel):
         "icon",
     ]
     parent_id: int | None = None
-    label_ids: list[int] = Field(default_factory=list, max_length=20)
-    text_ids: list[int] = Field(default_factory=list, max_length=30)
-    confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
+    label_ids: list[int] = Field(
+        default_factory=list, max_length=20, description="OCR block IDs naming this control"
+    )
+    text_ids: list[int] = Field(
+        default_factory=list,
+        max_length=30,
+        description="OCR block IDs literally inside this control",
+    )
+    confidence: float = Field(
+        ge=0,
+        le=1,
+        allow_inf_nan=False,
+        description="Semantic role/relationship confidence, independent of detector score",
+    )
     enabled: bool = True
     focused: bool = False
     visual_description: str = Field(default="", max_length=160)
@@ -85,6 +96,22 @@ class SceneObservation(BaseModel):
     elements: list[UIElement]
     evidence_source: Literal["ocr_visual"] = "ocr_visual"
     uncertainties: list[str] = Field(default_factory=list)
+    global_uncertainties: list[str] | None = None
+    uncertain_control_refs: list[str] = Field(default_factory=list)
+
+    def uncertainties_for_region(self, ref: str) -> list[str]:
+        # Older/replayed scenes without scope metadata stay conservative.
+        if self.global_uncertainties is None:
+            return self.uncertainties
+        by_ref = {element.ref: element for element in self.elements}
+        if ref not in by_ref:
+            return ["unknown_visual_region"]
+        region = by_ref[ref].bbox
+        return self.global_uncertainties + [
+            "uncertain_control:" + candidate
+            for candidate in self.uncertain_control_refs
+            if candidate not in by_ref or overlap(region, by_ref[candidate].bbox) > 0
+        ]
 
     def __getattr__(self, name: str):
         if name in Observation.model_fields:
@@ -143,6 +170,7 @@ def bind_scene(
         raise ValueError("duplicate_visual_id")
     uncertainties = list(detection.uncertainties)
     elements = []
+    uncertain_refs = []
     prefix = "e" + str(wire.obs_id.int) + "0"
 
     def text(ids: list[int]) -> str:
@@ -194,6 +222,7 @@ def bind_scene(
                 uncertain = True
         if uncertain:
             uncertainties.append(f"control:{control.id}:low_confidence_or_duplicate")
+            uncertain_refs.append(prefix + str(control.id))
         label = text(control.label_ids)
         value = text(control.text_ids)
         # Input names remain stable after typing: label, never the entered value.
@@ -217,4 +246,10 @@ def bind_scene(
                 else None,
             )
         )
-    return SceneObservation(wire=wire, elements=elements, uncertainties=uncertainties)
+    return SceneObservation(
+        wire=wire,
+        elements=elements,
+        uncertainties=uncertainties,
+        global_uncertainties=list(detection.uncertainties),
+        uncertain_control_refs=uncertain_refs,
+    )

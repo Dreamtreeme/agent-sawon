@@ -83,6 +83,29 @@ def test_blank_input_does_not_become_its_label():
     assert target.name == "Identifier" and target.value is None
 
 
+@pytest.mark.parametrize("inside", [False, True])
+def test_query_uncertainty_is_scoped_without_ignoring_model_warnings(inside):
+    detection = Detection(
+        controls=[
+            VisualControl(
+                id=0, role="table", bbox=[10, 60, 380, 100], confidence=1, table_state="empty"
+            ),
+            VisualControl(
+                id=1, role="text", bbox=[20, 80 if inside else 10, 20, 20], confidence=0.2
+            ),
+        ]
+    )
+    result = bind_scene(wire(), [], detection)
+    assert result.uncertainties  # Preserve all diagnostic warnings.
+    assert bool(result.uncertainties_for_region(result.elements[0].ref)) is inside
+    warned = bind_scene(
+        wire(), [], detection.model_copy(update={"uncertainties": ["uncertain grid"]})
+    )
+    assert warned.uncertainties_for_region(warned.elements[0].ref)
+    old = result.model_copy(update={"global_uncertainties": None})
+    assert old.uncertainties_for_region(old.elements[0].ref)
+
+
 @pytest.mark.parametrize(
     "update,reason",
     [

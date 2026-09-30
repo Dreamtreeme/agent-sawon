@@ -130,7 +130,8 @@ def test_missing_weights_fail_without_paid_fallback(tmp_path):
     assert calls[0].payload["usage_source"] == "local_no_tokens"
 
 
-def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_path):
+@pytest.mark.parametrize("outcome", ["valid", "corrected", "invalid", "provider_error"])
+def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_path, outcome):
     blocks, boxes, _, meaning = fixture()
 
     class Relay:
@@ -155,13 +156,40 @@ def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_pat
         assert schema is SemanticDetection
         assert page.image_path.name == "markers.png"
         assert "markers" in prompt
+        payload, _ = json.JSONDecoder().raw_decode(prompt[prompt.index('{"image_size"') :])
+        assert all("confidence" not in marker for marker in payload["markers"])
+        assert all("candidate_confidence" in marker for marker in payload["markers"])
+        assert all(marker["source"] == "omniparser" for marker in payload["markers"])
+        assert payload["markers"][0]["contained_ocr_ids"] == []
+        assert "NOT markers[].id" in prompt
         calls.append(page)
+        if outcome == "provider_error":
+            raise ValueError("provider_failure_with_private_details")
+        if outcome == "invalid" or (outcome == "corrected" and len(calls) == 1):
+            return meaning.model_copy(
+                update={"controls": [meaning.controls[0].model_copy(update={"text_ids": [8]})]}
+            )
+        if len(calls) == 2:
+            assert '"error": "value_outside_local_marker"' in prompt
         return meaning
 
     log = RunLog(tmp_path, case_id="markers", agent_id="test")
     perception = VisualPerception(Relay(), Ocr(), tmp_path, log, interpret, detector=Detector())
+    if outcome in {"invalid", "provider_error"}:
+        with pytest.raises(ValueError):
+            perception.observe(wire())
+        assert len(calls) == (2 if outcome == "invalid" else 1)
+        assert not (calls[0].image_path.parent / "perception.json").exists()
+        return
     scene = perception.observe(wire())
-    assert len(calls) == 1 and any(e.role == "edit" for e in scene.elements)
+    assert len(calls) == (2 if outcome == "corrected" else 1)
+    assert any(e.role == "edit" for e in scene.elements)
+    if outcome == "corrected":
+        rejected = [
+            e for e in log.read_all() if e.payload.get("stage") == "visual_semantic_rejection"
+        ]
+        assert len(rejected) == 1 and rejected[0].payload["retry"]
+        assert (calls[0].image_path.parent / "meanings-attempt-0.json").is_file()
     folder = calls[0].image_path.parent
     with Image.open(folder / "capture.png") as image:
         assert image.getpixel((100, 15)) == (255, 255, 255)

@@ -4,7 +4,14 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from sawon_interfaces import Action, CaptureGeometry, ImageTarget, Observation, Screenshot
+from sawon_interfaces import (
+    Action,
+    ActionResult,
+    CaptureGeometry,
+    ImageTarget,
+    Observation,
+    Screenshot,
+)
 from test_brain import FakeRelay, ScriptedModel, success_steps
 from test_brain import record as record
 
@@ -69,6 +76,35 @@ class SyntheticPerception:
 
     def observe(self, wire):
         return SceneObservation(wire=wire, elements=self.relay.items)
+
+
+@pytest.mark.parametrize("error", ["screen_changed", "PRIVATE unexpected server text"])
+def test_relay_diagnostic_records_only_known_codes(tmp_path, record, error):
+    class RejectedRelay(VisualFixture):
+        def act(self, action):
+            return ActionResult(
+                action_id=action.root.action_id, ok=False, error=error, duration_ms=0
+            )
+
+    relay = RejectedRelay(record)
+    log = RunLog(tmp_path, case_id=record.case_id, agent_id="visual-test")
+    brain = Brain(
+        record=record,
+        goal="Save for approval",
+        relay=relay,
+        model=ScriptedModel(log, success_steps(record)),
+        settings=BrainSettings(perception_mode="visual_only"),
+        case_dir=tmp_path,
+        run_log=log,
+        visual_ocr=object(),
+    )
+    brain.visual_perception = SyntheticPerception(relay)
+    assert brain.run().status != "success"
+    events = [e for e in log.read_all() if e.kind == "act" and e.payload.get("stage") == "returned"]
+    assert events and events[0].payload["error_code"] == (
+        error if error == "screen_changed" else None
+    )
+    assert "PRIVATE" not in (tmp_path / "run_log.jsonl").read_text()
 
 
 @pytest.mark.parametrize("corrupt", [False, True])

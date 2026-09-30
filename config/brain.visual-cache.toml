@@ -7,6 +7,7 @@ model_call_reserve_usd = 0.025
 recovery_enabled = false
 
 [visual_detector]
+pixel_rectangles_enabled = true
 weights = "../../../L2C/models/omniparser/icon_detect/model.pt"
 python = "C:/Users/psg/Desktop/L2C/.venv-app/Scripts/python.exe"
 

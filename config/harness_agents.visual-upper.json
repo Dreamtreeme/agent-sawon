@@ -1,0 +1,44 @@
+{
+  "schema_version": "0.1",
+  "agents": {
+    "core_visual_upper": {
+      "working_directory": "..",
+      "case_root": "../cases/visual-pilot",
+      "max_case_usd": 1.0,
+      "command": [
+        "{agent_dir}/.venv/Scripts/python.exe",
+        "-m",
+        "brain.run",
+        "--record",
+        "{record}",
+        "--case-dir",
+        "{case_dir}",
+        "--relay-url",
+        "{relay_url}",
+        "--config",
+        "{agent_dir}/config/brain.visual.toml",
+        "--model-config",
+        "{agent_dir}/config/models.visual.toml",
+        "--env-path",
+        "{agent_dir}/.env",
+        "--summary-strategy",
+        "label_grouped",
+        "--goal",
+        "제공된 선적 레코드를 업무 전산에 입력하고 저장하세요. 먼저 중복을 조회하고, 존재하면 추가 입력하지 말고 중단하세요. 저장 후 조회 결과를 레코드와 대조하세요. 전송이나 승인은 수행하지 마세요.",
+        "--visual-ocr-config",
+        "{agent_dir}/config/pipeline.korean.toml"
+      ],
+      "source_directories": [
+        "brain",
+        "models",
+        "pipeline"
+      ],
+      "metadata_files": [
+        "config/brain.visual.toml",
+        "config/models.visual.toml",
+        "config/pricing.toml",
+        "config/pipeline.korean.toml"
+      ]
+    }
+  }
+}

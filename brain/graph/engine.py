@@ -1046,8 +1046,6 @@ class Brain:
 
     def _grid(self, decision: Decision) -> list[UIElement]:
         assert self.observation is not None
-        if isinstance(self.observation, SceneObservation) and self.observation.uncertainties:
-            raise GuardStop("visual_query_evidence_uncertain")
         by_ref = {item.ref: item for item in self.observation.elements}
         grid = by_ref.get(decision.grid_ref)
         if (
@@ -1058,6 +1056,10 @@ class Brain:
             raise GuardStop("missing_query_grid_evidence")
         if decision.screen_kind != "query":
             raise GuardStop("evidence_not_query_screen")
+        if isinstance(
+            self.observation, SceneObservation
+        ) and self.observation.uncertainties_for_region(grid.ref):
+            raise GuardStop("visual_query_evidence_uncertain")
         return subtree(self.observation, grid.ref)
 
     def _check_duplicate(self, decision: Decision) -> dict:
@@ -1184,6 +1186,16 @@ class Brain:
                     or new_shot.geometry.model_dump(exclude={"capture_id", "captured_at"})
                     != old_shot.geometry.model_dump(exclude={"capture_id", "captured_at"})
                 ):
+                    self.log.append(
+                        "verify",
+                        payload={
+                            "check": "visual_capture_renewal",
+                            "ok": False,
+                            "foreground_blocked": bool(fresh.blocked_reason),
+                            "same_window": fresh.active_window == previous.active_window,
+                            "same_pixels": fresh.screen_hash == previous.screen_hash,
+                        },
+                    )
                     raise ValueError("visual_screen_changed_before_action")
                 data["obs_id"] = str(fresh.obs_id)
                 data["schema_version"] = "0.2"
@@ -1233,6 +1245,24 @@ class Brain:
                     "action_id": str(action.root.action_id),
                     "ok": response.ok,
                     "error": "relay_action_failed" if response.error else None,
+                    "error_code": response.error
+                    if response.error
+                    in {
+                        "observation_expired",
+                        "capture_expired",
+                        "capture_unavailable",
+                        "capture_geometry_changed",
+                        "screen_changed",
+                        "window_changed",
+                        "foreground_not_allowed",
+                        "focus_not_confirmed",
+                        "point_outside_allowed_window",
+                        "point_outside_capture",
+                        "observation_stale",
+                        "observation_blocked",
+                        "action_failed",
+                    }
+                    else None,
                     "post_obs_id": str(response.post_obs_id) if response.post_obs_id else None,
                 },
                 latency_ms=response.duration_ms,

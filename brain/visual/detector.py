@@ -27,6 +27,8 @@ class DetectorSettings(BaseModel):
     refinement_enabled: bool = True
     refinement_max_regions: int = Field(default=3, ge=1, le=6)
     refinement_scale: float = Field(default=2.0, ge=1, le=3, allow_inf_nan=False)
+    pixel_rectangles_enabled: bool = False
+    pixel_rectangles_limit: int = Field(default=80, ge=1, le=100)
 
 
 class ControlDetector(Protocol):
