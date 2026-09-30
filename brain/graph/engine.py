@@ -1261,6 +1261,7 @@ class Brain:
                         "observation_stale",
                         "observation_blocked",
                         "action_failed",
+                        "unsupported_key",
                     }
                     else None,
                     "post_obs_id": str(response.post_obs_id) if response.post_obs_id else None,
@@ -1304,6 +1305,30 @@ class Brain:
             return self._finish("stopped", str(exc))
         except Exception as exc:
             return self._fail("action_error:" + type(exc).__name__)
+
+    def _blur_visual_input(self, element: UIElement, decision: Decision) -> dict:
+        """One guarded focus move; never infer the next control or modify its value."""
+        if self.steps >= self.settings.max_steps:
+            raise GuardStop("max_steps")
+        self._budget()
+        blur = decision.model_copy(
+            update={
+                "intent": "navigate",
+                "action": Choice(type="key", ref=element.ref, keys="tab"),
+                "reason": "Move focus once before rereading the original input from pixels",
+            }
+        )
+        self._guard_action(blur)
+        original_pending, original_decision = self.pending, self.decision
+        self.steps += 1
+        self.log.append(
+            "verify", payload={"check": "visual_input_blur_recheck", "ref": element.ref}
+        )
+        try:
+            self.decision = blur
+            return self._act_node({})
+        finally:
+            self.pending, self.decision = original_pending, original_decision
 
     @staticmethod
     def _expected_effect(decision: Decision) -> ExpectedEffect:
@@ -1378,6 +1403,29 @@ class Brain:
                     return self._fail("input_target_ambiguous_after_action")
                 element = matches[0]
                 source = choice.source
+                if (
+                    isinstance(observation, SceneObservation)
+                    and self.settings.visual_input_blur_recheck
+                    and source not in self.credentials
+                    and element.focused
+                    and not field_matches(source, element.value, self.values)
+                ):
+                    before_window = observation.active_window
+                    result = self._blur_visual_input(element, decision)
+                    if result.get("next") != "verify":
+                        return result
+                    pending["blur_recheck"] = True
+                    observation = self._observe()
+                    matches = [
+                        item
+                        for item in observation.elements
+                        if describe(item, observation.elements) == descriptor
+                    ]
+                    if observation.active_window != before_window or len(matches) != 1:
+                        return self._fail("input_target_ambiguous_after_blur")
+                    element = matches[0]
+                    if element.focused:
+                        return self._fail("input_focus_not_moved")
                 if source == "credential.password":
                     # The relay intentionally never discloses a password ValuePattern.
                     # Reread establishes the same protected control still exists;
@@ -1439,7 +1487,7 @@ class Brain:
                     ),
                 }
             )
-            if self.cache_session.cache.enabled:
+            if self.cache_session.cache.enabled and not pending.get("blur_recheck"):
                 self.cache_session.stage_validated(
                     pending["before_observation"],
                     observation,

@@ -37,6 +37,7 @@ class BrainSettings(BaseModel):
     recovery_enabled: bool = False
     perception_mode: Literal["legacy_uia", "visual_only"] = "legacy_uia"
     visual_min_confidence: float = Field(default=0.8, ge=0, le=1, allow_inf_nan=False)
+    visual_input_blur_recheck: bool = True
     visual_detector: DetectorSettings = Field(default_factory=DetectorSettings)
     visual_merge: MergeSettings = Field(default_factory=MergeSettings)
 

@@ -198,7 +198,7 @@ class TextChoice(WireModel):
 class KeyChoice(WireModel):
     type: Literal["key"]
     ref: NonemptyRef
-    keys: Literal["{ENTER}", "{TAB}", "+{TAB}", "{ESC}", "{DOWN}", "{UP}", "{SPACE}"]
+    keys: Literal["enter", "tab", "shift+tab", "esc", "down", "up", "space"]
 
 
 class SourceOptionChoice(WireModel):

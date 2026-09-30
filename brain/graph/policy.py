@@ -43,7 +43,7 @@ CurrentStep = Literal[
 ]
 
 _SCREENS = ("login", "menu", "query", "editor", "partner", "dialog")
-_NAVIGATION_KEYS = ("{TAB}", "+{TAB}", "{ESC}", "{DOWN}", "{UP}", "{SPACE}")
+_NAVIGATION_KEYS = ("tab", "shift+tab", "esc", "down", "up", "space")
 
 
 @dataclass(frozen=True)
@@ -142,7 +142,7 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
             keys=_NAVIGATION_KEYS,
             focus=True,
         ),
-        _ActionRule("cancel", screens, click_types=("click",), keys=("{ESC}",)),
+        _ActionRule("cancel", screens, click_types=("click",), keys=("esc",)),
         _ActionRule("wait", screens, wait=True),
     ]
     if facts.remaining_credentials:
@@ -150,14 +150,12 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
             _ActionRule("credential", ("login",), text_sources=facts.remaining_credentials)
         )
     elif facts.available_credential_sources:
-        rules.append(_ActionRule("login", ("login",), click_types=("click",), keys=("{ENTER}",)))
+        rules.append(_ActionRule("login", ("login",), click_types=("click",), keys=("enter",)))
     if facts.phase in {"duplicate_query", "final_query"}:
         if not facts.query_value_verified and not facts.query_submitted:
             rules.append(_ActionRule("query_input", ("query",), text_sources=("hbl_no",)))
         elif facts.query_value_verified and not facts.query_submitted:
-            rules.append(
-                _ActionRule("search", ("query",), click_types=("click",), keys=("{ENTER}",))
-            )
+            rules.append(_ActionRule("search", ("query",), click_types=("click",), keys=("enter",)))
     if facts.phase in {"enter", "final_query"}:
         rules.append(
             _ActionRule(
@@ -176,20 +174,18 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
                         "select_option",
                         ("editor", "partner"),
                         click_types=("click", "double_click"),
-                        keys=("{ENTER}",),
+                        keys=("enter",),
                         option_sources=facts.remaining_fields,
                         named_option=True,
                     ),
-                    _ActionRule("search", ("partner",), click_types=("click",), keys=("{ENTER}",)),
+                    _ActionRule("search", ("partner",), click_types=("click",), keys=("enter",)),
                 ]
             )
         elif facts.field_names:
-            rules.append(
-                _ActionRule("save", ("editor",), click_types=("click",), keys=("{ENTER}",))
-            )
+            rules.append(_ActionRule("save", ("editor",), click_types=("click",), keys=("enter",)))
     if facts.save_issued:
         rules.append(
-            _ActionRule("confirm_save", ("dialog",), click_types=("click",), keys=("{ENTER}",))
+            _ActionRule("confirm_save", ("dialog",), click_types=("click",), keys=("enter",))
         )
     return tuple(rules)
 

@@ -134,7 +134,7 @@ def complete():
         decision(
             intent="query_input", action={"type": "set_text", "ref": "e1", "source": "hbl_no"}
         ),
-        decision(intent="search", action={"type": "key", "ref": "e1", "keys": "{ENTER}"}),
+        decision(intent="search", action={"type": "key", "ref": "e1", "keys": "enter"}),
         decision(intent="wait", action={"type": "wait", "duration_ms": 0}),
         decision(action={"type": "focus_window", "handle": 99}),
         decision(

@@ -83,7 +83,7 @@ def test_credential_submission_removes_only_submitted_sources_and_then_offers_lo
     assert_contract(DecisionPolicy(ready), password, False)
     assert_contract(DecisionPolicy(ready), login, True)
     assert_contract(
-        DecisionPolicy(ready), action("login", screen="login", kind="key", keys="{ENTER}"), True
+        DecisionPolicy(ready), action("login", screen="login", kind="key", keys="enter"), True
     )
     assert (
         DecisionPolicy(ready).as_prompt()["verified_facts"][
@@ -128,7 +128,7 @@ def test_query_input_then_search_have_disjoint_preconditions(phase):
     verified = replace(facts, query_value_verified=True)
     assert_contract(DecisionPolicy(verified), text, False)
     assert_contract(DecisionPolicy(verified), search, True)
-    assert_contract(DecisionPolicy(verified), action("search", kind="key", keys="{ENTER}"), True)
+    assert_contract(DecisionPolicy(verified), action("search", kind="key", keys="enter"), True)
     searched = replace(verified, query_submitted=True)
     assert_contract(DecisionPolicy(searched), text, False)
     assert_contract(DecisionPolicy(searched), search, False)
@@ -142,7 +142,7 @@ def test_duplicate_checkpoint_freezes_ui_until_result_evidence_or_stop():
         assert_contract(after, proof(operation), True)
     for payload in (
         action("navigate"),
-        action("cancel", kind="key", keys="{ESC}"),
+        action("cancel", kind="key", keys="esc"),
         action("wait", kind="wait"),
     ):
         assert_contract(after, payload, False)
@@ -178,7 +178,7 @@ def test_partner_selection_and_search_remain_available_during_unfinished_entry()
         action("fill", screen="partner", kind="type_text", source="shipper"),
         action("search", screen="partner"),
         action("select_option", screen="partner", kind="double_click"),
-        action("select_option", screen="partner", kind="key", keys="{ENTER}"),
+        action("select_option", screen="partner", kind="key", keys="enter"),
         action("select_option", screen="partner", kind="select_option", option="Observed option"),
     ]
     for payload in allowed:
@@ -229,7 +229,7 @@ def test_final_proof_can_reveal_current_controls_without_repeating_input_or_sear
         action("navigate", kind="focus_window", handle=12),
         action("select_tab", screen="editor"),
         action("wait", kind="wait", duration_ms=0),
-        action("cancel", screen="dialog", kind="key", keys="{ESC}"),
+        action("cancel", screen="dialog", kind="key", keys="esc"),
     ):
         assert_contract(policy, payload, True)
     assert policy.current_step == "final_row_evidence"
@@ -254,7 +254,7 @@ def test_save_confirmation_requires_a_prior_save_and_a_dialog_activation():
     [
         action("navigate", kind="set_text", source="hbl_no"),
         action("navigate", kind="select_option", source="hbl_no"),
-        action("navigate", kind="key", keys="{ENTER}"),
+        action("navigate", kind="key", keys="enter"),
         action("navigate", kind="wait"),
         action("search", kind="double_click"),
         action("search", kind="set_text", source="hbl_no"),
