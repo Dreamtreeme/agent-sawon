@@ -29,3 +29,8 @@
 
 반복 화면 실행의 전경 인계는 벤치 CLI `--desktop-handoff`에서 선택하며 계획에 남긴다.
 이 옵션은 모델·캐시 설정 파일이나 relay 허용 목록을 대신하지 않는다.
+
+화면 전용 `brain.visual.toml`/`brain.visual-cache.toml`은 `[visual_detector]`의 로컬
+OmniParser 가중치·Python을 사용한다. 현재 값은 이 컴퓨터의 기존 L2C 설치 위치다.
+다른 환경에서는 경로를 수정해야 하며, weights 상대 경로는 설정 파일 기준이다.
+설치 파일/가중치는 저장소에 포함되지 않는다. [화면 인식 이식 상세](../brain/visual/README.md).

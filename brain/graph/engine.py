@@ -28,6 +28,7 @@ from brain.observe.summary import ancestors
 from brain.relay import Relay
 from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from brain.settings import BrainSettings
+from brain.visual.detector import OmniParserDetector
 from brain.visual.perception import VisualPerception
 from brain.visual.scene import SceneObservation
 from models.base import ModelClient
@@ -270,6 +271,7 @@ class Brain:
                 self._detect_visual,
                 secrets=self.secrets,
                 threshold=settings.visual_min_confidence,
+                detector=OmniParserDetector(settings.visual_detector, self.log),
             )
 
     def _detect_visual(self, prompt: str, schema: type[BaseModel], page: RenderedPage):

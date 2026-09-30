@@ -11,6 +11,8 @@ from pathlib import Path
 
 from brain.relay import HttpRelay
 from brain.runtime.storage import RunLog, atomic_write_json
+from brain.settings import BrainSettings
+from brain.visual.detector import OmniParserDetector
 from brain.visual.perception import VisualPerception
 from models.factory import create_model_client
 from pipeline.extract import PipelineCallBudget
@@ -47,6 +49,7 @@ def main(argv=None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--ocr-config", type=Path, required=True)
     parser.add_argument("--model-config", type=Path, required=True)
+    parser.add_argument("--brain-config", type=Path, required=True)
     parser.add_argument("--env-path", type=Path)
     parser.add_argument("--samples", type=int, default=10)
     parser.add_argument("--max-cost-usd", type=float, required=True)
@@ -77,7 +80,12 @@ def main(argv=None) -> int:
         return result.response
 
     perception = VisualPerception(
-        source, PaddleOcrEngine(PipelineSettings.load(args.ocr_config)), args.output, log, detect
+        source,
+        PaddleOcrEngine(PipelineSettings.load(args.ocr_config)),
+        args.output,
+        log,
+        detect,
+        detector=OmniParserDetector(BrainSettings.load(args.brain_config).visual_detector, log),
     )
     try:
         count = record_scenes(

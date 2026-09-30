@@ -112,15 +112,22 @@ class MeasuredModelClient(ABC):
     ) -> ModelResult[T]:
         started = perf_counter()
         reply: ProviderReply | None = None
-        usage = TokenUsage(input_tokens=0, response_tokens=0) if self.provider == "replay" else None
-        usd = Decimal(0) if self.provider == "replay" else None
+        api_free = self.provider in {"replay", "local"}
+        usage = TokenUsage(input_tokens=0, response_tokens=0) if api_free else None
+        usd = Decimal(0) if api_free else None
         payload = {
             "call_id": str(uuid4()),
             "provider": self.provider,
             "model": self.model,
             "status": "error",
-            "usage_source": "replay_actual_zero" if self.provider == "replay" else "provider",
-            "cost_basis": "no_api_call" if self.provider == "replay" else "configured_list_price",
+            "usage_source": (
+                "local_no_tokens"
+                if self.provider == "local"
+                else "replay_actual_zero"
+                if self.provider == "replay"
+                else "provider"
+            ),
+            "cost_basis": "no_api_call" if api_free else "configured_list_price",
         }
         try:
             payload["request_sha256"] = request_fingerprint(prompt, schema, images)

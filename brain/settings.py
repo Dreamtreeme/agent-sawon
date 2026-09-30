@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from brain.visual.detector import DetectorSettings
+
 
 class CacheSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -34,11 +36,22 @@ class BrainSettings(BaseModel):
     recovery_enabled: bool = False
     perception_mode: Literal["legacy_uia", "visual_only"] = "legacy_uia"
     visual_min_confidence: float = Field(default=0.8, ge=0, le=1, allow_inf_nan=False)
+    visual_detector: DetectorSettings = Field(default_factory=DetectorSettings)
 
     @classmethod
     def load(cls, path: Path) -> "BrainSettings":
         with path.open("rb") as stream:
             settings = cls.model_validate(tomllib.load(stream))
+        if not settings.visual_detector.weights.is_absolute():
+            settings = settings.model_copy(
+                update={
+                    "visual_detector": settings.visual_detector.model_copy(
+                        update={
+                            "weights": (path.parent / settings.visual_detector.weights).resolve()
+                        }
+                    )
+                }
+            )
         if not settings.cache.path.is_absolute():
             settings = settings.model_copy(
                 update={
