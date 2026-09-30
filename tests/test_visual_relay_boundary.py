@@ -12,7 +12,7 @@ from brain.relay import HttpRelay, RelayError
 def test_legacy_brain_rejects_visual_mode_before_planning(monkeypatch):
     relay = HttpRelay("http://127.0.0.1:8765", "synthetic")
     monkeypatch.setattr(relay, "_request", lambda _: {"observation_mode": "visual_only"})
-    with pytest.raises(RelayError, match="visual_agent_not_implemented"):
+    with pytest.raises(RelayError, match="visual_mode_not_enabled"):
         relay.health()
 
 
@@ -43,5 +43,5 @@ def test_visual_wire_is_supported_but_not_sent_to_legacy_reasoning(monkeypatch):
     assert Observation.model_validate(payload) == observation
     relay = HttpRelay("http://127.0.0.1:8765", "synthetic")
     monkeypatch.setattr(relay, "_request", lambda _: payload)
-    with pytest.raises(RelayError, match="visual_agent_not_implemented"):
+    with pytest.raises(RelayError, match="visual_mode_not_enabled"):
         relay.observe()

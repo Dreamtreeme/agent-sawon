@@ -29,6 +29,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model-config", type=Path, required=True)
     parser.add_argument("--env-path", type=Path)
     parser.add_argument("--recovery-model-config", type=Path)
+    parser.add_argument("--visual-ocr-config", type=Path)
+    parser.add_argument("--cache-path", type=Path, help="Explicit isolated notebook cache")
     parser.add_argument("--prepared-case", action="store_true")
     parser.add_argument("--summary-strategy", choices=["flat_fields", "label_grouped"])
     parser.add_argument(
@@ -43,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
         "--cache-snapshot", type=Path, help="Immutable input for snapshot isolation"
     )
     args = parser.parse_args(argv)
+    if args.cache_path is not None and args.cache_isolation is not None:
+        parser.error("--cache-path cannot be combined with --cache-isolation")
     if (args.cache_isolation == "snapshot") != (args.cache_snapshot is not None):
         parser.error("--cache-snapshot is required only with --cache-isolation snapshot")
     if args.max_cost_usd is not None and (
@@ -60,6 +64,14 @@ def main(argv: list[str] | None = None) -> int:
         if record.origin == "extracted" and not args.prepared_case:
             raise ValueError("Extracted records require a validated prepared case")
         settings = BrainSettings.load(args.config)
+        if args.cache_path is not None:
+            if not settings.cache.enabled:
+                raise ValueError("A cache path requires cache-enabled configuration")
+            settings = settings.model_copy(
+                update={
+                    "cache": settings.cache.model_copy(update={"path": args.cache_path.resolve()})
+                }
+            )
         if args.max_cost_usd is not None:
             if args.max_cost_usd > settings.max_cost_usd:
                 raise ValueError("A total case budget override may only reduce the configured cap")
@@ -94,7 +106,16 @@ def main(argv: list[str] | None = None) -> int:
             os.environ.get("SAWON_RELAY_TOKEN", ""),
             timeout=settings.http_timeout_seconds,
             max_depth=settings.observation_max_depth,
+            visual=settings.perception_mode == "visual_only",
         )
+        visual_ocr = None
+        if settings.perception_mode == "visual_only":
+            if args.visual_ocr_config is None:
+                raise ValueError("Visual mode requires --visual-ocr-config")
+            from pipeline.ocr import PaddleOcrEngine
+            from pipeline.schemas import PipelineSettings
+
+            visual_ocr = PaddleOcrEngine(PipelineSettings.load(args.visual_ocr_config))
         model = create_model_client(args.model_config, run_log=log, env_path=args.env_path)
         recovery_model = (
             create_model_client(args.recovery_model_config, run_log=log, env_path=args.env_path)
@@ -119,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
                 else None
             ),
             prepared_case=args.prepared_case,
+            visual_ocr=visual_ocr,
         ).run()
         outcome = result.status
         print(result.model_dump_json())

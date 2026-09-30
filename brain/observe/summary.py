@@ -10,6 +10,7 @@ from sawon_interfaces import Observation, UIElement
 from .rows import row_refs
 
 INTERACTIVE = {
+    "icon",
     "edit",
     "button",
     "combobox",

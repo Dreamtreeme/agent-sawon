@@ -1,0 +1,213 @@
+"""Local scene graph, distinct from the relay's UIA-free wire observation."""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sawon_interfaces import Observation, UIElement
+
+from pipeline.schemas import OcrBlock
+
+
+class VisualControl(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: int = Field(ge=0)
+    role: Literal[
+        "edit",
+        "combobox",
+        "button",
+        "checkbox",
+        "tabitem",
+        "menuitem",
+        "table",
+        "row",
+        "cell",
+        "header",
+        "group",
+        "window",
+        "text",
+        "icon",
+    ]
+    # Original image pixels: left, top, width, height. Never desktop pixels.
+    bbox: list[int] = Field(min_length=4, max_length=4)
+    parent_id: int | None = None
+    label_ids: list[int] = Field(default_factory=list, max_length=20)
+    text_ids: list[int] = Field(default_factory=list, max_length=30)
+    confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
+    enabled: bool = True
+    focused: bool = False
+    visual_description: str = Field(default="", max_length=160)
+    table_state: Literal["not_table", "empty", "rows", "uncertain"] = "not_table"
+
+
+class Detection(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    controls: list[VisualControl] = Field(max_length=500)
+    uncertainties: list[str] = Field(default_factory=list, max_length=30)
+
+    @classmethod
+    def model_json_schema(cls, *args, **kwargs):
+        # As in document extraction, enforce nested collection resource limits
+        # locally; expanding them in provider decoding can exceed schema limits.
+        schema = super().model_json_schema(*args, **kwargs)
+
+        def compact(node):
+            if isinstance(node, dict):
+                node.pop("maxItems", None)
+                node.pop("maxLength", None)
+                for child in node.values():
+                    compact(child)
+            elif isinstance(node, list):
+                for child in node:
+                    compact(child)
+
+        compact(schema)
+        return schema
+
+
+class SceneObservation(BaseModel):
+    """Internal semantics reuse element shape, but are explicitly OCR/vision evidence.
+
+    No constructed UIA Observation is sent to or accepted from the relay. The
+    original wire observation (with empty elements) is retained for auditing.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    wire: Observation
+    elements: list[UIElement]
+    evidence_source: Literal["ocr_visual"] = "ocr_visual"
+    uncertainties: list[str] = Field(default_factory=list)
+
+    def __getattr__(self, name: str):
+        if name in Observation.model_fields:
+            return getattr(self.wire, name)
+        return super().__getattr__(name)
+
+    @model_validator(mode="after")
+    def validate_scene(self):
+        if self.wire.observation_mode != "visual_only" or self.wire.elements:
+            raise ValueError("visual_scene_requires_isolated_wire")
+        if any(item.automation_id is not None for item in self.elements):
+            raise ValueError("visual_scene_cannot_contain_automation_ids")
+        refs = {item.ref: item.parent_ref for item in self.elements}
+        if len(refs) != len(self.elements):
+            raise ValueError("duplicate_visual_ref")
+        for ref in refs:
+            seen = set()
+            while ref is not None:
+                if ref not in refs or ref in seen:
+                    raise ValueError("invalid_visual_hierarchy")
+                seen.add(ref)
+                ref = refs[ref]
+        return self
+
+
+def contains(outer: tuple, inner: tuple, margin: int = 2) -> bool:
+    x, y, w, h = outer
+    a, b, c, d = inner
+    return (
+        x - margin <= a and y - margin <= b and a + c <= x + w + margin and b + d <= y + h + margin
+    )
+
+
+def overlap(left, right) -> float:
+    x, y, w, h = left
+    a, b, c, d = right
+    area = max(0, min(x + w, a + c) - max(x, a)) * max(0, min(y + h, b + d) - max(y, b))
+    return area / max(1, w * h + c * d - area)
+
+
+def bind_scene(
+    wire: Observation,
+    blocks: list[OcrBlock],
+    detection: Detection,
+    *,
+    threshold: float = 0.8,
+    secrets: tuple[str, ...] = (),
+) -> SceneObservation:
+    """Bind model structure to literal OCR. No model-generated field values."""
+    shot = wire.screenshot
+    if shot is None or shot.geometry is None:
+        raise ValueError("visual_capture_missing")
+    by_id = {block.id: block for block in blocks}
+    controls = {control.id: control for control in detection.controls}
+    if len(by_id) != len(blocks) or len(controls) != len(detection.controls):
+        raise ValueError("duplicate_visual_id")
+    uncertainties = list(detection.uncertainties)
+    elements = []
+    prefix = "e" + str(wire.obs_id.int) + "0"
+
+    def text(ids: list[int]) -> str:
+        selected = sorted((by_id[i] for i in ids), key=lambda b: (b.bbox[1], b.bbox[0]))
+        if any(block.confidence < threshold for block in selected):
+            return ""
+        value = " ".join(block.text for block in selected)
+        for secret in secrets:
+            if secret:
+                value = value.replace(secret, "[REDACTED]")
+        return value
+
+    for control in detection.controls:
+        x, y, w, h = control.bbox
+        if min(x, y) < 0 or min(w, h) <= 0 or x + w > shot.width or y + h > shot.height:
+            raise ValueError("visual_bbox_outside_capture")
+        ids = control.label_ids + control.text_ids
+        if len(set(control.label_ids)) != len(control.label_ids) or len(
+            set(control.text_ids)
+        ) != len(control.text_ids):
+            raise ValueError("duplicate_ocr_reference")
+        if any(i not in by_id for i in ids):
+            raise ValueError("unknown_ocr_reference")
+        if any(not contains(control.bbox, by_id[i].bbox) for i in control.text_ids):
+            raise ValueError("value_outside_visual_control")
+        if control.parent_id is not None:
+            parent = controls.get(control.parent_id)
+            if parent is None or not contains(parent.bbox, control.bbox):
+                raise ValueError("invalid_visual_parent_bounds")
+        duplicate = (
+            sum(
+                other.role == control.role and overlap(other.bbox, control.bbox) >= 0.85
+                for other in detection.controls
+            )
+            > 1
+        )
+        uncertain = control.confidence < threshold or duplicate
+        if control.role == "table":
+            rows = [
+                other
+                for other in detection.controls
+                if other.parent_id == control.id and other.role == "row"
+            ]
+            if (
+                control.table_state not in {"empty", "rows"}
+                or (control.table_state == "empty" and rows)
+                or (control.table_state == "rows" and not rows)
+            ):
+                uncertain = True
+        if uncertain:
+            uncertainties.append(f"control:{control.id}:low_confidence_or_duplicate")
+        label = text(control.label_ids)
+        value = text(control.text_ids)
+        # Input names remain stable after typing: label, never the entered value.
+        name = label if control.role in {"edit", "combobox"} else (value or label)
+        if not name and control.role in {"icon", "button", "checkbox", "tabitem", "menuitem"}:
+            name = control.visual_description
+        if uncertain:
+            name = ""
+        elements.append(
+            UIElement(
+                ref=prefix + str(control.id),
+                role=control.role,
+                name=name,
+                label_hint=label or None,
+                value=(value or None) if not uncertain else None,
+                enabled=control.enabled and not uncertain,
+                focused=control.focused and not uncertain,
+                bbox=control.bbox,
+                parent_ref=prefix + str(control.parent_id)
+                if control.parent_id is not None
+                else None,
+            )
+        )
+    return SceneObservation(wire=wire, elements=elements, uncertainties=uncertainties)

@@ -23,6 +23,7 @@ from brain.cache import (
 )
 from brain.graph.schemas import Choice, Decision
 from brain.runtime.storage import atomic_write_json
+from brain.visual.scene import SceneObservation
 
 
 class DemonstrationResult(BaseModel):
@@ -40,13 +41,19 @@ def read_recording(path: Path) -> list[Observation]:
     raw = Path(path).read_bytes()
     if raw and not raw.endswith(b"\n"):
         raise ValueError("Incomplete observation recording; original file preserved")
-    result = [Observation.model_validate_json(line) for line in raw.splitlines()]
+    result = []
+    for line in raw.splitlines():
+        data = json.loads(line)
+        contract = SceneObservation if data.get("evidence_source") == "ocr_visual" else Observation
+        result.append(contract.model_validate(data))
     _validate_sequence(result)
     return result
 
 
 def _validate_sequence(observations: list[Observation]) -> None:
     seen = set()
+    if len({getattr(item, "evidence_source", "uia") for item in observations}) > 1:
+        raise ValueError("Mixed evidence sources in demonstration")
     for index, observation in enumerate(observations):
         if observation.obs_id in seen:
             raise ValueError("Repeated observation identity in demonstration")

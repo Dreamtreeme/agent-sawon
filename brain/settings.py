@@ -32,6 +32,8 @@ class BrainSettings(BaseModel):
     navigation_history_size: int = Field(default=12, ge=4, le=64)
     cache: CacheSettings = Field(default_factory=CacheSettings)
     recovery_enabled: bool = False
+    perception_mode: Literal["legacy_uia", "visual_only"] = "legacy_uia"
+    visual_min_confidence: float = Field(default=0.8, ge=0, le=1, allow_inf_nan=False)
 
     @classmethod
     def load(cls, path: Path) -> "BrainSettings":

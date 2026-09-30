@@ -73,7 +73,11 @@ def build_rebind_request(
 ) -> RebindRequest | None:
     if session.closed or not session.cache.enabled or session.cache.matching_mode != "rebind":
         return None
-    saved = tuple(e for e in session.cache.entries() if not e.invalidated)
+    saved = tuple(
+        e
+        for e in session.cache.entries()
+        if not e.invalidated and e.evidence_source == getattr(observation, "evidence_source", "uia")
+    )
     anchors = label_anchors(saved, observation, session.cache.min_anchor_fields)
     if not anchors:
         return None
@@ -109,7 +113,11 @@ def install_rebind_proposal(
     """Validate the complete response before making any run-local proposal visible."""
     if session.closed or not session.cache.enabled or session.cache.matching_mode != "rebind":
         raise ValueError("rebind_session_ineligible")
-    current_entries = session.cache.entries()
+    current_entries = tuple(
+        e
+        for e in session.cache.entries()
+        if e.evidence_source == getattr(observation, "evidence_source", "uia")
+    )
     active_ids = {e.entry_id for e in current_entries if not e.invalidated}
     invalid_ids = {e.entry_id for e in current_entries if e.invalidated}
     if (

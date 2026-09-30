@@ -1,7 +1,7 @@
 """LangGraph agent with deterministic gates around model-chosen UI semantics.
 
 No ERP implementation, database, layout export, hardcoded label or selector is
-available here. Every claim about the environment is checked against relay UIA.
+available here. Environment evidence comes only from relay observations and images.
 """
 
 from __future__ import annotations
@@ -28,9 +28,14 @@ from brain.observe.summary import ancestors
 from brain.relay import Relay
 from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from brain.settings import BrainSettings
+from brain.visual.perception import VisualPerception
+from brain.visual.scene import SceneObservation
 from models.base import ModelClient
 from models.budget import CallBudget
 from models.validation import safe_validation_errors
+from pipeline.extract import PipelineCallBudget
+from pipeline.ocr import OcrEngine
+from pipeline.schemas import RenderedPage
 
 from .policy import DecisionPolicy, ExecutionFacts
 from .review import EvidenceReview, review_final
@@ -206,6 +211,7 @@ class Brain:
         recovery_model: ModelClient | None = None,
         recovery_budget: CallBudget | None = None,
         prepared_case: bool = False,
+        visual_ocr: OcrEngine | None = None,
     ) -> None:
         self.record, self.goal, self.relay, self.model = record, goal, relay, model
         self.settings, self.case_dir, self.log = settings, Path(case_dir), run_log
@@ -252,6 +258,22 @@ class Brain:
         self.cache_entry_id: str | None = None
         self.review: EvidenceReview | None = None
         self.review_decision = False
+        self.visual_perception = None
+        if settings.perception_mode == "visual_only":
+            if visual_ocr is None:
+                raise ValueError("visual_ocr_required")
+            self.visual_perception = VisualPerception(
+                relay,
+                visual_ocr,
+                self.case_dir,
+                self.log,
+                self._detect_visual,
+                secrets=self.secrets,
+                threshold=settings.visual_min_confidence,
+            )
+
+    def _detect_visual(self, prompt: str, schema: type[BaseModel], page: RenderedPage):
+        return self._call(prompt, schema, page=page)
 
     def _budget(self, reservation: Decimal | None = None) -> None:
         calls = [event for event in self.log.read_all() if event.kind == "model_call"]
@@ -272,9 +294,16 @@ class Brain:
         *,
         model: ModelClient | None = None,
         call_budget: CallBudget | None = None,
+        page: RenderedPage | None = None,
     ):
         budget = call_budget if model is not None else self.call_budget
-        reservation = budget(prompt, schema) if budget else None
+        reservation = (
+            PipelineCallBudget(budget)(prompt, schema, page)
+            if page is not None
+            else budget(prompt, schema)
+            if budget
+            else None
+        )
         self._budget(reservation)
         self.log.append(
             "verify",
@@ -283,12 +312,21 @@ class Brain:
                 "ok": True,
                 "configured_floor_usd": self.settings.model_call_reserve_usd,
                 "computed_reservation_usd": float(reservation) if reservation is not None else None,
-                "basis": "text_utf8_bytes_plus_schema_and_1024_envelope_max_output",
+                "basis": (
+                    "text_plus_raster_allowance"
+                    if page is not None
+                    else "text_utf8_bytes_plus_schema_and_1024_envelope_max_output"
+                ),
             },
         )
         before = len([event for event in self.log.read_all() if event.kind == "model_call"])
         try:
-            result = (model or self.model).complete_json(prompt, schema)
+            if page is None:
+                result = (model or self.model).complete_json(prompt, schema)
+            else:
+                result = (model or self.model).complete_json(
+                    prompt, schema, images=[page.image_path]
+                )
         finally:
             calls = [event for event in self.log.read_all() if event.kind == "model_call"]
             if len(calls) != before + 1:
@@ -486,6 +524,8 @@ class Brain:
 
     def _observe(self) -> Observation:
         observation = redact(self.relay.observe(), self.secrets)
+        if self.visual_perception is not None and not observation.blocked_reason:
+            observation = self.visual_perception.observe(observation)
         self.observation = observation
         self.review = None
         self.observation_number += 1
@@ -1003,6 +1043,8 @@ class Brain:
 
     def _grid(self, decision: Decision) -> list[UIElement]:
         assert self.observation is not None
+        if isinstance(self.observation, SceneObservation) and self.observation.uncertainties:
+            raise GuardStop("visual_query_evidence_uncertain")
         by_ref = {item.ref: item for item in self.observation.elements}
         grid = by_ref.get(decision.grid_ref)
         if (
@@ -1098,6 +1140,8 @@ class Brain:
         if choice.type in {"set_text", "type_text"}:
             if by_ref[choice.ref].role.casefold() not in TEXT_INPUT_ROLES:
                 raise GuardStop("target_not_text_input")
+        if isinstance(self.observation, SceneObservation) and choice.type == "select_option":
+            raise GuardStop("visual_select_requires_click_or_keyboard")
         if decision.intent == "search" and decision.screen_kind == "query":
             if not self._current_query_matches():
                 raise GuardStop("query_value_changed")
@@ -1116,6 +1160,46 @@ class Brain:
         }
         if choice.type not in {"wait", "focus_window"}:
             data["target"] = {"ref": choice.ref}
+            if isinstance(self.observation, SceneObservation):
+                target = next(item for item in self.observation.elements if item.ref == choice.ref)
+                x, y, width, height = target.bbox
+                # OCR/model latency can exceed the capture TTL. Renew only when
+                # pixels, physical geometry and foreground identity are identical.
+                fresh = self.relay.observe()
+                previous = self.observation.wire
+                old_shot, new_shot = previous.screenshot, fresh.screenshot
+                if (
+                    fresh.blocked_reason
+                    or fresh.observation_mode != "visual_only"
+                    or fresh.active_window != previous.active_window
+                    or fresh.screen_hash != previous.screen_hash
+                    or new_shot is None
+                    or new_shot.geometry is None
+                    or old_shot is None
+                    or old_shot.geometry is None
+                    or (new_shot.width, new_shot.height) != (old_shot.width, old_shot.height)
+                    or new_shot.geometry.model_dump(exclude={"capture_id", "captured_at"})
+                    != old_shot.geometry.model_dump(exclude={"capture_id", "captured_at"})
+                ):
+                    raise ValueError("visual_screen_changed_before_action")
+                data["obs_id"] = str(fresh.obs_id)
+                data["schema_version"] = "0.2"
+                data["target"] = {
+                    "image_point": [x + width / 2, y + height / 2],
+                    "capture_id": str(new_shot.geometry.capture_id),
+                    "evidence": "ocr_visual:" + target.ref + ":sha1:" + fresh.screen_hash,
+                    "source": "visual",
+                }
+                self.log.append(
+                    "observe",
+                    payload={
+                        "check": "visual_identical_capture_renewal",
+                        "ok": True,
+                        "perceived_obs_id": str(previous.obs_id),
+                        "action_obs_id": str(fresh.obs_id),
+                        "screen_hash": fresh.screen_hash,
+                    },
+                )
         if choice.type in {"set_text", "type_text"}:
             data["text"] = self.credentials.get(choice.source) or self.values.get(choice.source, "")
         elif choice.type == "key":

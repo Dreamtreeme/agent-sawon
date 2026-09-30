@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
+import re
+from pathlib import Path
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
@@ -28,7 +32,15 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 class HttpRelay:
-    def __init__(self, url: str, token: str, *, timeout: float = 30, max_depth: int = 12) -> None:
+    def __init__(
+        self,
+        url: str,
+        token: str,
+        *,
+        timeout: float = 30,
+        max_depth: int = 12,
+        visual: bool = False,
+    ) -> None:
         parts = urlsplit(url)
         if (
             parts.scheme not in {"http", "https"}
@@ -46,6 +58,7 @@ class HttpRelay:
         self._token = token
         self.timeout = timeout
         self.max_depth = max_depth
+        self.visual = visual
         self._opener = build_opener(_NoRedirect)
 
     def _request(self, path: str, body: dict | None = None) -> dict:
@@ -76,16 +89,57 @@ class HttpRelay:
 
     def health(self) -> dict:
         health = self._request("/health")
-        if health.get("observation_mode") == "visual_only":
-            raise RelayError("visual_agent_not_implemented")
+        if health.get("observation_mode") == "visual_only" and not self.visual:
+            raise RelayError("visual_mode_not_enabled")
+        if self.visual and health.get("observation_mode") != "visual_only":
+            raise RelayError("visual_relay_mode_mismatch")
         return health
 
     def observe(self) -> Observation:
         query = urlencode({"screenshot": "false", "max_depth": self.max_depth})
         observation = Observation.model_validate(self._request(f"/observe?{query}"))
-        if observation.observation_mode == "visual_only":
-            raise RelayError("visual_agent_not_implemented")
+        if observation.observation_mode == "visual_only" and not self.visual:
+            raise RelayError("visual_mode_not_enabled")
+        if self.visual and observation.observation_mode != "visual_only":
+            raise RelayError("visual_relay_mode_mismatch")
         return observation
+
+    def screenshot(self, observation: Observation, destination: Path) -> Path:
+        """Fetch only a relay-owned PNG; redirects and arbitrary origins are denied."""
+        from PIL import Image
+
+        shot = observation.screenshot
+        if not self.visual or shot is None or shot.geometry is None:
+            raise RelayError("visual_capture_missing")
+        if not re.fullmatch(r"screenshots/[A-Za-z0-9_.-]+\.png", shot.path):
+            raise RelayError("invalid_screenshot_path")
+        request = Request(
+            self.url + "/" + shot.path,
+            headers={
+                "Authorization": f"Bearer {self._token}",
+                "Accept": "image/png",
+            },
+        )
+        try:
+            with self._opener.open(request, timeout=self.timeout) as response:
+                data = response.read(32 * 1024 * 1024 + 1)
+        except (HTTPError, URLError, TimeoutError, OSError):
+            raise RelayError("screenshot_transport_error") from None
+        if (
+            len(data) > 32 * 1024 * 1024
+            or hashlib.sha1(data).hexdigest() != observation.screen_hash
+        ):
+            raise RelayError("screenshot_integrity_error")
+        with Image.open(io.BytesIO(data)) as picture:
+            if picture.format != "PNG" or picture.size != (shot.width, shot.height):
+                raise RelayError("screenshot_geometry_mismatch")
+            if shot.width * shot.height > 40_000_000:
+                raise RelayError("screenshot_pixel_limit")
+            picture.verify()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("xb") as stream:
+            stream.write(data)
+        return destination
 
     def act(self, action: Action) -> ActionResult:
         return ActionResult.model_validate(self._request("/act", action.model_dump(mode="json")))

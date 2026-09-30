@@ -95,6 +95,7 @@ class SemanticEntry(CacheModel):
     failure_count: int = Field(default=0, ge=0)
     invalidated: bool = False
     origin: Literal["successful_run", "demonstration"] = "successful_run"
+    evidence_source: Literal["uia", "ocr_visual"] = "uia"
 
     @property
     def entry_id(self) -> str:
@@ -102,6 +103,8 @@ class SemanticEntry(CacheModel):
             mode="json",
             include={"task_type", "subgoal", "field", "target_descriptor", "action_template"},
         )
+        if self.evidence_source != "uia":
+            semantic["evidence_source"] = self.evidence_source
         return hashlib.sha256(
             json.dumps(semantic, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()
@@ -317,7 +320,11 @@ class CacheSession:
             self.last_miss_reason = "disabled_or_ineligible"
             return None
         allowed = set(allowed_sources)
-        saved_entries = self.cache.entries()
+        saved_entries = tuple(
+            entry
+            for entry in self.cache.entries()
+            if entry.evidence_source == getattr(observation, "evidence_source", "uia")
+        )
         entries = (*saved_entries, *self.rebound.values())
         anchors = (
             label_anchors(saved_entries, observation, self.cache.min_anchor_fields)
@@ -326,7 +333,11 @@ class CacheSession:
         )
         matches: list[tuple[SemanticEntry, UIElement, str]] = []
         for entry in entries:
-            if entry.invalidated or entry.field not in allowed:
+            if (
+                entry.invalidated
+                or entry.field not in allowed
+                or entry.evidence_source != getattr(observation, "evidence_source", "uia")
+            ):
                 continue
             targets = matching_targets(entry.target_descriptor, observation)
             mode = self.rebound_modes.get(entry.entry_id, "exact")
@@ -391,6 +402,8 @@ class CacheSession:
     ) -> bool:
         if self._closed or not self.cache.enabled:
             return False
+        if getattr(before, "evidence_source", "uia") != getattr(after, "evidence_source", "uia"):
+            return False
         action = decision.action
         if (
             decision.operation != "act"
@@ -425,6 +438,7 @@ class CacheSession:
             action_template=action.type,
             last_verified=after.ts,
             origin=origin,
+            evidence_source=getattr(after, "evidence_source", "uia"),
         )
         self._staged[entry.entry_id] = entry
         return True
