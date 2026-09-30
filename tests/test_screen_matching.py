@@ -272,3 +272,60 @@ def test_save_result_and_proof_use_the_existing_contract():
         grid=1,
     )
     assert compile_match(proof, scene, DecisionResponse).to_decision().grid_ref == prefix + "1"
+
+
+@pytest.mark.parametrize("mode", ["present", "missing", "still_missing", "changed_value"])
+def test_query_verification_omission_is_repaired_without_reusing_old_value(tmp_path, record, mode):
+    from brain.graph.execution import GuardStop
+    from brain.graph.matching import required_verification, retain_verification
+    from brain.observe.summary import describe
+    from brain.visual.markers import Marker, build_markers, ground_meanings
+    from brain.visual.scene import SemanticDetection, bind_scene
+    from pipeline.schemas import OcrBlock
+
+    blocks, boxes, _, _ = fixture()
+    expected = record.fields.hbl_no.value
+    blocks.append(OcrBlock(id=9, text=expected, bbox=(110, 20, 70, 15), confidence=0.99))
+    boxes.append(Marker(id=9, bbox=(0, 70, 400, 100), source="omniparser", confidence=0.9))
+    markers = build_markers(blocks, boxes, 400, 200)
+    field_id = next(m.id for m in markers if m.source != "ocr" and m.bbox[1] == 15)
+    table_id = next(m.id for m in markers if m.source != "ocr" and m.bbox[1] == 70)
+    field = {"id": field_id, "role": "edit", "label_ids": [8], "text_ids": [9], "confidence": 0.95}
+    table = {"id": table_id, "role": "table", "table_state": "empty", "confidence": 0.95}
+    initial = SemanticDetection(screen_kind="query", controls=[field, table])
+    before = bind_scene(wire(), blocks, ground_meanings(initial, markers, blocks))
+    supplemental = {"controls": [] if mode == "still_missing" else [field]}
+    brain, model, _, _, _, _ = setup_brain(tmp_path, record, [supplemental])
+    brain.observation = before
+    brain.query_descriptor = describe(
+        next(e for e in before.elements if e.role == "edit"), before.elements
+    )
+    brain.query_window_handle = before.active_window.handle
+    brain.query_submitted = brain.query_value_verified = True
+    required = required_verification(brain)
+    if mode == "changed_value":
+        blocks[-1] = blocks[-1].model_copy(update={"text": "DIFFERENT-NOW"})
+    screen = {"ocr": [b.model_dump() for b in blocks], "markers": [m.model_dump() for m in markers]}
+    matched = ScreenMatch(
+        screen_kind="query",
+        procedure_step="check-duplicate",
+        controls=[table, field] if mode == "present" else [table],
+        operation="duplicate_clear",
+        grid=table_id,
+    )
+    if mode == "still_missing":
+        with pytest.raises(GuardStop, match="required_verification_missing"):
+            retain_verification(brain, matched, screen, required)
+        assert len(model.prompts) == 1
+        return
+    repaired = retain_verification(brain, matched, screen, required)
+    assert len(model.prompts) == (0 if mode == "present" else 1)
+    assert repaired.operation == matched.operation and repaired.steps == matched.steps
+    brain.observation = bind_scene(wire(), blocks, ground_meanings(repaired, markers, blocks))
+    if mode == "changed_value":
+        assert not brain._current_query_matches()
+    else:
+        assert brain._current_query_matches()
+        decision = compile_match(repaired, brain.observation, DecisionResponse).to_decision()
+        assert brain._check_duplicate(decision) == {"next": "observe"}
+        assert brain.phase == "enter" and brain.duplicate_clear

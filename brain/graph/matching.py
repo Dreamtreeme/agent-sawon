@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from brain.visual.scene import SemanticDetection
 
+from .execution import GuardStop
 from .schemas import Choice, Decision, FieldName
 from .visual_turn import adapt_proposal, bind_proposal
 
@@ -110,12 +111,102 @@ expected_result describes an expectation only; it never proves that execution su
 If OCR/geometry cannot determine a needed relation or empty-table evidence, return
 needs_image=true without actions. Never guess empty solely from lack of OCR text.
 Report needs_refinement only when a required control extent is missing. Never transmit/approve.
+Include every required_verification control on its specified screen, even when the next
+action/proof uses a different control. Keep its current label_ids and contained text_ids.
 """
+
+
+def required_verification(brain) -> list[dict]:
+    """Carry semantic identities, never old refs, coordinates or previously read values."""
+    required = []
+    if brain.query_value_verified and brain.query_descriptor is not None:
+        required.append(
+            {"source": "hbl_no", "screen": "query", "descriptor": brain.query_descriptor}
+        )
+    if brain.pending is not None:
+        execution = brain.pending.get("execution")
+        delivered = execution.delivered if execution else [brain.pending]
+        for item in delivered:
+            decision = item["decision"]
+            descriptor = item.get("descriptor")
+            if descriptor and decision.intent in {"query_input", "fill"}:
+                entry = {
+                    "source": item["choice"].source,
+                    "screen": decision.screen_kind,
+                    "descriptor": descriptor,
+                }
+                if entry not in required:
+                    required.append(entry)
+    return required
+
+
+def retain_verification(
+    brain, response: ScreenMatch, screen: dict, required: list[dict], page=None
+):
+    relevant = [r for r in required if r["screen"] == response.screen_kind]
+    blocks = {b["id"]: b for b in screen["ocr"]}
+
+    def missing(controls):
+        result = []
+        for item in relevant:
+            descriptor = item["descriptor"]
+            matches = []
+            for control in controls:
+                if (
+                    not control.enabled
+                    or control.confidence < brain.settings.visual_min_confidence
+                    or control.role != descriptor["role"]
+                ):
+                    continue
+                labels = [blocks[i] for i in control.label_ids if i in blocks]
+                name = " ".join(
+                    b["text"] for b in sorted(labels, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+                )
+                if name == (descriptor.get("label") or descriptor["name"]):
+                    matches.append(control)
+            if not matches:
+                result.append(item)
+        return result
+
+    absent = missing(response.controls)
+    if not absent:
+        return response
+    # Only an actual omission causes this measured repair call. The action/proof
+    # proposal remains unchanged; original verification still checks current values.
+    supplement = brain._call(
+        "Return only missing verification controls and their necessary parents from CURRENT "
+        "OCR/markers. Preserve their labels and literal contained text. No actions or invented "
+        "values/boxes. Report uncertainty if they cannot be observed.\n"
+        + json.dumps({"required_verification": absent, "screen": screen}, ensure_ascii=False),
+        SemanticDetection,
+        page=page,
+    )
+    controls = {c.id: c for c in response.controls}
+    controls.update({c.id: c for c in supplement.controls})
+    response = response.model_copy(
+        update={
+            "controls": list(controls.values()),
+            "uncertainties": [*response.uncertainties, *supplement.uncertainties],
+        }
+    )
+    remaining = missing(response.controls)
+    brain.log.append(
+        "verify",
+        payload={
+            "check": "required_verification_repaired",
+            "sources": [r["source"] for r in absent],
+            "ok": not remaining,
+        },
+    )
+    if remaining:
+        raise GuardStop("required_verification_missing")
+    return response
 
 
 def match_screen(brain, screen: dict, page):
     policy = brain._decision_policy()
     candidates = [s for s in brain.procedure.steps if s.phase == brain.phase]
+    required = required_verification(brain)
     pending_actions = []
     if brain.pending is not None:
         execution = brain.pending.get("execution")
@@ -135,6 +226,7 @@ def match_screen(brain, screen: dict, page):
         "save_issued": brain.save_issued,
         "pending_verification": brain.pending is not None,
         "pending_actions": pending_actions,
+        "required_verification": required,
         "available_credentials": sorted(k for k, value in brain.credentials.items() if value),
         "record": brain.values
         if brain.phase in {"enter", "final_query"}
@@ -149,6 +241,7 @@ def match_screen(brain, screen: dict, page):
         ensure_ascii=False,
     )
     response = brain._call(prompt, ScreenMatch)
+    used_image = response.needs_image
     if response.needs_image:
         response = brain._call(
             prompt + "\nResolve the reported ambiguity with this image.", ScreenMatch, page=page
@@ -162,6 +255,10 @@ def match_screen(brain, screen: dict, page):
     # checks the action against the actual, verified facts before any input.
     if brain.pending is None and step.checkpoint not in {"any", policy.current_step}:
         raise ValueError("screen_match_checkpoint_mismatch")
+    if not response.needs_refinement:
+        response = retain_verification(
+            brain, response, screen, required, page if used_image else None
+        )
     brain.procedure_step = step.id
     brain.log.append(
         "select",
