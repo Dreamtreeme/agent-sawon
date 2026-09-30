@@ -34,3 +34,9 @@
 OmniParser 가중치·Python을 사용한다. 현재 값은 이 컴퓨터의 기존 L2C 설치 위치다.
 다른 환경에서는 경로를 수정해야 하며, weights 상대 경로는 설정 파일 기준이다.
 설치 파일/가중치는 저장소에 포함되지 않는다. [화면 인식 이식 상세](../brain/visual/README.md).
+
+확대 재탐지는 `[visual_detector]`의 `refinement_enabled`(기본true),
+`refinement_max_regions`(기본3, 상한6), `refinement_scale`(기본2)로 조정한다.
+OCR 겹침 제거 허용 오차는 `[visual_merge]`의 `min_ocr_confidence`, `text_overlap`,
+`text_padding_ratio`, `max_text_padding`, `duplicate_iou`, `nested_area_ratio`로 조정한다.
+새 실행은 이 기본값까지 포함한 설정과 코드 버전을 고정하며 과거 측정과 합치지 않는다.

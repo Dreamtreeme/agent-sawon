@@ -9,9 +9,10 @@ from test_visual_scene import wire
 
 from brain.runtime.storage import RunLog
 from brain.visual.detector import DetectorSettings, OmniParserDetector
-from brain.visual.detector_worker import original_box
-from brain.visual.markers import Marker, build_markers, ground_meanings
+from brain.visual.detector_worker import original_box, restore_region_box
+from brain.visual.markers import Marker, MergeSettings, build_markers, ground_meanings
 from brain.visual.perception import VisualPerception
+from brain.visual.refinement import refinement_regions
 from brain.visual.scene import SemanticDetection, bind_scene
 from pipeline.schemas import OcrBlock, RenderedPage
 
@@ -173,3 +174,108 @@ def test_settings_resolve_local_weights_relative_to_config(tmp_path):
     config = tmp_path / "brain.toml"
     config.write_text('[visual_detector]\nweights="weights/model.pt"', encoding="utf-8")
     assert BrainSettings.load(config).visual_detector.weights == tmp_path / "weights/model.pt"
+
+
+def test_ocr_tolerance_removes_tall_glyphs_but_preserves_larger_button():
+    block = OcrBlock(id=0, text="Example", confidence=0.99, bbox=(20, 30, 100, 22))
+    glyph = Marker(id=0, bbox=(40, 27, 24, 29), source="omniparser", confidence=0.7)
+    button = Marker(id=1, bbox=(10, 20, 125, 45), source="omniparser", confidence=0.3)
+    markers = build_markers([block], [glyph, button], 300, 200)
+    assert [m.bbox for m in markers if m.source == "omniparser"] == [button.bbox]
+    # Weak OCR must not erase a legitimate detector candidate.
+    markers = build_markers(
+        [block.model_copy(update={"confidence": 0.2})], [glyph, button], 300, 200
+    )
+    assert len([m for m in markers if m.source == "omniparser"]) == 2
+    markers = build_markers([block], [glyph], 300, 200, settings=MergeSettings(max_text_padding=0))
+    assert any(m.source == "omniparser" for m in markers)
+
+
+def test_concentric_icon_dedup_does_not_remove_small_table_child():
+    boxes = [
+        Marker(id=i, bbox=b, source="omniparser", confidence=c)
+        for i, (b, c) in enumerate(
+            [
+                ((10, 10, 30, 40), 0.2),
+                ((13, 18, 24, 24), 0.4),
+                ((100, 10, 180, 120), 0.8),
+                ((120, 30, 60, 20), 0.7),
+            ]
+        )
+    ]
+    kept = [m.bbox for m in build_markers([], boxes, 300, 200)]
+    assert (10, 10, 30, 40) not in kept
+    assert (13, 18, 24, 24) in kept and (120, 30, 60, 20) in kept
+
+
+def test_unmatched_label_creates_only_bounded_search_region():
+    blocks = [
+        OcrBlock(id=i, text="Field", confidence=0.99, bbox=(10, y, 50, 20))
+        for i, y in enumerate((40, 160, 280))
+    ]
+    boxes = [Marker(id=0, bbox=(100, 35, 180, 30), source="omniparser", confidence=0.4)]
+    regions = refinement_regions(blocks, boxes, 400, 400, limit=1)
+    assert regions == [(0, 100, 400, 140)]
+    # Crops are search areas only, never appended as click candidates.
+    assert len(boxes) == 1
+
+
+def test_zoom_restores_crop_origin_and_rejects_cut_off_control():
+    assert restore_region_box([40, 40, 200, 100], (10, 100, 200, 100), (400, 200), (400, 400)) == [
+        30,
+        120,
+        80,
+        30,
+    ]
+    assert (
+        restore_region_box([40, 0, 200, 100], (10, 100, 200, 100), (400, 200), (400, 400)) is None
+    )
+    assert (
+        restore_region_box([40, 40, 400, 100], (10, 100, 200, 100), (400, 200), (400, 400)) is None
+    )
+
+
+def test_refinement_budget_stops_before_a_model_call(tmp_path):
+    log = RunLog(tmp_path, case_id="bounded", agent_id="test")
+    detector = OmniParserDetector(DetectorSettings(refinement_max_regions=1), log)
+    with pytest.raises(ValueError, match="refinement_region_limit"):
+        detector.refine(None, [(0, 0, 10, 10), (0, 10, 10, 10)])
+    assert not log.read_all()
+
+
+def test_perception_refines_once_before_semantic_call(tmp_path):
+    blocks, boxes, _, meaning = fixture()
+    blocks.append(OcrBlock(id=9, text="Second", confidence=0.99, bbox=(10, 120, 60, 15)))
+    log = RunLog(tmp_path, case_id="refinement", agent_id="test")
+    calls = []
+
+    class Detector(OmniParserDetector):
+        def read(self, page):
+            calls.append("full")
+            return boxes
+
+        def refine(self, page, regions):
+            assert 1 <= len(regions) <= self.settings.refinement_max_regions
+            calls.append("refine")
+            return [Marker(id=0, bbox=(100, 115, 150, 30), source="omniparser", confidence=0.5)]
+
+    class Relay:
+        def screenshot(self, observation, path):
+            path.parent.mkdir(parents=True)
+            Image.new("RGB", (400, 200), "white").save(path)
+            return path
+
+    class Ocr:
+        def read(self, page):
+            return blocks
+
+    def interpret(prompt, schema, page):
+        calls.append("meaning")
+        assert '"refinement' not in prompt  # Search regions are not selectable markers.
+        return meaning
+
+    perception = VisualPerception(
+        Relay(), Ocr(), tmp_path, log, interpret, detector=Detector(DetectorSettings(), log)
+    )
+    perception.observe(wire())
+    assert calls == ["full", "refine", "meaning"]

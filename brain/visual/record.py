@@ -79,13 +79,15 @@ def main(argv=None) -> int:
             raise ValueError("demonstration_cost_cap")
         return result.response
 
+    settings = BrainSettings.load(args.brain_config)
     perception = VisualPerception(
         source,
         PaddleOcrEngine(PipelineSettings.load(args.ocr_config)),
         args.output,
         log,
         detect,
-        detector=OmniParserDetector(BrainSettings.load(args.brain_config).visual_detector, log),
+        detector=OmniParserDetector(settings.visual_detector, log),
+        merge_settings=settings.visual_merge,
     )
     try:
         count = record_scenes(

@@ -24,6 +24,9 @@ class DetectorSettings(BaseModel):
     confidence: float = Field(default=0.15, gt=0, le=1, allow_inf_nan=False)
     max_dimension: int = Field(default=1920, ge=640, le=4096)
     timeout_seconds: float = Field(default=120, gt=0, le=300, allow_inf_nan=False)
+    refinement_enabled: bool = True
+    refinement_max_regions: int = Field(default=3, ge=1, le=6)
+    refinement_scale: float = Field(default=2.0, ge=1, le=3, allow_inf_nan=False)
 
 
 class ControlDetector(Protocol):
@@ -40,8 +43,20 @@ class OmniParserDetector(MeasuredModelClient):
         self.settings = settings
 
     def read(self, page: RenderedPage) -> list[Marker]:
+        return self._read(page, [])
+
+    def refine(self, page: RenderedPage, regions: list[tuple[int, int, int, int]]) -> list[Marker]:
+        if not self.settings.refinement_enabled or not regions:
+            return []
+        if len(regions) > self.settings.refinement_max_regions:
+            raise ValueError("refinement_region_limit")
+        return self._read(page, regions)
+
+    def _read(self, page: RenderedPage, regions: list[tuple[int, int, int, int]]) -> list[Marker]:
         return self.complete_json(
-            self.settings.model_dump_json(), MarkerBatch, images=[page.image_path]
+            json.dumps({"settings": self.settings.model_dump(mode="json"), "regions": regions}),
+            MarkerBatch,
+            images=[page.image_path],
         ).response.markers
 
     def _cost(self, usage: TokenUsage) -> Decimal:
@@ -56,6 +71,7 @@ class OmniParserDetector(MeasuredModelClient):
             raise ValueError("detector_requires_one_image")
         if not self.settings.weights.is_file():
             raise ValueError("omniparser_weights_missing")
+        regions = json.loads(prompt)["regions"]
         with tempfile.TemporaryDirectory(prefix=".detect-", dir=images[0].parent) as folder:
             request, output = Path(folder) / "request.json", Path(folder) / "output.json"
             request.write_text(
@@ -65,6 +81,8 @@ class OmniParserDetector(MeasuredModelClient):
                         "weights": str(self.settings.weights.resolve()),
                         "confidence": self.settings.confidence,
                         "max_dimension": self.settings.max_dimension,
+                        "regions": regions,
+                        "refinement_scale": self.settings.refinement_scale,
                     }
                 ),
                 encoding="utf-8",

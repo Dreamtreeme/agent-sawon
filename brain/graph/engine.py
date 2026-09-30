@@ -272,6 +272,7 @@ class Brain:
                 secrets=self.secrets,
                 threshold=settings.visual_min_confidence,
                 detector=OmniParserDetector(settings.visual_detector, self.log),
+                merge_settings=settings.visual_merge,
             )
 
     def _detect_visual(self, prompt: str, schema: type[BaseModel], page: RenderedPage):

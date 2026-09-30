@@ -21,21 +21,64 @@ class Marker(BaseModel):
     text_ids: tuple[int, ...] = ()
 
 
-def is_text_fragment(box: Marker, block: OcrBlock) -> bool:
+class MergeSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    min_ocr_confidence: float = Field(default=0.8, ge=0, le=1, allow_inf_nan=False)
+    text_overlap: float = Field(default=0.85, gt=0, le=1, allow_inf_nan=False)
+    text_padding_ratio: float = Field(default=0.15, ge=0, le=0.3, allow_inf_nan=False)
+    max_text_padding: int = Field(default=4, ge=0, le=8)
+    duplicate_iou: float = Field(default=0.85, gt=0, le=1, allow_inf_nan=False)
+    nested_area_ratio: float = Field(default=0.45, gt=0, le=1, allow_inf_nan=False)
+
+
+def intersection(left: tuple, right: tuple) -> float:
+    x, y, w, h = left
+    a, b, c, d = right
+    return max(0, min(x + w, a + c) - max(x, a)) * max(0, min(y + h, b + d) - max(y, b))
+
+
+def is_text_fragment(box: Marker, block: OcrBlock, settings: MergeSettings) -> bool:
+    if block.confidence < settings.min_ocr_confidence:
+        return False
     x, y, w, h = box.bbox
     a, b, c, d = block.bbox
-    area = max(0, min(x + w, a + c) - max(x, a)) * max(0, min(y + h, b + d) - max(y, b))
-    return w * h <= c * d * 1.2 and area / (w * h) >= 0.8
+    padding = min(settings.max_text_padding, round(d * settings.text_padding_ratio))
+    area = intersection(box.bbox, (a - padding, b - padding, c + 2 * padding, d + 2 * padding))
+    # Padding accounts for OCR line boxes versus individual glyph extents. A
+    # genuinely larger control enclosing the text must survive this filter.
+    return h <= d * 1.5 and w * h <= c * d * 1.2 and area / (w * h) >= settings.text_overlap
+
+
+def duplicate_detection(left: Marker, right: Marker, settings: MergeSettings) -> bool:
+    if overlap(left.bbox, right.bbox) >= settings.duplicate_iou:
+        return True
+    x, y, w, h = left.bbox
+    a, b, c, d = right.bbox
+    smaller, larger = sorted((w * h, c * d))
+    # Near-concentric nested icon boxes are duplicates, but a field/table and
+    # its much smaller child are not. OCR boxes are never passed to this rule.
+    return (
+        smaller / larger >= settings.nested_area_ratio
+        and intersection(left.bbox, right.bbox) / smaller >= 0.9
+        and abs(x + w / 2 - a - c / 2) <= min(w, c) * 0.2
+        and abs(y + h / 2 - b - d / 2) <= min(h, d) * 0.2
+    )
 
 
 def build_markers(
-    blocks: list[OcrBlock], boxes: list[Marker], width: int, height: int
+    blocks: list[OcrBlock],
+    boxes: list[Marker],
+    width: int,
+    height: int,
+    *,
+    settings: MergeSettings | None = None,
 ) -> list[Marker]:
     """Keep OCR anchors and genuine enclosing controls; suppress duplicate detections.
 
     Unlike L2C's icon-only merge, a larger detector box enclosing text is useful
     for desktop inputs and tables. Never discard the OCR evidence itself.
     """
+    settings = settings or MergeSettings()
     candidates = [
         Marker(id=0, bbox=b.bbox, source="ocr", confidence=b.confidence, text_ids=(b.id,))
         for b in blocks
@@ -50,9 +93,9 @@ def build_markers(
 
         # OmniParser sometimes calls individual glyphs icons. Remove detections
         # substantially inside an OCR span, but retain larger enclosing controls.
-        if any(is_text_fragment(box, block) for block in blocks):
+        if any(is_text_fragment(box, block, settings) for block in blocks):
             continue
-        if any(overlap(box.bbox, other.bbox) >= 0.85 for other in kept):
+        if any(duplicate_detection(box, other, settings) for other in kept):
             continue
         kept.append(box)
     candidates += kept
