@@ -82,6 +82,7 @@ class Detection(BaseModel):
 
 class SemanticDetection(Detection):
     controls: list[ControlMeaning] = Field(max_length=500)
+    needs_refinement: bool = False
 
 
 class SceneObservation(BaseModel):

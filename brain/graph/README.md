@@ -67,3 +67,11 @@ eligible next action. Rejection returns to entry and invalidates only implicated
 record fields; confirmation remains pending. Neither delivery nor readiness for
 query proves persistence. Final row verification remains mandatory. Flat record
 inputs use the shared form-scope predicate, including cache and evidence paths.
+
+With `visual_joint_planning`, the initial goal/plan and current progress accompany
+screen interpretation. `VisualTurn` proposes the next step in the same measured
+response. Current marker refs are bound locally and the post-verification policy
+still validates the proposal. A missing/stale/incompatible proposal uses measured
+selection; normal proposals reuse the existing single/batch executor without a
+second selection call. Translation-only capture renewal preserves image-relative
+coordinates while binding the new capture origin. Scale/content changes do not.

@@ -55,6 +55,8 @@ unknown/empty, never proof of a value. Use uncertainties for ambiguous relations
 Include static status text and empty-result messages. Do not declare task success.
 Disable background controls when a modal covers them.
 Mark uncertain targets below minimum_confidence.
+Set needs_refinement=true ONLY when basic detection is missing a control needed
+for the current task. Unmatched decorative text alone is not a detection failure.
 """
 
 
@@ -138,31 +140,6 @@ class VisualPerception:
             blocks, boxes, shot.width, shot.height, settings=self.merge_settings
         )
         regions = []
-        if (
-            isinstance(self.detector, OmniParserDetector)
-            and self.detector.settings.refinement_enabled
-        ):
-            regions = refinement_regions(
-                blocks,
-                markers,
-                shot.width,
-                shot.height,
-                limit=self.detector.settings.refinement_max_regions,
-                min_confidence=self.merge_settings.min_ocr_confidence,
-            )
-            if regions:
-                refined = self.detector.refine(page, regions)
-                atomic_write_json(
-                    folder / "refinement.json",
-                    {
-                        "regions": regions,
-                        "boxes": [b.model_dump(mode="json") for b in refined],
-                        "reason": "unmatched_ocr_search_only_not_click_geometry",
-                    },
-                )
-                markers = build_markers(
-                    blocks, boxes + refined, shot.width, shot.height, settings=self.merge_settings
-                )
         detector_ms = (perf_counter() - local_started) * 1000
         atomic_write_json(
             folder / "markers.json",
@@ -188,32 +165,68 @@ class VisualPerception:
         # Rendering marker IDs is a diagnostic/model-input artifact; the relay
         # capture and its freshness hash remain untouched.
         marked_path = folder / "markers.png"
-        candidates = [m for m in markers if m.source != "ocr"]
-        render_markers(path, marked_path, candidates)
-        prompt = DETECTION_RULES + json.dumps(
-            {
-                "image_size": [shot.width, shot.height],
-                "minimum_confidence": self.threshold,
-                "ocr": [block.model_dump(mode="json") for block in blocks],
-                "markers": [
-                    {
-                        **m.model_dump(mode="json", exclude={"confidence"}),
-                        "candidate_confidence": m.confidence,
-                        "contained_ocr_ids": [b.id for b in blocks if contains(m.bbox, b.bbox)],
-                    }
-                    for m in candidates
-                ],
-            },
-            ensure_ascii=False,
-        )
-        detected_at = perf_counter()
-        for attempt in range(2):
+        prompt = self._semantic_prompt(page, path, marked_path, markers, blocks)
+        detection_ms = 0.0
+        refinement_attempted = False
+        for attempt in range(3):
+            detected_at = perf_counter()
             meanings = self.detect(
                 prompt, SemanticDetection, page.model_copy(update={"image_path": marked_path})
             )
+            detection_ms += (perf_counter() - detected_at) * 1000
             atomic_write_json(
                 folder / f"meanings-attempt-{attempt}.json", meanings.model_dump(mode="json")
             )
+            if meanings.needs_refinement:
+                if refinement_attempted or not isinstance(self.detector, OmniParserDetector):
+                    raise ValueError("visual_required_control_missing")
+                if not self.detector.settings.refinement_enabled:
+                    raise ValueError("visual_required_control_missing")
+                regions = refinement_regions(
+                    blocks,
+                    markers,
+                    shot.width,
+                    shot.height,
+                    limit=self.detector.settings.refinement_max_regions,
+                    min_confidence=self.merge_settings.min_ocr_confidence,
+                )
+                if not regions:
+                    raise ValueError("visual_required_control_missing")
+                refinement_attempted = True
+                refined_at = perf_counter()
+                refined = self.detector.refine(page, regions)
+                elapsed = (perf_counter() - refined_at) * 1000
+                detector_ms += elapsed
+                atomic_write_json(
+                    folder / "refinement.json",
+                    {
+                        "regions": regions,
+                        "boxes": [b.model_dump(mode="json") for b in refined],
+                        "reason": "required_control_missing_after_basic_detection",
+                    },
+                )
+                self.log.append(
+                    "verify",
+                    payload={
+                        "stage": "visual_refinement",
+                        "reason": "required_control_missing",
+                        "refinement_ms": elapsed,
+                        "obs_id": str(wire.obs_id),
+                    },
+                )
+                markers = build_markers(
+                    blocks, boxes + refined, shot.width, shot.height, settings=self.merge_settings
+                )
+                atomic_write_json(
+                    folder / "markers-refined.json",
+                    {
+                        "markers": [m.model_dump(mode="json") for m in markers],
+                        "refinement_regions": regions,
+                    },
+                )
+                marked_path = folder / "markers-refined.png"
+                prompt = self._semantic_prompt(page, path, marked_path, markers, blocks)
+                continue
             try:
                 detection = ground_meanings(meanings, markers, blocks)
                 scene = bind_scene(
@@ -293,10 +306,36 @@ class VisualPerception:
                 "ocr_ms": ocr_ms,
                 "local_detector_ms": detector_ms,
                 "geometry_source": "local_markers",
-                "detection_ms": (perf_counter() - detected_at) * 1000,
+                "detection_ms": detection_ms,
                 "controls": len(scene.elements),
                 "uncertainties": scene.uncertainties,
                 "local_ocr_api_cost_usd": 0,
             },
         )
         return scene
+
+    def _semantic_prompt(self, page, path, marked_path, markers, blocks):
+        candidates = [m for m in markers if m.source != "ocr"]
+        render_markers(path, marked_path, candidates)
+        return DETECTION_RULES + json.dumps(
+            {
+                "image_size": [page.width, page.height],
+                "minimum_confidence": self.threshold,
+                "ocr": [block.model_dump(mode="json") for block in blocks],
+                "ocr_evidence_refs": {
+                    str(block_id): "m" + str(marker.id)
+                    for marker in markers
+                    if marker.source == "ocr"
+                    for block_id in marker.text_ids
+                },
+                "markers": [
+                    {
+                        **m.model_dump(mode="json", exclude={"confidence"}),
+                        "candidate_confidence": m.confidence,
+                        "contained_ocr_ids": [b.id for b in blocks if contains(m.bbox, b.bbox)],
+                    }
+                    for m in candidates
+                ],
+            },
+            ensure_ascii=False,
+        )

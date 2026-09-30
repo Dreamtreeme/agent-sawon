@@ -271,20 +271,27 @@ def test_refinement_budget_stops_before_a_model_call(tmp_path):
     assert not log.read_all()
 
 
-def test_perception_refines_once_before_semantic_call(tmp_path):
+@pytest.mark.parametrize("missing", [False, True])
+def test_perception_refines_only_after_basic_detection_reports_failure(
+    tmp_path, missing, monkeypatch
+):
     blocks, boxes, _, meaning = fixture()
     blocks.append(OcrBlock(id=9, text="Second", confidence=0.99, bbox=(10, 120, 60, 15)))
     log = RunLog(tmp_path, case_id="refinement", agent_id="test")
     calls = []
+    clock = [0.0]
+    monkeypatch.setattr("brain.visual.perception.perf_counter", lambda: clock[0])
 
     class Detector(OmniParserDetector):
         def read(self, page):
             calls.append("full")
+            clock[0] += 2
             return boxes
 
         def refine(self, page, regions):
             assert 1 <= len(regions) <= self.settings.refinement_max_regions
             calls.append("refine")
+            clock[0] += 10
             return [Marker(id=0, bbox=(100, 115, 150, 30), source="omniparser", confidence=0.5)]
 
     class Relay:
@@ -299,11 +306,17 @@ def test_perception_refines_once_before_semantic_call(tmp_path):
 
     def interpret(prompt, schema, page):
         calls.append("meaning")
+        clock[0] += 1
         assert '"refinement' not in prompt  # Search regions are not selectable markers.
-        return meaning
+        return meaning.model_copy(
+            update={"needs_refinement": missing and calls.count("meaning") == 1}
+        )
 
     perception = VisualPerception(
         Relay(), Ocr(), tmp_path, log, interpret, detector=Detector(DetectorSettings(), log)
     )
     perception.observe(wire())
-    assert calls == ["full", "refine", "meaning"]
+    assert calls == (["full", "meaning", "refine", "meaning"] if missing else ["full", "meaning"])
+    event = next(e for e in log.read_all() if e.payload.get("stage") == "visual_perception")
+    assert event.payload["detection_ms"] == (2000 if missing else 1000)
+    assert event.payload["local_detector_ms"] == (12000 if missing else 2000)

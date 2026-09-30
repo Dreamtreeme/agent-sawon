@@ -65,6 +65,7 @@ from .transitions import (
     ObservedEffect,
     TransitionFact,
 )
+from .visual_turn import VisualTurn, adapt_proposal, bind_proposal
 
 
 class Result(BaseModel):
@@ -235,6 +236,8 @@ class Brain:
         self.cache_entry_id: str | None = None
         self.review: EvidenceReview | None = None
         self.review_decision = False
+        self.visual_proposal = None
+        self.visual_proposal_obs_id = None
         self.visual_perception = None
         if settings.perception_mode == "visual_only":
             if visual_ocr is None:
@@ -252,7 +255,84 @@ class Brain:
             )
 
     def _detect_visual(self, prompt: str, schema: type[BaseModel], page: RenderedPage):
-        return self._call(prompt, schema, page=page)
+        if not self.settings.visual_joint_planning:
+            return self._call(prompt, schema, page=page)
+        context = {
+            "goal": self.goal,
+            "plan": self.plan,
+            "record": self.values,
+            "phase": self.phase,
+            "verified_fields": sorted(self.verified),
+            "remaining_fields": sorted(set(self.values) - set(self.verified)),
+            "query_value_verified": self.query_value_verified,
+            "query_submitted": self.query_submitted,
+            "duplicate_clear": self.duplicate_clear,
+            "save_issued": self.save_issued,
+            "credentials_available": [k for k, v in self.credentials.items() if v],
+            "pending_action": self.pending["decision"].model_dump(mode="json")
+            if self.pending
+            else None,
+            "pending_fields": [
+                item.decision.action.source
+                for item in self.pending["execution"].plan.actions
+                if item.decision.action and item.decision.intent == "fill"
+            ]
+            if self.pending and self.pending.get("execution")
+            else [],
+            "feedback": self.feedback[-4:],
+        }
+        instructions = (
+            POLICY + "\nFollow the INITIAL goal/plan; do not create a new overall plan. "
+            "Interpret CURRENT screen and propose next_step in this SAME response. "
+            "Use m<ID> for every action/evidence ref, where ID is a current control marker. "
+            "Use ocr_evidence_refs for unclassified static OCR evidence only, never as an input. "
+            "No old refs or coordinates. All proposals are revalidated after local verification. "
+            "Pending inputs may become verified only if their current visible values match. "
+            "If they match, advance to the next planned step; otherwise repair only mismatches. "
+            "Use LoginScreenPlan for credentials and ScreenFillPlan for visible record fields. "
+            "Use SaveReviewResponse in save_result, otherwise DecisionResponse. "
+            "If needed control extents are missing from basic detection, needs_refinement=true "
+            "and next_step=null; do not request refinement for decorative/static text.\n"
+            + (LOGIN_GUIDANCE if self.phase == "duplicate_query" else "")
+            + (SCREEN_FILL_GUIDANCE if self.phase == "enter" else "")
+            + (SAVE_REVIEW_GUIDANCE if self.phase == "save_result" else "")
+            + "\nTRUSTED_TASK="
+            + json.dumps(context, ensure_ascii=False)
+            + "\nUNTRUSTED_SCREEN="
+            + prompt
+        )
+        response = self._call(instructions, VisualTurn, page=page)
+        self.visual_proposal = response.next_step
+        atomic_write_json(page.image_path.parent / "screen-turn.json", response)
+        return schema.model_validate(response.model_dump(exclude={"next_step"}))
+
+    def _selection_call(self, prompt: str, schema: type[BaseModel]):
+        proposal, self.visual_proposal = self.visual_proposal, None
+        if proposal is not None and self.visual_proposal_obs_id == self.observation.obs_id:
+            try:
+                bound = bind_proposal(
+                    proposal,
+                    "e" + str(self.observation.obs_id.int) + "0",
+                    {e.ref for e in self.observation.elements},
+                )
+                result = adapt_proposal(bound, schema)
+                self.log.append(
+                    "select",
+                    payload={
+                        "check": "visual_proposal_reused",
+                        "obs_id": str(self.observation.obs_id),
+                    },
+                )
+                return result
+            except (ValueError, ValidationError):
+                self.log.append(
+                    "verify",
+                    payload={
+                        "check": "visual_proposal_rejected",
+                        "reason": "post_verification_contract_changed",
+                    },
+                )
+        return self._call(prompt, schema)
 
     def _budget(self, reservation: Decimal | None = None) -> None:
         accounting = read_model_accounting(self.log)
@@ -513,7 +593,9 @@ class Brain:
     def _observe(self) -> Observation:
         observation = redact(self.relay.observe(), self.secrets)
         if self.visual_perception is not None and not observation.blocked_reason:
+            self.visual_proposal = None
             observation = self.visual_perception.observe(observation)
+            self.visual_proposal_obs_id = observation.obs_id
         self.observation = observation
         self.review = None
         self.observation_number += 1
@@ -856,7 +938,7 @@ class Brain:
                 prompt, schema, model=self.recovery_model, call_budget=self.recovery_budget
             ).to_decision()
         try:
-            return self._call(prompt, schema).to_decision()
+            return self._selection_call(prompt, schema).to_decision()
         except ValidationError:
             if not recover:
                 raise
@@ -994,7 +1076,7 @@ class Brain:
                 prompt = self._decision_prompt(policy)
                 if self.phase == "save_result":
                     schema = SaveReviewResponse
-                    review = self._call(prompt, schema)
+                    review = self._selection_call(prompt, schema)
                     outcome = self._apply_save_review(review)
                     if outcome is not None:
                         return outcome
@@ -1002,14 +1084,14 @@ class Brain:
                     policy = self._decision_policy()
                 elif login_batch:
                     schema = LoginScreenPlan
-                    plan = self._call(prompt + LOGIN_GUIDANCE, schema)
+                    plan = self._selection_call(prompt + LOGIN_GUIDANCE, schema)
                     if plan.fields:
                         self.action_plan = prepare_login_plan(self.observation, plan, policy)
                         return {"next": "act"}
                     self.decision = plan.next_decision.to_decision()
                 elif screen_fill:
                     schema = ScreenFillPlan
-                    plan = self._call(prompt + SCREEN_FILL_GUIDANCE, schema)
+                    plan = self._selection_call(prompt + SCREEN_FILL_GUIDANCE, schema)
                     if plan.fields:
                         self.action_plan = prepare_screen_fill(self.observation, plan)
                         return {"next": "act"}
@@ -1220,7 +1302,8 @@ class Brain:
                 target = next(item for item in self.observation.elements if item.ref == choice.ref)
                 x, y, width, height = target.bbox
                 # OCR/model latency can exceed the capture TTL. Renew only when
-                # task pixels, physical geometry and foreground identity are identical.
+                # task pixels, scale and foreground identity match. A translation alone
+                # changes only the fresh capture origin, not image-relative targets.
                 fresh = self.relay.observe()
                 previous = self.observation.wire
                 old_shot, new_shot = previous.screenshot, fresh.screenshot
@@ -1242,8 +1325,14 @@ class Brain:
                     or old_shot is None
                     or old_shot.geometry is None
                     or (new_shot.width, new_shot.height) != (old_shot.width, old_shot.height)
-                    or new_shot.geometry.model_dump(exclude={"capture_id", "captured_at"})
-                    != old_shot.geometry.model_dump(exclude={"capture_id", "captured_at"})
+                    or new_shot.geometry.model_dump(
+                        exclude={"capture_id", "captured_at"}
+                        | ({"origin"} if not screen_batch else set())
+                    )
+                    != old_shot.geometry.model_dump(
+                        exclude={"capture_id", "captured_at"}
+                        | ({"origin"} if not screen_batch else set())
+                    )
                 ):
                     self.log.append(
                         "verify",
@@ -1276,6 +1365,7 @@ class Brain:
                         "action_obs_id": str(fresh.obs_id),
                         "screen_hash": fresh.screen_hash,
                         "screen_batch": screen_batch,
+                        "origin_changed": new_shot.geometry.origin != old_shot.geometry.origin,
                         "same_content": same_content,
                     },
                 )
