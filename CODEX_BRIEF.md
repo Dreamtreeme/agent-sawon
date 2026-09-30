@@ -666,13 +666,14 @@ D3 비교·환경 시작 확인·서류 검증은 목적별 별도 분모로 기
 빈 캐시 조건은 현재 외부 에이전트 설정의 `--cache-isolation cold`로 지정합니다.
 아래는 bench 루트에서 작성하는 **연습 계획 확인 예시**입니다. `--plan-only`는 화면·모델을 실행하지 않습니다.
 설정의 정확 일치/재연결·요약·복구 조건, 기준선 참조와 남은 합산 예산 내 실행 상한을 확정한 뒤 새 출력 경로로 계획을 고정합니다.
+현재 준비한 프로필과 파일럿 순서·예산 배정은 [실행 준비 기록](../agent-sawon-bench/docs/m1-practice-preparation-20260930.md)을 따릅니다.
 
 ```powershell
 # 현재 구현으로 180건의 빈 캐시 에이전트 계획 확인
-python -m harness.run --agent core_m2_cache_cold --agent-config ../agent-sawon/config/harness_agents.cache-isolated.json --seeds 0-29 --repeats 3 --modes stable,none --desktop-handoff --output evidence/runs/practice-agent-001 --plan-only
+python -m harness.run --agent core_practice_cold --agent-config ../agent-sawon/config/harness_agents.m1-practice.json --seeds 0-29 --repeats 3 --modes stable,none --max-cost-usd 40 --max-consecutive-environment-failures 1 --desktop-handoff --output evidence/runs/m1-practice-agent-20260930-001 --plan-only
 
 # 두 기준선 합계 120건. 검증된 참조 파일을 지정하고 반복 1회를 명시
-python -m harness.run --agent coord_replay,selector_script --seeds 0-29 --repeats 1 --modes stable,none --reference evidence/references/seed0.json --desktop-handoff --output evidence/runs/practice-baselines-001 --plan-only
+python -m harness.run --agent coord_replay,selector_script --seeds 0-29 --repeats 1 --modes stable,none --reference evidence/references/seed0.json --max-cost-usd 0.01 --max-consecutive-environment-failures 1 --desktop-handoff --output evidence/runs/m1-practice-baselines-20260930-001 --plan-only
 ```
 
 본시험 ①은 승인 후 평가 시드 5000~5049·에이전트 3회·기준선 각각 1회로 별도 계획을 만듭니다.
