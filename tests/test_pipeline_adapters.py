@@ -135,26 +135,34 @@ def test_budget_includes_image_and_output_reservation(page):
     assert replay("test", PageExtraction, page) == Decimal(0)
 
 
-def test_external_worker_uses_argument_list_hidden_no_shell(monkeypatch, page):
-    observed = []
+def test_external_ocr_reuses_worker_and_closes_it(monkeypatch, page):
+    created, requests, closed = [], [], []
 
-    def run(arguments, **kwargs):
-        observed.append((arguments, kwargs))
-        request = json.loads(Path(arguments[-2]).read_text(encoding="utf-8"))
-        assert request["image"] == str(page.image_path.resolve())
-        Path(arguments[-1]).write_text(
-            json.dumps(
-                {"blocks": [{"id": 0, "text": "12 CT", "confidence": 0.9, "bbox": [0, 0, 30, 10]}]}
-            ),
-            encoding="utf-8",
-        )
-        return 0
+    class Worker:
+        last_metrics = {"pid": 123, "model_initialized": False}
 
-    monkeypatch.setattr("pipeline.ocr.run_worker", run)
-    blocks = PaddleOcrEngine(PipelineSettings(ocr_python="C:/OCR env/python.exe")).read(page)
-    assert blocks == [OcrBlock(id=0, text="12 CT", confidence=0.9, bbox=(0, 0, 30, 10))]
-    assert observed[0][0][0] == "C:/OCR env/python.exe"
-    assert "shell" not in observed[0][1]
-    assert observed[0][1]["timeout"] == 300
-    assert observed[0][1]["log_path"].name == "worker.log"
-    assert not list(page.image_path.parent.glob(".ocr-*"))
+        def __init__(self, command, *, directory):
+            created.append(command)
+
+        def request(self, payload, *, timeout):
+            requests.append((payload, timeout))
+            return {
+                "blocks": [{"id": 0, "text": "12 CT", "confidence": 0.9, "bbox": [0, 0, 30, 10]}]
+            }
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr("pipeline.ocr.PersistentWorker", Worker)
+    engine = PaddleOcrEngine(PipelineSettings(ocr_python="C:/OCR env/python.exe"))
+    first = engine.read(page)
+    second = engine.read(
+        page.model_copy(update={"image_path": page.image_path.parent / "other.png"})
+    )
+    engine.close()
+    assert first == second == [OcrBlock(id=0, text="12 CT", confidence=0.9, bbox=(0, 0, 30, 10))]
+    assert len(created) == 1 and created[0][0] == "C:/OCR env/python.exe"
+    assert created[0][-1] == "--serve"
+    assert len(requests) == 2 and requests[0][0]["image"] != requests[1][0]["image"]
+    assert all(timeout == 300 for _, timeout in requests)
+    assert closed == [True]

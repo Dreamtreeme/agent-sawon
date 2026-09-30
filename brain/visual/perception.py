@@ -79,6 +79,16 @@ class VisualPerception:
         self.detector = detector or OmniParserDetector(DetectorSettings(), log)
         self.merge_settings = merge_settings or MergeSettings()
 
+    def close(self) -> None:
+        try:
+            close = getattr(self.ocr, "close", None)
+            if close:
+                close()
+        finally:
+            close = getattr(self.detector, "close", None)
+            if close:
+                close()
+
     def observe(self, wire: Observation) -> SceneObservation:
         if wire.observation_mode != "visual_only" or wire.elements or wire.blocked_reason:
             raise ValueError("visual_wire_not_usable")
@@ -158,6 +168,8 @@ class VisualPerception:
                 "obs_id": str(wire.obs_id),
                 "markers": len(markers),
                 "ocr_ms": ocr_ms,
+                "ocr_worker": getattr(self.ocr, "last_metrics", {}),
+                "detector_worker": getattr(self.detector, "last_metrics", {}),
                 "local_detector_ms": detector_ms,
                 "local_detector_api_cost_usd": 0,
             },
@@ -211,6 +223,7 @@ class VisualPerception:
                         "stage": "visual_refinement",
                         "reason": "required_control_missing",
                         "refinement_ms": elapsed,
+                        "detector_worker": getattr(self.detector, "last_metrics", {}),
                         "obs_id": str(wire.obs_id),
                     },
                 )

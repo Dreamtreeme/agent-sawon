@@ -1797,6 +1797,14 @@ class Brain:
         return self._finish("success", "saved_and_verified_awaiting_approval")
 
     def run(self) -> Result:
+        try:
+            return self._run()
+        finally:
+            close = getattr(self.visual_perception, "close", None)
+            if close:
+                close()
+
+    def _run(self) -> Result:
         self.started = perf_counter()
         if self.record.origin == "extracted" and not self.prepared_case:
             raise ValueError("Extracted records require a validated prepared case")

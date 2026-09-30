@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from time import perf_counter
 
 
 def create_engine(
@@ -75,22 +76,53 @@ def recognize(engine, image: str) -> list[dict]:
     return blocks
 
 
+class OcrSession:
+    def __init__(self):
+        self.engine = None
+        self.key = None
+        self.metrics = {}
+
+    def __call__(self, request):
+        key = tuple(
+            request[k]
+            for k in (
+                "language",
+                "device",
+                "enable_mkldnn",
+                "cpu_threads",
+                "ocr_version",
+                "detection_model",
+                "recognition_model",
+            )
+        )
+        initialized = self.engine is None or key != self.key
+        started = perf_counter()
+        if initialized:
+            self.engine = create_engine(*key)
+            self.key = key
+        initialization_ms = (perf_counter() - started) * 1000 if initialized else 0
+        started = perf_counter()
+        blocks = recognize(self.engine, request["image"])
+        self.metrics = {
+            "model_initialized": initialized,
+            "model_init_ms": initialization_ms,
+            "inference_ms": (perf_counter() - started) * 1000,
+        }
+        return {"blocks": blocks}
+
+
 def main() -> int:
+    session = OcrSession()
+    if sys.argv[1] == "--serve":
+        from worker_server import serve
+
+        serve(session)
+        return 0
     request = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     destination = Path(sys.argv[2])
     try:
-        engine = create_engine(
-            request["language"],
-            request["device"],
-            request["enable_mkldnn"],
-            request["cpu_threads"],
-            request["ocr_version"],
-            request["detection_model"],
-            request["recognition_model"],
-        )
-        result = {"blocks": recognize(engine, request["image"])}
+        result = session(request)
     except Exception as exc:
-        # Exception text may expose private paths/document contents.
         destination.write_text(json.dumps({"error_type": type(exc).__name__}), encoding="utf-8")
         return 1
     destination.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")

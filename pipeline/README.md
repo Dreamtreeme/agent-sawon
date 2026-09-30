@@ -27,9 +27,13 @@ The adapter uses the documented v3 `predict()` / `rec_texts`, `rec_scores`,
 The measured Windows preset uses PP-OCRv5 mobile detection/recognition, four CPU
 threads and `enable_mkldnn=false`. The installed v6 medium preset raised a oneDNN
 runtime error; server detection without oneDNN was too slow for this host.
-`ocr_execution="subprocess"` is the default: the fixed worker is hidden, has a
-configured deadline, and timeout cleanup kills its owned descendants as well as
-the Windows virtualenv launcher. `in_process` is an explicit option without a
+`ocr_execution="subprocess"` is the default: the fixed worker is hidden and reuses
+its loaded model across pages/screens while inferring each image afresh. Each
+request has a configured deadline. Failure, timeout, or task completion closes
+the worker and its owned descendants, including the Windows virtualenv launcher.
+A request after failure starts a new worker; it does not silently retry the failed
+request. Call `close()` when supplying a caller-owned OCR adapter to a pipeline.
+`in_process` is an explicit option without a
 hard native-call timeout. Use `config/pipeline.korean.toml` for Korean documents.
 
 `config/pipeline.fax.toml` is an opt-in English fax profile. It reads both the

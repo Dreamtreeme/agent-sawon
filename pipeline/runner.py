@@ -97,6 +97,7 @@ def prepare_case(
     log.append("plan", payload={"stage": "document_extraction", "document_count": len(documents)})
     bundle = ExtractionBundle(case_id=case_id, pages=[])
     atomic_write_json(case_dir / "extracted.json", bundle)
+    owns_ocr = ocr is None
     ocr = ocr or PaddleOcrEngine(settings)
     model = None
     error_type = None
@@ -204,6 +205,9 @@ def prepare_case(
             message=error_detail or f"{error_type}: processing stopped; inspect local evidence.",
         )
         log.append("stop", payload={"stage": "document_extraction", "error_type": error_type})
+    finally:
+        if owns_ocr:
+            ocr.close()
     report, record = cross_validate(bundle, settings)
     if pipeline_failure:
         report = report.model_copy(update={"checks": [*report.checks, pipeline_failure]})

@@ -99,6 +99,8 @@ def main(argv=None) -> int:
             {"status": "stopped", "error_type": type(exc).__name__},
         )
         return 1
+    finally:
+        perception.close()
     result = {
         "status": "recorded",
         "observations": count,
