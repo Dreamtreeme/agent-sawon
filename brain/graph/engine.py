@@ -1058,7 +1058,12 @@ class Brain:
             raise GuardStop("evidence_not_query_screen")
         if isinstance(
             self.observation, SceneObservation
-        ) and self.observation.uncertainties_for_region(grid.ref):
+        ) and self.observation.uncertainties_for_region(
+            grid.ref,
+            # Empty-result proof uses structured table state/confidence and the
+            # row checks below; prose about header labels is not a veto.
+            include_general_warnings=decision.operation != "duplicate_clear",
+        ):
             raise GuardStop("visual_query_evidence_uncertain")
         return subtree(self.observation, grid.ref)
 

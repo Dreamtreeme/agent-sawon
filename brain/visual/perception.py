@@ -32,6 +32,8 @@ Use real contained parents only; omit absent parents.
 Never infer an input location from its label or invent a container to complete a hierarchy.
 For each table explicitly report table_state empty/rows/uncertain from the visible
 result area; never infer empty merely because OCR found no text. Other controls use not_table.
+If row presence cannot be determined, set table_state=uncertain on that table.
+An OCR-only static header does not need a separate selectable detector box.
 Associate label_ids with nearby OCR labels, text_ids with literal OCR INSIDE the control.
 label_ids and text_ids reference ocr[].id, NOT markers[].id. These are different namespaces.
 Always provide both lists explicitly. Do not leave a clearly visible field label unassociated.

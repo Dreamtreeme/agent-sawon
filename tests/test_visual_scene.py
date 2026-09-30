@@ -102,8 +102,55 @@ def test_query_uncertainty_is_scoped_without_ignoring_model_warnings(inside):
         wire(), [], detection.model_copy(update={"uncertainties": ["uncertain grid"]})
     )
     assert warned.uncertainties_for_region(warned.elements[0].ref)
+    assert (
+        bool(
+            warned.uncertainties_for_region(warned.elements[0].ref, include_general_warnings=False)
+        )
+        is inside
+    )
+    assert warned.uncertainties  # Notes remain available for diagnostics.
     old = result.model_copy(update={"global_uncertainties": None})
     assert old.uncertainties_for_region(old.elements[0].ref)
+    assert old.uncertainties_for_region(old.elements[0].ref, include_general_warnings=False)
+
+
+@pytest.mark.parametrize("table_state", ["empty", "uncertain", "rows"])
+def test_empty_grid_uses_structured_evidence_not_header_notes(table_state):
+    from brain.graph.engine import Brain, GuardStop
+    from brain.graph.schemas import Decision
+
+    brain = Brain.__new__(Brain)
+    brain.observation = bind_scene(
+        wire(),
+        [],
+        Detection(
+            controls=[
+                VisualControl(
+                    id=0,
+                    role="table",
+                    bbox=[10, 60, 380, 100],
+                    confidence=0.95,
+                    table_state=table_state,
+                )
+            ],
+            uncertainties=["Partially clipped header lacks a separate detector box"],
+        ),
+    )
+    decision = Decision(
+        operation="duplicate_clear",
+        intent="verify",
+        screen_kind="query",
+        subgoal="Check empty results",
+        reason="Read the visible result area",
+        grid_ref=brain.observation.elements[0].ref,
+    )
+    if table_state == "empty":
+        assert brain._grid(decision)
+        with pytest.raises(GuardStop, match="visual_query_evidence_uncertain"):
+            brain._grid(decision.model_copy(update={"operation": "complete"}))
+    else:
+        with pytest.raises(GuardStop, match="missing_query_grid_evidence"):
+            brain._grid(decision)
 
 
 @pytest.mark.parametrize(

@@ -99,7 +99,9 @@ class SceneObservation(BaseModel):
     global_uncertainties: list[str] | None = None
     uncertain_control_refs: list[str] = Field(default_factory=list)
 
-    def uncertainties_for_region(self, ref: str) -> list[str]:
+    def uncertainties_for_region(
+        self, ref: str, *, include_general_warnings: bool = True
+    ) -> list[str]:
         # Older/replayed scenes without scope metadata stay conservative.
         if self.global_uncertainties is None:
             return self.uncertainties
@@ -107,7 +109,8 @@ class SceneObservation(BaseModel):
         if ref not in by_ref:
             return ["unknown_visual_region"]
         region = by_ref[ref].bbox
-        return self.global_uncertainties + [
+        general = self.global_uncertainties if include_general_warnings else []
+        return general + [
             "uncertain_control:" + candidate
             for candidate in self.uncertain_control_refs
             if candidate not in by_ref or overlap(region, by_ref[candidate].bbox) > 0
