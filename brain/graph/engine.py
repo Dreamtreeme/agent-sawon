@@ -1174,15 +1174,23 @@ class Brain:
                 target = next(item for item in self.observation.elements if item.ref == choice.ref)
                 x, y, width, height = target.bbox
                 # OCR/model latency can exceed the capture TTL. Renew only when
-                # pixels, physical geometry and foreground identity are identical.
+                # task pixels, physical geometry and foreground identity are identical.
                 fresh = self.relay.observe()
                 previous = self.observation.wire
                 old_shot, new_shot = previous.screenshot, fresh.screenshot
+                same_content = (
+                    old_shot.content_hash == new_shot.content_hash
+                    if old_shot is not None
+                    and new_shot is not None
+                    and old_shot.content_hash is not None
+                    and new_shot.content_hash is not None
+                    else fresh.screen_hash == previous.screen_hash
+                )
                 if (
                     fresh.blocked_reason
                     or fresh.observation_mode != "visual_only"
                     or fresh.active_window != previous.active_window
-                    or fresh.screen_hash != previous.screen_hash
+                    or not same_content
                     or new_shot is None
                     or new_shot.geometry is None
                     or old_shot is None
@@ -1199,6 +1207,7 @@ class Brain:
                             "foreground_blocked": bool(fresh.blocked_reason),
                             "same_window": fresh.active_window == previous.active_window,
                             "same_pixels": fresh.screen_hash == previous.screen_hash,
+                            "same_content": same_content,
                         },
                     )
                     raise ValueError("visual_screen_changed_before_action")

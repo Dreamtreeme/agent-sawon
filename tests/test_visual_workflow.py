@@ -110,8 +110,21 @@ def test_relay_diagnostic_records_only_known_codes(tmp_path, record, error):
 
 
 @pytest.mark.parametrize("corrupt", [False, True])
-def test_visual_complete_flow_and_corrupt_reread_gate(tmp_path, record, corrupt):
+@pytest.mark.parametrize("caret_blink", [False, True])
+def test_visual_complete_flow_and_corrupt_reread_gate(tmp_path, record, corrupt, caret_blink):
     relay = VisualFixture(record, corrupt=corrupt)
+    if caret_blink:
+        observe = relay.observe
+
+        def blinking_observe():
+            wire = observe()
+            shot = wire.screenshot.model_copy(update={"content_hash": wire.screen_hash})
+            relay.current = wire.model_copy(
+                update={"screenshot": shot, "screen_hash": uuid4().hex + "0" * 8}
+            )
+            return relay.current
+
+        relay.observe = blinking_observe
     log = RunLog(tmp_path, case_id=record.case_id, agent_id="visual-test")
     model = ScriptedModel(log, success_steps(record))
     brain = Brain(
