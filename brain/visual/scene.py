@@ -57,6 +57,9 @@ class VisualControl(ControlMeaning):
 
 class Detection(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+    screen_kind: Literal["login", "menu", "query", "editor", "partner", "dialog", "unknown"] = (
+        "unknown"
+    )
     controls: list[VisualControl] = Field(max_length=500)
     uncertainties: list[str] = Field(default_factory=list, max_length=30)
 
@@ -94,6 +97,9 @@ class SceneObservation(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     wire: Observation
+    screen_kind: Literal["login", "menu", "query", "editor", "partner", "dialog", "unknown"] = (
+        "unknown"
+    )
     elements: list[UIElement]
     evidence_source: Literal["ocr_visual"] = "ocr_visual"
     uncertainties: list[str] = Field(default_factory=list)
@@ -252,6 +258,7 @@ def bind_scene(
         )
     return SceneObservation(
         wire=wire,
+        screen_kind=detection.screen_kind,
         elements=elements,
         uncertainties=uncertainties,
         global_uncertainties=list(detection.uncertainties),

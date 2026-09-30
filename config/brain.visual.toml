@@ -1,7 +1,8 @@
 schema_version = "0.1"
 perception_mode = "visual_only"
 visual_screen_fill = true
-visual_joint_planning = true
+visual_joint_planning = false
+numbered_selection = true
 summary_strategy = "label_grouped"
 max_steps = 80
 max_cost_usd = 1.0

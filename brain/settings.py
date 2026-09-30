@@ -40,6 +40,7 @@ class BrainSettings(BaseModel):
     visual_input_blur_recheck: bool = True
     visual_screen_fill: bool = False
     visual_joint_planning: bool = False
+    numbered_selection: bool = False
     visual_detector: DetectorSettings = Field(default_factory=DetectorSettings)
     visual_merge: MergeSettings = Field(default_factory=MergeSettings)
 

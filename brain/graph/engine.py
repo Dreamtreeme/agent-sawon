@@ -202,6 +202,7 @@ class Brain:
         self.observation: Observation | None = None
         self.decision: Decision | None = None
         self.plan: list[str] = []
+        self.stage_goals: dict[str, str] = {}
         self.verified: dict[str, dict] = {}
         self.query_value_verified = False
         self.query_submitted = False
@@ -255,6 +256,13 @@ class Brain:
             )
 
     def _detect_visual(self, prompt: str, schema: type[BaseModel], page: RenderedPage):
+        if self.settings.numbered_selection:
+            return self._call(
+                "Describe CURRENT screen only, including screen_kind. Do not plan actions.\n"
+                + prompt,
+                schema,
+                page=page,
+            )
         if not self.settings.visual_joint_planning:
             return self._call(prompt, schema, page=page)
         context = {
@@ -307,6 +315,10 @@ class Brain:
         return schema.model_validate(response.model_dump(exclude={"next_step"}))
 
     def _selection_call(self, prompt: str, schema: type[BaseModel]):
+        if self.settings.numbered_selection:
+            from .notebook import select_numbered
+
+            return select_numbered(self, schema)
         proposal, self.visual_proposal = self.visual_proposal, None
         if proposal is not None and self.visual_proposal_obs_id == self.observation.obs_id:
             try:
@@ -414,6 +426,10 @@ class Brain:
                     "last_obs_id": str(self.observation.obs_id) if self.observation else None,
                 },
             )
+        if self.settings.numbered_selection:
+            from .notebook import remember
+
+            remember(self)
         return {"next": "finish"}
 
     def _fail(self, reason: str, *, validation_errors: list[dict] | None = None) -> dict:
@@ -638,10 +654,30 @@ class Brain:
                     "obs_id": str(observation.obs_id),
                 },
             )
+        if self.settings.numbered_selection:
+            from .notebook import remember
+
+            remember(self)
         return observation
 
     def _plan_node(self, state: GraphState) -> dict:
         try:
+            if self.settings.numbered_selection:
+                from .notebook import TaskPlan, remember
+
+                plan = self._call(
+                    "Write one concise goal for each workflow stage: duplicate check, entry, "
+                    "save-result inspection, final query verification. No control refs, actions, "
+                    "record values, or implementation instructions in stage goals. Never transmit "
+                    "or approve.\n"
+                    + json.dumps({"goal": self.goal, "record_fields": list(self.values)}),
+                    TaskPlan,
+                )
+                self.stage_goals = plan.model_dump()
+                self.plan = list(self.stage_goals.values())
+                self.log.append("plan", payload={"subgoals": self.plan})
+                remember(self)
+                return {"next": "observe"}
             plan = self._call(
                 POLICY + "\nProduce a short plan: duplicate query, field entry with verification, "
                 "save, and final query verification.\nTRUSTED_TASK="
@@ -924,6 +960,8 @@ class Brain:
 
     def _choose_decision(self, prompt: str, schema: type[BaseModel]) -> Decision:
         """Recover with an explicitly configured measured model, at most once."""
+        if self.settings.numbered_selection:
+            return self._selection_call("", schema).to_decision()
         recover = self.settings.recovery_enabled and self.recovery_model is not None
         if recover and self._current_review().status == "needs_more":
             self.log.append(
@@ -1010,6 +1048,7 @@ class Brain:
                     hit is None
                     and not (screen_fill or login_batch)
                     and self.phase == "enter"
+                    and not self.settings.numbered_selection
                     and self.cache_rebind_calls < self.settings.cache.rebind_model_max_calls
                 ):
                     request = build_rebind_request(
@@ -1073,7 +1112,7 @@ class Brain:
                             "phase": self.phase,
                         },
                     )
-                prompt = self._decision_prompt(policy)
+                prompt = "" if self.settings.numbered_selection else self._decision_prompt(policy)
                 if self.phase == "save_result":
                     schema = SaveReviewResponse
                     review = self._selection_call(prompt, schema)

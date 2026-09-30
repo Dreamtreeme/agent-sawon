@@ -169,4 +169,6 @@ def ground_meanings(
         for block in blocks:
             if block.id in control.text_ids and not contains(control.bbox, block.bbox):
                 raise ValueError("value_outside_local_marker")
-    return Detection(controls=controls, uncertainties=meanings.uncertainties)
+    return Detection(
+        screen_kind=meanings.screen_kind, controls=controls, uncertainties=meanings.uncertainties
+    )
