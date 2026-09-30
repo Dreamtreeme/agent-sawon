@@ -75,11 +75,17 @@ class HttpRelay:
             raise RelayError("relay_transport_or_json_error") from None
 
     def health(self) -> dict:
-        return self._request("/health")
+        health = self._request("/health")
+        if health.get("observation_mode") == "visual_only":
+            raise RelayError("visual_agent_not_implemented")
+        return health
 
     def observe(self) -> Observation:
         query = urlencode({"screenshot": "false", "max_depth": self.max_depth})
-        return Observation.model_validate(self._request(f"/observe?{query}"))
+        observation = Observation.model_validate(self._request(f"/observe?{query}"))
+        if observation.observation_mode == "visual_only":
+            raise RelayError("visual_agent_not_implemented")
+        return observation
 
     def act(self, action: Action) -> ActionResult:
         return ActionResult.model_validate(self._request("/act", action.model_dump(mode="json")))

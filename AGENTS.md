@@ -12,7 +12,8 @@ preserve old plans/results and do not treat notebook/human/failover tools as imp
 The user approved a visual-first plan on 2026-09-30. Follow ../agent-sawon-bench/docs/visual-first-plan-20260930.md before the old 300-run practice.
 Implement screenshot/OCR/control detection and visual verification first; UIA is optional assistance.
 Visual-only mode must exclude UIA observations and direct control patterns while retaining OS safety guards.
-The new path is not implemented yet. Preserve previous UIA evidence and re-plan counts; do not auto-resume old runs.
+V1 relay contracts/isolation are implemented; OCR/control detection and visual brain (V2/V3) are next.
+See ../agent-sawon-bench/docs/visual-v1-contract-20260930.md. Preserve previous UIA evidence; do not auto-resume old runs.
 
 - Core may import only the public `sawon_interfaces` contract from bench.
 - The future brain accesses the environment only through relay HTTP; never read ERP internals.
