@@ -45,6 +45,7 @@ from .schemas import (
     Decision,
     Plan,
 )
+from .screen_batch import SCREEN_FILL_GUIDANCE, ScreenFillPlan, execute_screen_fill
 from .transitions import (
     ActionTransition,
     ExpectedEffect,
@@ -891,6 +892,8 @@ class Brain:
             ).to_decision()
 
     def _select_node(self, state: GraphState) -> dict:
+        if self.steps >= self.settings.max_steps:
+            return self._finish("stopped", "max_steps")
         self.steps += 1
         duplicate_checkpoint = self._duplicate_checkpoint_pending()
         final_query_pending = (
@@ -907,6 +910,13 @@ class Brain:
             self.decision = None
             self.cache_entry_id = None
             schema = policy.response_schema()
+            screen_fill = (
+                self.settings.visual_screen_fill
+                and isinstance(self.observation, SceneObservation)
+                and self.phase == "enter"
+                and self.duplicate_clear
+                and bool(policy.facts.remaining_fields)
+            )
             allowed_sources = (
                 policy.facts.remaining_fields
                 if self.phase == "enter"
@@ -915,14 +925,19 @@ class Brain:
                 else ()
             )
             try:
-                hit = self.cache_session.lookup(
-                    self.observation,
-                    phase=self.phase,
-                    allowed_sources=allowed_sources,
-                    record=self.record,
+                hit = (
+                    None
+                    if screen_fill
+                    else self.cache_session.lookup(
+                        self.observation,
+                        phase=self.phase,
+                        allowed_sources=allowed_sources,
+                        record=self.record,
+                    )
                 )
                 if (
                     hit is None
+                    and not screen_fill
                     and self.phase == "enter"
                     and self.cache_rebind_calls < self.settings.cache.rebind_model_max_calls
                 ):
@@ -988,7 +1003,14 @@ class Brain:
                         },
                     )
                 prompt = self._decision_prompt(policy)
-                self.decision = self._choose_decision(prompt, schema)
+                if screen_fill:
+                    schema = ScreenFillPlan
+                    plan = self._call(prompt + SCREEN_FILL_GUIDANCE, schema)
+                    if plan.fields:
+                        return execute_screen_fill(self, plan)
+                    self.decision = plan.next_decision.to_decision()
+                else:
+                    self.decision = self._choose_decision(prompt, schema)
             decision = self.decision
             self.log.append(
                 "select",
@@ -1160,7 +1182,9 @@ class Brain:
         }:
             raise GuardStop("navigation_no_progress")
 
-    def _wire_action(self, choice: Choice, decision: Decision) -> Action:
+    def _wire_action(
+        self, choice: Choice, decision: Decision, *, screen_batch: bool = False
+    ) -> Action:
         assert self.observation is not None
         data = {
             "type": choice.type,
@@ -1190,7 +1214,7 @@ class Brain:
                     fresh.blocked_reason
                     or fresh.observation_mode != "visual_only"
                     or fresh.active_window != previous.active_window
-                    or not same_content
+                    or (not screen_batch and not same_content)
                     or new_shot is None
                     or new_shot.geometry is None
                     or old_shot is None
@@ -1222,11 +1246,15 @@ class Brain:
                 self.log.append(
                     "observe",
                     payload={
-                        "check": "visual_identical_capture_renewal",
+                        "check": "visual_planned_capture_renewal"
+                        if screen_batch
+                        else "visual_identical_capture_renewal",
                         "ok": True,
                         "perceived_obs_id": str(previous.obs_id),
                         "action_obs_id": str(fresh.obs_id),
                         "screen_hash": fresh.screen_hash,
+                        "screen_batch": screen_batch,
+                        "same_content": same_content,
                     },
                 )
         if choice.type in {"set_text", "type_text"}:
@@ -1241,12 +1269,12 @@ class Brain:
             data["duration_ms"] = choice.duration_ms
         return Action.model_validate(data)
 
-    def _act_node(self, state: GraphState) -> dict:
+    def _act_node(self, state: GraphState, *, screen_batch: bool = False) -> dict:
         assert self.decision is not None and self.observation is not None
         decision, choice = self.decision, self.decision.action
         assert choice is not None
         try:
-            action = self._wire_action(choice, decision)
+            action = self._wire_action(choice, decision, screen_batch=screen_batch)
             logged = action.model_dump(mode="json")
             if choice.source and choice.source.startswith("credential."):
                 logged["text"] = "[REDACTED]"
@@ -1510,7 +1538,11 @@ class Brain:
                 )
             self.cache_entry_id = None
             self.pending = None
-            return {"next": "observe"}
+            return {
+                "next": "review"
+                if self.settings.visual_screen_fill and isinstance(observation, SceneObservation)
+                else "observe"
+            }
         except GuardStop as exc:
             return self._finish("stopped", str(exc))
         except Exception as exc:
