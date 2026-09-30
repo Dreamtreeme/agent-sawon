@@ -15,6 +15,8 @@ Visual-only mode must exclude UIA observations and direct control patterns while
 The user authorized L2C-style automatic foreground activation on 2026-09-30.
 The relay may restore an allowlisted ERP before visual capture/input; foreground loss alone
 does not require a new confirmation. Observation-only recording stays passive.
+The user removed duplicate screenshot password overlays on 2026-09-30. Preserve the app's
+rendered password bullets; do not reinstate white/black control paint-over in the relay.
 V1 isolation and V2/V3 visual perception/brain integration are implemented with fake tests; real visual completion is unverified.
 Visual cache/demo provenance and notebook/human/scoreboard tools are implemented. The user confirmed HTTP400 billing review and authorized paid resumption within the existing total $50 cap on 2026-09-30. Preserve historical unknown-cost records; run bounded visual pilots before scaling.
 See ../agent-sawon-bench/docs/visual-v1-contract-20260930.md. Preserve previous UIA evidence; do not auto-resume old runs.
