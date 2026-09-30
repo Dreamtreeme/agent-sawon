@@ -299,7 +299,7 @@ def test_workflow_uses_real_prepared_brain_with_isolation_and_combined_cap(
         return relay
 
     monkeypatch.setattr(workflow, "prepare_case", preparation)
-    monkeypatch.setattr(workflow.PipelineCallBudget, "from_config", lambda path: None)
+    monkeypatch.setattr(workflow.ImageCallBudget, "from_config", lambda path: None)
     monkeypatch.setattr(runner, "create_model_client", model_factory)
     monkeypatch.setattr(runner, "HttpRelay", relay_factory)
     monkeypatch.setattr(runner.CallBudget, "from_config", lambda path: None)

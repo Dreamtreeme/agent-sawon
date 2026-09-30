@@ -12,9 +12,9 @@ from pydantic import Field
 from sawon_interfaces import ShipmentRecord
 
 from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
+from models.accounting import read_model_accounting
 from models.base import MeasuredModelClient
 
-from .accounting import read_model_accounting
 from .checks import can_enter, cross_validate
 from .extract import Reservation, extract_page, extraction_prompt
 from .ocr import OcrEngine, PaddleOcrEngine
@@ -175,7 +175,7 @@ def prepare_case(
                         or accounting.known_usd + reserved > limit
                     ):
                         raise PipelineBudgetError("pipeline_cost_reservation_exceeds_limit")
-                    before_calls = sum(event.kind == "model_call" for event in log.read_all())
+                    before_calls = read_model_accounting(log).model_calls
                     extracted, charged = extract_page(model, page, blocks, case_dir=case_dir)
                     extracted = extracted.model_copy(update={"ocr_input": ocr_input})
                     accounting = read_model_accounting(log)

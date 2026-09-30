@@ -7,9 +7,9 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
+from models.budget import ImageCallBudget
 from models.factory import create_model_client
 
-from .extract import PipelineCallBudget
 from .runner import load_inputs, prepare_case
 from .schemas import DocumentInput, PipelineSettings
 
@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
         model_factory=lambda log: create_model_client(
             args.model_config, run_log=log, env_path=args.env, provider=args.provider
         ),
-        reservation=PipelineCallBudget.from_config(args.model_config),
+        reservation=ImageCallBudget.from_config(args.model_config),
     )
     print(
         json.dumps(

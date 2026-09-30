@@ -6,10 +6,12 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, model_validator
+from sawon_interfaces import Observation
 
-from brain.observe import describe
+from brain.observe.evidence import matching_elements
 from brain.visual.scene import SceneObservation
 
+from .execution import ActionPlan, GuardStop, PlanExecution, PlannedAction
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision, DecisionResponse, FieldName, StrictModel
 
@@ -102,185 +104,127 @@ class LoginScreenPlan(StrictModel):
         return self
 
 
-def execute_login_plan(brain: Brain, plan: LoginScreenPlan) -> dict:
-    from .engine import GuardStop
-
-    scene = brain.observation
+def prepare_login_plan(
+    scene: Observation, plan: LoginScreenPlan, policy: DecisionPolicy
+) -> ActionPlan:
     if not isinstance(scene, SceneObservation):
         raise GuardStop("login_plan_requires_visual_scene")
-    policy = brain._decision_policy()
     sources = {f.source for f in plan.fields}
     if sources != set(policy.facts.remaining_credentials):
         raise GuardStop("login_plan_missing_credentials")
-    if brain.steps + len(plan.fields) > brain.settings.max_steps:
-        raise GuardStop("max_steps")
-    decisions = [
-        Decision(
-            screen_kind="login",
-            operation="act",
-            intent="credential",
-            subgoal="Log in",
-            reason="Execute observed credential plan",
-            action=Choice(type="set_text", ref=f.ref, source=f.source),
+    actions = [
+        PlannedAction(
+            Decision(
+                screen_kind="login",
+                operation="act",
+                intent="credential",
+                subgoal="Log in",
+                reason="Execute observed credential plan",
+                action=Choice(type="set_text", ref=f.ref, source=f.source),
+            )
         )
         for f in plan.fields
     ]
-    for decision in decisions:
-        brain._guard_action(decision, policy)
-    login = Decision(
-        screen_kind="login",
-        operation="act",
-        intent="login",
-        subgoal="Log in",
-        reason="Submit the completed credential plan",
-        action=Choice(type="click", ref=plan.login_ref),
-    )
-    # Check the final command against the state the delivered inputs will establish.
-    # No credential values or invented UI observations are supplied to the model.
+    # Preflight the final command against the facts successful input delivery
+    # will establish. Runtime still stops immediately if any input is rejected.
     after_delivery = DecisionPolicy(
         replace(
             policy.facts,
             submitted_credentials=tuple(sorted(set(policy.facts.submitted_credentials) | sources)),
         )
     )
-    brain._guard_action(login, after_delivery)
-    brain.log.append(
-        "select",
-        payload={
+    actions.append(
+        PlannedAction(
+            Decision(
+                screen_kind="login",
+                operation="act",
+                intent="login",
+                subgoal="Log in",
+                reason="Submit the completed credential plan",
+                action=Choice(type="click", ref=plan.login_ref),
+            ),
+            after_delivery,
+        )
+    )
+    return ActionPlan(
+        tuple(actions),
+        "login",
+        {
             "check": "login_screen_plan",
-            "obs_id": str(scene.obs_id),
             "assignments": [f.model_dump() for f in plan.fields],
             "login_ref": plan.login_ref,
         },
     )
-    for index, decision in enumerate([*decisions, login]):
-        if index:
-            brain.steps += 1
-        brain.decision = decision
-        outcome = brain._act_node({}, screen_batch=index > 0)
-        if outcome["next"] != "verify":
-            brain.pending = None
-            return outcome
-        if decision.intent == "credential":
-            field = plan.fields[index]
-            element = next(e for e in scene.elements if e.ref == field.ref)
-            brain.credential_submissions[field.source] = {
-                "window_handle": scene.active_window.handle,
-                "descriptor": describe(element, scene.elements),
-            }
-            brain.pending = None
-    # Only the final click enters verification; the app's new screen is the evidence.
-    brain.pending["login_plan_descriptors"] = [
-        describe(next(e for e in scene.elements if e.ref == ref), scene.elements)
-        for ref in [*(f.ref for f in plan.fields), plan.login_ref]
-    ]
-    return {"next": "verify"}
 
 
-def execute_screen_fill(brain: Brain, plan: ScreenFillPlan) -> dict:
-    from .engine import GuardStop, field_matches
-
-    scene = brain.observation
-    if (
-        not isinstance(scene, SceneObservation)
-        or brain.phase != "enter"
-        or not brain.duplicate_clear
-    ):
-        raise GuardStop("screen_fill_requires_editor_phase")
-    if brain.steps + len(plan.fields) > brain.settings.max_steps:
-        raise GuardStop("max_steps")
-    by_ref = {item.ref: item for item in scene.elements}
-    decisions = []
-    descriptors = {}
-    # Validate the entire plan before sending its first input.
-    for field in plan.fields:
-        decision = Decision(
-            screen_kind="editor",
-            operation="act",
-            intent="fill",
-            subgoal="Fill visible screen",
-            reason="Execute the current screen field plan",
-            action=Choice(type="set_text", ref=field.ref, source=field.source),
+def prepare_screen_fill(scene: Observation, plan: ScreenFillPlan) -> ActionPlan:
+    if not isinstance(scene, SceneObservation):
+        raise GuardStop("screen_fill_requires_visual_scene")
+    actions = [
+        PlannedAction(
+            Decision(
+                screen_kind="editor",
+                operation="act",
+                intent="fill",
+                subgoal="Fill visible screen",
+                reason="Execute the current screen field plan",
+                action=Choice(type="set_text", ref=f.ref, source=f.source),
+            )
         )
-        brain._guard_action(decision)
-        descriptors[field.source] = describe(by_ref[field.ref], scene.elements)
-        decisions.append(decision)
-    brain.log.append(
-        "select",
-        payload={
+        for f in plan.fields
+    ]
+    last = actions[-1].decision
+    actions.append(
+        PlannedAction(
+            last.model_copy(
+                update={
+                    "intent": "navigate",
+                    "action": Choice(type="key", ref=last.action.ref, keys="tab"),
+                    "reason": "Finish screen entry before joint value verification",
+                }
+            )
+        )
+    )
+    return ActionPlan(
+        tuple(actions),
+        "fields",
+        {
             "check": "screen_fill_plan",
-            "obs_id": str(scene.obs_id),
-            "assignments": [field.model_dump() for field in plan.fields],
+            "assignments": [f.model_dump() for f in plan.fields],
         },
     )
-    for index, decision in enumerate(decisions):
-        if index:
-            brain.steps += 1
-        brain.decision = decision
-        # The first input requires unchanged content. Subsequent inputs use the
-        # plan's positions with fresh relay captures; our edits have changed pixels.
-        result = brain._act_node({}, screen_batch=index > 0)
-        brain.pending = None
-        if result["next"] != "verify":
-            return result
 
-    # Commit the last edit and remove its caret before the single visual reread.
-    last = decisions[-1]
-    brain.decision = last.model_copy(
-        update={
-            "intent": "navigate",
-            "action": Choice(type="key", ref=last.action.ref, keys="tab"),
-            "reason": "Finish screen entry before joint value verification",
-        }
-    )
-    brain._guard_action(brain.decision)
-    brain.steps += 1
-    result = brain._act_node({}, screen_batch=True)
-    brain.pending = None
-    if result["next"] != "verify":
-        return result
-    observation = brain._observe()
+
+def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Observation) -> dict:
+    """Evaluate the one new scene using the same field-evidence writer as singles."""
     matched, mismatched = [], []
-    for field in plan.fields:
-        candidates = [
-            item
-            for item in observation.elements
-            if describe(item, observation.elements) == descriptors[field.source]
-        ]
+    for delivered in execution.delivered[:-1]:
+        source = delivered["choice"].source
+        candidates = matching_elements(observation, delivered["descriptor"])
         ok = (
-            observation.active_window == scene.active_window
+            observation.active_window == execution.before.active_window
             and len(candidates) == 1
-            and field_matches(field.source, candidates[0].value, brain.values)
+            and brain._record_verified_field(source, candidates[0])
         )
         if ok:
-            brain.verified[field.source] = descriptors[field.source]
-            brain._record_progress("field:" + field.source)
-            matched.append(field.source)
+            execution.matched_fields.add(source)
+            matched.append(source)
         else:
-            brain.verified.pop(field.source, None)
-            mismatched.append(field.source)
-    brain.log.append(
-        "verify",
-        payload={
-            "check": "screen_fill_values",
-            "ok": not mismatched,
-            "matched": matched,
-            "mismatched": mismatched,
-            "obs_id": str(observation.obs_id),
-        },
-    )
-    brain.feedback.append(
-        {
-            "ok": not mismatched,
-            "check": "screen_fill_values",
-            "matched": matched,
-            "mismatched": mismatched,
-        }
-    )
+            brain.verified.pop(source, None)
+            mismatched.append(source)
+    payload = {
+        "check": "screen_fill_values",
+        "ok": not mismatched,
+        "matched": matched,
+        "mismatched": mismatched,
+    }
+    brain.log.append("verify", payload={**payload, "obs_id": str(observation.obs_id)})
+    brain.feedback.append(payload)
     if mismatched:
-        brain.decision = next(d for d in decisions if d.action.source == mismatched[0])
+        brain.decision = next(
+            a.decision for a in execution.plan.actions if a.decision.action.source == mismatched[0]
+        )
         outcome = brain._fail("screen_fill_value_mismatch")
         if outcome["next"] == "finish":
             return outcome
-    # Verification already produced the next scene; don't run full perception again.
     return {"next": "review"}

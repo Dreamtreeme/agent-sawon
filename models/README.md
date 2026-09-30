@@ -67,3 +67,8 @@ python -m examples.replay_demo
   입력, 캐시, 응답, 생각 토큰의 구분.
 - [Gemini 요금표](https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash):
   표준 유료 가격 설정의 출처.
+
+`models.budget.CallBudget`와 `ImageCallBudget`는 텍스트/이미지 비용 예약을 담당한다.
+`models.accounting.read_model_accounting`은 동일 실행 로그의 확인 비용·미확정 여부·호출 수를
+합산한다. 두뇌·화면 기록·서류 처리에서 같은 구현을 재사용하며, 모델 계층은 서류/두뇌
+구현에 의존하지 않는다. 이미지 비용 예약은 실제 과금표가 아닌 보수적 실행 정책이다.

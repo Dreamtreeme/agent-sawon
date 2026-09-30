@@ -14,8 +14,8 @@ from brain.runtime.storage import RunLog, atomic_write_json
 from brain.settings import BrainSettings
 from brain.visual.detector import OmniParserDetector
 from brain.visual.perception import VisualPerception
+from models.budget import ImageCallBudget
 from models.factory import create_model_client
-from pipeline.extract import PipelineCallBudget
 from pipeline.ocr import PaddleOcrEngine
 from pipeline.schemas import PipelineSettings
 
@@ -65,7 +65,7 @@ def main(argv=None) -> int:
     args.output.mkdir(parents=True, exist_ok=False)
     log = RunLog(args.output, case_id="visual-demonstration", agent_id="visual-recorder")
     model = create_model_client(args.model_config, run_log=log, env_path=args.env_path)
-    budget = PipelineCallBudget.from_config(args.model_config)
+    budget = ImageCallBudget.from_config(args.model_config)
 
     def detect(prompt, schema, page):
         calls = [event for event in log.read_all() if event.kind == "model_call"]

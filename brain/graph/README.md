@@ -49,7 +49,14 @@ prevent ungrounded completion, stale target reuse, unchecked text, duplicate ent
 and missing-field saves; they are not a semantic proof of arbitrary button intent.
 The application's agent role remains the enforcement boundary for transmission.
 
-Live testing resumed. The first model planning call failed with ServerError;
-a separate measured Plan-schema diagnostic returned HTTP 503 UNAVAILABLE.
-Further model calls are stopped; live model GUI comparison is still pending. Fake/replay and local HTTP tests do not establish real GUI
-success rates or the relative performance of the two summary strategies.
+Current execution architecture: [2026-09-30 review](../../docs/architecture-review-20260930.md).
+Selection prepares an `ActionPlan`; single model/cache actions, login and field batches
+all use `execution.execute_plan` through the `act` node. The `verify` node owns the
+subsequent observation. Domain-specific verifiers share field comparison, semantic
+rebinding and transition logging. A partial batch retains delivery records without
+claiming unobserved values. Group plans are not promoted as single-field cache entries.
+
+Live run013 verified grouped login and two field batches, but an incorrect optional
+item row caused save rejection. Field-scope mapping and save-result handling remain
+open; see the architecture review and bench progress log. Current refactoring tests
+use replay/fakes and do not establish a new live success rate.

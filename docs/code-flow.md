@@ -25,7 +25,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    PLAN["Plan: 최초 계획 모델 호출"] --> O["Observe: 현재 UIA 관찰"]
+    PLAN["Plan: 최초 계획 모델 호출"] --> O["Observe: relay 관찰·OCR/시각 분석 또는 UIA"]
     O --> R["Review: 현재 행 식별·필수 필드 근거 검사"]
     R -->|중복 결과 행·안전 제한| STOP["중단"]
     R -->|계속| POLICY["Select: 상태 정책·허용 응답 구성"]
@@ -41,9 +41,10 @@ flowchart TD
     POLICY -->|최종 근거 needs_more| HIGH
     HIGH --> G
     G -->|모델의 비입력 대상 선택 · 재선택 한도 내| O
-    G --> ACT["Act: relay HTTP로 행동 하나"]
+    G --> ACT["Act: ActionPlan 공통 실행·relay HTTP"]
     ACT --> VERIFY["Verify: 새 관찰·값 재읽기·행동 효과 검사"]
-    VERIFY -->|통과·검증한 의미 입력 후보 저장| O
+    VERIFY -->|시각 검증 장면 재사용| R
+    VERIFY -->|UIA 최신 상태 관찰| O
     VERIFY -->|캐시 실패| RETRY["설정된 재시도 → 무효화 → 모델 복구"]
     RETRY --> O
     VERIFY -->|일반 복구 가능 오류| BOUND["피드백·단계/실패/비용 한도"]
@@ -56,7 +57,9 @@ flowchart TD
 ```
 
 실제 LangGraph 노드는 `plan / observe / review / select / act / verify`다.
-정책, 캐시, 모델 선택과 공통 가드는 `select` 안의 조건부 처리다.
+정책·캐시·모델 선택은 `select`에서 ActionPlan을 준비한다.
+로그인·등록 묶음도 `act`의 공통 실행기를 거쳐 `verify`에서 한 번 재관찰한다.
+[2026-09-30 공통화 점검](architecture-review-20260930.md)이 최신 구조와 미해결 항목을 설명한다.
 `review`는 현재 관찰의 완료 가능 여부와 제출된 업무 근거 검증을 담당하며 별도 LLM을 호출하지 않는다.
 허용 창 밖, 만료된 대상, 비용 불명 등 즉시 종료 조건은 모델 복구로 우회하지 않는다.
 

@@ -80,6 +80,13 @@ def test_complete_workflow_fills_all_fields_before_one_reread(tmp_path, record):
     renewals = [e for e in events if e.payload.get("check") == "visual_planned_capture_renewal"]
     assert len(renewals) == 11  # Remaining ten inputs and the final focus move.
     assert all(e.payload["screen_batch"] and not e.payload["same_content"] for e in renewals)
+    transitions = [
+        e.payload["transition"] for e in events if e.payload.get("check") == "action_transition"
+    ]
+    field_proofs = [t for t in transitions if t["intent"] == "fill"]
+    assert len(field_proofs) == 11
+    assert all(t["observed_effect"] == "input_value_matches" for t in field_proofs)
+    assert {f for t in field_proofs for f in t["new_facts"]} == set(brain.values)
 
 
 def test_wrong_field_is_not_verified_and_only_that_field_is_replanned(tmp_path, record):
@@ -99,9 +106,13 @@ def test_wrong_field_is_not_verified_and_only_that_field_is_replanned(tmp_path, 
     brain, perception, _ = make_brain(tmp_path, record, relay, [screen_plan(record), repair])
     brain.phase, brain.duplicate_clear = "enter", True
     brain._observe()
-    assert brain._select_node({}) == {"next": "review"}
+    assert brain._select_node({}) == {"next": "act"}
+    assert brain._act_node({}) == {"next": "verify"}
+    assert brain._verify_node({}) == {"next": "review"}
     assert set(brain.verified) == set(brain.values) - {"mbl_no"}
-    assert brain._select_node({}) == {"next": "review"}
+    assert brain._select_node({}) == {"next": "act"}
+    assert brain._act_node({}) == {"next": "verify"}
+    assert brain._verify_node({}) == {"next": "review"}
     assert set(brain.verified) == set(brain.values)
     assert perception.action_counts == [0, 12, 14]
 
@@ -139,9 +150,43 @@ def test_invalid_plan_and_mid_batch_geometry_change_stop_remaining_inputs(
     brain, _, _ = make_brain(tmp_path, record, relay, [plan])
     brain.phase, brain.duplicate_clear = "enter", True
     brain._observe()
-    brain._select_node({})
+    selected = brain._select_node({})
+    if selected["next"] == "act":
+        brain._act_node({})
     assert len(relay.actions) == (1 if failure in {"window_change", "move"} else 0)
     assert not brain.verified and not relay.saved
+    transitions = [
+        e.payload["transition"]
+        for e in brain.log.read_all()
+        if e.payload.get("check") == "action_transition"
+    ]
+    assert len(transitions) == len(relay.actions)
+    assert all(t["observed_effect"] == "unchecked" and not t["new_facts"] for t in transitions)
+    assert brain.pending is None
+
+
+@pytest.mark.parametrize("max_steps,delivered", [(11, 0), (12, 12)])
+def test_shared_executor_checks_whole_plan_step_budget_before_delivery(
+    tmp_path, record, max_steps, delivered
+):
+    relay = ChangingPixelsRelay(record)
+    relay.mode = "editor"
+    brain, perception, _ = make_brain(tmp_path, record, relay, [screen_plan(record)])
+    brain.settings = brain.settings.model_copy(update={"max_steps": max_steps})
+    brain.phase, brain.duplicate_clear = "enter", True
+    brain._observe()
+    assert brain._select_node({}) == {"next": "act"}
+    assert not relay.actions and perception.action_counts == [0]
+    outcome = brain._act_node({})
+    assert len(relay.actions) == delivered
+    if delivered:
+        assert outcome == {"next": "verify"}
+        assert not brain.verified
+        assert brain._verify_node({}) == {"next": "review"}
+        assert perception.action_counts == [0, 12]
+    else:
+        assert outcome == {"next": "finish"}
+        assert brain.result.reason == "max_steps"
 
 
 @pytest.mark.parametrize("accept", [True, False])
@@ -200,7 +245,9 @@ def test_login_plan_sends_two_credentials_and_click_before_any_reread(tmp_path, 
     }
     brain.secrets = ("fixture-secret-901",)
     brain._observe()
-    assert brain._select_node({}) == {"next": "verify"}
+    assert brain._select_node({}) == {"next": "act"}
+    assert not relay.actions
+    assert brain._act_node({}) == {"next": "verify"}
     assert perception.action_counts == [0]
     assert [a.root.type for a in relay.actions] == ["set_text", "set_text", "click"]
     assert len(model.prompts) == 1

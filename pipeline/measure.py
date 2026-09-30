@@ -19,11 +19,11 @@ from typing import Any
 from pydantic import Field, TypeAdapter
 
 from brain.runtime.storage import RunLog, atomic_write_json
+from models.accounting import read_model_accounting
+from models.budget import ImageCallBudget
 from models.factory import create_model_client
 
-from .accounting import read_model_accounting
 from .evaluate import evaluate
-from .extract import PipelineCallBudget
 from .runner import PipelineResult, load_inputs, prepare_case
 from .schemas import FIELD_NAMES, ExtractionBundle, FrozenModel, PipelineSettings
 
@@ -223,7 +223,7 @@ def run_campaign(
         for item in items
     ]
     settings = PipelineSettings.load(config)
-    reservation = PipelineCallBudget.from_config(model_config)
+    reservation = ImageCallBudget.from_config(model_config)
     metadata = {
         "schema_version": "0.2",
         "evaluation_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),

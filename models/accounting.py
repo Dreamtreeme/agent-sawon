@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Protocol
 
-from brain.runtime.storage import RunLog
+from sawon_interfaces import RunEvent
+
+
+class EventReader(Protocol):
+    def read_all(self) -> list[RunEvent]: ...
 
 
 @dataclass(frozen=True)
@@ -15,7 +20,7 @@ class ModelAccounting:
     model_calls: int
 
 
-def read_model_accounting(log: RunLog) -> ModelAccounting:
+def read_model_accounting(log: EventReader) -> ModelAccounting:
     calls = [event for event in log.read_all() if event.kind == "model_call"]
     return ModelAccounting(
         known_usd=sum(

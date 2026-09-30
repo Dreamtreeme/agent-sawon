@@ -7,9 +7,7 @@ available here. Environment evidence comes only from relay observations and imag
 from __future__ import annotations
 
 import json
-import re
-import unicodedata
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
 from typing import Literal, TypedDict
@@ -22,22 +20,27 @@ from sawon_interfaces import Action, Observation, ShipmentRecord, UIElement
 from brain.cache import CacheIntegrityError, SemanticCache
 from brain.cache.rebind import RebindProposal, build_rebind_request, install_rebind_proposal
 from brain.observe import describe, redact, summarize
+from brain.observe.evidence import matching_elements
 from brain.observe.progress import navigation_state, navigation_target
 from brain.observe.rows import row_refs
 from brain.observe.summary import ancestors
+from brain.observe.values import field_matches as field_matches
+from brain.observe.values import values_for as values_for
 from brain.relay import Relay
 from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from brain.settings import BrainSettings
 from brain.visual.detector import OmniParserDetector
 from brain.visual.perception import VisualPerception
 from brain.visual.scene import SceneObservation
+from models.accounting import read_model_accounting
 from models.base import ModelClient
-from models.budget import CallBudget
+from models.budget import CallBudget, ImageCallBudget
 from models.validation import safe_validation_errors
-from pipeline.extract import PipelineCallBudget
 from pipeline.ocr import OcrEngine
 from pipeline.schemas import RenderedPage
 
+from .execution import ActionPlan, PendingAction, execute_plan, log_transition
+from .execution import GuardStop as GuardStop
 from .policy import DecisionPolicy, ExecutionFacts
 from .review import EvidenceReview, review_final
 from .schemas import (
@@ -50,8 +53,9 @@ from .screen_batch import (
     SCREEN_FILL_GUIDANCE,
     LoginScreenPlan,
     ScreenFillPlan,
-    execute_login_plan,
-    execute_screen_fill,
+    prepare_login_plan,
+    prepare_screen_fill,
+    verify_screen_fields,
 )
 from .transitions import (
     ActionTransition,
@@ -73,47 +77,6 @@ class Result(BaseModel):
 
 class GraphState(TypedDict):
     next: str
-
-
-class GuardStop(RuntimeError):
-    """A precise, non-secret reason suitable for durable evidence."""
-
-
-def normalize(value: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", value).split()).upper()
-
-
-def values_for(record: ShipmentRecord) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for name, field in record.fields:
-        if name == "packages":
-            values["packages.count"] = str(field.value.count)
-            values["packages.unit"] = field.value.unit
-        else:
-            values[name] = str(field.value)
-    return values
-
-
-def field_matches(field: str, actual: str | None, values: dict[str, str]) -> bool:
-    if actual is None:
-        return False
-    expected = values[field]
-    if field in {"gross_weight_kg", "packages.count"}:
-        clean = unicodedata.normalize("NFKC", actual).strip()
-        if field == "packages.count":
-            unit = re.escape(values["packages.unit"])
-            clean = re.sub(rf"\s*{unit}\s*$", "", clean, flags=re.IGNORECASE)
-        if not re.fullmatch(r"[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?", clean):
-            return False
-        try:
-            return Decimal(clean.replace(",", "")) == Decimal(expected)
-        except InvalidOperation:
-            return False
-    if field == "packages.unit":
-        if normalize(actual) == normalize(expected):
-            return True
-        return normalize(actual) == normalize(values["packages.count"] + " " + expected)
-    return normalize(actual) == normalize(expected)
 
 
 def element_value(element: UIElement) -> str:
@@ -241,7 +204,8 @@ class Brain:
         self.query_window_handle: int | None = None
         self.duplicate_clear = False
         self.save_issued = False
-        self.pending: dict | None = None
+        self.pending: PendingAction | None = None
+        self.action_plan: ActionPlan | None = None
         self.failures: dict[str, int] = {}
         self.phase_failures: dict[str, int] = {}
         self.progress_marks: set[str] = set()
@@ -287,10 +251,10 @@ class Brain:
         return self._call(prompt, schema, page=page)
 
     def _budget(self, reservation: Decimal | None = None) -> None:
-        calls = [event for event in self.log.read_all() if event.kind == "model_call"]
-        if any(event.cost.usd is None for event in calls):
+        accounting = read_model_accounting(self.log)
+        if accounting.unknown:
             raise GuardStop("unknown_model_call_cost")
-        used = sum(Decimal(str(event.cost.usd)) for event in calls)
+        used = accounting.known_usd
         cap = Decimal(str(self.settings.max_cost_usd))
         reserve = Decimal(str(self.settings.model_call_reserve_usd))
         if reservation is not None:
@@ -309,7 +273,7 @@ class Brain:
     ):
         budget = call_budget if model is not None else self.call_budget
         reservation = (
-            PipelineCallBudget(budget)(prompt, schema, page)
+            ImageCallBudget(budget)(prompt, schema, page)
             if page is not None
             else budget(prompt, schema)
             if budget
@@ -330,7 +294,7 @@ class Brain:
                 ),
             },
         )
-        before = len([event for event in self.log.read_all() if event.kind == "model_call"])
+        before = read_model_accounting(self.log).model_calls
         try:
             if page is None:
                 result = (model or self.model).complete_json(prompt, schema)
@@ -339,12 +303,12 @@ class Brain:
                     prompt, schema, images=[page.image_path]
                 )
         finally:
-            calls = [event for event in self.log.read_all() if event.kind == "model_call"]
-            if len(calls) != before + 1:
+            accounting = read_model_accounting(self.log)
+            if accounting.model_calls != before + 1:
                 raise GuardStop("unmeasured_model_call")
-            if calls[-1].cost.usd is None:
+            if accounting.unknown:
                 raise GuardStop("unknown_model_call_cost")
-        used = sum(Decimal(str(event.cost.usd)) for event in calls)
+        used = accounting.known_usd
         if used > Decimal(str(self.settings.max_cost_usd)):
             raise GuardStop("case_cost_cap")
         return result.response
@@ -519,11 +483,7 @@ class Brain:
             or self.query_descriptor is None
         ):
             return False
-        matches = [
-            item
-            for item in observation.elements
-            if describe(item, observation.elements) == self.query_descriptor
-        ]
+        matches = matching_elements(observation, self.query_descriptor)
         return (
             len(matches) == 1
             and matches[0].enabled
@@ -804,12 +764,7 @@ class Brain:
         for source, entry in self.credential_submissions.items():
             if entry["window_handle"] != observation.active_window.handle:
                 continue
-            matches = [
-                element
-                for element in observation.elements
-                if element.enabled
-                and describe(element, observation.elements) == entry["descriptor"]
-            ]
+            matches = [e for e in matching_elements(observation, entry["descriptor"]) if e.enabled]
             if len(matches) != 1:
                 continue
             if source == "credential.username" and matches[0].value != self.credentials[source]:
@@ -915,6 +870,7 @@ class Brain:
                 raise GuardStop("query_value_changed")
             policy = self._decision_policy()
             self.decision = None
+            self.action_plan = None
             self.cache_entry_id = None
             schema = policy.response_schema()
             screen_fill = (
@@ -1021,13 +977,15 @@ class Brain:
                     schema = LoginScreenPlan
                     plan = self._call(prompt + LOGIN_GUIDANCE, schema)
                     if plan.fields:
-                        return execute_login_plan(self, plan)
+                        self.action_plan = prepare_login_plan(self.observation, plan, policy)
+                        return {"next": "act"}
                     self.decision = plan.next_decision.to_decision()
                 elif screen_fill:
                     schema = ScreenFillPlan
                     plan = self._call(prompt + SCREEN_FILL_GUIDANCE, schema)
                     if plan.fields:
-                        return execute_screen_fill(self, plan)
+                        self.action_plan = prepare_screen_fill(self.observation, plan)
+                        return {"next": "act"}
                     self.decision = plan.next_decision.to_decision()
                 else:
                     self.decision = self._choose_decision(prompt, schema)
@@ -1152,15 +1110,19 @@ class Brain:
         # Visible changes invalidate older proof; hidden fields retain evidence
         # across tab switches, then all fields are checked in the final query.
         for field, descriptor in list(self.verified.items()):
-            matches = [
-                item
-                for item in self.observation.elements
-                if describe(item, self.observation.elements) == descriptor
-            ]
+            matches = matching_elements(self.observation, descriptor)
             if len(matches) > 1 or (
                 matches and not field_matches(field, matches[0].value, self.values)
             ):
                 del self.verified[field]
+
+    def _record_verified_field(self, source: str, element: UIElement) -> bool:
+        assert self.observation is not None
+        if not field_matches(source, element.value, self.values):
+            return False
+        self.verified[source] = describe(element, self.observation.elements)
+        self._record_progress("field:" + source)
+        return True
 
     def _collect_editor_evidence(self, decision: Decision) -> None:
         assert self.observation is not None
@@ -1169,9 +1131,7 @@ class Brain:
         for evidence in decision.evidence:
             item = by_ref.get(evidence.ref)
             if item is not None and item.role.casefold() in {"edit", "combobox"}:
-                if field_matches(evidence.field, item.value, self.values):
-                    self.verified[evidence.field] = describe(item, self.observation.elements)
-                    self._record_progress("field:" + evidence.field)
+                self._record_verified_field(evidence.field, item)
 
     def _guard_action(self, decision: Decision, policy: DecisionPolicy | None = None) -> None:
         """Apply the model's exact choice policy, then ground it in this observation."""
@@ -1289,7 +1249,18 @@ class Brain:
             data["duration_ms"] = choice.duration_ms
         return Action.model_validate(data)
 
-    def _act_node(self, state: GraphState, *, screen_batch: bool = False) -> dict:
+    def _act_node(self, state: GraphState) -> dict:
+        assert self.decision is not None or self.action_plan is not None
+        plan = self.action_plan or ActionPlan.single(self.decision)
+        self.action_plan = None
+        try:
+            return execute_plan(self, plan)
+        except GuardStop as exc:
+            return self._finish("stopped", str(exc))
+        except Exception as exc:
+            return self._fail("action_error:" + type(exc).__name__)
+
+    def _dispatch_action(self, *, screen_batch: bool = False) -> dict:
         assert self.decision is not None and self.observation is not None
         decision, choice = self.decision, self.decision.action
         assert choice is not None
@@ -1388,7 +1359,10 @@ class Brain:
         )
         try:
             self.decision = blur
-            return self._act_node({})
+            outcome = execute_plan(self, ActionPlan.single(blur))
+            if outcome["next"] == "verify":
+                log_transition(self.log, self.pending)
+            return outcome
         finally:
             self.pending, self.decision = original_pending, original_decision
 
@@ -1416,11 +1390,11 @@ class Brain:
         new_facts: list[TransitionFact] = []
         try:
             observation = self._observe()
+            execution = pending.get("execution")
+            if execution is not None and execution.plan.verification == "fields":
+                return verify_screen_fields(self, execution, observation)
             if pending.get("login_plan_descriptors") and all(
-                any(
-                    describe(item, observation.elements) == descriptor
-                    for item in observation.elements
-                )
+                bool(matching_elements(observation, descriptor))
                 for descriptor in pending["login_plan_descriptors"]
             ):
                 return self._fail("login_screen_still_visible")
@@ -1464,11 +1438,7 @@ class Brain:
                 )
             if choice.type in {"set_text", "type_text"}:
                 descriptor = self.pending["descriptor"]
-                matches = [
-                    element
-                    for element in observation.elements
-                    if describe(element, observation.elements) == descriptor
-                ]
+                matches = matching_elements(observation, descriptor)
                 if len(matches) != 1:
                     return self._fail("input_target_ambiguous_after_action")
                 element = matches[0]
@@ -1486,11 +1456,7 @@ class Brain:
                         return result
                     pending["blur_recheck"] = True
                     observation = self._observe()
-                    matches = [
-                        item
-                        for item in observation.elements
-                        if describe(item, observation.elements) == descriptor
-                    ]
+                    matches = matching_elements(observation, descriptor)
                     if observation.active_window != before_window or len(matches) != 1:
                         return self._fail("input_target_ambiguous_after_blur")
                     element = matches[0]
@@ -1521,8 +1487,7 @@ class Brain:
                         self._record_progress("query_input")
                         new_facts.append("query_input_verified")
                     if decision.intent == "fill" and decision.screen_kind == "editor":
-                        self.verified[source] = describe(element, observation.elements)
-                        self._record_progress("field:" + source)
+                        self._record_verified_field(source, element)
                         new_facts.append(source)
                 self.log.append(
                     "verify",
@@ -1557,7 +1522,11 @@ class Brain:
                     ),
                 }
             )
-            if self.cache_session.cache.enabled and not pending.get("blur_recheck"):
+            if (
+                self.cache_session.cache.enabled
+                and not pending.get("blur_recheck")
+                and (execution is None or execution.plan.verification == "single")
+            ):
                 self.cache_session.stage_validated(
                     pending["before_observation"],
                     observation,
@@ -1566,29 +1535,34 @@ class Brain:
                 )
             self.cache_entry_id = None
             self.pending = None
-            return {
-                "next": "review"
-                if self.settings.visual_screen_fill and isinstance(observation, SceneObservation)
-                else "observe"
-            }
+            # Reuse an already interpreted visual scene for every visual action.
+            # UIA keeps its cheap fresh-state read before the next selection.
+            return {"next": "review" if isinstance(observation, SceneObservation) else "observe"}
         except GuardStop as exc:
             return self._finish("stopped", str(exc))
         except Exception as exc:
             return self._fail("verification_error:" + type(exc).__name__)
         finally:
-            transition = pending.get("transition")
-            if transition is not None:
-                if observation is not None and observed_effect != ObservedEffect.UNCHECKED:
-                    transition = transition.complete(
-                        str(observation.obs_id), observed_effect, tuple(new_facts)
-                    )
-                self.log.append(
-                    "verify",
-                    payload={
-                        "check": "action_transition",
-                        "transition": transition.model_dump(mode="json"),
-                    },
-                )
+            execution = pending.get("execution")
+            if execution is not None and execution.plan.verification == "fields":
+                for delivered in execution.delivered:
+                    source = delivered["choice"].source
+                    if observation is not None and source in execution.matched_fields:
+                        log_transition(
+                            self.log,
+                            delivered,
+                            observation,
+                            ObservedEffect.INPUT_VALUE_MATCHES,
+                            (source,),
+                        )
+                    else:
+                        log_transition(self.log, delivered)
+            else:
+                if execution is not None:
+                    for delivered in execution.delivered[:-1]:
+                        log_transition(self.log, delivered)
+                log_transition(self.log, pending, observation, observed_effect, tuple(new_facts))
+            self.pending = None
 
     def _check_complete(self, decision: Decision) -> dict:
         assert self.observation is not None

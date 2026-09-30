@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Private reasoning and model runtime for Agent Sawon"
 requires-python = ">=3.13"
 dependencies = [
-  "sawon-interfaces>=0.3,<0.4",
+  "sawon-interfaces>=0.4,<0.5",
   "pydantic>=2.11,<3",
   "portalocker>=3,<4",
   "google-genai>=1.68,<2",

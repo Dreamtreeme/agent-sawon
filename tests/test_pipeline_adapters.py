@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from pipeline.extract import PipelineCallBudget
+from models.budget import ImageCallBudget
 from pipeline.ocr import PaddleOcrEngine
 from pipeline.ocr_worker import recognize
 from pipeline.render import PipelineDependencyError, render_document
@@ -128,10 +128,10 @@ def test_multipage_image_limit_blocks(tmp_path):
 
 
 def test_budget_includes_image_and_output_reservation(page):
-    budget = PipelineCallBudget.from_config(Path("config/models.lite.toml"))
+    budget = ImageCallBudget.from_config(Path("config/models.lite.toml"))
     page = page.model_copy(update={"width": 1200, "height": 1600})
     assert budget("test", PageExtraction, page) > budget.text("test", PageExtraction)
-    replay = PipelineCallBudget(text=None)
+    replay = ImageCallBudget(text=None)
     assert replay("test", PageExtraction, page) == Decimal(0)
 
 

@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import math
 import re
-from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
@@ -14,7 +12,6 @@ from pydantic import BaseModel
 from sawon_interfaces import SourceLocation
 
 from models.base import ModelClient
-from models.budget import CallBudget
 
 from .normalize import normalize_value, normalized_text
 from .schemas import (
@@ -29,30 +26,6 @@ from .schemas import (
 
 class Reservation(Protocol):
     def __call__(self, prompt: str, schema: type[BaseModel], page: RenderedPage) -> Decimal: ...
-
-
-@dataclass(frozen=True)
-class PipelineCallBudget:
-    """Text reservation plus a deliberately conservative raster input allowance.
-
-    At most one image is submitted per request. The bound reserves one input
-    token per 16 pixels, with an 8192 token floor. It is a local spending policy,
-    not a provider billing promise; actual usage is checked after every call.
-    """
-
-    text: CallBudget | None
-
-    @classmethod
-    def from_config(cls, path: Path) -> PipelineCallBudget:
-        return cls(CallBudget.from_config(path))
-
-    def __call__(self, prompt: str, schema: type[BaseModel], page: RenderedPage) -> Decimal:
-        if self.text is None:
-            return Decimal(0)
-        image_tokens = max(8192, math.ceil(page.width * page.height / 16))
-        return self.text(prompt, schema) + (
-            image_tokens * self.text.price.input_usd_per_million / Decimal(1_000_000)
-        )
 
 
 def extraction_prompt(page: RenderedPage, blocks: list[OcrBlock]) -> str:

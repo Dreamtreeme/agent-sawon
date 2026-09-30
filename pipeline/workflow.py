@@ -19,9 +19,9 @@ from brain.graph import Result
 from brain.run import main as run_brain
 from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from brain.settings import BrainSettings
+from models.budget import ImageCallBudget
 from models.factory import create_model_client
 
-from .extract import PipelineCallBudget
 from .runner import load_inputs, prepare_case
 from .schemas import PipelineSettings
 
@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
             model_factory=lambda log: create_model_client(
                 extraction_config, run_log=log, env_path=args.env_path
             ),
-            reservation=PipelineCallBudget.from_config(extraction_config),
+            reservation=ImageCallBudget.from_config(extraction_config),
         )
         atomic_write_json(
             args.case_dir / "pipeline_result.json",

@@ -94,9 +94,7 @@ def fake_preparation(record, *, ready=True, crash=False):
 
 @pytest.fixture
 def no_provider(monkeypatch):
-    monkeypatch.setattr(
-        workflow.PipelineCallBudget, "from_config", lambda path: lambda *a: Decimal(0)
-    )
+    monkeypatch.setattr(workflow.ImageCallBudget, "from_config", lambda path: lambda *a: Decimal(0))
 
 
 def test_only_extracted_record_is_given_to_brain_and_log_costs_continue(
