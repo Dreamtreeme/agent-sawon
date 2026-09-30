@@ -37,7 +37,8 @@
         "config/brain.visual.toml",
         "config/models.visual.toml",
         "config/pricing.toml",
-        "config/pipeline.korean.toml"
+        "config/pipeline.korean.toml",
+        "examples/shipment-procedure.json"
       ]
     }
   }

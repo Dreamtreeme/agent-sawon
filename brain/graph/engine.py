@@ -240,6 +240,19 @@ class Brain:
         self.visual_proposal = None
         self.visual_proposal_obs_id = None
         self.visual_perception = None
+        self.procedure = None
+        self.procedure_step = None
+        self.mapping_screen = None
+        self.mapping_page = None
+        if settings.screen_matching:
+            from .matching import Procedure
+
+            if settings.perception_mode != "visual_only" or settings.procedure_path is None:
+                raise ValueError("screen_matching_requires_visual_procedure")
+            self.procedure = Procedure.model_validate_json(
+                settings.procedure_path.read_text(encoding="utf-8")
+            )
+            atomic_write_json(self.case_dir / "procedure.json", self.procedure)
         if settings.perception_mode == "visual_only":
             if visual_ocr is None:
                 raise ValueError("visual_ocr_required")
@@ -253,9 +266,28 @@ class Brain:
                 threshold=settings.visual_min_confidence,
                 detector=OmniParserDetector(settings.visual_detector, self.log),
                 merge_settings=settings.visual_merge,
+                reuse_identical=settings.screen_matching,
             )
 
     def _detect_visual(self, prompt: str, schema: type[BaseModel], page: RenderedPage):
+        if self.settings.screen_matching:
+            from .matching import match_screen
+
+            start = prompt.index('{"image_size"')
+            self.mapping_screen, end = json.JSONDecoder().raw_decode(prompt[start:])
+            feedback = prompt[start + end :]
+            if '{"error"' in feedback:
+                correction = json.loads(feedback[feedback.index('{"error"') :])
+                self.mapping_screen["correction"] = {
+                    k: correction[k] for k in ("error", "invalid_text_links") if k in correction
+                }
+            self.mapping_page = page
+            response = match_screen(self, self.mapping_screen, page)
+            self.visual_proposal = response
+            atomic_write_json(page.image_path.parent / "screen-match.json", response)
+            return schema.model_validate(
+                {k: v for k, v in response.model_dump().items() if k in schema.model_fields}
+            )
         if self.settings.numbered_selection:
             return self._call(
                 "Describe CURRENT screen only, including screen_kind. Do not plan actions.\n"
@@ -315,6 +347,72 @@ class Brain:
         return schema.model_validate(response.model_dump(exclude={"next_step"}))
 
     def _selection_call(self, prompt: str, schema: type[BaseModel]):
+        if self.settings.screen_matching:
+            from .matching import compile_match, match_screen
+
+            response, self.visual_proposal = self.visual_proposal, None
+            if response is None or self.visual_proposal_obs_id != self.observation.obs_id:
+                response = match_screen(self, self.mapping_screen, self.mapping_page)
+                from brain.visual.markers import Marker, ground_meanings
+                from brain.visual.scene import SemanticDetection, bind_scene
+                from pipeline.schemas import OcrBlock
+
+                markers = [
+                    Marker.model_validate(
+                        {k: v for k, v in item.items() if k in Marker.model_fields}
+                        | {"confidence": item["candidate_confidence"]}
+                    )
+                    for item in self.mapping_screen["markers"]
+                ]
+                # OCR-only markers also belong to the local catalog.
+                blocks = [OcrBlock.model_validate(b) for b in self.mapping_screen["ocr"]]
+                for block in blocks:
+                    marker_ref = self.mapping_screen["ocr_evidence_refs"][str(block.id)]
+                    markers.append(
+                        Marker(
+                            id=int(marker_ref[1:]),
+                            bbox=block.bbox,
+                            source="ocr",
+                            confidence=block.confidence,
+                            text_ids=(block.id,),
+                        )
+                    )
+                meanings = SemanticDetection.model_validate(
+                    {
+                        k: v
+                        for k, v in response.model_dump().items()
+                        if k in SemanticDetection.model_fields
+                    }
+                )
+                self.observation = bind_scene(
+                    self.observation.wire,
+                    blocks,
+                    ground_meanings(meanings, markers, blocks),
+                    threshold=self.settings.visual_min_confidence,
+                    secrets=self.secrets,
+                )
+                self.observation_number += 1
+                snapshot = f"observations/{self.observation_number:04d}.json"
+                atomic_write_json(self.case_dir / snapshot, self.observation)
+                self.review = None
+                self.log.append(
+                    "observe",
+                    payload={
+                        "obs_id": str(self.observation.obs_id),
+                        "snapshot": snapshot,
+                        "source": "same_screen_rematched",
+                    },
+                )
+            result = compile_match(response, self.observation, schema)
+            self.log.append(
+                "select",
+                payload={
+                    "check": "screen_match_compiled",
+                    "obs_id": str(self.observation.obs_id),
+                    "procedure_step": response.procedure_step,
+                },
+            )
+            return result
         if self.settings.numbered_selection:
             from .notebook import select_numbered
 
@@ -426,7 +524,7 @@ class Brain:
                     "last_obs_id": str(self.observation.obs_id) if self.observation else None,
                 },
             )
-        if self.settings.numbered_selection:
+        if self.settings.numbered_selection or self.settings.screen_matching:
             from .notebook import remember
 
             remember(self)
@@ -654,7 +752,7 @@ class Brain:
                     "obs_id": str(observation.obs_id),
                 },
             )
-        if self.settings.numbered_selection:
+        if self.settings.numbered_selection or self.settings.screen_matching:
             from .notebook import remember
 
             remember(self)
@@ -662,6 +760,19 @@ class Brain:
 
     def _plan_node(self, state: GraphState) -> dict:
         try:
+            if self.settings.screen_matching:
+                from .notebook import remember
+
+                self.plan = [s.goal for s in self.procedure.steps]
+                self.log.append(
+                    "plan",
+                    payload={
+                        "source": "procedure.json",
+                        "steps": [s.id for s in self.procedure.steps],
+                    },
+                )
+                remember(self)
+                return {"next": "observe"}
             if self.settings.numbered_selection:
                 from .notebook import TaskPlan, remember
 
@@ -960,7 +1071,7 @@ class Brain:
 
     def _choose_decision(self, prompt: str, schema: type[BaseModel]) -> Decision:
         """Recover with an explicitly configured measured model, at most once."""
-        if self.settings.numbered_selection:
+        if self.settings.numbered_selection or self.settings.screen_matching:
             return self._selection_call("", schema).to_decision()
         recover = self.settings.recovery_enabled and self.recovery_model is not None
         if recover and self._current_review().status == "needs_more":
@@ -1049,6 +1160,7 @@ class Brain:
                     and not (screen_fill or login_batch)
                     and self.phase == "enter"
                     and not self.settings.numbered_selection
+                    and not self.settings.screen_matching
                     and self.cache_rebind_calls < self.settings.cache.rebind_model_max_calls
                 ):
                     request = build_rebind_request(
@@ -1112,7 +1224,11 @@ class Brain:
                             "phase": self.phase,
                         },
                     )
-                prompt = "" if self.settings.numbered_selection else self._decision_prompt(policy)
+                prompt = (
+                    ""
+                    if (self.settings.numbered_selection or self.settings.screen_matching)
+                    else self._decision_prompt(policy)
+                )
                 if self.phase == "save_result":
                     schema = SaveReviewResponse
                     review = self._selection_call(prompt, schema)

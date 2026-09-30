@@ -87,6 +87,8 @@ def remember(brain: Brain) -> dict:
         "phase": brain.phase,
         "stage_goals": getattr(brain, "stage_goals", {}),
         "record_path": "record.json",
+        "procedure_path": "procedure.json" if getattr(brain, "procedure", None) else None,
+        "proposed_procedure_step": getattr(brain, "procedure_step", None),
         "verified_fields": sorted(brain.verified),
         "remaining_fields": sorted(set(brain.values) - set(brain.verified)),
         "query_value_verified": brain.query_value_verified,

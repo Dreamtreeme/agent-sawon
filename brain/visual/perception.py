@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -73,11 +74,14 @@ class VisualPerception:
         threshold: float = 0.8,
         detector: ControlDetector | None = None,
         merge_settings: MergeSettings | None = None,
+        reuse_identical: bool = False,
     ):
         self.relay, self.ocr, self.case_dir, self.log = relay, ocr, case_dir, log
         self.detect, self.secrets, self.threshold = detect, secrets, threshold
         self.detector = detector or OmniParserDetector(DetectorSettings(), log)
         self.merge_settings = merge_settings or MergeSettings()
+        self.reuse_identical = reuse_identical
+        self._last_scene_data = None
 
     def close(self) -> None:
         try:
@@ -97,6 +101,31 @@ class VisualPerception:
         path = self.relay.screenshot(wire, folder / "capture.png")
         shot = wire.screenshot
         assert shot is not None
+        cache_key = (
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+            shot.width,
+            shot.height,
+            wire.active_window.handle if wire.active_window else None,
+        )
+        if self.reuse_identical and self._last_scene_data is not None:
+            previous_key, previous_blocks, previous_detection = self._last_scene_data
+            if previous_key == cache_key:
+                scene = bind_scene(
+                    wire,
+                    previous_blocks,
+                    previous_detection,
+                    threshold=self.threshold,
+                    secrets=self.secrets,
+                )
+                self.log.append(
+                    "verify",
+                    payload={
+                        "check": "identical_form_reused",
+                        "obs_id": str(wire.obs_id),
+                        "ocr_and_detection_skipped": True,
+                    },
+                )
+                return scene
         page = RenderedPage(
             document="relay",
             kind="hbl",
@@ -325,6 +354,8 @@ class VisualPerception:
                 "local_ocr_api_cost_usd": 0,
             },
         )
+        if self.reuse_identical:
+            self._last_scene_data = (cache_key, blocks, detection)
         return scene
 
     def _semantic_prompt(self, page, path, marked_path, markers, blocks):

@@ -25,6 +25,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--case-dir", type=Path, required=True)
     parser.add_argument("--relay-url", required=True)
     parser.add_argument("--goal", required=True)
+    parser.add_argument("--procedure", type=Path, help="User-supplied ordered workflow JSON")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--model-config", type=Path, required=True)
     parser.add_argument("--env-path", type=Path)
@@ -64,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
         if record.origin == "extracted" and not args.prepared_case:
             raise ValueError("Extracted records require a validated prepared case")
         settings = BrainSettings.load(args.config)
+        if args.procedure is not None:
+            settings = settings.model_copy(update={"procedure_path": args.procedure.resolve()})
         if args.cache_path is not None:
             if not settings.cache.enabled:
                 raise ValueError("A cache path requires cache-enabled configuration")

@@ -41,6 +41,8 @@ class BrainSettings(BaseModel):
     visual_screen_fill: bool = False
     visual_joint_planning: bool = False
     numbered_selection: bool = False
+    screen_matching: bool = False
+    procedure_path: Path | None = None
     visual_detector: DetectorSettings = Field(default_factory=DetectorSettings)
     visual_merge: MergeSettings = Field(default_factory=MergeSettings)
 
@@ -48,6 +50,10 @@ class BrainSettings(BaseModel):
     def load(cls, path: Path) -> "BrainSettings":
         with path.open("rb") as stream:
             settings = cls.model_validate(tomllib.load(stream))
+        if settings.procedure_path is not None and not settings.procedure_path.is_absolute():
+            settings = settings.model_copy(
+                update={"procedure_path": (path.parent / settings.procedure_path).resolve()}
+            )
         if not settings.visual_detector.weights.is_absolute():
             settings = settings.model_copy(
                 update={
