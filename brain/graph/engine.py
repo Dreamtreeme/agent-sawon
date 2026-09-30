@@ -45,7 +45,14 @@ from .schemas import (
     Decision,
     Plan,
 )
-from .screen_batch import SCREEN_FILL_GUIDANCE, ScreenFillPlan, execute_screen_fill
+from .screen_batch import (
+    LOGIN_GUIDANCE,
+    SCREEN_FILL_GUIDANCE,
+    LoginScreenPlan,
+    ScreenFillPlan,
+    execute_login_plan,
+    execute_screen_fill,
+)
 from .transitions import (
     ActionTransition,
     ExpectedEffect,
@@ -917,6 +924,13 @@ class Brain:
                 and self.duplicate_clear
                 and bool(policy.facts.remaining_fields)
             )
+            login_batch = (
+                self.settings.visual_screen_fill
+                and isinstance(self.observation, SceneObservation)
+                and self.phase == "duplicate_query"
+                and not self.query_submitted
+                and bool(policy.facts.remaining_credentials)
+            )
             allowed_sources = (
                 policy.facts.remaining_fields
                 if self.phase == "enter"
@@ -927,7 +941,7 @@ class Brain:
             try:
                 hit = (
                     None
-                    if screen_fill
+                    if screen_fill or login_batch
                     else self.cache_session.lookup(
                         self.observation,
                         phase=self.phase,
@@ -937,7 +951,7 @@ class Brain:
                 )
                 if (
                     hit is None
-                    and not screen_fill
+                    and not (screen_fill or login_batch)
                     and self.phase == "enter"
                     and self.cache_rebind_calls < self.settings.cache.rebind_model_max_calls
                 ):
@@ -1003,7 +1017,13 @@ class Brain:
                         },
                     )
                 prompt = self._decision_prompt(policy)
-                if screen_fill:
+                if login_batch:
+                    schema = LoginScreenPlan
+                    plan = self._call(prompt + LOGIN_GUIDANCE, schema)
+                    if plan.fields:
+                        return execute_login_plan(self, plan)
+                    self.decision = plan.next_decision.to_decision()
+                elif screen_fill:
                     schema = ScreenFillPlan
                     plan = self._call(prompt + SCREEN_FILL_GUIDANCE, schema)
                     if plan.fields:
@@ -1396,6 +1416,14 @@ class Brain:
         new_facts: list[TransitionFact] = []
         try:
             observation = self._observe()
+            if pending.get("login_plan_descriptors") and all(
+                any(
+                    describe(item, observation.elements) == descriptor
+                    for item in observation.elements
+                )
+                for descriptor in pending["login_plan_descriptors"]
+            ):
+                return self._fail("login_screen_still_visible")
             choice: Choice = self.pending["choice"]
             decision: Decision = self.pending["decision"]
             observed_state = navigation_state(observation)

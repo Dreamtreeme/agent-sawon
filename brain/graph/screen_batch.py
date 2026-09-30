@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import replace
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, model_validator
 
 from brain.observe import describe
 from brain.visual.scene import SceneObservation
 
+from .policy import DecisionPolicy
 from .schemas import Choice, Decision, DecisionResponse, FieldName, StrictModel
 
 if TYPE_CHECKING:
@@ -57,6 +59,122 @@ class ScreenFillPlan(StrictModel):
             if decision.intent == "fill" and decision.action is not None:
                 raise ValueError("put direct field inputs in the screen plan")
         return self
+
+
+LOGIN_GUIDANCE = """
+LOGIN SCREEN MODE overrides the single-action credential instructions.
+On a login screen, plan ALL remaining available credential inputs and the login
+button together: fields contains source/ref mappings and login_ref is the current
+login command. The runtime supplies opaque credential values, executes the inputs
+then clicks login without intermediate OCR/model calls, and observes the result once.
+Do not include credential values in your answer. Input delivery is not authentication.
+If no login form is visible, fields=[], login_ref=null, and next_decision contains
+the ordinary allowed query/navigation/stop decision. Do not return a single
+credential or login action in next_decision; those belong to the login screen plan.
+When fields and login_ref are supplied, next_decision=null.
+"""
+
+
+class CredentialField(StrictModel):
+    source: Literal["credential.username", "credential.password"]
+    ref: str = Field(min_length=1)
+
+
+class LoginScreenPlan(StrictModel):
+    fields: list[CredentialField] = Field(max_length=2)
+    login_ref: str | None
+    next_decision: DecisionResponse | None
+
+    @model_validator(mode="after")
+    def one_path(self) -> LoginScreenPlan:
+        if self.fields:
+            if not self.login_ref or self.next_decision is not None:
+                raise ValueError("credential plan requires login command")
+            for key in ("source", "ref"):
+                if len({getattr(f, key) for f in self.fields}) != len(self.fields):
+                    raise ValueError("duplicate credential assignment")
+            if self.login_ref in {f.ref for f in self.fields}:
+                raise ValueError("login command cannot be an input")
+        elif self.login_ref is not None or self.next_decision is None:
+            raise ValueError("choose login plan or ordinary next decision")
+        elif self.next_decision.to_decision().intent in {"credential", "login"}:
+            raise ValueError("credentials and login belong in one plan")
+        return self
+
+
+def execute_login_plan(brain: Brain, plan: LoginScreenPlan) -> dict:
+    from .engine import GuardStop
+
+    scene = brain.observation
+    if not isinstance(scene, SceneObservation):
+        raise GuardStop("login_plan_requires_visual_scene")
+    policy = brain._decision_policy()
+    sources = {f.source for f in plan.fields}
+    if sources != set(policy.facts.remaining_credentials):
+        raise GuardStop("login_plan_missing_credentials")
+    if brain.steps + len(plan.fields) > brain.settings.max_steps:
+        raise GuardStop("max_steps")
+    decisions = [
+        Decision(
+            screen_kind="login",
+            operation="act",
+            intent="credential",
+            subgoal="Log in",
+            reason="Execute observed credential plan",
+            action=Choice(type="set_text", ref=f.ref, source=f.source),
+        )
+        for f in plan.fields
+    ]
+    for decision in decisions:
+        brain._guard_action(decision, policy)
+    login = Decision(
+        screen_kind="login",
+        operation="act",
+        intent="login",
+        subgoal="Log in",
+        reason="Submit the completed credential plan",
+        action=Choice(type="click", ref=plan.login_ref),
+    )
+    # Check the final command against the state the delivered inputs will establish.
+    # No credential values or invented UI observations are supplied to the model.
+    after_delivery = DecisionPolicy(
+        replace(
+            policy.facts,
+            submitted_credentials=tuple(sorted(set(policy.facts.submitted_credentials) | sources)),
+        )
+    )
+    brain._guard_action(login, after_delivery)
+    brain.log.append(
+        "select",
+        payload={
+            "check": "login_screen_plan",
+            "obs_id": str(scene.obs_id),
+            "assignments": [f.model_dump() for f in plan.fields],
+            "login_ref": plan.login_ref,
+        },
+    )
+    for index, decision in enumerate([*decisions, login]):
+        if index:
+            brain.steps += 1
+        brain.decision = decision
+        outcome = brain._act_node({}, screen_batch=index > 0)
+        if outcome["next"] != "verify":
+            brain.pending = None
+            return outcome
+        if decision.intent == "credential":
+            field = plan.fields[index]
+            element = next(e for e in scene.elements if e.ref == field.ref)
+            brain.credential_submissions[field.source] = {
+                "window_handle": scene.active_window.handle,
+                "descriptor": describe(element, scene.elements),
+            }
+            brain.pending = None
+    # Only the final click enters verification; the app's new screen is the evidence.
+    brain.pending["login_plan_descriptors"] = [
+        describe(next(e for e in scene.elements if e.ref == ref), scene.elements)
+        for ref in [*(f.ref for f in plan.fields), plan.login_ref]
+    ]
+    return {"next": "verify"}
 
 
 def execute_screen_fill(brain: Brain, plan: ScreenFillPlan) -> dict:

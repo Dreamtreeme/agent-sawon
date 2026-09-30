@@ -142,3 +142,71 @@ def test_invalid_plan_and_mid_batch_geometry_change_stop_remaining_inputs(
     brain._select_node({})
     assert len(relay.actions) == (1 if failure in {"window_change", "move"} else 0)
     assert not brain.verified and not relay.saved
+
+
+@pytest.mark.parametrize("accept", [True, False])
+def test_login_plan_sends_two_credentials_and_click_before_any_reread(tmp_path, record, accept):
+    from test_brain import element
+
+    class LoginVisual(ChangingPixelsRelay):
+        user = ""
+        password = ""
+
+        def observe(self):
+            wire = super().observe()
+            if self.mode == "login":
+                self.items.extend(
+                    [
+                        element(
+                            "e14", "Edit", name="Account", value=self.user, parent="e0"
+                        ).model_copy(update={"bbox": (140, 10, 8, 20)}),
+                        element("e15", "Button", name="Sign in", parent="e0").model_copy(
+                            update={"bbox": (150, 10, 8, 20)}
+                        ),
+                    ]
+                )
+            digest = hashlib.sha1(
+                json.dumps([wire.screen_hash, self.user, bool(self.password)]).encode()
+            )
+            self.current = wire.model_copy(update={"screen_hash": digest.hexdigest()})
+            return self.current
+
+        def act(self, action):
+            x, _ = action.root.target.image_point
+            if action.root.type == "set_text":
+                if x == 144:
+                    self.user = action.root.text
+                elif x == 84:
+                    self.password = action.root.text
+            if x == 154 and action.root.type == "click" and accept:
+                assert self.user == "fixture-user" and self.password == "fixture-secret-901"
+                self.mode = "query"
+            return super().act(action)
+
+    relay = LoginVisual(record)
+    relay.mode = "login"
+    plan = {
+        "fields": [
+            {"source": "credential.username", "ref": "e14"},
+            {"source": "credential.password", "ref": "e8"},
+        ],
+        "login_ref": "e15",
+        "next_decision": None,
+    }
+    brain, perception, model = make_brain(tmp_path, record, relay, [plan])
+    brain.credentials = {
+        "credential.username": "fixture-user",
+        "credential.password": "fixture-secret-901",
+    }
+    brain.secrets = ("fixture-secret-901",)
+    brain._observe()
+    assert brain._select_node({}) == {"next": "verify"}
+    assert perception.action_counts == [0]
+    assert [a.root.type for a in relay.actions] == ["set_text", "set_text", "click"]
+    assert len(model.prompts) == 1
+    outcome = brain._verify_node({})
+    assert perception.action_counts == [0, 3]
+    assert outcome == {"next": "review" if accept else "observe"}
+    assert not brain.save_issued and not brain.verified
+    assert "fixture-secret-901" not in (tmp_path / "run_log.jsonl").read_text()
+    assert all("fixture-secret-901" not in prompt for prompt in model.prompts)
