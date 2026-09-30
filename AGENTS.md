@@ -5,6 +5,9 @@ Follow CODEX_BRIEF.md and track progress in sibling agent-sawon-bench/docs/progr
 Implement semantic cache, demonstration learning, document extraction and validation,
 and integrate bounded evidence review/recovery before measured development runs.
 Unfinished M1 measurements remain open; scope expansion does not approve milestone exit.
+The 2026-09-30 brief revision replaces the next 1,200-run development sweep with a
+0–29 practice study and D4 scale proposal. Use ../agent-sawon-bench/docs/revised-development-plan-20260930.md;
+preserve old plans/results and do not treat notebook/human/failover tools as implemented.
 
 - Core may import only the public `sawon_interfaces` contract from bench.
 - The future brain accesses the environment only through relay HTTP; never read ERP internals.
