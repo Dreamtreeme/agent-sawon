@@ -166,7 +166,10 @@ def ground_meanings(
                 else "ocr_text_is_not_control_extent"
             )
         # Literal value evidence is constrained to the measured box. OCR markers
-        # cannot be relabelled with a different OCR block or omit their own text.
+        # cannot be relabelled with a different OCR block. Omitted links are
+        # already known locally; asking the model to reproduce them adds no evidence.
+        if marker.source == "ocr" and not meaning.text_ids:
+            meaning = meaning.model_copy(update={"text_ids": list(marker.text_ids)})
         if marker.source == "ocr" and set(meaning.text_ids) != set(marker.text_ids):
             raise ValueError("ocr_marker_text_mismatch")
         if meaning.role in {"edit", "combobox"} and not meaning.text_ids:

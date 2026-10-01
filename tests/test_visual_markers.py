@@ -11,7 +11,7 @@ from brain.runtime.storage import RunLog
 from brain.visual.detector import DetectorSettings, OmniParserDetector
 from brain.visual.detector_worker import original_box, restore_region_box
 from brain.visual.markers import Marker, MergeSettings, build_markers, ground_meanings
-from brain.visual.perception import VisualPerception
+from brain.visual.perception import VisualGroundingError, VisualPerception
 from brain.visual.refinement import refinement_regions
 from brain.visual.scene import SemanticDetection, bind_scene
 from pipeline.schemas import OcrBlock, RenderedPage
@@ -96,19 +96,32 @@ def test_label_is_never_promoted_to_input():
         ground_meanings(meaning, markers, blocks)
 
 
-def test_ocr_caption_can_be_a_tab_target_without_detector_extent():
+@pytest.mark.parametrize("text_ids", [[8], []])
+def test_ocr_caption_can_be_a_tab_target_without_detector_extent(text_ids):
     blocks, _, markers, _ = fixture()
     label = next(m for m in markers if m.source == "ocr")
     meaning = SemanticDetection.model_validate(
         {
             "screen_kind": "editor",
-            "controls": [{"id": label.id, "role": "tabitem", "text_ids": [8], "confidence": 0.95}],
+            "controls": [
+                {"id": label.id, "role": "tabitem", "text_ids": text_ids, "confidence": 0.95}
+            ],
         }
     )
     scene = bind_scene(wire(), blocks, ground_meanings(meaning, markers, blocks))
     tab = next(e for e in scene.elements if e.role == "tabitem")
     assert tab.enabled and tab.bbox == blocks[0].bbox
     assert tab.name == "Reference"
+
+
+def test_ocr_caption_cannot_replace_its_literal_text():
+    blocks, _, markers, _ = fixture()
+    label = next(m for m in markers if m.source == "ocr")
+    meaning = SemanticDetection.model_validate(
+        {"controls": [{"id": label.id, "role": "tabitem", "text_ids": [999], "confidence": 1}]}
+    )
+    with pytest.raises(ValueError, match="ocr_marker_text_mismatch"):
+        ground_meanings(meaning, markers, blocks)
 
 
 def test_resize_rounding_is_inverted_per_axis():
@@ -194,7 +207,7 @@ def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_pat
     log = RunLog(tmp_path, case_id="markers", agent_id="test")
     perception = VisualPerception(Relay(), Ocr(), tmp_path, log, interpret, detector=Detector())
     if outcome in {"invalid", "provider_error"}:
-        with pytest.raises(ValueError):
+        with pytest.raises(VisualGroundingError if outcome == "invalid" else ValueError):
             perception.observe(wire())
         assert len(calls) == (2 if outcome == "invalid" else 1)
         assert not (calls[0].image_path.parent / "perception.json").exists()

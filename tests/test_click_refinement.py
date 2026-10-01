@@ -13,7 +13,10 @@ from brain.graph.engine import Brain
 from brain.graph.schemas import Choice, Decision
 from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
-from brain.visual.scene import SceneObservation
+from brain.visual.markers import Marker, ground_meanings
+from brain.visual.perception import VisualGroundingError
+from brain.visual.scene import SemanticDetection, bind_scene
+from pipeline.schemas import OcrBlock
 
 
 def setup(tmp_path, record, answer, *, success=True, enabled=True):
@@ -69,17 +72,24 @@ def setup(tmp_path, record, answer, *, success=True, enabled=True):
 
     def observe():
         current = relay.observe()
-        tab = element("e" + str(current.obs_id.int), "tabitem", name="First Second")
-        tab.bbox = (20, 20, 180, 30)
+        # Reproduce the recorded merged-caption response: the model omits the
+        # OCR link, which is supplied locally before the real executor runs.
+        block = OcrBlock(id=4, text="First Second", bbox=(20, 20, 180, 30), confidence=1)
+        marker = Marker(id=8, bbox=block.bbox, source="ocr", text_ids=(4,), confidence=1)
+        meanings = SemanticDetection.model_validate(
+            {
+                "screen_kind": "editor",
+                "controls": [{"id": 8, "role": "tabitem", "text_ids": [], "confidence": 1}],
+            }
+        )
+        scene = bind_scene(current, [block], ground_meanings(meanings, [marker], [block]))
         body = element(
             "e" + str(current.obs_id.int) + "0",
             "text",
             name="Second panel" if relay.changed else "First panel",
         )
         body.bbox = (20, 90, 180, 30)
-        brain.observation = SceneObservation(
-            wire=current, screen_kind="editor", elements=[tab, body]
-        )
+        brain.observation = scene.model_copy(update={"elements": [*scene.elements, body]})
         return brain.observation
 
     brain._observe = observe
@@ -168,3 +178,16 @@ def test_outside_target_coordinate_is_not_dispatched(tmp_path, record):
     assert brain._verify_node({}) == {"next": "finish"}
     assert brain.result.reason == "refined_click_outside_target"
     assert len(relay.actions) == 1
+
+
+def test_exhausted_grounding_repair_does_not_restart_from_outer_verification(tmp_path, record):
+    brain, relay, model = setup(tmp_path, record, {})
+    brain._act_node({})
+
+    def exhausted():
+        raise VisualGroundingError("ocr_marker_text_mismatch")
+
+    brain._observe = exhausted
+    assert brain._verify_node({}) == {"next": "finish"}
+    assert brain.result.reason == "visual_grounding:ocr_marker_text_mismatch"
+    assert len(relay.actions) == 1 and not model.prompts

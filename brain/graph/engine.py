@@ -30,7 +30,7 @@ from brain.relay import Relay
 from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from brain.settings import BrainSettings
 from brain.visual.detector import OmniParserDetector
-from brain.visual.perception import VisualPerception
+from brain.visual.perception import VisualGroundingError, VisualPerception
 from brain.visual.scene import SceneObservation
 from models.accounting import read_model_accounting
 from models.base import ModelClient
@@ -800,6 +800,8 @@ class Brain:
             self._budget()
             self._observe()
             return {"next": "review"}
+        except VisualGroundingError as exc:
+            return self._finish("failed", "visual_grounding:" + str(exc))
         except GuardStop as exc:
             return self._finish("stopped", str(exc))
         except Exception as exc:
@@ -1770,6 +1772,8 @@ class Brain:
             # Reuse an already interpreted visual scene for every visual action.
             # UIA keeps its cheap fresh-state read before the next selection.
             return {"next": "review" if isinstance(observation, SceneObservation) else "observe"}
+        except VisualGroundingError as exc:
+            return self._finish("failed", "visual_grounding:" + str(exc))
         except GuardStop as exc:
             return self._finish("stopped", str(exc))
         except Exception as exc:

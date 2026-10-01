@@ -552,3 +552,55 @@ def test_final_row_matching_receives_visibility_and_action_contract(tmp_path, re
     assert "search" not in state["execution"]["allowed_intents"]
     assert "window expansion" in state["execution"]["guidance"]
     assert "reuse earlier refs" in state["execution"]["guidance"]
+
+
+@pytest.mark.parametrize("dependency", ["none", "action", "evidence", "parent", "verification"])
+def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
+    from brain.graph.matching import omit_unused_invalid_roles
+    from brain.visual.markers import Marker, ground_meanings
+    from brain.visual.scene import SemanticDetection, bind_scene
+    from pipeline.schemas import OcrBlock
+
+    brain, *_ = setup_brain(tmp_path, record, [])
+    blocks = [
+        OcrBlock(id=4, text="Number", bbox=(10, 10, 80, 20), confidence=1),
+        OcrBlock(id=5, text="Details", bbox=(10, 60, 80, 20), confidence=1),
+    ]
+    markers = [
+        Marker(id=i, bbox=b.bbox, source="ocr", text_ids=(b.id,), confidence=1)
+        for i, b in zip([5, 55], blocks, strict=True)
+    ]
+    payload = {
+        "screen_kind": "query",
+        "procedure_step": "verify-final",
+        "controls": [
+            {"id": 5, "role": "edit", "text_ids": [4], "confidence": 1},
+            {"id": 55, "role": "button", "text_ids": [5], "confidence": 1},
+        ],
+        "steps": [{"target": 55, "action": "click", "intent": "navigate"}],
+    }
+    required = []
+    if dependency == "action":
+        payload["steps"][0]["target"] = 5
+    elif dependency == "evidence":
+        payload["evidence"] = [{"field": "hbl_no", "target": 5}]
+    elif dependency == "parent":
+        payload["controls"][1]["parent_id"] = 5
+    elif dependency == "verification":
+        required = [{"screen": "query", "descriptor": {"role": "edit"}}]
+    response = ScreenMatch.model_validate(payload)
+    cleaned = omit_unused_invalid_roles(
+        brain, response, {"markers": [m.model_dump() for m in markers]}, required
+    )
+    meanings = SemanticDetection.model_validate(
+        {k: v for k, v in cleaned.model_dump().items() if k in SemanticDetection.model_fields}
+    )
+    if dependency == "none":
+        scene = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
+        decision = compile_match(cleaned, scene, DecisionResponse).decision
+        assert decision.intent == "navigate"
+        assert next(e for e in scene.elements if e.ref == decision.action.ref).name == "Details"
+        assert not any(e.role == "edit" for e in scene.elements)
+    else:
+        with pytest.raises(ValueError, match="ocr_text_is_not_control_extent"):
+            ground_meanings(meanings, markers, blocks)

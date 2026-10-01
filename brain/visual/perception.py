@@ -64,6 +64,10 @@ for the current task. Unmatched decorative text alone is not a detection failure
 """
 
 
+class VisualGroundingError(ValueError):
+    """Local semantic repair was exhausted; outer verification must not retry it."""
+
+
 class VisualPerception:
     def __init__(
         self,
@@ -286,6 +290,7 @@ class VisualPerception:
                 if code not in {
                     "unknown_or_duplicate_marker_id",
                     "ocr_text_is_not_control_extent",
+                    "ocr_group_is_not_input_or_table_extent",
                     "ocr_marker_text_mismatch",
                     "value_outside_local_marker",
                     "value_outside_visual_control",
@@ -305,7 +310,7 @@ class VisualPerception:
                     },
                 )
                 if attempt:
-                    raise
+                    raise VisualGroundingError(code) from error
                 prompt += "\nLOCAL VALIDATION REJECTED THE RESPONSE; NO ACTION WAS SENT.\n"
                 prompt += json.dumps(
                     {
@@ -313,6 +318,11 @@ class VisualPerception:
                         "invalid_text_links": [
                             {
                                 "marker_id": c.id,
+                                "expected_ocr_ids": list(
+                                    next(m.text_ids for m in markers if m.id == c.id)
+                                )
+                                if next(m.source for m in markers if m.id == c.id) == "ocr"
+                                else None,
                                 "invalid_ocr_ids": [
                                     i
                                     for i in c.text_ids
