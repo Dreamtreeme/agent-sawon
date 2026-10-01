@@ -171,3 +171,28 @@ RedrawWindow(INVALIDATE|ALLCHILDREN|UPDATENOW|FRAME)를 적용했다. 전체 클
 참고: https://docs.typesafe.ai/patterns/fan-out
 https://github.com/browser-use/jev-ultrafast/blob/main/jev_ultrafast/model.py
 https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-redrawwindow
+
+### 2026-10-01 통합 분기 파일럿009–011 결과
+- 009(core05bfe03/bench79e7dd2):53.51초,$0.029026290,실패. 로그인→조회 입력→검색
+  실제6행동 진행. 기존 절차 불일치는 없었음. Jev가 choice0.42/다른확률0.43처럼
+  최대와 다른 choice를 반환한3건을 기존 어댑터가 거절하여 종료. 마지막캡처에서 조회0건 확인.
+  Jev18시도5.964초/$0.014300790,Gemini2회8.192초/$0.014725500. 새미확정0.
+- 후속수정b2ba25b: API의 choice가 아닌 제공 probabilities의 argmax를 코드에서 선택.
+  동률은 원래choice 유지. 원본choice/확률을 수정하지 않고 아티팩트에 보존한다.
+- 010:33.94초,로컬탐지 PermissionError로 유료호출 전 실패,$0. 동일 저장캡처를
+  별도 로컬탐지로 점검했을 때43개후보를 정상 반환해 오류 재현 안 됨. 원인은 미확정.
+- 011(coreb2ba25b):178.35초,$0.163687110,실패. 로그인→조회 입력·검색→중복 없음
+  검증→신규 등록 화면까지 실제7행동 진행. 초기 same_content=false1회가 있었지만
+  재관찰에서 로그인 분기를 다시 선택해 복구. RedrawWindow가 화면변경을 완전히 없앴다고
+  볼 수는 없으며, 과거 screen/procedure/command 불일치 종료는 재현되지 않았다.
+  Jev52회18.456초/$0.041335560,Gemini7회99.963초/$0.122351550.
+  등록 화면에서 description/gross_weight 등의 중복 후보 배정과 비입력 역할 매칭으로
+  image보완. Gemini후속2회는 json_invalid 응답으로 실패.5필드 입력 계획 생성은
+  있었지만 실제 등록필드 입력은 실행되지 않았고, 마지막캡처의 빈칸을 직접 확인했다.
+  저장·최종조회 미완료. HTTP오류/새미확정비용0. 추가 유료 반복 중단.
+
+이번 신규 확인비용$0.192713400,알려진 누적$4.382655818. 과거 누락 사용량 원본 유지.
+010/011 동안 오프라인 회귀테스트도 동시 실행되어 총지연을 공정한 성능 비교로 쓰지 않는다.
+통합분기 수정 검증 코어738개/벤치561개(GUI6개제외) 통과. argmax후속 회귀44개 통과;
+최종 전체 코어 검증은 아래에 별도 기록한다. 실업무 성공은 여전히 미검증이다.
+최종 argmax 코드 전체 검증: 코어739개 통과(554.00초), ruff 검사·형식 검사 통과.
