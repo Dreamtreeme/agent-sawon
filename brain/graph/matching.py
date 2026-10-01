@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from brain.runtime.storage import atomic_write_json
 from brain.visual.scene import SemanticDetection
 
 from .execution import GuardStop
@@ -229,6 +231,8 @@ def retain_verification(
 def match_screen(brain, screen: dict, page):
     policy = brain._decision_policy()
     candidates = [s for s in brain.procedure.steps if s.phase == brain.phase]
+    if brain.pending is None:
+        candidates = [s for s in candidates if s.checkpoint in {"any", policy.current_step}]
     required = required_verification(brain)
     pending_actions = []
     if brain.pending is not None:
@@ -273,6 +277,7 @@ def match_screen(brain, screen: dict, page):
         response = brain._call(
             prompt + "\nResolve the reported ambiguity with this image.", ScreenMatch, page=page
         )
+        atomic_write_json(brain.case_dir / "matching" / f"{uuid4().hex}-image.json", response)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
     step = next((s for s in candidates if s.id == response.procedure_step), None)

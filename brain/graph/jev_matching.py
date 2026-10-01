@@ -127,12 +127,22 @@ def build_request(state: dict) -> ChoiceRequest:
         },
     )
     for source in [*notebook["record"], *notebook["available_credentials"]]:
+        query_input_pending = any(
+            a.get("intent") == "query_input" for a in notebook.get("pending_actions", [])
+        )
+        query_rule = (
+            "The query input was already delivered and awaits verification: choose none if "
+            "the CURRENT value matches, allowing the next search command. Repair only a mismatch."
+            if query_input_pending
+            else "For query_input checkpoint select hbl_no even if it already matches; "
+            "the required fresh input has not been delivered yet."
+        )
         ask(
             "input:" + source,
             f"Which visible input needs writing from source {source} NOW? "
             "Choose none for an already matching/verified record field or if navigation is needed. "
             "On login select all available credential inputs. Do not choose line-item cells. "
-            "For the query_input checkpoint select hbl_no even if it already matches.",
+            + query_rule,
             inputs,
         )
     for source in notebook["record"]:

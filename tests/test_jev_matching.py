@@ -309,6 +309,16 @@ def test_command_target_questions_are_explicit_and_missing_target_routes_to_imag
     assert result.needs_image and result.steps == []
 
 
+def test_pending_query_does_not_request_a_second_fill():
+    data = state()
+    data["notebook"]["pending_actions"] = [{"intent": "query_input", "source": "hbl_no"}]
+    request = build_request(data)
+    instruction = request.questions["input:hbl_no"].instructions
+    assert "already delivered" in instruction
+    assert "allowing the next search command" in instruction
+    assert "select hbl_no even if it already matches" not in instruction
+
+
 def client(tmp_path):
     log = RunLog(tmp_path, case_id="jev-test", agent_id="test")
     model = JevClient(
