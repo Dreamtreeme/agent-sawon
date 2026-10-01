@@ -134,7 +134,7 @@ def test_login_compiles_credentials_and_click_in_one_batch():
                 "input:credential.username": "1",
                 "input:credential.password": "2",
                 "command": "login",
-                "command_target": "3",
+                "command_target:login": "3",
                 "role:1": "edit",
                 "role:2": "edit",
                 "role:3": "button",
@@ -156,7 +156,7 @@ def test_login_compiles_credentials_and_click_in_one_batch():
     "changes, message",
     [
         ({"input:mbl_no": "1"}, "conflicting_field_assignment"),
-        ({"command": "navigate", "command_target": "3"}, "mixed_fill_and_navigation"),
+        ({"command": "navigate", "command_target:navigate": "3"}, "mixed_fill_and_navigation"),
     ],
 )
 def test_independent_answers_cannot_create_conflicting_actions(changes, message):
@@ -183,7 +183,7 @@ def test_exact_question_and_option_sets_required():
     with pytest.raises(ValueError, match="question_set"):
         compile_answers(request, reply)
     reply = answers(request)
-    reply.answers["command_target"].probabilities["999"] = 0
+    reply.answers["command_target:login"].probabilities["999"] = 0
     with pytest.raises(ValueError, match="option_set"):
         compile_answers(request, reply)
 
@@ -208,7 +208,7 @@ def test_ocr_text_tab_can_be_selected_without_detector_box():
                 "screen": "editor",
                 "operation": "act",
                 "command": "select_tab",
-                "command_target": "3",
+                "command_target:select_tab": "3",
                 "role:3": "tabitem",
             },
         ),
@@ -288,6 +288,25 @@ def test_disabled_target_is_preserved_for_existing_execution_guard():
     )
     assert result.controls[0].role == "edit"
     assert not result.controls[0].enabled
+
+
+def test_command_target_questions_are_explicit_and_missing_target_routes_to_image():
+    request = build_request(state())
+    assert "login" in request.questions["command_target:login"].instructions
+    assert "command_target" not in request.questions
+    result = compile_answers(
+        request,
+        answers(
+            request,
+            **{
+                "screen": "login",
+                "operation": "act",
+                "command": "login",
+                "command_target:login": "none",
+            },
+        ),
+    )
+    assert result.needs_image and result.steps == []
 
 
 def client(tmp_path):

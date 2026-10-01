@@ -105,12 +105,18 @@ def build_request(state: dict) -> ChoiceRequest:
         "Only login may be combined with credential fills.",
         COMMANDS,
     )
-    ask(
-        "command_target",
-        "Which current marker implements the required boundary command? "
-        "Answer independently from current goal/state, not another question's answer.",
-        targets,
-    )
+    # Jev questions cannot consume another question's answer. Speculate each
+    # command target explicitly, then use only the selected command's answer.
+    for command, description in COMMANDS.items():
+        if command != "none":
+            ask(
+                "command_target:" + command,
+                f"If the current procedure requires {command}: {description} "
+                "Which CURRENT marker performs that command? For login, assume credential "
+                "fills will run first. Select the command even if fields are currently empty. "
+                "Choose none only if no such command is visible.",
+                targets,
+            )
     ask(
         "command_action",
         "How should the current boundary command be activated?",
@@ -280,20 +286,22 @@ def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMa
                         else "fill",
                     )
                 )
-        command, selected = pick("command"), target("command_target")
+        command = pick("command")
+        selected = target("command_target:" + command)
         if command != "none":
             if selected is None:
-                raise ValueError("jev_command_without_target")
-            action = pick("command_action")
-            steps.append(
-                MatchAction(
-                    target=selected,
-                    intent=command,
-                    action="key" if action == "enter" else action,
-                    keys="enter" if action == "enter" else None,
+                operation, steps = "image", []
+            else:
+                action = pick("command_action")
+                steps.append(
+                    MatchAction(
+                        target=selected,
+                        intent=command,
+                        action="key" if action == "enter" else action,
+                        keys="enter" if action == "enter" else None,
+                    )
                 )
-            )
-        if not steps:
+        if not steps and operation == "act":
             raise ValueError("jev_act_without_steps")
         fills = [s for s in steps if s.action == "fill"]
         if len({s.target for s in fills}) != len(fills):
