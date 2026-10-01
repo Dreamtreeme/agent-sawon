@@ -22,15 +22,20 @@ class PriceRate(BaseModel):
     input_usd_per_million: Decimal = Field(ge=0, allow_inf_nan=False)
     output_usd_per_million: Decimal = Field(ge=0, allow_inf_nan=False)
     cached_input_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    cache_write_usd_per_million: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
 
     def cost(self, usage: TokenUsage) -> Decimal:
         if usage.cached_input_tokens and self.cached_input_usd_per_million is None:
             raise PricingError("Cached input has no configured price")
-        uncached = usage.input_tokens - usage.cached_input_tokens
+        if usage.cache_write_tokens and self.cache_write_usd_per_million is None:
+            raise PricingError("Cache writes have no configured price")
+        uncached = usage.input_tokens - usage.cached_input_tokens - usage.cache_write_tokens
         total = Decimal(uncached) * self.input_usd_per_million
         total += Decimal(usage.output_tokens) * self.output_usd_per_million
         if usage.cached_input_tokens:
             total += Decimal(usage.cached_input_tokens) * self.cached_input_usd_per_million
+        if usage.cache_write_tokens:
+            total += Decimal(usage.cache_write_tokens) * self.cache_write_usd_per_million
         return total / Decimal(1_000_000)
 
 

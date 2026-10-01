@@ -1,0 +1,10 @@
+schema_version = "0.1"
+checked_on = 2026-10-01
+source = "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
+basis = "standard_paid_text_image"
+
+[models."gpt-5.6-luna"]
+input_usd_per_million = "0.20"
+output_usd_per_million = "1.20"
+cached_input_usd_per_million = "0.02"
+cache_write_usd_per_million = "0.25"

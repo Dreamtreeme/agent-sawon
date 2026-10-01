@@ -28,10 +28,11 @@ class TokenUsage(BaseModel):
     response_tokens: int = Field(ge=0, strict=True)
     thinking_tokens: int = Field(default=0, ge=0, strict=True)
     cached_input_tokens: int = Field(default=0, ge=0, strict=True)
+    cache_write_tokens: int = Field(default=0, ge=0, strict=True)
 
     @model_validator(mode="after")
     def check_cached_count(self) -> TokenUsage:
-        if self.cached_input_tokens > self.input_tokens:
+        if self.cached_input_tokens + self.cache_write_tokens > self.input_tokens:
             raise ValueError("Cached input cannot exceed all input tokens")
         return self
 

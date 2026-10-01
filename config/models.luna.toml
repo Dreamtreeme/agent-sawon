@@ -1,0 +1,7 @@
+schema_version = "0.1"
+provider = "openai"
+model = "gpt-5.6-luna"
+pricing_path = "pricing.openai.toml"
+max_output_tokens = 8192
+thinking_level = "low"
+timeout_ms = 60000

@@ -12,6 +12,7 @@ dependencies = [
   "pydantic>=2.11,<3",
   "portalocker>=3,<4",
   "google-genai>=1.68,<2",
+  "openai>=2.54,<3",
   "python-dotenv>=1,<2",
   "langgraph>=1,<2",
 ]

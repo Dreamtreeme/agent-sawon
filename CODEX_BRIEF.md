@@ -1463,3 +1463,26 @@ ruff check/format 및 diff 검사 통과. 실제 저장 캡처의 OCR37블록/�
   saved-evidence.json, run_log.jsonl 및 최종 조회/기본/추가 capture.png.
 - 상세 변경/근거는 bench docs/saved-evidence-remediation-20261001.md에 기록했다.
   단일 시드1회 성공이며 타 시드 성공률/캐시 재사용과 M1/M2 종료는 미검증이다.
+
+
+### 2026-10-01 Luna 작업자 교체 및 파일럿001
+- 사용자 요청으로 ERP 작업자용 OpenAI Responses API 어댑터와 별도 Luna 프로필을 추가했다.
+  config/harness_agents.luna.json → models.luna.toml(gpt-5.6-luna, low, 출력8192).
+  Gemini 성공 프로필과 기존 업무 프롬프트/실행/검증 로직은 보존했다.
+- 공통 MeasuredModelClient를 사용하며 SDK 재시도0, .env의 OPENAI_API_KEY만 사용한다.
+  strict JSON schema, 원본 이미지 전달, 파싱 전 사용량 확보를 구현했다. 캐시 쓰기
+  토큰/단가와 긴 문맥 요금, 보수적인 호출 전 예약도 포함한다.
+- Luna001 seed0/none/visual_only/1회 실행: API2회 정상 응답, 실제 행동0,
+  로그인 이전 visual_grounding:unknown_ocr_reference로 실패했다. 저장 미도달.
+- 실제 캡처/후보/OCR/응답을 대조: 컨트롤7·9·11은 맞지만 label_ids에 OCR4·5·6
+  대신 후보8·10·12를 넣었다. 기존 보완1회에서도 동일해 중단했다. HTTP/JSON/토큰
+  잘림 문제가 아니다. 두 번호 체계를 혼동한 응답이며 모델 적합성 전체를 단정하지 않는다.
+- harness32.64초/작업자26.04초, Luna2회+로컬1회. 비용$0.002863250,
+  신규 미확정0, 알려진 누적$6.848967895 / 총$50 한도. 조기 실패이므로 Gemini 전체
+  성공 실행 대비 업무 시간/비용 절감률로 비교하지 않는다. 추가 유료 반복 없음.
+- 전체802개 통과(311.41초), 어댑터/기존 모델 관련41개 통과. ruff check/format 통과.
+- 증거: bench evidence/runs/luna-worker-20261001-001;
+  core cases/visual-pilot/28ab84f34d103225e662/case-2c15ff8f0f2d4dd9a0136576473eb58e/case;
+  visual/f2ada7f7-8d63-4e06-a154-43d98ef624df의 capture/markers/ocr/응답.
+- 상세: bench docs/luna-worker-pilot-20261001.md. 다음 개선 대상은 후보 ID와 OCR ID를
+  구분하는 모델 입력/스키마 계약이다. Luna 전체 완료와 M1/M2 종료는 미검증이다.

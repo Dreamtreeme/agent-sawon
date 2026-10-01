@@ -27,10 +27,16 @@ class CallBudget:
             settings = ModelSettings.model_validate(tomllib.load(stream))
         if settings.provider == "replay":
             return None
-        return cls(
-            PriceBook.load(path.parent / settings.pricing_path).for_model(settings.model),
-            settings.max_output_tokens,
-        )
+        price = PriceBook.load(path.parent / settings.pricing_path).for_model(settings.model)
+        if settings.provider == "openai" and settings.model == "gpt-5.6-luna":
+            # Reserve long-context and cache-write upper rates; actual usage selects its tier.
+            price = price.model_copy(
+                update={
+                    "input_usd_per_million": price.input_usd_per_million * Decimal("2.5"),
+                    "output_usd_per_million": price.output_usd_per_million * Decimal("1.5"),
+                }
+            )
+        return cls(price, settings.max_output_tokens)
 
     def __call__(self, prompt: str, schema: type[BaseModel]) -> Decimal:
         # Text-only brain: one token per UTF-8 byte overestimates ordinary text

@@ -1,7 +1,7 @@
 # 모델 호출과 비용 기록
 
 `ModelClient.complete_json(prompt, schema, images=...)`는 pydantic 결과와 사용량,
-USD 비용 추정치, 지연 시간을 반환한다. `GeminiClient`와 `ReplayClient` 모두
+USD 비용 추정치, 지연 시간을 반환한다. `GeminiClient`, `OpenAIClient`, `JevClient`, `ReplayClient` 모두
 필수 실행 기록 작성기를 받아 공개 호출마다 `model_call` 이벤트를 남긴다.
 호출부가 기록 래퍼를 빠뜨리는 별도 경로는 제공하지 않는다.
 
@@ -22,7 +22,8 @@ client = create_model_client(Path("config/models.toml"), run_log=log, env_path=P
 # result = client.complete_json("Return a synthetic greeting.", Response)
 ```
 
-비밀값은 명시한 `.env`의 `GEMINI_API_KEY`만 읽는다. 부모 폴더 검색, 환경 변수
+비밀값은 명시한 `.env`에서 선택한 공급자의 키만 읽는다(Gemini: `GEMINI_API_KEY`,
+OpenAI: `OPENAI_API_KEY`, Jev: `TYPESAFE_API_KEY` 또는 `JEV_API_KEY`). 부모 폴더 검색, 환경 변수
 키 자동 선택, 환경 변수 보간은 하지 않는다. 테스트는 가짜 SDK를 주입하며
 실제 API를 호출하지 않는다. SDK의 자동 재시도와 자동 함수 호출을 끄므로
 측정 한 건이 숨은 추가 요청을 만들지 않는다.
@@ -58,6 +59,19 @@ python -m examples.replay_demo
 소비하지 않으며, 소진 시 순환하지 않고 실패한다. 실제 API 토큰/비용은 0,
 원래 사용량과 비용은 `recorded_usage`/`recorded_usd`에 별도로 유지한다.
 지연 시간은 현재 재생 호출의 실측값이므로 원본 모델의 지연 비교에 쓰지 않는다.
+
+## Luna 화면 작업자
+
+`config/models.luna.toml`은 `gpt-5.6-luna`, Responses API, reasoning low, 출력8192를 사용한다.
+`config/harness_agents.luna.json`을 harness의 `--agent-config`에 지정하면 기존 화면 작업자를
+동일한 절차/검증/도구로 실행한다. Gemini 설정은 비교 기준으로 보존한다.
+OpenAI SDK는 자동 재시도0이며 명시적 OpenAI API 주소를 사용한다. 원본 크기의 이미지를
+전달하고 Pydantic 스키마를 strict JSON schema로 변환한다. 파싱 전 사용량을 확보하므로
+불완전/잘못된 응답도 발생 비용을 기록하며 실행 가능한 행동으로 처리하지 않는다.
+
+`config/pricing.openai.toml`은 [공식 Luna 가격](https://developers.openai.com/api/docs/models/gpt-5.6-luna)을
+기록한다. 사용량의 캐시 읽기/쓰기와 추론 토큰을 분리한다. 272K 초과 입력의 단가 배수를
+적용하고 호출 전 예약은 긴 문맥·캐시 쓰기 상한 단가로 보수적으로 계산한다.
 
 공식 참고 자료 (2026-09-28 확인):
 

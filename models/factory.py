@@ -21,7 +21,7 @@ from models.replay import ReplayClient
 class ModelSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["0.1"] = "0.1"
-    provider: Literal["gemini", "replay", "jev"] = "gemini"
+    provider: Literal["gemini", "replay", "jev", "openai"] = "gemini"
     model: str = Field(default="gemini-3.8-flash", min_length=1)
     pricing_path: str = "pricing.toml"
     replay_path: str = "../examples/replay_responses.jsonl"
@@ -36,19 +36,40 @@ def create_model_client(
     *,
     run_log: EventSink,
     env_path: Path | None = None,
-    provider: Literal["gemini", "replay", "jev"] | None = None,
+    provider: Literal["gemini", "replay", "jev", "openai"] | None = None,
 ) -> ModelClient:
     """Replay needs no .env; Gemini never falls back to ambient credentials."""
     with config_path.open("rb") as handle:
         settings = ModelSettings.model_validate(tomllib.load(handle))
     selected = provider if provider is not None else settings.provider
-    if selected not in {"gemini", "replay", "jev"}:
+    if selected not in {"gemini", "replay", "jev", "openai"}:
         raise ValueError("Unknown model provider")
     if selected == "replay":
         return ReplayClient.from_jsonl(config_path.parent / settings.replay_path, run_log=run_log)
     price = PriceBook.load(config_path.parent / settings.pricing_path).for_model(settings.model)
     if env_path is None or not env_path.is_file():
         raise ValueError("Paid providers require an explicitly specified .env file")
+    if selected == "openai":
+        from openai import OpenAI
+
+        from models.openai_client import OpenAIClient
+
+        api_key = dotenv_values(env_path, interpolate=False).get("OPENAI_API_KEY")
+        if not api_key or not api_key.strip():
+            raise ValueError("OPENAI_API_KEY is missing from the specified .env file")
+        return OpenAIClient(
+            sdk_client=OpenAI(
+                api_key=api_key,
+                max_retries=0,
+                timeout=settings.timeout_ms / 1000,
+                base_url="https://api.openai.com/v1",
+            ),
+            model=settings.model,
+            price=price,
+            run_log=run_log,
+            max_output_tokens=settings.max_output_tokens,
+            reasoning_effort=settings.thinking_level or "low",
+        )
     if selected == "jev":
         secrets = dotenv_values(env_path, interpolate=False)
         api_key = secrets.get("TYPESAFE_API_KEY") or secrets.get("JEV_API_KEY")
