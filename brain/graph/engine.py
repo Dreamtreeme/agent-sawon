@@ -190,9 +190,14 @@ class Brain:
         recovery_budget: CallBudget | None = None,
         prepared_case: bool = False,
         visual_ocr: OcrEngine | None = None,
+        matching_model: ModelClient | None = None,
+        matching_budget: CallBudget | None = None,
     ) -> None:
         self.record, self.goal, self.relay, self.model = record, goal, relay, model
         self.settings, self.case_dir, self.log = settings, Path(case_dir), run_log
+        if matching_model is not None and not settings.screen_matching:
+            raise ValueError("matching_model_requires_screen_matching")
+        self.matching_model, self.matching_budget = matching_model, matching_budget
         self.credentials = {"credential.username": username, "credential.password": password}
         self.credential_submissions: dict[str, dict] = {}
         self.secrets = (password,) if password else ()

@@ -5,6 +5,7 @@
 
 | 목적 | 설정 |
 |---|---|
+| Jev 화면 매칭 + Gemini 이미지 보완 파일럿 | `harness_agents.jev.json` (`core_jev`) |
 | 개정 M1 연습 0–29, 경량 기본·상위 복구·매 실행 빈 캐시 | `harness_agents.m1-practice.json` |
 | M1 두 관찰 요약 전략, 캐시 없음·동일 상위 복구 | `harness_agents.m1-final.json` |
 | M2 경량 기본·상위 복구·캐시 | `harness_agents.m2.json` |
@@ -40,3 +41,8 @@ OmniParser 가중치·Python을 사용한다. 현재 값은 이 컴퓨터의 기
 OCR 겹침 제거 허용 오차는 `[visual_merge]`의 `min_ocr_confidence`, `text_overlap`,
 `text_padding_ratio`, `max_text_padding`, `duplicate_iou`, `nested_area_ratio`로 조정한다.
 새 실행은 이 기본값까지 포함한 설정과 코드 버전을 고정하며 과거 측정과 합치지 않는다.
+
+Jev 파일럿은 기존 `brain.visual.toml`을 사용하고 `--matching-model-config models.jev.toml`을
+추가한다. 기본 `--model-config models.visual.toml`은 이미지 보완용 Gemini다.
+명시적으로 지정한 비공개 `.env`에 `TYPESAFE_API_KEY`(또는 `JEV_API_KEY`)와 `GEMINI_API_KEY`가 필요하다.
+상세 동작·재현 명령·현재 한계는 [Jev 파일럿](../docs/jev-pilot.md)을 따른다.

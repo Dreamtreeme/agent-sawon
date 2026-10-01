@@ -1,0 +1,5 @@
+schema_version = "0.1"
+provider = "jev"
+model = "jev-1.13.0"
+pricing_path = "pricing.jev.toml"
+timeout_ms = 60000

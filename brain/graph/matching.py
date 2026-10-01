@@ -253,18 +253,21 @@ def match_screen(brain, screen: dict, page):
         "required_verification": required,
         "available_credentials": sorted(k for k, value in brain.credentials.items() if value),
         "record": brain.values
-        if brain.phase in {"enter", "final_query"}
+        if brain.phase in {"enter", "save_result", "final_query"}
         else {"hbl_no": brain.values["hbl_no"]},
     }
-    prompt = RULES + json.dumps(
-        {
-            "procedure": [s.model_dump() for s in candidates],
-            "notebook": notebook,
-            "screen": screen,
-        },
-        ensure_ascii=False,
-    )
-    response = brain._call(prompt, ScreenMatch)
+    state = {
+        "procedure": [s.model_dump() for s in candidates],
+        "notebook": notebook,
+        "screen": screen,
+    }
+    prompt = RULES + json.dumps(state, ensure_ascii=False)
+    if brain.matching_model is not None:
+        from .jev_matching import match_choices
+
+        response = match_choices(brain, state)
+    else:
+        response = brain._call(prompt, ScreenMatch)
     used_image = response.needs_image
     if response.needs_image:
         response = brain._call(
@@ -281,7 +284,11 @@ def match_screen(brain, screen: dict, page):
         raise ValueError("screen_match_checkpoint_mismatch")
     if not response.needs_refinement:
         response = retain_verification(
-            brain, response, screen, required, page if used_image else None
+            brain,
+            response,
+            screen,
+            required,
+            page if used_image or brain.matching_model is not None else None,
         )
         if response.operation == "act" and not response.steps:
             completion = brain._call(

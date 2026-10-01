@@ -1,5 +1,9 @@
 # Agent Sawon private repository
 
+The user authorized an opt-in Jev screen-matching pilot on 2026-10-01.
+Use the shared measured ModelClient, ScreenMatch compiler and executor; retain Gemini
+for image-based recovery. This does not authorize broad Jev sweeps or milestone exit.
+
 Current scope: through M2 / stages 3–4 (authorized by the user on 2026-09-29).
 Follow CODEX_BRIEF.md and track progress in sibling agent-sawon-bench/docs/progress.md.
 Implement semantic cache, demonstration learning, document extraction and validation,

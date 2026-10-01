@@ -28,6 +28,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--procedure", type=Path, help="User-supplied ordered workflow JSON")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--model-config", type=Path, required=True)
+    parser.add_argument(
+        "--matching-model-config",
+        type=Path,
+        help="Optional Jev Choice model for OCR screen matching",
+    )
     parser.add_argument("--env-path", type=Path)
     parser.add_argument("--recovery-model-config", type=Path)
     parser.add_argument("--visual-ocr-config", type=Path)
@@ -120,6 +125,11 @@ def main(argv: list[str] | None = None) -> int:
 
             visual_ocr = PaddleOcrEngine(PipelineSettings.load(args.visual_ocr_config))
         model = create_model_client(args.model_config, run_log=log, env_path=args.env_path)
+        matching_model = (
+            create_model_client(args.matching_model_config, run_log=log, env_path=args.env_path)
+            if args.matching_model_config
+            else None
+        )
         recovery_model = (
             create_model_client(args.recovery_model_config, run_log=log, env_path=args.env_path)
             if settings.recovery_enabled
@@ -144,6 +154,12 @@ def main(argv: list[str] | None = None) -> int:
             ),
             prepared_case=args.prepared_case,
             visual_ocr=visual_ocr,
+            matching_model=matching_model,
+            matching_budget=(
+                CallBudget.from_config(args.matching_model_config)
+                if args.matching_model_config
+                else None
+            ),
         ).run()
         outcome = result.status
         print(result.model_dump_json())
