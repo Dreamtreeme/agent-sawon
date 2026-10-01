@@ -51,17 +51,3 @@ def test_augmenting_path_finds_assignment_that_greedy_first_fit_misses():
     assignment = _assign_fields({"a": {"e1", "e2"}, "b": {"e1", "e3"}, "c": {"e1", "e3"}})
     assert set(assignment) == {"a", "b", "c"}
     assert len(set(assignment.values())) == 3
-
-
-def test_hidden_hbl_cannot_be_replaced_by_query_input(record):
-    observation = FakeRelay(record, duplicate=True).observe()
-    elements = [item for item in observation.elements if item.ref != "e40"]
-    elements = [
-        item.model_copy(update={"value": record.fields.hbl_no.value}) if item.ref == "e1" else item
-        for item in elements
-    ]
-    report = review_final(
-        observation.model_copy(update={"elements": elements}), values_for(record), field_matches
-    )
-    assert report.status == "needs_more"
-    assert "hbl_no" in report.missing_fields

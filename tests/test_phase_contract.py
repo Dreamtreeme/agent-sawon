@@ -46,11 +46,15 @@ def test_final_request_only_explains_current_checkpoint(tmp_path, record, step):
     if step != "query_input":
         assert "obsolete input repair" not in prompt
     if step == "final_row_evidence":
-        brain._decision_schema().model_validate({"decision": success_steps(record)[-1]})
+        brain._decision_policy().response_schema().model_validate(
+            {"decision": success_steps(record)[-1]}
+        )
         assert "operation=complete" in task["phase_instruction"]
     else:
         with pytest.raises(ValidationError):
-            brain._decision_schema().model_validate({"decision": success_steps(record)[-1]})
+            brain._decision_policy().response_schema().model_validate(
+                {"decision": success_steps(record)[-1]}
+            )
         assert "operation=complete" not in prompt
         assert f"intent={step}" in task["phase_instruction"]
     assert not log.read_all()

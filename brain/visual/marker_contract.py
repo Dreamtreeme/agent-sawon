@@ -27,11 +27,7 @@ def model_screen(screen: dict) -> dict:
     def ids(values):
         return [index[i] for i in values if i in index]
 
-    result = {
-        k: v
-        for k, v in screen.items()
-        if k not in {"ocr", "markers", "ocr_evidence_refs", "correction"}
-    }
+    result = {k: v for k, v in screen.items() if k not in {"ocr", "markers", "correction"}}
     result["id_namespace"] = "visible_marker_ids"
     result["ocr"] = [dict(b, id=index[b["id"]]) for b in screen["ocr"] if b["id"] in index]
     result["markers"] = [

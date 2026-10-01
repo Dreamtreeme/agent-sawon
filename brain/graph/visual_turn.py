@@ -1,33 +1,8 @@
-"""One grounded screen interpretation and a proposal for the existing executor."""
+"""Bind screen-match marker references to the existing execution contracts."""
 
 from pydantic import BaseModel
 
-from brain.visual.scene import SemanticDetection
-
-from .save_review import SaveReviewResponse
-from .schemas import DecisionResponse
 from .screen_batch import LoginScreenPlan, ScreenFillPlan
-
-
-class VisualTurn(SemanticDetection):
-    next_step: LoginScreenPlan | ScreenFillPlan | SaveReviewResponse | DecisionResponse | None
-
-    @classmethod
-    def model_json_schema(cls, *args, **kwargs):
-        schema = super().model_json_schema(*args, **kwargs)
-
-        def visit(node):
-            if isinstance(node, dict):
-                if "const" in node:
-                    node["enum"] = [node.pop("const")]
-                for value in node.values():
-                    visit(value)
-            elif isinstance(node, list):
-                for value in node:
-                    visit(value)
-
-        visit(schema)
-        return schema
 
 
 def bind_proposal(proposal: BaseModel, prefix: str, allowed_refs: set[str]) -> dict:

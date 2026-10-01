@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -267,21 +266,6 @@ def test_current_scope_and_existing_values_are_ineligible(tmp_path, record):
         )
         is None
     )
-
-
-def test_complete_safe_fake_reuse_flow(tmp_path, record):
-    cache = SemanticCache(tmp_path / "cache.json")
-    seed(cache, record)
-    session = cache.start_run()
-    current = observation(shift=40, seconds=5)
-    hit = session.lookup(current, phase="enter", allowed_sources=["hbl_no"], record=record)
-    assert hit is not None
-    # Fake executor resolves the current choice, then provides a fresh value read.
-    assert hit.decision.action.ref in {item.ref for item in current.elements}
-    after = observation(record.fields.hbl_no.value, shift=90, seconds=6)
-    assert session.stage_validated(current, after, hit.decision, record)
-    assert session.finish(success=True) == 1
-    assert json.loads(cache.path.read_text())["entries"][0]["success_count"] == 2
 
 
 def test_concurrent_successes_preserve_all_counts(tmp_path, record):

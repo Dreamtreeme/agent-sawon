@@ -8,12 +8,8 @@ import re
 import pytest
 from pydantic import ValidationError
 
-from brain.graph.schemas import (
-    DecisionResponse,
-    DuplicateResponse,
-    FinalQueryPendingResponse,
-    FinalQueryResponse,
-)
+from brain.graph.policy import DecisionPolicy, ExecutionFacts
+from brain.graph.schemas import DecisionResponse
 
 
 def schema_accepts(value, schema, root=None):
@@ -225,42 +221,12 @@ def test_wire_schema_and_local_validation_both_reject_invalid_contracts(payload)
         DecisionResponse.model_validate_json(json.dumps(envelope))
 
 
-@pytest.mark.parametrize(
-    "schema,allowed",
-    [
-        (DuplicateResponse, {"duplicate_clear", "duplicate_found", "stop"}),
-        (FinalQueryPendingResponse, {"act", "stop"}),
-        (FinalQueryResponse, {"act", "complete", "stop"}),
-    ],
-)
-def test_phase_response_schema_limits_operations_without_hidden_validators(schema, allowed):
-    choices = [
-        decision(action={"type": "click", "ref": "e1"}),
-        decision("stop", "stop"),
-        decision("duplicate_clear", "verify", grid_ref="e2"),
-        decision("duplicate_found", "verify", grid_ref="e2"),
-        complete(),
-    ]
-    exported = schema.model_json_schema()
-    assert exported["type"] == "object"
-    assert exported["required"] == ["decision"]
-    assert "anyOf" in exported["properties"]["decision"]
-    assert "discriminator" not in json.dumps(exported)
-    for payload in choices:
-        envelope = {"decision": payload}
-        assert schema_accepts(envelope, exported) == (payload["operation"] in allowed)
-        if payload["operation"] in allowed:
-            schema.model_validate_json(json.dumps(envelope)).to_decision()
-        else:
-            with pytest.raises(ValidationError):
-                schema.model_validate_json(json.dumps(envelope))
-
-
 def test_provider_schema_does_not_accept_raw_unwrapped_response():
     payload = decision("stop", "stop")
-    assert not schema_accepts(payload, FinalQueryPendingResponse.model_json_schema())
+    schema = DecisionPolicy(ExecutionFacts("final_query")).response_schema()
+    assert not schema_accepts(payload, schema.model_json_schema())
     with pytest.raises(ValidationError):
-        FinalQueryPendingResponse.model_validate_json(json.dumps(payload))
+        schema.model_validate_json(json.dumps(payload))
 
 
 def test_schema_oracle_fails_on_unimplemented_keywords():
@@ -272,20 +238,21 @@ def test_schema_oracle_fails_on_unimplemented_keywords():
 def test_unrelated_operations_do_not_offer_nullable_grid_fields(operation, intent):
     action = {"type": "click", "ref": "e1"} if operation == "act" else None
     payload = decision(operation, intent, action)
-    schema = FinalQueryPendingResponse.model_json_schema()
-    internal = FinalQueryPendingResponse.model_validate({"decision": payload}).to_decision()
+    response = DecisionPolicy(
+        ExecutionFacts("final_query", duplicate_clear=True, save_issued=True)
+    ).response_schema()
+    schema = response.model_json_schema()
+    internal = response.model_validate({"decision": payload}).to_decision()
     assert internal.grid_ref is None and internal.row_ref is None
     for field in ("grid_ref", "row_ref"):
         incompatible = {"decision": {**payload, field: None}}
         assert not schema_accepts(incompatible, schema)
         with pytest.raises(ValidationError):
-            FinalQueryPendingResponse.model_validate(incompatible)
+            response.model_validate(incompatible)
 
 
-@pytest.mark.parametrize(
-    "schema", [DecisionResponse, DuplicateResponse, FinalQueryPendingResponse, FinalQueryResponse]
-)
-def test_provider_schema_uses_documented_enum_for_single_literal_branches(schema):
+def test_provider_schema_uses_documented_enum_for_single_literal_branches():
+    schema = DecisionResponse
     exported = schema.model_json_schema()
     assert '"const"' not in json.dumps(exported)
     stop = exported["$defs"]["WireStopDecision"]["properties"]

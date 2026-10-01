@@ -1505,3 +1505,33 @@ ruff check/format 및 diff 검사 통과. 실제 저장 캡처의 OCR37블록/�
 - 전체807개 통과(304.33초), ruff check/format 통과. 추가 유료 반복 없음.
 - 상세: bench docs/visible-marker-contract-20261001.md. 남은 과제는 부모 관계와 값 근거의
   잘못된 연결이며 Luna 전체 완료 및 M1/M2 종료를 선언하지 않는다.
+
+
+### 2026-10-01 현재 실행 경로 기준 코드·테스트 정리
+- 사용자가 전체 코드 점검과 불필요한 코드·테스트 제거를 요청했다. 양쪽 저장소의
+  실행 진입점/설정/생산 코드 참조와 테스트 참조를 구분해 점검했다.
+- ScreenMatch로 대체된 numbered_selection 및 visual_joint_planning 경로, 설정 옵션,
+  번호 선택 카탈로그/TaskPlan/stage_goals/VisualTurn을 제거했다. notebook의 현재 사실
+  기록과 ScreenMatch의 bind/adapt, 기존 공통 ActionPlan·검증기는 유지한다.
+- 실제 실행 참조가 없던 DuplicateResponse/FinalQueryPendingResponse/FinalQueryResponse,
+  Brain._decision_schema와 구 joint 전용 ocr_evidence_refs를 제거했다. 남은 검증 테스트는
+  실제 DecisionPolicy.response_schema를 사용한다.
+- OCR/탐지의 미사용 단발 파일입출력 CLI를 제거하고 현재 --serve/지속 워커를 유지했다.
+  두 워커 시작·정상 종료 스모크와 brain 설정6개 로드 검사 통과.
+- bench의 미사용 harness.metrics.load_rows를 제거했다. 별도 계층의 JSON writer는
+  부모 폴더 생성/모델 직렬화 계약이 달라 무리하게 합치지 않았다.
+- 생산 코드 순감소659줄(core654+bench5), 테스트 코드 순감소326줄.
+  기존 테스트807개→787개: 폐기된 판단 경로12개, 폐기 스키마 중복6개, 상위 통합검사로
+  이미 다루는 캐시/숨긴 HBL 중복2개를 삭제했다. 새 테스트는 추가하지 않았다.
+- Gemini/Luna/Jev 현재 프로필, UIA 보조/기준선, 의미 캐시·시연·문서 파이프라인,
+  비용/근거/비밀정보/화면 좌표/동시성 회귀는 실제 지원 경로여서 유지했다.
+- 현재 README/코드흐름을 ScreenMatch 및 실제 최근 파일럿 결과에 맞췄다.
+  옛 옵션을 켠 외부 설정은 현재 설정으로 갱신해야 하며 별도 호환 별칭은 두지 않았다.
+  과거 실행 설정·로그·증거·계획은 보존한다.
+- bench Ruff는 보존용 evidence 안의 미추적 녹화 스크립트를 소스로 수집하고 있었다.
+  evidence를 검사 대상에서 제외해 실행 소스와 과거 증거를 분리했고 원명령이 통과했다.
+- 이번 작업의 API 호출0/화면 입력0. Luna004 부모 관계 실패는 별도 미해결 상태다.
+- 최종 검증: core787개 통과(274.97초), bench561개 통과/GUI6개 제외(14.93초).
+  양쪽 python -m ruff check . / format --check . 및 git diff --check 통과.
+  실행 경로 독립 검토에서도 제거한 번호맵/옛 CLI의 현재 소비자는 확인되지 않았다.
+  이번 측정 시간만으로 ERP 동작 속도 향상을 주장하지 않는다.

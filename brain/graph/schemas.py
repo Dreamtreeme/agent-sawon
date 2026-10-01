@@ -290,15 +290,3 @@ class DecisionResponse(WireModel):
 
     def to_decision(self) -> Decision:
         return Decision.model_validate(self.decision.model_dump(mode="python"))
-
-
-class DuplicateResponse(DecisionResponse):
-    decision: WireDuplicateDecision | WireStopDecision
-
-
-class FinalQueryPendingResponse(DecisionResponse):
-    decision: WireActDecision | WireStopDecision
-
-
-class FinalQueryResponse(DecisionResponse):
-    decision: WireActDecision | WireCompleteDecision | WireStopDecision

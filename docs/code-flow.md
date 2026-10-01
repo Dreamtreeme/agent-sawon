@@ -1,6 +1,6 @@
 # M2 코드 실행 흐름
 
-2026-09-29 M2 구현 기준. 실제 측정 결과는 `m2-implementation.md`와 공개 진행 기록에 별도로 남긴다.
+2026-10-01 현재 화면 매칭 경로와 지원 중인 M2 공통 실행 기준. 실제 측정 결과는 `m2-implementation.md`와 공개 진행 기록에 별도로 남긴다.
 이전 [L2C 비교](l2c-graph-comparison-20260929.md)는 M2 적용 전 구조의 분석이다.
 
 ## 서류부터 결재 대기까지
@@ -25,7 +25,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    PLAN["Plan: 최초 계획 모델 호출"] --> O["Observe: relay 관찰·OCR/시각 분석 또는 UIA"]
+    PLAN["Plan: 제공된 절차 로드 / 분리형 경로의 계획 호출"] --> O["Observe: relay 관찰·OCR/시각 분석 또는 UIA"]
     O --> R["Review: 현재 행 식별·필수 필드 근거 검사"]
     R -->|중복 결과 행·안전 제한| STOP["중단"]
     R -->|계속| POLICY["Select: 상태 정책·허용 응답 구성"]
@@ -85,7 +85,7 @@ pipeline/workflow.py
       ├─ READY·자기 레코드·검증 보고서·기록 정체성 확인
       ├─ 선택적 건별 캐시 설치 (OCR 기록/비용 유지)
       └─ Brain.run()
-          ├─ _plan_node → measured ModelClient
+          ├─ _plan_node → 화면 매칭은 절차 로드 / 분리형 경로는 measured ModelClient
           ├─ _observe_node → relay.observe → 민감정보 제거·스냅샷 저장
           ├─ _review_node → review_final → 완료 가능 여부
           ├─ _select_node
@@ -122,15 +122,17 @@ pipeline/workflow.py
 업무 근거 검토, 조건부 경험 재사용, 모든 출처에 공통인 실행 가드, 명시적 상위 모델 복구,
 성공 후 경험 승격을 반영했다. L2C의 사이트별 경로·좌표·업무 DB 접근은 사용하지 않는다.
 Sawon은 정해진 선적 한 건을 처리하며 L2C의 상위 조사·답변 그래프는 없다.
-상태는 아직 Brain 인스턴스에 보관하고 `verify` 재관찰 뒤 `observe`에서 다시 관찰할 수 있다.
+상태는 Brain 인스턴스에 보관하며 `verify`의 최신 시각 관찰을 다음 판단에서 재사용한다.
 그래프 모양을 같게 만드는 것과 실제 성공률을 증명하는 것은 별개다.
 
 ## 목표·계획과 화면 행동 연결
 
-화면 전용 프로필은 `visual_joint_planning=true`다. 최초 plan 노드 이후 매 관찰은
-기본 OCR/탐지 결과와 목표·초기 계획·현재 진행 상태를 `VisualTurn` 한 응답으로 해석한다.
-화면 의미를 검증한 다음 select는 같은 관찰의 행동 제안을 현재 정책으로 재검사해 사용한다.
-유효 제안은 별도 행동 선택 모델 호출 없이 공통 ActionPlan 실행기로 간다.
-없거나 만료됐거나 검증 후 정책과 맞지 않는 제안만 기존 측정 선택 경로로 다시 판단한다.
+화면 전용 프로필은 `screen_matching=true`다. 제공된 업무 절차를 읽으므로 최초
+계획 생성 모델 호출은 없다. 현재 OCR/탐지 JSON, 절차 단계와 작업 메모를 `ScreenMatch`
+한 응답에 연결한다. `marker_contract`가 모델용 마커 번호를 내부 OCR 근거로 변환한다.
+검증된 제안은 같은 관찰의 현재 정책을 통과해 공통 ActionPlan 실행기로 간다.
+단계만 바뀌면 저장된 화면 양식으로 재매칭하며 이미지 보완은 필요한 경우에만 수행한다.
 보완 탐지는 기본 판단의 업무 대상 누락 실패 때만 최대1회 수행한다.
 내용/크기/스케일이 같은 창의 단순 이동은 새 캡처 원점으로 연결하며 전체 인식을 반복하지 않는다.
+이전 번호 선택과 `VisualTurn` 판단 경로는 제거했다. Gemini/Luna/Jev의 현재 매칭,
+분리형 의미 인식, UIA 보조 및 공통 실행·검증 경로는 유지한다.

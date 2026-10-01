@@ -106,7 +106,6 @@ def test_procedure_is_loaded_without_model_and_form_match_is_single_call(tmp_pat
     assert len(model.prompts) == 1
     assert brain.decision.action.source == "hbl_no"
     assert brain.decision.action.ref.startswith("e" + str(brain.observation.obs_id.int))
-    assert "Select one label" not in model.prompts[0]
     assert "secret-user" not in model.prompts[0] and "secret-pw" not in model.prompts[0]
 
 

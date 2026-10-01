@@ -68,7 +68,6 @@ from .transitions import (
     ObservedEffect,
     TransitionFact,
 )
-from .visual_turn import VisualTurn, adapt_proposal, bind_proposal
 
 
 class Result(BaseModel):
@@ -172,7 +171,6 @@ class Brain:
         self.observation: Observation | None = None
         self.decision: Decision | None = None
         self.plan: list[str] = []
-        self.stage_goals: dict[str, str] = {}
         self.verified: dict[str, dict] = {}
         self.query_value_verified = False
         self.query_submitted = False
@@ -264,63 +262,7 @@ class Brain:
             return schema.model_validate(
                 {k: v for k, v in response.model_dump().items() if k in schema.model_fields}
             )
-        if self.settings.numbered_selection:
-            return self._call(
-                "Describe CURRENT screen only, including screen_kind. Do not plan actions.\n"
-                + prompt,
-                schema,
-                page=page,
-            )
-        if not self.settings.visual_joint_planning:
-            return self._call(prompt, schema, page=page)
-        context = {
-            "execution": execution_context(self, anticipate=True),
-            "goal": self.goal,
-            "plan": self.plan,
-            "record": self.values,
-            "phase": self.phase,
-            "verified_fields": sorted(self.verified),
-            "remaining_fields": sorted(set(self.values) - set(self.verified)),
-            "query_value_verified": self.query_value_verified,
-            "query_submitted": self.query_submitted,
-            "duplicate_clear": self.duplicate_clear,
-            "save_issued": self.save_issued,
-            "credentials_available": [k for k, v in self.credentials.items() if v],
-            "pending_action": self.pending["decision"].model_dump(mode="json")
-            if self.pending
-            else None,
-            "pending_fields": [
-                item.decision.action.source
-                for item in self.pending["execution"].plan.actions
-                if item.decision.action and item.decision.intent == "fill"
-            ]
-            if self.pending and self.pending.get("execution")
-            else [],
-            "feedback": self.feedback[-4:],
-        }
-        instructions = (
-            POLICY + "\nFollow the INITIAL goal/plan; do not create a new overall plan. "
-            "Interpret CURRENT screen and propose next_step in this SAME response. "
-            "Use m<ID> for every action/evidence ref, where ID is a current control marker. "
-            "Use ocr_evidence_refs for unclassified static OCR evidence only, never as an input. "
-            "No old refs or coordinates. All proposals are revalidated after local verification. "
-            "Pending inputs may become verified only if their current visible values match. "
-            "If they match, advance to the next planned step; otherwise repair only mismatches. "
-            "Use LoginScreenPlan for credentials and ScreenFillPlan for visible record fields. "
-            "Use SaveReviewResponse in save_result, otherwise DecisionResponse. "
-            "If needed control extents are missing from basic detection, needs_refinement=true "
-            "and next_step=null; do not request refinement for decorative/static text.\n"
-            + (LOGIN_GUIDANCE if self.phase == "duplicate_query" else "")
-            + (SCREEN_FILL_GUIDANCE if self.phase == "enter" else "")
-            + "\nTRUSTED_TASK="
-            + json.dumps(context, ensure_ascii=False)
-            + "\nUNTRUSTED_SCREEN="
-            + prompt
-        )
-        response = self._call(instructions, VisualTurn, page=page)
-        self.visual_proposal = response.next_step
-        atomic_write_json(page.image_path.parent / "screen-turn.json", response)
-        return schema.model_validate(response.model_dump(exclude={"next_step"}))
+        return self._call(prompt, schema, page=page)
 
     def _selection_call(self, prompt: str, schema: type[BaseModel]):
         if self.settings.screen_matching:
@@ -383,35 +325,6 @@ class Brain:
                 },
             )
             return result
-        if self.settings.numbered_selection:
-            from .notebook import select_numbered
-
-            return select_numbered(self, schema)
-        proposal, self.visual_proposal = self.visual_proposal, None
-        if proposal is not None and self.visual_proposal_obs_id == self.observation.obs_id:
-            try:
-                bound = bind_proposal(
-                    proposal,
-                    "e" + str(self.observation.obs_id.int) + "0",
-                    {e.ref for e in self.observation.elements},
-                )
-                result = adapt_proposal(bound, schema)
-                self.log.append(
-                    "select",
-                    payload={
-                        "check": "visual_proposal_reused",
-                        "obs_id": str(self.observation.obs_id),
-                    },
-                )
-                return result
-            except (ValueError, ValidationError):
-                self.log.append(
-                    "verify",
-                    payload={
-                        "check": "visual_proposal_rejected",
-                        "reason": "post_verification_contract_changed",
-                    },
-                )
         return self._call(prompt, schema)
 
     def _budget(self, reservation: Decimal | None = None) -> None:
@@ -499,7 +412,7 @@ class Brain:
                     "last_obs_id": str(self.observation.obs_id) if self.observation else None,
                 },
             )
-        if self.settings.numbered_selection or self.settings.screen_matching:
+        if self.settings.screen_matching:
             from .notebook import remember
 
             remember(self)
@@ -754,7 +667,7 @@ class Brain:
                     "obs_id": str(observation.obs_id),
                 },
             )
-        if self.settings.numbered_selection or self.settings.screen_matching:
+        if self.settings.screen_matching:
             from .notebook import remember
 
             remember(self)
@@ -773,22 +686,6 @@ class Brain:
                         "steps": [s.id for s in self.procedure.steps],
                     },
                 )
-                remember(self)
-                return {"next": "observe"}
-            if self.settings.numbered_selection:
-                from .notebook import TaskPlan, remember
-
-                plan = self._call(
-                    "Write one concise goal for each workflow stage: duplicate check, entry, "
-                    "save-result inspection, final query verification. No control refs, actions, "
-                    "record values, or implementation instructions in stage goals. Never transmit "
-                    "or approve.\n"
-                    + json.dumps({"goal": self.goal, "record_fields": list(self.values)}),
-                    TaskPlan,
-                )
-                self.stage_goals = plan.model_dump()
-                self.plan = list(self.stage_goals.values())
-                self.log.append("plan", payload={"subgoals": self.plan})
                 remember(self)
                 return {"next": "observe"}
             plan = self._call(
@@ -910,9 +807,6 @@ class Brain:
     def _phase_instruction(self, policy: DecisionPolicy | None = None) -> str:
         return execution_context(self, policy or self._decision_policy())["guidance"]
 
-    def _decision_schema(self) -> type[BaseModel]:
-        return self._decision_policy().response_schema()
-
     def _decision_policy(self) -> DecisionPolicy:
         return DecisionPolicy(
             ExecutionFacts(
@@ -1028,7 +922,7 @@ class Brain:
 
     def _choose_decision(self, prompt: str, schema: type[BaseModel]) -> Decision:
         """Recover with an explicitly configured measured model, at most once."""
-        if self.settings.numbered_selection or self.settings.screen_matching:
+        if self.settings.screen_matching:
             return self._selection_call("", schema).to_decision()
         recover = self.settings.recovery_enabled and self.recovery_model is not None
         if recover and self._current_review().status == "needs_more":
@@ -1116,7 +1010,6 @@ class Brain:
                     hit is None
                     and not (screen_fill or login_batch)
                     and self.phase == "enter"
-                    and not self.settings.numbered_selection
                     and not self.settings.screen_matching
                     and self.cache_rebind_calls < self.settings.cache.rebind_model_max_calls
                 ):
@@ -1181,11 +1074,7 @@ class Brain:
                             "phase": self.phase,
                         },
                     )
-                prompt = (
-                    ""
-                    if (self.settings.numbered_selection or self.settings.screen_matching)
-                    else self._decision_prompt(policy)
-                )
+                prompt = "" if self.settings.screen_matching else self._decision_prompt(policy)
                 if self.phase == "save_result":
                     schema = SaveReviewResponse
                     review = self._selection_call(prompt, schema)

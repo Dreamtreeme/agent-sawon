@@ -401,12 +401,6 @@ class VisualPerception:
                 "image_size": [page.width, page.height],
                 "minimum_confidence": self.threshold,
                 "ocr": [block.model_dump(mode="json") for block in blocks],
-                "ocr_evidence_refs": {
-                    str(block_id): "m" + str(marker.id)
-                    for marker in markers
-                    if marker.source == "ocr"
-                    for block_id in marker.text_ids
-                },
                 "markers": [
                     {
                         **m.model_dump(mode="json", exclude={"confidence"}),

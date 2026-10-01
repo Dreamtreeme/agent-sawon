@@ -56,10 +56,9 @@ subsequent observation. Domain-specific verifiers share field comparison, semant
 rebinding and transition logging. A partial batch retains delivery records without
 claiming unobserved values. Group plans are not promoted as single-field cache entries.
 
-Live run013 verified grouped login and two field batches, but an incorrect optional
-item row caused save rejection. Field-scope mapping and save-result handling have been revised; live verification
-remains open. See the architecture review and bench progress log. Current refactoring tests
-use replay/fakes and do not establish a new live success rate.
+The Gemini013 visual pilot completed save and final verification on seed0.
+The latest Luna004 reached the query screen but failed on an invalid parent relation.
+See the bench progress log; a single successful pilot does not establish general success rates.
 
 Save delivery now enters `save_result`. The next measured selection jointly returns
 current evidence, rejected/confirmation_required/ready_for_query/unknown, and an
@@ -68,10 +67,11 @@ record fields; confirmation remains pending. Neither delivery nor readiness for
 query proves persistence. Final row verification remains mandatory. Flat record
 inputs use the shared form-scope predicate, including cache and evidence paths.
 
-With `visual_joint_planning`, the initial goal/plan and current progress accompany
-screen interpretation. `VisualTurn` proposes the next step in the same measured
-response. Current marker refs are bound locally and the post-verification policy
-still validates the proposal. A missing/stale/incompatible proposal uses measured
-selection; normal proposals reuse the existing single/batch executor without a
-second selection call. Translation-only capture renewal preserves image-relative
-coordinates while binding the new capture origin. Scale/content changes do not.
+Current visual profiles use `screen_matching`: the supplied procedure, runtime
+notebook and current OCR/marker JSON produce one `ScreenMatch` response. Local code
+binds visible marker IDs to the current scene and supplies record values to the
+shared executor. Post-verification policy checks remain mandatory. The superseded
+number-only selector and `VisualTurn` model path have been removed; shared proposal
+binding and adaptation remain. Translation-only capture renewal preserves
+image-relative coordinates while binding the new capture origin. Scale/content
+changes do not.

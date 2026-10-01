@@ -5,6 +5,8 @@
 
 | 목적 | 설정 |
 |---|---|
+| 현재 Gemini 화면 매칭 파일럿 | `harness_agents.visual.json` (`core_visual`) |
+| 동일 업무의 Luna 비교 | `harness_agents.luna.json` (`core_visual`) |
 | Jev 화면 매칭 + Gemini 이미지 보완 파일럿 | `harness_agents.jev.json` (`core_jev`) |
 | 개정 M1 연습 0–29, 경량 기본·상위 복구·매 실행 빈 캐시 | `harness_agents.m1-practice.json` |
 | M1 두 관찰 요약 전략, 캐시 없음·동일 상위 복구 | `harness_agents.m1-final.json` |
@@ -46,3 +48,10 @@ Jev 파일럿은 기존 `brain.visual.toml`을 사용하고 `--matching-model-co
 추가한다. 기본 `--model-config models.visual.toml`은 이미지 보완용 Gemini다.
 명시적으로 지정한 비공개 `.env`에 `TYPESAFE_API_KEY`(또는 `JEV_API_KEY`)와 `GEMINI_API_KEY`가 필요하다.
 상세 동작·재현 명령·현재 한계는 [Jev 파일럿](../docs/jev-pilot.md)을 따른다.
+
+
+2026-10-01 정리: 현재 화면 작업자는 `screen_matching=true`를 사용한다.
+이 방식으로 대체된 `numbered_selection`/`visual_joint_planning` 옵션과 전용 실행기는
+제거했다. 이전 옵션을 켠 별도 로컬 설정은 현재 화면 매칭 설정으로 갱신해야 한다.
+저장소의 여섯 `brain*.toml` 프로필은 모두 로드 검증을 통과했다.
+과거 실행 폴더의 설정 스냅샷·결과는 보존하며 현재 코드로 옛 실험 경로를 지원하지 않는다.

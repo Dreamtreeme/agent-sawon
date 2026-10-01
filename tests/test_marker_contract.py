@@ -24,7 +24,6 @@ def screen():
             {"id": 8, "source": "ocr", "text_ids": [4], "contained_ocr_ids": [4]},
             {"id": 4, "source": "ocr", "text_ids": [5], "contained_ocr_ids": [5]},
         ],
-        "ocr_evidence_refs": {"4": "m8", "5": "m4"},
     }
 
 
@@ -32,7 +31,6 @@ def test_image_and_text_catalog_share_visible_ids_and_round_trip():
     current = screen()
     public = model_screen(current)
     assert public["ocr"] == [{"id": 8, "text": "Account"}, {"id": 4, "text": "Password"}]
-    assert "ocr_evidence_refs" not in public
     assert public["markers"][1]["text_ids"] == [8]
     assert public["markers"][2]["contained_ocr_ids"] == [4]
     external = SemanticDetection(

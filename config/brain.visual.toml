@@ -1,8 +1,6 @@
 schema_version = "0.1"
 perception_mode = "visual_only"
 visual_screen_fill = true
-visual_joint_planning = false
-numbered_selection = false
 screen_matching = true
 procedure_path = "../examples/shipment-procedure.json"
 summary_strategy = "label_grouped"

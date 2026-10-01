@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import sys
@@ -116,19 +115,14 @@ class DetectorSession:
 
 
 def main() -> None:
-    session = DetectorSession()
-    if sys.argv[1] == "--serve":
-        # Import only the stdlib server, not pipeline's package/dependency graph.
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pipeline"))
-        from worker_server import serve
+    if len(sys.argv) != 3 or sys.argv[1] != "--serve":
+        raise SystemExit("Usage: detector_worker.py --serve YOLO_CONFIG_DIR")
+    # Import only the stdlib server, not pipeline's package/dependency graph.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pipeline"))
+    from worker_server import serve
 
-        os.environ["YOLO_CONFIG_DIR"] = sys.argv[2]
-        serve(session)
-        return
-    os.environ["YOLO_CONFIG_DIR"] = str(Path(sys.argv[2]).parent / "yolo")
-    request = json.loads(Path(sys.argv[1]).read_text("utf-8"))
-    result = session(request)
-    Path(sys.argv[2]).write_text(json.dumps(result), encoding="utf-8")
+    os.environ["YOLO_CONFIG_DIR"] = sys.argv[2]
+    serve(DetectorSession())
 
 
 if __name__ == "__main__":

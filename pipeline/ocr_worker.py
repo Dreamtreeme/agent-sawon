@@ -136,23 +136,13 @@ class OcrSession:
         return {"blocks": blocks}
 
 
-def main() -> int:
-    session = OcrSession()
-    if sys.argv[1] == "--serve":
-        from worker_server import serve
+def main() -> None:
+    if sys.argv[1:] != ["--serve"]:
+        raise SystemExit("Usage: ocr_worker.py --serve")
+    from worker_server import serve
 
-        serve(session)
-        return 0
-    request = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-    destination = Path(sys.argv[2])
-    try:
-        result = session(request)
-    except Exception as exc:
-        destination.write_text(json.dumps({"error_type": type(exc).__name__}), encoding="utf-8")
-        return 1
-    destination.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
-    return 0
+    serve(OcrSession())
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
