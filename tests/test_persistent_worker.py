@@ -66,6 +66,26 @@ def test_failed_worker_is_not_reused_or_silently_retried(worker):
     assert worker.last_metrics["model_initialized"]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows response publication race")
+def test_response_temporarily_unreadable_preserves_inference_and_worker(worker, monkeypatch):
+    worker.request({"image": "first"}, timeout=10)
+    pid = worker.last_metrics["pid"]
+    original = Path.read_text
+    denied = []
+
+    def read(path, *args, **kwargs):
+        if path.suffix == ".json" and path.exists() and not denied:
+            denied.append(path)
+            raise PermissionError(13, "response not readable yet")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    assert worker.request({"image": "second"}, timeout=10)["calls"] == 2
+    assert len(denied) == 1
+    assert worker.last_metrics["pid"] == pid
+    assert not worker.last_metrics["model_initialized"]
+
+
 @pytest.mark.parametrize("timeout", [False, True])
 def test_timeout_or_normal_close_also_removes_owned_child(worker, tmp_path, timeout):
     import subprocess

@@ -20,7 +20,7 @@ from sawon_interfaces import Action, Observation, ShipmentRecord, UIElement
 from brain.cache import CacheIntegrityError, SemanticCache
 from brain.cache.rebind import RebindProposal, build_rebind_request, install_rebind_proposal
 from brain.observe import describe, redact, summarize
-from brain.observe.evidence import is_record_input, matching_elements
+from brain.observe.evidence import is_record_input, matching_delivered_input, matching_elements
 from brain.observe.progress import navigation_state, navigation_target
 from brain.observe.rows import row_refs
 from brain.observe.summary import ancestors
@@ -213,6 +213,7 @@ class Brain:
         self.query_value_verified = False
         self.query_submitted = False
         self.query_descriptor: dict | None = None
+        self.query_input_anchor: tuple[Observation, str] | None = None
         self.query_window_handle: int | None = None
         self.duplicate_clear = False
         self.save_issued = False
@@ -355,7 +356,7 @@ class Brain:
 
     def _selection_call(self, prompt: str, schema: type[BaseModel]):
         if self.settings.screen_matching:
-            from .matching import compile_match, match_screen
+            from .matching import compile_match, compile_selection_plan, match_screen
 
             response, self.visual_proposal = self.visual_proposal, None
             if response is None or self.visual_proposal_obs_id != self.observation.obs_id:
@@ -399,6 +400,10 @@ class Brain:
                         "source": "same_screen_rematched",
                     },
                 )
+            selection_plan = compile_selection_plan(response, self.observation)
+            if selection_plan is not None:
+                self.action_plan = selection_plan
+                response = response.model_copy(update={"steps": response.steps[:1]})
             result = compile_match(response, self.observation, schema)
             self.log.append(
                 "select",
@@ -492,6 +497,11 @@ class Brain:
                 result = (model or self.model).complete_json(
                     prompt, schema, images=[page.image_path]
                 )
+        except ValidationError:
+            raw = getattr(model or self.model, "last_response", None)
+            if raw is not None:
+                atomic_write_json(self.case_dir / "model-errors" / f"{uuid4().hex}.json", raw)
+            raise
         finally:
             accounting = read_model_accounting(self.log)
             if accounting.model_calls != before + 1:
@@ -690,7 +700,22 @@ class Brain:
             or self.query_descriptor is None
         ):
             return False
-        matches = matching_elements(observation, self.query_descriptor)
+        anchor = self.query_input_anchor
+        same_size = (
+            anchor is not None
+            and isinstance(anchor[0], SceneObservation)
+            and isinstance(observation, SceneObservation)
+            and (
+                anchor[0].screenshot.width,
+                anchor[0].screenshot.height,
+            )
+            == (observation.screenshot.width, observation.screenshot.height)
+        )
+        matches = (
+            matching_delivered_input(observation, *anchor, self.query_descriptor)
+            if same_size
+            else matching_elements(observation, self.query_descriptor)
+        )
         return (
             len(matches) == 1
             and matches[0].enabled
@@ -1272,6 +1297,7 @@ class Brain:
                 return {"next": "review"}
             if decision.screen_kind == "editor" and self.phase == "enter":
                 self._collect_editor_evidence(decision)
+                policy = self._decision_policy()
             self._guard_action(decision, policy)
             return {"next": "act"}
         except GuardStop as exc:
@@ -1741,7 +1767,9 @@ class Brain:
                 )
             if choice.type in {"set_text", "type_text"}:
                 descriptor = self.pending["descriptor"]
-                matches = matching_elements(observation, descriptor)
+                matches = matching_delivered_input(
+                    observation, pending["before_observation"], choice.ref, descriptor
+                )
                 if len(matches) != 1:
                     return self._fail("input_target_ambiguous_after_action")
                 element = matches[0]
@@ -1759,7 +1787,9 @@ class Brain:
                         return result
                     pending["blur_recheck"] = True
                     observation = self._observe()
-                    matches = matching_elements(observation, descriptor)
+                    matches = matching_delivered_input(
+                        observation, pending["before_observation"], choice.ref, descriptor
+                    )
                     if observation.active_window != before_window or len(matches) != 1:
                         return self._fail("input_target_ambiguous_after_blur")
                     element = matches[0]
@@ -1786,6 +1816,7 @@ class Brain:
                         self.query_value_verified = True
                         self.query_submitted = False
                         self.query_descriptor = describe(element, observation.elements)
+                        self.query_input_anchor = (observation, element.ref)
                         self.query_window_handle = observation.active_window.handle
                         self._record_progress("query_input")
                         new_facts.append("query_input_verified")

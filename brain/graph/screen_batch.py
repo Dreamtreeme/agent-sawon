@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import Field, model_validator
 from sawon_interfaces import Observation
 
-from brain.observe.evidence import matching_elements
+from brain.observe.evidence import matching_delivered_input
 from brain.visual.scene import SceneObservation
 
 from .execution import ActionPlan, GuardStop, PlanExecution, PlannedAction
@@ -203,7 +203,9 @@ def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Ob
     matched, mismatched = [], []
     for delivered in execution.delivered[:-1]:
         source = delivered["choice"].source
-        candidates = matching_elements(observation, delivered["descriptor"])
+        candidates = matching_delivered_input(
+            observation, execution.before, delivered["choice"].ref, delivered["descriptor"]
+        )
         ok = (
             observation.active_window == execution.before.active_window
             and len(candidates) == 1

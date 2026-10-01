@@ -291,3 +291,65 @@ def test_login_plan_sends_two_credentials_and_click_before_any_reread(tmp_path, 
     assert not brain.save_issued and not brain.verified
     assert "fixture-secret-901" not in (tmp_path / "run_log.jsonl").read_text()
     assert all("fixture-secret-901" not in prompt for prompt in model.prompts)
+
+
+@pytest.mark.parametrize("wrong_value", [False, True])
+def test_joint_verification_survives_corrected_visual_label(tmp_path, record, wrong_value):
+    relay = ChangingPixelsRelay(record)
+    relay.mode = "editor"
+    brain, perception, _ = make_brain(tmp_path, record, relay, [screen_plan(record)])
+    original = perception.observe
+
+    def corrected_labels(wire):
+        scene = original(wire)
+        if relay.actions:
+            scene = scene.model_copy(
+                update={
+                    "elements": [
+                        e.model_copy(
+                            update={"name": "Corrected caption", "label_hint": "Corrected"}
+                        )
+                        if e.role == "edit"
+                        else e
+                        for e in scene.elements
+                    ]
+                }
+            )
+        return scene
+
+    perception.observe = corrected_labels
+    brain.phase, brain.duplicate_clear = "enter", True
+    brain._observe()
+    assert brain._select_node({}) == {"next": "act"}
+    assert brain._act_node({}) == {"next": "verify"}
+    if wrong_value:
+        relay.inputs["mbl_no"] = "WRONG"
+    assert brain._verify_node({}) == {"next": "review"}
+    assert set(brain.verified) == set(brain.values) - ({"mbl_no"} if wrong_value else set())
+
+
+def test_save_policy_uses_current_verified_evidence(tmp_path, record):
+    from test_brain import decision
+
+    relay = ChangingPixelsRelay(record)
+    relay.mode = "editor"
+    relay.inputs.update(values_for(record))
+    proposal = {
+        "fields": [],
+        "next_decision": {
+            "decision": decision(
+                intent="save",
+                kind="editor",
+                action={"type": "click", "ref": "e7"},
+                evidence=[
+                    {"field": f, "ref": f"e{i + 20}"} for i, f in enumerate(values_for(record))
+                ],
+            )
+        },
+    }
+    brain, _, _ = make_brain(tmp_path, record, relay, [proposal])
+    brain.phase, brain.duplicate_clear = "enter", True
+    brain._observe()
+    assert not brain.verified
+    assert brain._select_node({}) == {"next": "act"}
+    assert set(brain.verified) == set(brain.values)

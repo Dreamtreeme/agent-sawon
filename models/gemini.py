@@ -45,16 +45,20 @@ class GeminiClient(MeasuredModelClient):
         run_log: EventSink,
         temperature: float = 0,
         max_output_tokens: int = 4096,
+        thinking_level: str | None = None,
     ) -> None:
         super().__init__(provider="gemini", model=model, run_log=run_log)
         self._sdk = sdk_client
         self._price = price
         self._temperature = temperature
         self._max_output_tokens = max_output_tokens
+        self._thinking_level = thinking_level
+        self.last_response: dict | None = None
 
     def _generate(
         self, prompt: str, schema: type[BaseModel], *, images: list[Path] | None
     ) -> ProviderReply:
+        self.last_response = None
         parts = [types.Part.from_text(text=prompt)]
         for path in images or []:
             mime_type, _ = mimetypes.guess_type(path.name)
@@ -75,11 +79,22 @@ class GeminiClient(MeasuredModelClient):
                 response_json_schema=schema.model_json_schema(),
                 temperature=self._temperature,
                 max_output_tokens=self._max_output_tokens,
+                thinking_config=types.ThinkingConfig(thinking_level=self._thinking_level)
+                if self._thinking_level is not None
+                else None,
                 candidate_count=1,
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                 http_options=types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=1)),
             ),
         )
+        self.last_response = {
+            "text": response.text or "",
+            "finish_reasons": [
+                c.finish_reason.value
+                for c in (getattr(response, "candidates", None) or [])
+                if isinstance(getattr(c, "finish_reason", None), types.FinishReason)
+            ],
+        }
         metadata = response.usage_metadata
         usage = None
         if (
@@ -93,7 +108,14 @@ class GeminiClient(MeasuredModelClient):
                 thinking_tokens=metadata.thoughts_token_count or 0,
                 cached_input_tokens=metadata.cached_content_token_count or 0,
             )
-        return ProviderReply(text=response.text or "", usage=usage)
+        return ProviderReply(
+            text=response.text or "",
+            usage=usage,
+            output_truncated=any(
+                getattr(c, "finish_reason", None) == types.FinishReason.MAX_TOKENS
+                for c in (getattr(response, "candidates", None) or [])
+            ),
+        )
 
     def _cost(self, usage: TokenUsage) -> Decimal:
         return self._price.cost(usage)

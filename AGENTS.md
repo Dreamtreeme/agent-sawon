@@ -36,3 +36,7 @@ See ../agent-sawon-bench/docs/visual-v1-contract-20260930.md. Preserve previous 
 - Python 3.13, typed code, pydantic v2, ruff, pytest. Mark desktop tests `gui`.
 - Run `python -m ruff check .`, `python -m ruff format --check .`, `python -m pytest`.
 - Do not publish this repository or its prompts/cache as part of routine implementation.
+
+The user selected Gemini as the primary screen-worker path on 2026-10-01.
+Follow ../agent-sawon-bench/docs/gemini-worker-plan-20261001.md.
+Preserve Jev as an experimental profile; prioritize actual save/final-query completion.

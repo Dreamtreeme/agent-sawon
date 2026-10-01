@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import json
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -80,13 +81,22 @@ class PersistentWorker:
                     + "\n"
                 )
                 self.process.stdin.flush()
-                while not output.exists():
+                while True:
+                    try:
+                        reply = json.loads(output.read_text(encoding="utf-8"))
+                        break
+                    except FileNotFoundError:
+                        pass  # The worker has not published its atomic response yet.
+                    except PermissionError:
+                        if sys.platform != "win32":
+                            raise
+                        # Windows can expose the renamed response before allowing an
+                        # open. Wait for this same response; do not restart inference.
                     if self.process.poll() is not None:
                         raise WorkerError("local_worker_exited")
                     if time.perf_counter() - started >= timeout:
                         raise subprocess.TimeoutExpired(self.command, timeout)
                     time.sleep(0.02)
-                reply = json.loads(output.read_text(encoding="utf-8"))
                 if reply.get("request_id") != request_id or not reply.get("ok"):
                     raise WorkerError("local_worker_request_failed")
                 self.last_metrics = {

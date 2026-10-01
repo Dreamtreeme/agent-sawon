@@ -6,4 +6,6 @@ replay_path = "../examples/replay_responses.jsonl"
 temperature = 0.0
 # Includes reasoning tokens as well as the structured control relationships.
 max_output_tokens = 8192
+# Screen matching uses the supplied procedure; reserve capacity for the actual JSON.
+thinking_level = "low"
 timeout_ms = 60000

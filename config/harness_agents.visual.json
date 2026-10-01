@@ -18,7 +18,7 @@
         "--config",
         "{agent_dir}/config/brain.visual.toml",
         "--model-config",
-        "{agent_dir}/config/models.lite.toml",
+        "{agent_dir}/config/models.visual.toml",
         "--env-path",
         "{agent_dir}/.env",
         "--summary-strategy",
@@ -35,7 +35,7 @@
       ],
       "metadata_files": [
         "config/brain.visual.toml",
-        "config/models.lite.toml",
+        "config/models.visual.toml",
         "config/pricing.toml",
         "config/pipeline.korean.toml",
         "examples/shipment-procedure.json"

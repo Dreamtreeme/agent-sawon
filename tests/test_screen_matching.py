@@ -133,7 +133,7 @@ def test_identical_capture_reuses_ocr_but_rematches_new_procedure_step(tmp_path,
     assert ocr.calls == detector.calls == 2
 
 
-def test_image_is_requested_only_after_explicit_ambiguity(tmp_path, record):
+def test_gemini_matches_image_and_ocr_together_and_can_retry_ambiguity(tmp_path, record):
     meaning = fixture()[-1]
     brain, model, _, _, _, _ = setup_brain(
         tmp_path,
@@ -150,7 +150,7 @@ def test_image_is_requested_only_after_explicit_ambiguity(tmp_path, record):
     model._generate = generate
     brain._observe()
     assert brain._select_node({}) == {"next": "act"}
-    assert images_seen == [False, True]
+    assert images_seen == [True, True]
 
 
 def test_local_grounding_retry_receives_only_the_relevant_correction(tmp_path, record):
@@ -274,7 +274,19 @@ def test_save_result_and_proof_use_the_existing_contract():
     assert compile_match(proof, scene, DecisionResponse).to_decision().grid_ref == prefix + "1"
 
 
-@pytest.mark.parametrize("mode", ["present", "missing", "still_missing", "changed_value"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "present",
+        "missing",
+        "still_missing",
+        "changed_value",
+        "renamed",
+        "renamed_wrong_value",
+        "resized",
+        "resized_wrong_value",
+    ],
+)
 def test_query_verification_omission_is_repaired_without_reusing_old_value(tmp_path, record, mode):
     from brain.graph.execution import GuardStop
     from brain.graph.matching import required_verification, retain_verification
@@ -302,14 +314,36 @@ def test_query_verification_omission_is_repaired_without_reusing_old_value(tmp_p
     )
     brain.query_window_handle = before.active_window.handle
     brain.query_submitted = brain.query_value_verified = True
+    if mode.startswith(("renamed", "resized")):
+        brain.query_input_anchor = (
+            before,
+            next(e.ref for e in before.elements if e.role == "edit"),
+        )
     required = required_verification(brain)
-    if mode == "changed_value":
+    if mode in {"changed_value", "renamed_wrong_value", "resized_wrong_value"}:
         blocks[-1] = blocks[-1].model_copy(update={"text": "DIFFERENT-NOW"})
-    screen = {"ocr": [b.model_dump() for b in blocks], "markers": [m.model_dump() for m in markers]}
+    if mode.startswith("renamed"):
+        field = dict(field, label_ids=[])
+    current_wire = wire()
+    if mode.startswith("resized"):
+        markers = [
+            m.model_copy(update={"bbox": (100, 15, 500, 35)}) if m.id == field_id else m
+            for m in markers
+        ]
+        current_wire = current_wire.model_copy(
+            update={"screenshot": current_wire.screenshot.model_copy(update={"width": 800})}
+        )
+    screen = {
+        "image_size": [current_wire.screenshot.width, current_wire.screenshot.height],
+        "ocr": [b.model_dump() for b in blocks],
+        "markers": [m.model_dump() for m in markers],
+    }
     matched = ScreenMatch(
         screen_kind="query",
         procedure_step="check-duplicate",
-        controls=[table, field] if mode == "present" else [table],
+        controls=[table, field]
+        if mode == "present" or mode.startswith(("renamed", "resized"))
+        else [table],
         operation="duplicate_clear",
         grid=table_id,
         evidence=[{"field": "hbl_no", "target": field_id}],
@@ -320,10 +354,12 @@ def test_query_verification_omission_is_repaired_without_reusing_old_value(tmp_p
         assert len(model.prompts) == 1
         return
     repaired = retain_verification(brain, matched, screen, required)
-    assert len(model.prompts) == (0 if mode == "present" else 1)
+    assert len(model.prompts) == (
+        0 if mode == "present" or mode.startswith(("renamed", "resized")) else 1
+    )
     assert repaired.operation == matched.operation and repaired.steps == matched.steps
-    brain.observation = bind_scene(wire(), blocks, ground_meanings(repaired, markers, blocks))
-    if mode == "changed_value":
+    brain.observation = bind_scene(current_wire, blocks, ground_meanings(repaired, markers, blocks))
+    if mode in {"changed_value", "renamed_wrong_value", "resized_wrong_value"}:
         assert not brain._current_query_matches()
     else:
         assert brain._current_query_matches()
@@ -389,3 +425,130 @@ def test_final_proof_preserves_grid_row_and_field_evidence():
     decision = compile_match(result, scene, DecisionResponse).to_decision()
     assert decision.grid_ref == prefix + "1" and decision.row_ref == prefix + "2"
     assert decision.evidence[0].ref == prefix + "3"
+
+
+def test_selection_row_and_confirmation_compile_to_existing_executor():
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from brain.graph.matching import compile_selection_plan
+
+    obs_id = uuid4()
+    prefix = "e" + str(obs_id.int) + "0"
+    scene = SimpleNamespace(
+        obs_id=obs_id, elements=[SimpleNamespace(ref=prefix + str(i)) for i in (20, 31)]
+    )
+    match = ScreenMatch.model_validate(
+        {
+            "screen_kind": "partner",
+            "controls": [],
+            "procedure_step": "lookup-partner",
+            "steps": [
+                {"target": 20, "action": "click", "source": "consignee", "intent": "select_option"},
+                {"target": 31, "action": "click", "intent": "select_option"},
+            ],
+        }
+    )
+    plan = compile_selection_plan(match, scene)
+    assert [a.decision.action.ref for a in plan.actions] == [prefix + "20", prefix + "31"]
+    assert all(a.decision.action.source is None for a in plan.actions)
+    assert plan.verification == "single"
+    mixed = match.model_copy(
+        update={"steps": [match.steps[0], match.steps[1].model_copy(update={"intent": "navigate"})]}
+    )
+    assert compile_selection_plan(mixed, scene) is None
+
+
+def test_save_matching_receives_same_action_contract_as_validator(tmp_path, record):
+    from brain.graph.matching import match_screen
+    from brain.graph.save_review import SAVE_RESULT_ACTIONS
+
+    brain, model, _, _, _, meaning = setup_brain(
+        tmp_path,
+        record,
+        [
+            response(
+                fixture()[-1],
+                screen_kind="dialog",
+                procedure_step="inspect-save",
+                steps=[],
+                operation="stop",
+                save_result="unknown",
+            )
+        ],
+    )
+    brain.phase = "save_result"
+    match_screen(brain, {"ocr": [], "markers": []}, None)
+    prompt = model.prompts[-1]
+    for intent in SAVE_RESULT_ACTIONS["ready_for_query"]:
+        assert intent in prompt
+    assert '"schema_mapping"' in prompt
+    assert "not acknowledgement" in prompt
+
+
+@pytest.mark.parametrize("phase", ["duplicate_query", "final_query"])
+def test_pending_query_input_proposes_search_without_claiming_verification(tmp_path, record, phase):
+    import json
+
+    from brain.graph.matching import RULES, match_screen
+    from brain.graph.schemas import Choice, Decision
+
+    brain, model, _, _, _, _ = setup_brain(
+        tmp_path,
+        record,
+        [
+            response(
+                fixture()[-1],
+                screen_kind="query",
+                procedure_step="search-duplicate" if phase == "duplicate_query" else "search-final",
+                steps=[],
+                operation="stop",
+            )
+        ],
+    )
+    brain.phase = phase
+    brain.decision = Decision(
+        screen_kind="query",
+        operation="act",
+        intent="query_input",
+        subgoal="query",
+        reason="input identifier",
+        action=Choice(type="set_text", ref="e1", source="hbl_no"),
+    )
+    brain.pending = {"decision": brain.decision}
+    match_screen(brain, {"ocr": [], "markers": []}, None)
+    state = json.loads(model.prompts[-1][len(RULES) :])
+    assert state["notebook"]["query_value_verified"] is False
+    assert state["proposal_after_verification"]["checkpoint"] == "search"
+    assert "search" in state["execution"]["allowed_intents"]
+    assert "query_input" not in state["execution"]["allowed_intents"]
+    assert not any(s["checkpoint"] == "query_input" for s in state["procedure"])
+    assert any(s["checkpoint"] == "search" for s in state["procedure"])
+    assert brain.query_value_verified is False
+
+
+def test_final_row_matching_receives_visibility_and_action_contract(tmp_path, record):
+    import json
+
+    from brain.graph.matching import RULES, match_screen
+
+    brain, model, _, _, _, _ = setup_brain(
+        tmp_path,
+        record,
+        [
+            response(
+                fixture()[-1],
+                screen_kind="query",
+                procedure_step="verify-final",
+                steps=[],
+                operation="stop",
+            )
+        ],
+    )
+    brain.phase = "final_query"
+    brain.query_value_verified = brain.query_submitted = True
+    match_screen(brain, {"ocr": [], "markers": []}, None)
+    state = json.loads(model.prompts[-1][len(RULES) :])
+    assert "search" not in state["execution"]["allowed_intents"]
+    assert "window expansion" in state["execution"]["guidance"]
+    assert "reuse earlier refs" in state["execution"]["guidance"]

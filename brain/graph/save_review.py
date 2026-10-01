@@ -8,6 +8,14 @@ from sawon_interfaces import Observation
 from .execution import GuardStop
 from .schemas import DecisionResponse, FieldName, StrictModel
 
+SAVE_RESULT_ACTIONS = {
+    "rejected": {"navigate", "cancel", "wait"},
+    "confirmation_required": {"confirm_save"},
+    "ready_for_query": {"navigate", "select_tab", "query_input", "wait"},
+    "unknown": set(),
+}
+
+
 SAVE_REVIEW_GUIDANCE = """
 SAVE RESULT REVIEW: the last command was delivered, but saving is NOT proven.
 Read CURRENT visible messages and controls, not the previous action's intention.
@@ -23,7 +31,9 @@ Choose next_decision in the SAME response, avoiding another planning call:
 - rejected: dismiss the error by meaning (navigate/cancel/wait), or stop. The runtime
   returns to entry and un-verifies only repair_fields; field entry is replanned later.
 - confirmation_required: confirm_save on a current confirmation control, or stop.
-- ready_for_query: navigate toward the query, enter its identifier, or stop.
+- ready_for_query: dismiss a completed-save notice using navigate, navigate toward the query,
+  enter its identifier, or stop. confirm_save is only for a pending save confirmation,
+  not acknowledgement of a message reporting that saving already happened.
 The pending-state policy is superseded ONLY after runtime validation of this review.
 Do not claim completion, refill data, submit search before query input is verified,
 or infer persistence from a delivered click. Fresh final query proof is still required.
@@ -47,13 +57,7 @@ class SaveReviewResponse(StrictModel):
         decision = self.next_decision.to_decision()
         if decision.operation == "stop":
             return self
-        allowed = {
-            "rejected": {"navigate", "cancel", "wait"},
-            "confirmation_required": {"confirm_save"},
-            "ready_for_query": {"navigate", "select_tab", "query_input", "wait"},
-            "unknown": set(),
-        }
-        if decision.operation != "act" or decision.intent not in allowed[self.result]:
+        if decision.operation != "act" or decision.intent not in SAVE_RESULT_ACTIONS[self.result]:
             raise ValueError("next decision conflicts with save result")
         return self
 

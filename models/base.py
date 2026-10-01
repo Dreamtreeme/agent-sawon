@@ -81,6 +81,7 @@ class ProviderReply:
     usage: TokenUsage | None
     recorded_usage: TokenUsage | None = None
     recorded_usd: Decimal | None = None
+    output_truncated: bool = False
 
 
 def request_fingerprint(prompt: str, schema: type[BaseModel], images: list[Path] | None) -> str:
@@ -149,6 +150,8 @@ class MeasuredModelClient(ABC):
         finally:
             latency_ms = (perf_counter() - started) * 1000
             payload["usage"] = usage.model_dump() if usage is not None else None
+            if reply is not None and reply.output_truncated:
+                payload["output_truncated"] = True
             if reply is not None and (
                 reply.recorded_usage is not None or reply.recorded_usd is not None
             ):

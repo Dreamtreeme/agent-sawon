@@ -152,6 +152,10 @@ def ground_meanings(
         # cannot be relabelled with a different OCR block or omit their own text.
         if marker.source == "ocr" and set(meaning.text_ids) != set(marker.text_ids):
             raise ValueError("ocr_marker_text_mismatch")
+        if meaning.role in {"edit", "combobox"} and not meaning.text_ids:
+            meaning = meaning.model_copy(
+                update={"text_ids": [b.id for b in blocks if contains(marker.bbox, b.bbox)]}
+            )
         controls.append(VisualControl(**meaning.model_dump(), bbox=list(marker.bbox)))
     # Unclassified text remains visible as static evidence, never an input target.
     for marker in markers:

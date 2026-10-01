@@ -338,3 +338,12 @@ def test_perception_refines_only_after_basic_detection_reports_failure(
     event = next(e for e in log.read_all() if e.payload.get("stage") == "visual_perception")
     assert event.payload["detection_ms"] == (2000 if missing else 1000)
     assert event.payload["local_detector_ms"] == (12000 if missing else 2000)
+
+
+def test_input_value_comes_from_contained_ocr_when_model_omits_text_ids():
+    blocks, _, markers, meaning = fixture()
+    blocks.append(OcrBlock(id=9, text="CT", bbox=(110, 20, 20, 15), confidence=0.99))
+    scene = bind_scene(wire(), blocks, ground_meanings(meaning, markers, blocks))
+    field = next(e for e in scene.elements if e.role == "edit")
+    assert field.value == "CT"
+    assert field.name == "Reference"

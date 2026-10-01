@@ -378,3 +378,32 @@ def test_committed_replay_demo_fixture_matches_schema(run_log: RunLog):
     result = client.complete_json(DEMO_PROMPT, DemoResponse)
     assert result.response.message == "Agent Sawon stage-0 replay and run log are connected."
     assert result.usd == 0
+
+
+def test_gemini_truncated_json_preserves_usage_and_truncation_diagnostic(run_log, rate):
+    response = sdk_response('{"value":')
+    response.candidates = [SimpleNamespace(finish_reason=types.FinishReason.MAX_TOKENS)]
+    client, _ = fake_gemini(run_log, rate, response)
+    with pytest.raises(ValidationError):
+        client.complete_json("test", Answer)
+    event = run_log.read_all()[-1]
+    assert event.payload["output_truncated"] is True
+    assert event.payload["usage"]["response_tokens"] == 20
+    assert event.cost.usd is not None
+
+
+def test_gemini_configures_thinking_without_raising_output_limit(run_log, rate):
+    sdk = Mock()
+    sdk.models.generate_content.return_value = sdk_response()
+    client = GeminiClient(
+        sdk_client=sdk,
+        model="test-model",
+        price=rate,
+        run_log=run_log,
+        max_output_tokens=8192,
+        thinking_level="low",
+    )
+    client.complete_json("test", Answer)
+    config = sdk.models.generate_content.call_args.kwargs["config"]
+    assert config.max_output_tokens == 8192
+    assert config.thinking_config.thinking_level == types.ThinkingLevel.LOW
