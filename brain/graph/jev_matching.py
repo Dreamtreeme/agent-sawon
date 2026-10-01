@@ -342,6 +342,10 @@ def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMa
         fills = [s for s in steps if s.action == "fill"]
         if len({s.target for s in fills}) != len(fills):
             operation, steps = "image", []
+    proof = operation in {"duplicate_clear", "duplicate_found", "complete"}
+    required_sources = {
+        r["source"] for r in notebook.get("required_verification", []) if r["screen"] == screen_kind
+    }
     return ScreenMatch(
         screen_kind=screen_kind,
         controls=controls,
@@ -350,15 +354,18 @@ def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMa
         operation="stop" if operation in {"image", "refine"} else operation,
         needs_image=operation == "image",
         needs_refinement=operation == "refine",
-        grid=target("grid"),
-        row=target("row"),
+        grid=target("grid") if proof else None,
+        row=target("row") if operation == "complete" else None,
         evidence=[
             MatchEvidence(field=source, target=target("evidence:" + source))
             for source in notebook["record"]
             if target("evidence:" + source) is not None
+            and (operation == "complete" or source in required_sources)
         ],
         save_result=pick("save_result") if "save_result" in answers else None,
-        message_targets=[target("message")] if target("message") is not None else [],
+        message_targets=[target("message")]
+        if "save_result" in answers and target("message") is not None
+        else [],
         repair_fields=[s for s in notebook["record"] if pick("repair:" + s) == "yes"],
         expected_result=step["completion"],
     )
