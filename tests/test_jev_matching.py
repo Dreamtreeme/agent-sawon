@@ -29,6 +29,7 @@ def state():
         "procedure": [
             {
                 "id": "fill",
+                "actions": ["fill", "navigate", "select_tab"],
                 "screen": "editor",
                 "goal": "Fill remaining fields",
                 "completion": "Current values match",
@@ -91,8 +92,7 @@ def test_parallel_field_mapping_compiles_shared_batch_and_grounding():
         answers(
             request,
             **{
-                "screen": "editor",
-                "operation": "act",
+                "decision": "fill:editor:fill",
                 "field:1": "hbl_no",
                 "field:2": "mbl_no",
                 "role:1": "edit",
@@ -126,6 +126,7 @@ def test_parallel_field_mapping_compiles_shared_batch_and_grounding():
 def test_login_compiles_credentials_and_click_in_one_batch():
     data = state()
     data["procedure"][0]["screen"] = "login"
+    data["procedure"][0]["actions"] = ["login"]
     data["notebook"]["available_credentials"] = ["credential.username", "credential.password"]
     request = build_request(data)
     result = compile_answers(
@@ -133,12 +134,10 @@ def test_login_compiles_credentials_and_click_in_one_batch():
         answers(
             request,
             **{
-                "screen": "login",
-                "operation": "act",
+                "decision": "fill:login:login",
                 "field:1": "credential.username",
                 "field:2": "credential.password",
-                "command": "login",
-                "command_target:login": "3",
+                "target:fill:login:login": "3",
                 "role:1": "edit",
                 "role:2": "edit",
                 "role:3": "button",
@@ -164,12 +163,10 @@ def test_only_selected_branch_is_executed_and_conflicting_fills_request_image(na
         answers(
             request,
             **{
-                "screen": "editor",
-                "operation": "act",
                 "field:1": "hbl_no",
                 "field:2": "hbl_no",
-                "command": "navigate" if navigate else "none",
-                "command_target:navigate": "3",
+                "decision": "fill:editor:navigate" if navigate else "fill:editor:fill",
+                "target:fill:editor:navigate": "3",
             },
         ),
     )
@@ -190,9 +187,7 @@ def test_field_choice_uses_source_key_and_skip_preserves_unmatched_fields(role):
         answers(
             request,
             **{
-                "screen": "editor",
-                "operation": "act",
-                "command": "none",
+                "decision": "fill:editor:fill",
                 "field:1": "hbl_no",
                 "field:2": "skip",
                 "role:1": role,
@@ -208,6 +203,7 @@ def test_field_choice_uses_source_key_and_skip_preserves_unmatched_fields(role):
 
 def test_login_field_mapping_retains_local_credential_values_and_input_order():
     data = state()
+    data["procedure"][0].update(screen="login", actions=["login"])
     data["notebook"]["phase"] = "duplicate_query"
     data["notebook"]["checkpoint"] = "query_input"
     data["notebook"]["available_credentials"] = ["credential.password", "credential.username"]
@@ -221,15 +217,13 @@ def test_login_field_mapping_retains_local_credential_values_and_input_order():
         answers(
             request,
             **{
-                "screen": "login",
-                "operation": "act",
-                "command": "login",
+                "decision": "fill:login:login",
                 "field:1": "credential.password",
                 "field:2": "credential.username",
                 "role:1": "edit",
                 "role:2": "edit",
                 "role:3": "button",
-                "command_target:login": "3",
+                "target:fill:login:login": "3",
             },
         ),
     )
@@ -243,11 +237,11 @@ def test_login_field_mapping_retains_local_credential_values_and_input_order():
 def test_exact_question_and_option_sets_required():
     request = build_request(state())
     reply = answers(request)
-    del reply.answers["screen"]
+    del reply.answers["decision"]
     with pytest.raises(ValueError, match="question_set"):
         compile_answers(request, reply)
     reply = answers(request)
-    reply.answers["command_target:login"].probabilities["999"] = 0
+    reply.answers["target:fill:editor:navigate"].probabilities["999"] = 0
     with pytest.raises(ValueError, match="option_set"):
         compile_answers(request, reply)
 
@@ -269,10 +263,8 @@ def test_ocr_text_tab_can_be_selected_without_detector_box():
         answers(
             request,
             **{
-                "screen": "editor",
-                "operation": "act",
-                "command": "select_tab",
-                "command_target:select_tab": "3",
+                "decision": "fill:editor:select_tab",
+                "target:fill:editor:select_tab": "3",
                 "role:3": "tabitem",
             },
         ),
@@ -303,9 +295,7 @@ def test_actual_brain_uses_argmax_unless_image_explicitly_requested(
             reply = answers(
                 request,
                 **{
-                    "screen": "query",
-                    "procedure": "enter-duplicate-key",
-                    "operation": "image" if needs_image else "act",
+                    "decision": "image" if needs_image else "enter-duplicate-key:query:query_input",
                     "field:" + target: "skip" if needs_image else "hbl_no",
                     "role:" + target: "edit",
                     "label:" + target: "8",
@@ -352,8 +342,7 @@ def test_disabled_target_is_preserved_for_existing_execution_guard():
         answers(
             request,
             **{
-                "screen": "editor",
-                "operation": "stop",
+                "decision": "stop",
                 "role:1": "disabled:edit",
             },
         ),
@@ -362,23 +351,13 @@ def test_disabled_target_is_preserved_for_existing_execution_guard():
     assert not result.controls[0].enabled
 
 
-def test_command_target_questions_are_explicit_and_missing_target_routes_to_image():
+def test_branch_targets_are_explicit_and_missing_target_routes_to_image():
     request = build_request(state())
-    assert "login" in request.questions["command_target:login"].instructions
-    assert "command_target" not in request.questions
-    result = compile_answers(
-        request,
-        answers(
-            request,
-            **{
-                "screen": "login",
-                "operation": "act",
-                "command": "login",
-                "command_target:login": "none",
-            },
-        ),
-    )
-    assert result.needs_image and result.steps == []
+    assert not {"screen", "procedure", "command", "operation"} & request.questions.keys()
+    question = request.questions["target:fill:editor:navigate"]
+    assert question.instructions["branch"]["action"] == "navigate"
+    result = compile_answers(request, answers(request, decision="fill:editor:navigate"))
+    assert result.needs_image and not result.steps
 
 
 def test_pending_query_does_not_request_a_second_fill():
@@ -460,3 +439,77 @@ def test_jev_factory_uses_explicit_key_and_profile(tmp_path, key_name):
     env.write_text(f"{key_name}=fake-key\n", encoding="utf-8")
     config = Path(__file__).resolve().parents[1] / "config/models.jev.toml"
     assert isinstance(create_model_client(config, run_log=log, env_path=env), JevClient)
+
+
+def test_single_branch_owns_screen_procedure_and_command_with_business_checkpoint():
+    data = state()
+    data["notebook"].update(
+        phase="duplicate_query",
+        checkpoint="query_input",
+        available_credentials=["credential.username", "credential.password"],
+    )
+    data["procedure"] = [
+        {
+            "id": "authenticate",
+            "screen": "login",
+            "actions": ["login"],
+            "goal": "Authenticate",
+            "completion": "Menu visible",
+        },
+        {
+            "id": "query-key",
+            "screen": "query",
+            "actions": ["query_input"],
+            "goal": "Enter query key",
+            "completion": "Query input matches",
+        },
+    ]
+    request = build_request(data)
+    assert not {"screen", "procedure", "command", "operation"} & request.questions.keys()
+    result = compile_answers(
+        request,
+        answers(
+            request,
+            **{
+                "decision": "authenticate:login:login",
+                "field:1": "credential.username",
+                "field:2": "credential.password",
+                "role:1": "edit",
+                "role:2": "edit",
+                "role:3": "button",
+                "target:authenticate:login:login": "3",
+            },
+        ),
+    )
+    assert (result.screen_kind, result.procedure_step) == ("login", "authenticate")
+    assert [s.intent for s in result.steps] == ["credential", "credential", "login"]
+    assert "query-key:login:query_input" not in request.questions["decision"].criteria
+
+
+def test_proof_branch_ignores_speculative_action_targets():
+    data = state()
+    data["procedure"][0].update(screen="query", actions=["duplicate_clear", "navigate"])
+    request = build_request(data)
+    result = compile_answers(
+        request,
+        answers(
+            request,
+            **{
+                "decision": "fill:query:duplicate_clear",
+                "target:fill:query:navigate": "3",
+                "field:1": "hbl_no",
+                "grid": "1",
+                "role:1": "table",
+                "table:1": "empty",
+            },
+        ),
+    )
+    assert result.operation == "duplicate_clear" and result.grid == 1
+    assert not result.steps
+
+
+def test_jev_requires_explicit_procedure_actions_before_any_model_call():
+    data = state()
+    data["procedure"][0].pop("actions")
+    with pytest.raises(ValueError, match="jev_procedure_requires_actions"):
+        build_request(data)

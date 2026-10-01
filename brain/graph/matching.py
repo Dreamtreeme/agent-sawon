@@ -22,6 +22,24 @@ class ProcedureStep(BaseModel):
     phase: Literal["duplicate_query", "enter", "save_result", "final_query"]
     screen: Literal["login", "menu", "query", "editor", "partner", "dialog", "any"]
     checkpoint: str = "any"
+    actions: list[
+        Literal[
+            "login",
+            "navigate",
+            "query_input",
+            "fill",
+            "search",
+            "save",
+            "confirm_save",
+            "select_tab",
+            "select_option",
+            "cancel",
+            "duplicate_clear",
+            "duplicate_found",
+            "complete",
+            "inspect",
+        ]
+    ] = Field(default_factory=list)
     goal: str = Field(min_length=1, max_length=500)
     completion: str = Field(min_length=1, max_length=500)
 

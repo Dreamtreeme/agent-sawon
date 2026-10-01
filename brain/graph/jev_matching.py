@@ -40,17 +40,61 @@ Never infer an empty table merely from missing OCR rows. Request image when evid
 Saving is not completion: final completion requires a fresh query and current row evidence.
 Never transmit, approve, delete or invent business values. Choose none when no candidate fits.
 """
-COMMANDS = {
-    "none": "No boundary command; fill inputs, provide evidence, or stop instead.",
-    "login": "Click the login command AFTER filling available credentials.",
-    "navigate": "Click navigation to the current procedure destination.",
-    "search": "Click the search command for the current query.",
-    "save": "Click save, only after all required record fields are verified.",
-    "confirm_save": "Click the confirmation of the authorized save.",
-    "select_tab": "Click a tab revealing remaining task fields.",
-    "select_option": "Click a matching lookup result or option.",
-    "cancel": "Click cancel/back for the current procedure.",
+ACTION_MEANINGS = {
+    "login": (
+        "On a LOGIN screen: fill available credentials, then click login. "
+        "Business query checkpoint does not apply until logged in."
+    ),
+    "navigate": "Move from the specified CURRENT screen toward this procedure goal.",
+    "query_input": (
+        "On a QUERY screen: fill the query source; not credentials. "
+        "Skip this branch if delivered query input already matches."
+    ),
+    "fill": (
+        "Fill all currently visible remaining record inputs together. "
+        "No navigation or save in this branch."
+    ),
+    "search": "Submit the current query/search after required input matches.",
+    "save": "Save only after required record inputs are verified.",
+    "confirm_save": "Confirm the authorized save in its visible confirmation.",
+    "select_tab": "Open a visible tab needed for remaining inputs or evidence.",
+    "select_option": "Choose a visible matching result or dropdown option.",
+    "cancel": "Cancel/back as required by this procedure.",
+    "duplicate_clear": "Prove the current submitted query has zero matching rows.",
+    "duplicate_found": "Prove the current submitted query contains a duplicate.",
+    "complete": "Prove all required values from one current final-query row.",
+    "inspect": "Report current save result/error evidence without executing a command.",
 }
+FILL_ACTIONS = {"login", "query_input", "fill"}
+PROOF_ACTIONS = {"duplicate_clear", "duplicate_found", "complete"}
+CLICK_ACTIONS = set(ACTION_MEANINGS) - {"query_input", "fill", "inspect"} - PROOF_ACTIONS
+
+
+def action_choices(state: dict) -> dict:
+    """The procedure file supplies branches; one answer selects a complete branch."""
+    choices = {}
+    for step in state["procedure"]:
+        screens = (
+            [step["screen"]]
+            if step["screen"] != "any"
+            else ["login", "menu", "query", "editor", "partner", "dialog"]
+        )
+        for screen in screens:
+            for action in step.get("actions", []):
+                key = f"{step['id']}:{screen}:{action}"
+                choices[key] = {
+                    "procedure_step": step["id"],
+                    "screen": screen,
+                    "action": action,
+                    "goal": step["goal"],
+                    "completion": step["completion"],
+                    "condition": ACTION_MEANINGS[action],
+                }
+    if not choices:
+        raise ValueError("jev_procedure_requires_actions")
+    choices["image"] = "Current evidence is insufficient: inspect image before choosing a branch."
+    choices["stop"] = "No offered branch can progress the authorized task."
+    return choices
 
 
 def build_request(state: dict) -> ChoiceRequest:
@@ -88,58 +132,29 @@ def build_request(state: dict) -> ChoiceRequest:
         for key, value in contexts.items()
     }
     targets["none"] = "No observable suitable target. Never invent a target."
+    choices = action_choices(state)
     ask(
-        "screen",
-        "Identify the CURRENT screen from OCR and geometry.",
-        dict.fromkeys(["login", "menu", "query", "editor", "partner", "dialog", "unknown"]),
+        "decision",
+        "Choose ONE executable branch whose screen condition matches the CURRENT OCR. "
+        "The business checkpoint is progress within the task, NOT the current screen. "
+        "An observed login screen requires the supplied login branch first. "
+        "Use completed actions and current values; never infer an action happened from a plan. "
+        "For pending verification choose the next branch only if current values match. "
+        "Saving alone never establishes completion. Each option includes its procedure and action.",
+        choices,
     )
-    ask(
-        "procedure",
-        "Select the current supplied procedure step using phase, checkpoint and "
-        "screen. Pending verification may advance only if current visible values match.",
-        dict.fromkeys(s["id"] for s in state["procedure"]),
-    )
-    ask(
-        "operation",
-        "Choose the CURRENT operation. Proof requires current screen evidence. "
-        "No OCR text alone does NOT establish an empty table.",
-        {
-            "act": "Execute current procedure inputs or one command.",
-            "duplicate_clear": "Current queried table visibly proves zero matching records.",
-            "duplicate_found": "Current queried table proves a matching record exists.",
-            "complete": "Fresh final query row proves every required field.",
-            "stop": "No valid authorized action is available.",
-            "image": "Needed relationship, icon/state or table evidence requires image inspection.",
-            "refine": "Required control extent is missing; request local detector refinement.",
-        },
-    )
-    ask(
-        "command",
-        "Which single boundary command is needed NOW? Use none for record fills. "
-        "Only login may be combined with credential fills.",
-        COMMANDS,
-    )
-    # Jev questions cannot consume another question's answer. Speculate each
-    # command target explicitly, then use only the selected command's answer.
-    for command, description in COMMANDS.items():
-        if command != "none":
+    for key, branch in choices.items():
+        if isinstance(branch, dict) and branch["action"] in CLICK_ACTIONS:
             ask(
-                "command_target:" + command,
-                f"If the current procedure requires {command}: {description} "
-                "Which CURRENT marker performs that command? For login, assume credential "
-                "fills will run first. Select the command even if fields are currently empty. "
-                "Choose none only if no such command is visible.",
+                "target:" + key,
+                {
+                    "question": "If THIS branch is executed, select its CURRENT clickable target. "
+                    "For login assume credentials will be filled first. Choose none if absent. "
+                    "This speculative answer is used only if this branch is selected.",
+                    "branch": branch,
+                },
                 targets,
             )
-    ask(
-        "command_action",
-        "How should the current boundary command be activated?",
-        {
-            "click": "Single mouse click",
-            "double_click": "Double mouse click",
-            "enter": "Enter key on the selected target",
-        },
-    )
     sources = {
         key: {"source": key, "value": value, "scope": "record input; never a credential"}
         for key, value in notebook["record"].items()
@@ -220,7 +235,7 @@ def build_request(state: dict) -> ChoiceRequest:
                 "question": f"Classify marker {mid}'s actual semantic role. "
                 "OCR is text extent, not a surrounding input/table. Decorative text is text. "
                 "Use disabled:<role> only when current evidence indicates disabled state; "
-                "request image via operation when a needed visual state cannot be determined.",
+                "request image via decision when a needed visual state cannot be determined.",
                 "marker": contexts[str(mid)],
             },
             {
@@ -308,24 +323,28 @@ def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMa
                 table_state=pick(f"table:{mid}", "uncertain") if role == "table" else "not_table",
             )
         )
-    operation, screen_kind = pick("operation"), pick("screen")
-    step = next(s for s in state["procedure"] if s["id"] == pick("procedure"))
+    selected_branch = pick("decision")
+    branch = request.questions["decision"].criteria[selected_branch]
+    if isinstance(branch, dict):
+        screen_kind = branch["screen"]
+        action = branch["action"]
+        step = next(s for s in state["procedure"] if s["id"] == branch["procedure_step"])
+        operation = action if action in PROOF_ACTIONS else "act" if action != "inspect" else "stop"
+    else:
+        step = state["procedure"][0]
+        screen_kind = step["screen"] if step["screen"] != "any" else "unknown"
+        action, operation = "none", selected_branch
     steps = []
     if operation == "act":
-        command = pick("command")
-        # Parallel questions include speculative branches. Consume only the chosen
-        # branch, rather than treating every field answer as an instruction to act.
         sources = []
-        if screen_kind == "login" and command == "login":
+        if action == "login":
             sources = sorted(
                 notebook["available_credentials"], key=lambda s: s == "credential.password"
             )
-        elif command == "none":
-            if screen_kind in {"editor", "partner"} and notebook["phase"] == "enter":
-                sources = list(notebook["record"])
-            elif screen_kind == "query" and notebook["phase"] in {"duplicate_query", "final_query"}:
-                sources = ["hbl_no"]
-        # One answer per observed input candidate; original values stay in the notebook.
+        elif action == "fill":
+            sources = list(notebook["record"])
+        elif action == "query_input":
+            sources = ["hbl_no"]
         assignments = [
             (pick(f"field:{m['id']}", "skip"), m["id"])
             for m in state["screen"]["markers"]
@@ -339,26 +358,18 @@ def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMa
                     action="fill",
                     source=source,
                     intent="credential"
-                    if screen_kind == "login"
+                    if action == "login"
                     else "query_input"
-                    if screen_kind == "query"
+                    if action == "query_input"
                     else "fill",
                 )
             )
-        selected = target("command_target:" + command)
-        if command != "none":
+        if action in CLICK_ACTIONS:
+            selected = target("target:" + selected_branch)
             if selected is None:
                 operation, steps = "image", []
             else:
-                action = pick("command_action")
-                steps.append(
-                    MatchAction(
-                        target=selected,
-                        intent=command,
-                        action="key" if action == "enter" else action,
-                        keys="enter" if action == "enter" else None,
-                    )
-                )
+                steps.append(MatchAction(target=selected, intent=action, action="click"))
         if not steps and operation == "act":
             operation = "image"
         fills = [s for s in steps if s.action == "fill"]

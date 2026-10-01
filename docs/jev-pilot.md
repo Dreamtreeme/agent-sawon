@@ -154,3 +154,20 @@ OCR 글자 박스는 입력 칸 질문에서 제외하고, 복수 칸의 동일 
 다음 응답은 screen=login/command=login이지만 procedure=enter-duplicate-key로 불일치하여 종료했다.
 실제 실행0건. 입력 칸별 매칭은 작동했으나 전체 업무 성공은 아니며007의 별도 미해결 문제가 반복됐다.
 추가 유료 반복은 하지 않았다. 알려진 누적 추정$4.189942418(과거 청구 확인된 누락사용량 원본 유지).
+
+### 2026-10-01 Jev 실행 분기 통합 / 파일럿 개정
+공식 speculative fan-out 및 browser-use/jev-ultrafast 패턴에 맞춰
+screen/procedure/operation/command 독립 선택을 decision 한 개로 통합했다.
+업무 파일의 각 단계에 actions를 선언하고, 선택지는 단계·현재 화면 조건·행동·목표를
+함께 포함한다. 코드가 선택된 분기의 화면/절차를 확정하고 그 분기의 target/field 답만
+사용한다. 입력 칸별 메모 source/skip 매칭과 최대 확률 선택은 유지한다.
+명시적 actions가 없는 Jev 업무 파일은 모델 호출 전에 오류를 알린다.
+구형 화면/절차/명령 답을 임의 조합하거나 서로 불일치한다고 종료하는 Jev 경로는 제거했다.
+선택 자체의 정확성은 여전히 실측 대상이다. 이미지 필요 선택은 기존 Gemini로 전달한다.
+
+007/008 캡처에서 확인한 활성/포커스 표시 갱신을 대상으로 벤치 캡처 전에
+RedrawWindow(INVALIDATE|ALLCHILDREN|UPDATENOW|FRAME)를 적용했다. 전체 클라이언트
+내용 비교와 좌표·전경 검사는 유지한다. 이 수정의 실제 효과는 별도 파일럿으로 확인한다.
+참고: https://docs.typesafe.ai/patterns/fan-out
+https://github.com/browser-use/jev-ultrafast/blob/main/jev_ultrafast/model.py
+https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-redrawwindow
