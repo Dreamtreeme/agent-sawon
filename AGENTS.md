@@ -37,6 +37,6 @@ See ../agent-sawon-bench/docs/visual-v1-contract-20260930.md. Preserve previous 
 - Run `python -m ruff check .`, `python -m ruff format --check .`, `python -m pytest`.
 - Do not publish this repository or its prompts/cache as part of routine implementation.
 
-The user selected Gemini as the primary screen-worker path on 2026-10-01.
-Follow ../agent-sawon-bench/docs/gemini-worker-plan-20261001.md.
-Preserve Jev as an experimental profile; prioritize actual save/final-query completion.
+The user selected Luna as the primary screen-worker path on 2026-10-02.
+Follow ../agent-sawon-bench/docs/luna-primary-plan-20261002.md.
+Preserve Gemini and Jev as comparison profiles; prioritize actual save/final-query completion.

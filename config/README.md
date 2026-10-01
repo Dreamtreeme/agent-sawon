@@ -5,8 +5,9 @@
 
 | 목적 | 설정 |
 |---|---|
-| 현재 Gemini 화면 매칭 파일럿 | `harness_agents.visual.json` (`core_visual`) |
-| 동일 업무의 Luna 비교 | `harness_agents.luna.json` (`core_visual`) |
+| 현재 Luna 주 화면 작업자 | `harness_agents.visual.json` (`core_visual`) |
+| Luna 명시 프로필·과거 비교 재현 | `harness_agents.luna.json` (`core_visual`) |
+| Gemini 비교 프로필 | `harness_agents.gemini.json` (`core_visual`) |
 | Jev 화면 매칭 + Gemini 이미지 보완 파일럿 | `harness_agents.jev.json` (`core_jev`) |
 | 개정 M1 연습 0–29, 경량 기본·상위 복구·매 실행 빈 캐시 | `harness_agents.m1-practice.json` |
 | M1 두 관찰 요약 전략, 캐시 없음·동일 상위 복구 | `harness_agents.m1-final.json` |
