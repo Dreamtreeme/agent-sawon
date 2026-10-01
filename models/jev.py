@@ -18,7 +18,7 @@ from models.pricing import PriceRate
 class ChoiceQuestion(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["choice"] = "choice"
-    instructions: str
+    instructions: str | dict
     criteria: dict[str, str | dict | None] = Field(min_length=1, max_length=255)
 
 

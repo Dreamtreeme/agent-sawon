@@ -78,6 +78,10 @@ def answers(request, **choices):
 
 def test_parallel_field_mapping_compiles_shared_batch_and_grounding():
     request = build_request(state())
+    assert (
+        request.questions["role:1"].instructions["marker"]["nearby_ocr"][0]["text"] == "Reference"
+    )
+    assert "Reference" in request.questions["input:hbl_no"].criteria["1"]
     result = compile_answers(
         request,
         answers(
@@ -213,8 +217,12 @@ def test_ocr_text_tab_can_be_selected_without_detector_box():
     assert result.controls[2].text_ids == [20]
 
 
-@pytest.mark.parametrize("needs_image", [False, True])
-def test_actual_brain_routes_only_ambiguity_to_image_model(tmp_path, record, needs_image):
+@pytest.mark.parametrize(
+    "needs_image,low_confidence", [(False, False), (True, False), (False, True)]
+)
+def test_actual_brain_routes_only_ambiguity_to_image_model(
+    tmp_path, record, needs_image, low_confidence
+):
     from test_visual_markers import fixture
 
     brain, gemini, _, _, _, meaning = setup_brain(tmp_path, record, [response(fixture()[-1])])
@@ -239,6 +247,8 @@ def test_actual_brain_routes_only_ambiguity_to_image_model(tmp_path, record, nee
                     "label:" + target: "8",
                 },
             )
+            if low_confidence:
+                reply.answers["role:" + target].confidence = 0.4
             return ProviderReply(
                 reply.model_dump_json(), TokenUsage(input_tokens=0, response_tokens=0)
             )
@@ -255,8 +265,10 @@ def test_actual_brain_routes_only_ambiguity_to_image_model(tmp_path, record, nee
     brain.credentials = {"credential.username": "SECRET_USER", "credential.password": "SECRET_PW"}
     brain._observe()
     assert brain._select_node({}) == {"next": "act"}
-    assert seen == ([True] if needs_image else [])
-    assert sum(e.kind == "model_call" for e in brain.log.read_all()) == 1 + needs_image
+    assert seen == ([True] if needs_image or low_confidence else [])
+    assert sum(e.kind == "model_call" for e in brain.log.read_all()) == 1 + bool(
+        needs_image or low_confidence
+    )
     assert "SECRET_" not in brain.matching_model.request.model_dump_json()
     assert len(list((tmp_path / "jev").glob("*/answers.json"))) == 1
 

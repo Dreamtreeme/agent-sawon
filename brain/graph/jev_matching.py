@@ -43,10 +43,34 @@ def build_request(state: dict) -> ChoiceRequest:
     markers, ocr = screen["markers"], screen["ocr"]
     questions: dict[str, ChoiceQuestion] = {}
 
-    def ask(key: str, instruction: str, options: dict) -> None:
+    def ask(key: str, instruction: str | dict, options: dict) -> None:
         questions[key] = ChoiceQuestion(instructions=instruction, criteria=options)
 
-    targets = dict.fromkeys(str(m["id"]) for m in markers)
+    def context(marker: dict) -> dict:
+        x, y, w, h = marker["bbox"]
+
+        def distance(block: dict) -> float:
+            a, b, c, d = block["bbox"]
+            return max(x - a - c, a - x - w, 0) ** 2 + max(y - b - d, b - y - h, 0) ** 2
+
+        nearby = sorted(ocr, key=distance)[:4]
+        return {
+            "id": marker["id"],
+            "bbox": marker["bbox"],
+            "source": marker["source"],
+            "inside_text": [b["text"] for b in ocr if b["id"] in marker["contained_ocr_ids"]],
+            "nearby_ocr": [{"id": b["id"], "text": b["text"], "bbox": b["bbox"]} for b in nearby],
+        }
+
+    contexts = {str(m["id"]): context(m) for m in markers}
+    targets = {
+        key: (
+            "inside: " + " / ".join(value["inside_text"])
+            if value["inside_text"]
+            else "near: " + " / ".join(b["text"] for b in value["nearby_ocr"][:2])
+        )
+        for key, value in contexts.items()
+    }
     targets["none"] = "No observable suitable target. Never invent a target."
     inputs = {str(m["id"]): targets[str(m["id"])] for m in markers if m["source"] != "ocr"}
     inputs["none"] = targets["none"]
@@ -131,8 +155,8 @@ def build_request(state: dict) -> ChoiceRequest:
                 f"Does the current save rejection explicitly require repairing {source}?",
                 {"yes": "Explicitly implicated", "no": "Not implicated"},
             )
-    # IDs resolve against shared state; do not repeat OCR text for every question.
-    labels = dict.fromkeys(str(b["id"]) for b in ocr)
+    # Keep short literal labels next to choices; arbitrary ID indirection hurt live matching.
+    labels = {str(b["id"]): b["text"] for b in ocr}
     labels["none"] = "No observable label"
     for marker in markers:
         mid = marker["id"]
@@ -144,17 +168,23 @@ def build_request(state: dict) -> ChoiceRequest:
         ]
         ask(
             f"role:{mid}",
-            f"Classify marker {mid}'s actual semantic role. "
-            "OCR is text extent, not a surrounding input/table. Decorative text is text. "
-            "Use disabled:<role> only when current evidence indicates disabled state; "
-            "request image via operation when a needed visual state cannot be determined.",
+            {
+                "question": f"Classify marker {mid}'s actual semantic role. "
+                "OCR is text extent, not a surrounding input/table. Decorative text is text. "
+                "Use disabled:<role> only when current evidence indicates disabled state; "
+                "request image via operation when a needed visual state cannot be determined.",
+                "marker": contexts[str(mid)],
+            },
             dict.fromkeys([*roles, *(f"disabled:{r}" for r in roles)]),
         )
         if marker["source"] != "ocr":
             ask(
                 f"label:{mid}",
-                f"Which OCR block names marker {mid}? Choose its field label, "
-                "not an entered value. Use geometry and meaning, not only nearest distance.",
+                {
+                    "question": f"Which OCR block names marker {mid}? Choose its field label, "
+                    "not an entered value. Use geometry and meaning, not only nearest distance.",
+                    "marker": contexts[str(mid)],
+                },
                 labels,
             )
             ask(
@@ -309,6 +339,20 @@ def match_choices(brain, state: dict) -> ScreenMatch:
             atomic_write_json(directory / "provider-response.json", raw)
     atomic_write_json(directory / "answers.json", response)
     result = compile_answers(request, response)
+    needed = {s.target for s in result.steps} | {e.target for e in result.evidence}
+    needed.update(i for i in (result.grid, result.row) if i is not None)
+    ambiguous = [
+        c.id
+        for c in result.controls
+        if c.id in needed and c.confidence < brain.settings.visual_min_confidence
+    ]
+    if ambiguous and not result.needs_image and not result.needs_refinement:
+        # Reuse image recovery only for ambiguity that would block the selected action/proof.
+        # Jev's distribution confidence is not interchangeable with Gemini self-report.
+        result = result.model_copy(update={"needs_image": True, "steps": [], "operation": "stop"})
+        brain.log.append(
+            "verify", payload={"check": "jev_ambiguous_selected_controls", "marker_ids": ambiguous}
+        )
     atomic_write_json(directory / "screen-match.json", result)
     brain.log.append(
         "select",
