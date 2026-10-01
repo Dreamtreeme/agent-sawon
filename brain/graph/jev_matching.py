@@ -88,8 +88,6 @@ def build_request(state: dict) -> ChoiceRequest:
         for key, value in contexts.items()
     }
     targets["none"] = "No observable suitable target. Never invent a target."
-    inputs = {str(m["id"]): targets[str(m["id"])] for m in markers if m["source"] != "ocr"}
-    inputs["none"] = targets["none"]
     ask(
         "screen",
         "Identify the CURRENT screen from OCR and geometry.",
@@ -142,24 +140,42 @@ def build_request(state: dict) -> ChoiceRequest:
             "enter": "Enter key on the selected target",
         },
     )
-    for source in [*notebook["record"], *notebook["available_credentials"]]:
-        query_input_pending = any(
-            a.get("intent") == "query_input" for a in notebook.get("pending_actions", [])
-        )
-        query_rule = (
-            "The query input was already delivered and awaits verification: choose none if "
-            "the CURRENT value matches, allowing the next search command. Repair only a mismatch."
-            if query_input_pending
-            else "For query_input checkpoint select hbl_no even if it already matches; "
-            "the required fresh input has not been delivered yet."
-        )
+    sources = {
+        key: {"source": key, "value": value, "scope": "record input; never a credential"}
+        for key, value in notebook["record"].items()
+    }
+    sources.update(
+        {
+            key: {"source": key, "scope": "login credential; value supplied locally"}
+            for key in notebook["available_credentials"]
+        }
+    )
+    sources["skip"] = "Do not write this marker: no matching source or no input needed."
+    query_input_pending = any(
+        a.get("intent") == "query_input" for a in notebook.get("pending_actions", [])
+    )
+    for marker in markers:
+        if marker["source"] == "ocr":
+            continue  # OCR captions have no editable control extent.
         ask(
-            "input:" + source,
-            f"Which visible input needs writing from source {source} NOW? "
-            "Choose none for an already matching/verified record field or if navigation is needed. "
-            "On login select all available credential inputs. Do not choose line-item cells. "
-            + query_rule,
-            inputs,
+            f"field:{marker['id']}",
+            {
+                "question": "Which notebook source belongs in THIS input candidate NOW? "
+                "Use its geometry, inside text and nearby OCR; do not assume the nearest text "
+                "is its label. Choose skip for noneditable markers, repeated line-item cells, "
+                "already matching record inputs, or if navigation is needed. "
+                "On a login screen choose only available credential sources; "
+                "the business checkpoint does not change the login task. "
+                "On an editor/partner screen choose remaining record sources only. "
+                "On a query screen choose the supplied procedure's query source only. "
+                "Only on a query screen: if query_input_pending is true, the input was "
+                "already delivered; skip a matching value, allowing the next search command. "
+                "Otherwise match the required fresh query input even if its value matches. "
+                "Return a source key, never a literal value or coordinates.",
+                "marker": contexts[str(marker["id"])],
+                "query_input_pending": query_input_pending,
+            },
+            sources,
         )
     for source in notebook["record"]:
         ask(
@@ -309,21 +325,26 @@ def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMa
                 sources = list(notebook["record"])
             elif screen_kind == "query" and notebook["phase"] in {"duplicate_query", "final_query"}:
                 sources = ["hbl_no"]
-        for source in sources:
-            selected = target("input:" + source)
-            if selected is not None:
-                steps.append(
-                    MatchAction(
-                        target=selected,
-                        action="fill",
-                        source=source,
-                        intent="credential"
-                        if screen_kind == "login"
-                        else "query_input"
-                        if screen_kind == "query"
-                        else "fill",
-                    )
+        # One answer per observed input candidate; original values stay in the notebook.
+        assignments = [
+            (pick(f"field:{m['id']}", "skip"), m["id"])
+            for m in state["screen"]["markers"]
+            if m["source"] != "ocr" and pick(f"field:{m['id']}", "skip") in sources
+        ]
+        assignments.sort(key=lambda pair: sources.index(pair[0]))
+        for source, selected in assignments:
+            steps.append(
+                MatchAction(
+                    target=selected,
+                    action="fill",
+                    source=source,
+                    intent="credential"
+                    if screen_kind == "login"
+                    else "query_input"
+                    if screen_kind == "query"
+                    else "fill",
                 )
+            )
         selected = target("command_target:" + command)
         if command != "none":
             if selected is None:
@@ -341,7 +362,11 @@ def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMa
         if not steps and operation == "act":
             operation = "image"
         fills = [s for s in steps if s.action == "fill"]
-        if len({s.target for s in fills}) != len(fills):
+        if len({s.source for s in fills}) != len(fills) or any(
+            c.role not in {"edit", "combobox"}
+            for c in controls
+            if c.id in {s.target for s in fills}
+        ):
             operation, steps = "image", []
     proof = operation in {"duplicate_clear", "duplicate_found", "complete"}
     required_sources = {

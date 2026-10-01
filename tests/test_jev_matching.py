@@ -65,7 +65,9 @@ def state():
 def answers(request, **choices):
     selected = {}
     for key, question in request.questions.items():
-        default = "none" if "none" in question.criteria else next(iter(question.criteria))
+        default = next(
+            (v for v in ("skip", "none") if v in question.criteria), next(iter(question.criteria))
+        )
         choice = choices.get(key, default)
         selected[key] = {
             "type": "choice",
@@ -81,7 +83,9 @@ def test_parallel_field_mapping_compiles_shared_batch_and_grounding():
     assert (
         request.questions["role:1"].instructions["marker"]["nearby_ocr"][0]["text"] == "Reference"
     )
-    assert "Reference" in request.questions["input:hbl_no"].criteria["1"]
+    assert (
+        request.questions["field:1"].instructions["marker"]["nearby_ocr"][0]["text"] == "Reference"
+    )
     result = compile_answers(
         request,
         answers(
@@ -89,8 +93,8 @@ def test_parallel_field_mapping_compiles_shared_batch_and_grounding():
             **{
                 "screen": "editor",
                 "operation": "act",
-                "input:hbl_no": "1",
-                "input:mbl_no": "2",
+                "field:1": "hbl_no",
+                "field:2": "mbl_no",
                 "role:1": "edit",
                 "role:2": "edit",
                 "role:3": "text",
@@ -116,7 +120,7 @@ def test_parallel_field_mapping_compiles_shared_batch_and_grounding():
     ]
     grounded = ground_meanings(result, markers, [OcrBlock(**state()["screen"]["ocr"][0])])
     assert grounded.controls[0].bbox == [50, 0, 40, 15]
-    assert "3" not in request.questions["input:hbl_no"].criteria  # OCR isn't an input
+    assert "field:3" not in request.questions  # OCR is not an input
 
 
 def test_login_compiles_credentials_and_click_in_one_batch():
@@ -131,8 +135,8 @@ def test_login_compiles_credentials_and_click_in_one_batch():
             **{
                 "screen": "login",
                 "operation": "act",
-                "input:credential.username": "1",
-                "input:credential.password": "2",
+                "field:1": "credential.username",
+                "field:2": "credential.password",
                 "command": "login",
                 "command_target:login": "3",
                 "role:1": "edit",
@@ -162,8 +166,8 @@ def test_only_selected_branch_is_executed_and_conflicting_fills_request_image(na
             **{
                 "screen": "editor",
                 "operation": "act",
-                "input:hbl_no": "1",
-                "input:mbl_no": "1",
+                "field:1": "hbl_no",
+                "field:2": "hbl_no",
                 "command": "navigate" if navigate else "none",
                 "command_target:navigate": "3",
             },
@@ -174,6 +178,66 @@ def test_only_selected_branch_is_executed_and_conflicting_fills_request_image(na
         assert len(result.steps) == 1 and result.steps[0].intent == "navigate"
     else:
         assert result.needs_image and result.steps == []
+
+
+@pytest.mark.parametrize("role", ["edit", "button"])
+def test_field_choice_uses_source_key_and_skip_preserves_unmatched_fields(role):
+    request = build_request(state())
+    assert not any(k.startswith("input:") for k in request.questions)
+    assert request.questions["field:1"].criteria["hbl_no"]["value"] == "SYNTH-1"
+    result = compile_answers(
+        request,
+        answers(
+            request,
+            **{
+                "screen": "editor",
+                "operation": "act",
+                "command": "none",
+                "field:1": "hbl_no",
+                "field:2": "skip",
+                "role:1": role,
+            },
+        ),
+    )
+    if role == "edit":
+        assert [(s.target, s.source) for s in result.steps] == [(1, "hbl_no")]
+        assert "SYNTH-1" not in result.model_dump_json()
+    else:
+        assert result.needs_image and not result.steps
+
+
+def test_login_field_mapping_retains_local_credential_values_and_input_order():
+    data = state()
+    data["notebook"]["phase"] = "duplicate_query"
+    data["notebook"]["checkpoint"] = "query_input"
+    data["notebook"]["available_credentials"] = ["credential.password", "credential.username"]
+    request = build_request(data)
+    instruction = request.questions["field:1"].instructions["question"]
+    assert "For query_input checkpoint select hbl_no" not in instruction
+    assert "business checkpoint does not change the login task" in instruction
+    assert "value" not in request.questions["field:1"].criteria["credential.password"]
+    result = compile_answers(
+        request,
+        answers(
+            request,
+            **{
+                "screen": "login",
+                "operation": "act",
+                "command": "login",
+                "field:1": "credential.password",
+                "field:2": "credential.username",
+                "role:1": "edit",
+                "role:2": "edit",
+                "role:3": "button",
+                "command_target:login": "3",
+            },
+        ),
+    )
+    assert [(s.target, s.source) for s in result.steps] == [
+        (2, "credential.username"),
+        (1, "credential.password"),
+        (3, None),
+    ]
 
 
 def test_exact_question_and_option_sets_required():
@@ -242,7 +306,7 @@ def test_actual_brain_uses_argmax_unless_image_explicitly_requested(
                     "screen": "query",
                     "procedure": "enter-duplicate-key",
                     "operation": "image" if needs_image else "act",
-                    "input:hbl_no": "none" if needs_image else target,
+                    "field:" + target: "skip" if needs_image else "hbl_no",
                     "role:" + target: "edit",
                     "label:" + target: "8",
                 },
@@ -321,7 +385,7 @@ def test_pending_query_does_not_request_a_second_fill():
     data = state()
     data["notebook"]["pending_actions"] = [{"intent": "query_input", "source": "hbl_no"}]
     request = build_request(data)
-    instruction = request.questions["input:hbl_no"].instructions
+    instruction = request.questions["field:1"].instructions["question"]
     assert "already delivered" in instruction
     assert "allowing the next search command" in instruction
     assert "select hbl_no even if it already matches" not in instruction
