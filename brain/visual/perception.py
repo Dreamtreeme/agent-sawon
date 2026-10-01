@@ -28,6 +28,8 @@ Unclassified OCR text is added locally as static evidence.
 You CANNOT create, move, resize or invent boxes. Return only existing marker IDs.
 The image numbers both OCR text regions and local detector boxes.
 The marker list is the authoritative original-image geometry.
+OCR-group markers enclose aligned text in repeated lines. Classify them as row/header/group/text
+only; they are not input or table extents. Use OCR cell markers as children of an observed row.
 An OCR label is NOT an input. Only a local detector marker may be an edit/combobox,
 table, row, group or window. Missing controls must be reported in uncertainties.
 Use real contained parents only; omit absent parents.

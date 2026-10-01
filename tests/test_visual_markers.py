@@ -347,3 +347,83 @@ def test_input_value_comes_from_contained_ocr_when_model_omits_text_ids():
     field = next(e for e in scene.elements if e.role == "edit")
     assert field.value == "CT"
     assert field.name == "Reference"
+
+
+@pytest.mark.parametrize("clipped", [False, True])
+def test_ocr_rows_feed_existing_final_review_without_inventing_values(clipped):
+    from test_visual_scene import wire
+
+    from brain.graph.review import review_final
+    from brain.observe.values import field_matches
+    from brain.visual.scene import SemanticDetection, bind_scene
+
+    blocks = [
+        OcrBlock(id=0, text="Identifier", bbox=(10, 10, 70, 15), confidence=0.99),
+        OcrBlock(id=1, text="Cargo", bbox=(130, 10, 50, 15), confidence=0.99),
+        OcrBlock(id=2, text="ID-A", bbox=(10, 40, 50, 15), confidence=0.99),
+        OcrBlock(
+            id=3, text="par..." if clipped else "parts", bbox=(130, 40, 50, 15), confidence=0.99
+        ),
+    ]
+    markers = build_markers(
+        blocks,
+        [Marker(id=0, bbox=(1, 1, 350, 150), source="pixel_rectangle", confidence=1)],
+        400,
+        200,
+    )
+    table = next(m for m in markers if m.source == "pixel_rectangle")
+    row = next(m for m in markers if m.source == "ocr_group" and m.text_ids == (2, 3))
+    cells = [m for m in markers if m.source == "ocr" and m.text_ids[0] in {2, 3}]
+    meanings = SemanticDetection(
+        screen_kind="query",
+        controls=[
+            {"id": table.id, "role": "table", "confidence": 0.99, "table_state": "rows"},
+            {"id": row.id, "role": "row", "parent_id": table.id, "confidence": 0.99},
+            *[
+                {
+                    "id": m.id,
+                    "role": "cell",
+                    "parent_id": row.id,
+                    "confidence": 0.99,
+                    "text_ids": list(m.text_ids),
+                }
+                for m in cells
+            ],
+        ],
+    )
+    scene = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
+    review = review_final(scene, {"hbl_no": "ID-A", "description": "parts"}, field_matches)
+    assert review.status == ("needs_more" if clipped else "ready")
+    assert review.missing_fields == (("description",) if clipped else ())
+    invalid = meanings.model_copy(
+        update={
+            "controls": [
+                meanings.controls[1].model_copy(update={"role": "edit", "parent_id": None})
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="ocr_group_is_not_input"):
+        ground_meanings(invalid, markers, blocks)
+
+
+def test_row_groups_require_repeated_columns_inside_measured_container():
+    from brain.visual.row_candidates import row_candidates
+
+    blocks = [
+        OcrBlock(id=0, text="one", bbox=(10, 10, 30, 10), confidence=0.99),
+        OcrBlock(id=1, text="two", bbox=(60, 10, 30, 10), confidence=0.99),
+    ]
+    assert row_candidates(blocks, [(0, 0, 100, 100)]) == []
+    assert row_candidates(blocks, []) == []
+
+
+def test_overlapping_ocr_edges_do_not_drop_a_data_row():
+    from brain.visual.row_candidates import row_candidates
+
+    blocks = [
+        OcrBlock(id=0, text="A", bbox=(10, 10, 30, 10), confidence=0.99),
+        OcrBlock(id=1, text="B", bbox=(60, 10, 30, 10), confidence=0.99),
+        OcrBlock(id=2, text="data-a", bbox=(10, 30, 55, 10), confidence=0.99),
+        OcrBlock(id=3, text="data-b", bbox=(60, 30, 30, 10), confidence=0.99),
+    ]
+    assert [ids for _, ids in row_candidates(blocks, [(0, 0, 100, 100)])] == [(0, 1), (2, 3)]

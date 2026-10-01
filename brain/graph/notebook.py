@@ -18,6 +18,7 @@ from brain.observe.summary import ancestors
 from brain.observe.values import field_matches
 from brain.runtime.storage import atomic_write_json
 
+from .context import execution_context
 from .execution import GuardStop
 from .review import _assign_fields
 from .save_review import SaveReviewResponse
@@ -126,6 +127,7 @@ def _ask(brain: Brain, questions: list[tuple[str, list[Option]]]) -> list[Any]:
     memo = remember(brain)
     memo.update(
         {
+            "execution": execution_context(brain),
             "current_step": brain._decision_policy().current_step,
             "questions": tasks,
             "options": {
@@ -148,6 +150,7 @@ def _ask(brain: Brain, questions: list[tuple[str, list[Option]]]) -> list[Any]:
             {
                 "goal": getattr(brain, "stage_goals", {}).get(brain.phase, GOALS[brain.phase]),
                 "steps": tasks,
+                "execution": memo["execution"],
                 "options": {
                     "0": "Unavailable / stop",
                     **{str(k): v.label for k, v in options.items()},

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from pipeline.schemas import OcrBlock
 
+from .row_candidates import row_candidates
 from .scene import Detection, SemanticDetection, VisualControl, contains, overlap
 
 
@@ -16,7 +17,7 @@ class Marker(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: int = Field(ge=0)
     bbox: tuple[int, int, int, int]
-    source: Literal["ocr", "omniparser", "pixel_rectangle"]
+    source: Literal["ocr", "ocr_group", "omniparser", "pixel_rectangle"]
     confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
     text_ids: tuple[int, ...] = ()
 
@@ -99,6 +100,16 @@ def build_markers(
             continue
         kept.append(box)
     candidates += kept
+    candidates += [
+        Marker(
+            id=0,
+            bbox=extent,
+            source="ocr_group",
+            confidence=min(b.confidence for b in blocks if b.id in ids),
+            text_ids=ids,
+        )
+        for extent, ids in row_candidates(blocks, [box.bbox for box in kept])
+    ]
     if len(candidates) > 500:
         raise ValueError("visual_marker_limit")
     result = []
@@ -126,6 +137,15 @@ def render_markers(path: Path, output: Path, markers: list[Marker]) -> None:
     marked.save(output)
 
 
+def marker_role_allowed(source: str, role: str) -> bool:
+    """Shared geometry capabilities for semantic questions and grounding."""
+    if source == "ocr_group":
+        return role in {"row", "header", "group", "text"}
+    if source == "ocr":
+        return role not in {"edit", "combobox", "table", "row", "group", "window"}
+    return True
+
+
 def ground_meanings(
     meanings: SemanticDetection, markers: list[Marker], blocks: list[OcrBlock]
 ) -> Detection:
@@ -139,15 +159,12 @@ def ground_meanings(
             raise ValueError("unknown_or_duplicate_marker_id")
         used.add(meaning.id)
         marker = by_id[meaning.id]
-        if marker.source == "ocr" and meaning.role in {
-            "edit",
-            "combobox",
-            "table",
-            "row",
-            "group",
-            "window",
-        }:
-            raise ValueError("ocr_text_is_not_control_extent")
+        if not marker_role_allowed(marker.source, meaning.role):
+            raise ValueError(
+                "ocr_group_is_not_input_or_table_extent"
+                if marker.source == "ocr_group"
+                else "ocr_text_is_not_control_extent"
+            )
         # Literal value evidence is constrained to the measured box. OCR markers
         # cannot be relabelled with a different OCR block or omit their own text.
         if marker.source == "ocr" and set(meaning.text_ids) != set(marker.text_ids):

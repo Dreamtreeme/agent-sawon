@@ -40,11 +40,12 @@ from pipeline.ocr import OcrEngine
 from pipeline.schemas import RenderedPage
 
 from .click_refinement import ClickRefinement
+from .context import DUPLICATE_EVIDENCE_GUIDANCE, execution_context, phase_instruction
 from .execution import ActionPlan, PendingAction, execute_plan, log_transition
 from .execution import GuardStop as GuardStop
 from .policy import DecisionPolicy, ExecutionFacts
 from .review import EvidenceReview, review_final
-from .save_review import SAVE_REVIEW_GUIDANCE, SaveReviewResponse, validate_save_review
+from .save_review import SaveReviewResponse, validate_save_review
 from .schemas import (
     Choice,
     Decision,
@@ -95,44 +96,6 @@ def subtree(observation: Observation, ref: str) -> list[UIElement]:
     ]
 
 
-FINAL_QUERY_INPUT_GUIDANCE = (
-    "CURRENT STEP: Fresh query input is required. Saving ended record entry. "
-    "Do not fill record fields or save again. If a save confirmation is visible, "
-    "handle it by meaning; otherwise use CURRENT observed navigation to reach a query "
-    "screen. Choose navigation by each control's observed role and meaning. Window-"
-    "management menus are not evidence of a business search route; consider observed "
-    "back/close controls when leaving a completed document window. "
-    "Set its observed query input from hbl_no with operation=act, "
-    "intent=query_input and action.type=set_text, even if the value already matches. "
-    "The runtime will reread the value. Do not submit final evidence at this step."
-)
-FINAL_QUERY_SEARCH_GUIDANCE = (
-    "CURRENT STEP ONLY: The query value has already been entered and verified, "
-    "but the search has NOT been executed. Execute that search now using a CURRENT "
-    "observed enabled search control identified by its meaning. Return operation=act, "
-    "intent=search and one click or Enter action with its current ref. Do not submit "
-    "verification evidence yet. Existing visible rows do not fulfill the explicit "
-    "search step. If no appropriate control can be identified, stop with intent=stop "
-    "and action=null. Do not fill or save any record field."
-)
-FINAL_QUERY_EVIDENCE_GUIDANCE = (
-    "CURRENT STEP: Fresh query input and search are verified. Submit final proof with "
-    "operation=complete, intent=verify, action=null, screen_kind=query, CURRENT grid_ref, "
-    "row_ref and evidence for every final_required_field from the SAME visible query "
-    "row. If columns are hidden, first use operation=act, intent=navigate and a CURRENT "
-    "observed maximize/navigation control, then reobserve. Never substitute earlier "
-    "editor values or remembered refs for current query cells. Do not fill or save."
-)
-DUPLICATE_EVIDENCE_GUIDANCE = (
-    "CURRENT STEP: Stay on the query screen. Return duplicate_clear for an empty "
-    "visible result grid or duplicate_found for a matching record, intent=verify, "
-    "action=null and the CURRENT result grid_ref. grid_ref is the nonempty string ref "
-    "of the observed result table control, EVEN WHEN it contains zero rows. An empty "
-    "table still has a control ref: do not return null or a row ref for grid_ref. "
-    "If that table cannot be identified in this observation, return stop/stop instead "
-    "of claiming duplicate clearance. Do not navigate or enter data until "
-    "the runtime accepts this evidence. Never infer a grid ref from a prior observation."
-)
 TEXT_INPUT_ROLES = frozenset({"edit", "combobox", "dataitem", "cell"})
 
 POLICY = """You operate a desktop application through observed UI semantics only.
@@ -306,6 +269,7 @@ class Brain:
         if not self.settings.visual_joint_planning:
             return self._call(prompt, schema, page=page)
         context = {
+            "execution": execution_context(self, anticipate=True),
             "goal": self.goal,
             "plan": self.plan,
             "record": self.values,
@@ -343,7 +307,6 @@ class Brain:
             "and next_step=null; do not request refinement for decorative/static text.\n"
             + (LOGIN_GUIDANCE if self.phase == "duplicate_query" else "")
             + (SCREEN_FILL_GUIDANCE if self.phase == "enter" else "")
-            + (SAVE_REVIEW_GUIDANCE if self.phase == "save_result" else "")
             + "\nTRUSTED_TASK="
             + json.dumps(context, ensure_ascii=False)
             + "\nUNTRUSTED_SCREEN="
@@ -905,75 +868,7 @@ class Brain:
             return self._fail("review_error:" + type(exc).__name__)
 
     def _phase_instruction(self, policy: DecisionPolicy | None = None) -> str:
-        policy = policy or self._decision_policy()
-        step = policy.current_step
-        if step == "save_result":
-            return SAVE_REVIEW_GUIDANCE
-        if step == "duplicate_result_evidence":
-            return DUPLICATE_EVIDENCE_GUIDANCE
-        if self.phase == "final_query":
-            if step == "final_row_evidence" and not policy.facts.final_evidence_ready:
-                return (
-                    "CURRENT STEP: Current query evidence is incomplete. Completion is not "
-                    "an allowed response. evidence_review identifies the missing current "
-                    "fields or row identifier. Choose an observed window expansion or other "
-                    "navigation control to reveal the required cells together, then reobserve. "
-                    "Do not replace row cells with query inputs or reuse earlier refs. "
-                    "Do not enter or save the record again. Stop if no grounded route exists."
-                )
-            return {
-                "query_input": FINAL_QUERY_INPUT_GUIDANCE,
-                "search": FINAL_QUERY_SEARCH_GUIDANCE,
-                "final_row_evidence": FINAL_QUERY_EVIDENCE_GUIDANCE,
-            }[step]
-        if self.phase == "enter":
-            if step == "save":
-                return (
-                    "CURRENT STEP: Every record field has verified editor evidence. "
-                    "Activate the CURRENT observed save command once. Do not re-enter "
-                    "verified fields. Delivery will be followed by fresh query verification."
-                )
-            return (
-                "CURRENT PHASE: Duplicate clearance is accepted. Enter and verify ALL "
-                "record fields, including both packages components. Use observed tabs "
-                "and partner dialogs to reach missing fields. remaining_fields lists "
-                "unverified fields; do not repeat verified ones or save before this "
-                "list is empty. evidence may map CURRENT editor controls to fields. "
-                "To submit existing field evidence without another edit, use an allowed "
-                "wait action with that evidence; save becomes available on the next decision."
-            )
-        submitted = policy.facts.submitted_credentials
-        if submitted:
-            remaining = [source for source in policy.facts.remaining_credentials]
-            if remaining:
-                return (
-                    "CURRENT STEP: Input has already been submitted for "
-                    + ", ".join(submitted)
-                    + ". Do not type those credentials again. Submit only the remaining "
-                    "available credential source(s): " + ", ".join(remaining) + ". "
-                    "Protected password values remain unreadable after input."
-                )
-            return (
-                "CURRENT STEP: Available credential inputs have already been submitted "
-                "to the current login controls. Do not type them again; a password field "
-                "remains unreadable even after successful input delivery. Activate the "
-                "CURRENT observed login command with operation=act, intent=login and a "
-                "click or Enter action. Authentication is not yet verified; observe the "
-                "actual result. If the screen shows an authentication error, stop."
-            )
-        if step == "search":
-            return (
-                "CURRENT STEP: The duplicate query value is verified. Activate its "
-                "CURRENT observed search control with operation=act, intent=search. "
-                "Do not navigate to entry before the runtime accepts duplicate evidence."
-            )
-        return (
-            "CURRENT STEP: Check for an existing record before entry. Log in if needed "
-            "using opaque credential sources, and reach a query screen by observed "
-            "navigation. Set its query input from hbl_no with operation=act, "
-            "intent=query_input, action.type=set_text. The runtime must reread it before "
-            "search; even an already matching displayed value must be set and verified."
-        )
+        return phase_instruction(policy or self._decision_policy())
 
     def _decision_schema(self) -> type[BaseModel]:
         return self._decision_policy().response_schema()
@@ -1050,6 +945,7 @@ class Brain:
         )
         if json.loads(summary)["truncated"]:
             raise GuardStop("observation_summary_truncated")
+        context = execution_context(self, policy)
         return (
             POLICY
             + "\nTRUSTED_TASK="
@@ -1060,11 +956,11 @@ class Brain:
                     "plan": self.plan,
                     "phase": self.phase,
                     "execution_policy": (policy or self._decision_policy()).as_prompt(),
-                    "phase_instruction": self._phase_instruction(policy),
-                    "next_required_step": self._final_query_step(),
-                    "final_required_fields": (
-                        sorted(self.values) if self.phase == "final_query" else []
-                    ),
+                    "phase_instruction": context["guidance"],
+                    "next_required_step": context["checkpoint"]
+                    if self.phase == "final_query"
+                    else None,
+                    "final_required_fields": context["final_required_fields"],
                     "verified_fields": sorted(self.verified),
                     "remaining_fields": sorted(set(self.values) - set(self.verified)),
                     "duplicate_clear": self.duplicate_clear,

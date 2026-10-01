@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from typing import Literal
 from uuid import uuid4
 
@@ -12,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from brain.runtime.storage import atomic_write_json
 from brain.visual.scene import SemanticDetection, overlap
 
+from .context import execution_context
 from .execution import GuardStop
 from .schemas import Choice, Decision, FieldName
 from .visual_turn import adapt_proposal, bind_proposal
@@ -133,6 +133,7 @@ include their actual parents (especially tables/rows), not an inventory of every
 Use local marker IDs only. OCR IDs name/value controls; contained_ocr_ids constrain text_ids.
 Control confidence is semantic certainty, not detector candidate_confidence; do not copy it.
 Preserve visible labels and literal contained values for inputs that are being verified.
+OCR-group markers can be row/header/group/text, with OCR cells as children; never inputs/tables.
 OCR labels are not editable controls. Never invent boxes, values, refs or business data.
 OCR-source markers ARE available for clickable text such as tabs/buttons/menu items.
 Use their literal text_ids unchanged. A merged text box may contain multiple captions;
@@ -281,30 +282,11 @@ def retain_verification(
 
 def match_screen(brain, screen: dict, page):
     policy = brain._decision_policy()
-    proposal_policy = policy
-    pending_decision = brain.pending.get("decision") if brain.pending else None
-    if pending_decision is not None and brain.phase in {"duplicate_query", "final_query"}:
-        from .policy import DecisionPolicy
-
-        if pending_decision.intent == "query_input":
-            proposal_policy = DecisionPolicy(replace(policy.facts, query_value_verified=True))
-        elif pending_decision.intent == "search" and pending_decision.screen_kind == "query":
-            proposal_policy = DecisionPolicy(replace(policy.facts, query_submitted=True))
+    contract = execution_context(brain, policy, anticipate=True)
     candidates = [s for s in brain.procedure.steps if s.phase == brain.phase]
-    if brain.pending is None or proposal_policy is not policy:
-        candidates = [
-            s for s in candidates if s.checkpoint in {"any", proposal_policy.current_step}
-        ]
+    if brain.pending is None or contract["conditional"]:
+        candidates = [s for s in candidates if s.checkpoint in {"any", contract["checkpoint"]}]
     required = required_verification(brain)
-    pending_actions = []
-    if brain.pending is not None:
-        execution = brain.pending.get("execution")
-        decisions = [a.decision for a in execution.plan.actions] if execution else [brain.decision]
-        pending_actions = [
-            {"intent": d.intent, "source": d.action.source if d.action else None}
-            for d in decisions
-            if d is not None
-        ]
     notebook = {
         "phase": brain.phase,
         "checkpoint": policy.current_step,
@@ -314,7 +296,7 @@ def match_screen(brain, screen: dict, page):
         "query_submitted": brain.query_submitted,
         "save_issued": brain.save_issued,
         "pending_verification": brain.pending is not None,
-        "pending_actions": pending_actions,
+        "pending_actions": contract["pending_actions"],
         "recent_feedback": brain.feedback[-3:],
         "required_verification": required,
         "available_credentials": sorted(k for k, value in brain.credentials.items() if value),
@@ -326,34 +308,15 @@ def match_screen(brain, screen: dict, page):
         "procedure": [s.model_dump() for s in candidates],
         "notebook": notebook,
         "screen": screen,
-        "execution": {
-            "checkpoint": proposal_policy.current_step,
-            "allowed_intents": sorted(
-                {c["intent"] for c in proposal_policy.as_prompt()["allowed_next_choices"]}
-            ),
-            "guidance": brain._phase_instruction(proposal_policy),
-        },
+        "execution": contract,
     }
-    if proposal_policy is not policy:
+    if contract["conditional"]:
         state["proposal_after_verification"] = {
-            "condition": "ONLY if the pending action is verified from CURRENT screen evidence. "
-            "Retain the input control and literal value for code verification. Propose the next "
-            "procedure step, not another input of the value already delivered. If verification "
-            "fails, code discards the proposal; these conditional facts are not completed facts.",
-            "checkpoint": proposal_policy.current_step,
+            "condition": contract["condition"],
+            "checkpoint": contract["checkpoint"],
         }
-    if brain.phase == "save_result":
-        from .save_review import SAVE_RESULT_ACTIONS, SAVE_REVIEW_GUIDANCE
-
-        state["save_review"] = {
-            "allowed_intents": {k: sorted(v) for k, v in SAVE_RESULT_ACTIONS.items()},
-            "instructions": SAVE_REVIEW_GUIDANCE,
-            "schema_mapping": {
-                "result": "save_result",
-                "evidence_refs": "message_targets",
-                "next_decision": "steps",
-            },
-        }
+    if "save_review" in contract:
+        state["save_review"] = contract["save_review"]
     prompt = RULES + json.dumps(state, ensure_ascii=False)
     if brain.matching_model is not None:
         from .jev_matching import match_choices
@@ -394,6 +357,7 @@ def match_screen(brain, screen: dict, page):
                     {
                         "procedure": step.model_dump(),
                         "notebook": notebook,
+                        "execution": contract,
                         "screen": screen,
                         "controls": [c.model_dump() for c in response.controls],
                     },

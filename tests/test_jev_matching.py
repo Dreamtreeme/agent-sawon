@@ -374,10 +374,11 @@ def test_pending_query_does_not_request_a_second_fill():
     data = state()
     data["notebook"]["pending_actions"] = [{"intent": "query_input", "source": "hbl_no"}]
     request = build_request(data)
-    instruction = request.questions["field:1"].instructions["question"]
-    assert "already delivered" in instruction
-    assert "allowing the next search command" in instruction
-    assert "select hbl_no even if it already matches" not in instruction
+    instruction = request.questions["field:1"].instructions["query_input"]
+    assert instruction["pending"] is True
+    assert instruction["required"] is False
+    assert "Code verifies" in instruction["instruction"]
+    assert "propose search" in instruction["instruction"]
 
 
 def test_question_packing_preserves_every_question_and_shared_state():

@@ -6,9 +6,11 @@ from typing import get_args
 from uuid import uuid4
 
 from brain.runtime.storage import atomic_write_json
+from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import ControlMeaning, contains
 from models.jev import ChoiceAnswers, ChoiceQuestion, ChoiceRequest
 
+from .context import query_input_requirement
 from .matching import MatchAction, MatchEvidence, ScreenMatch
 
 ROLES = get_args(ControlMeaning.model_fields["role"].annotation)
@@ -166,11 +168,13 @@ def build_request(state: dict) -> ChoiceRequest:
         }
     )
     sources["skip"] = "Do not write this marker: no matching source or no input needed."
-    query_input_pending = any(
-        a.get("intent") == "query_input" for a in notebook.get("pending_actions", [])
+    query_contract = state.get("execution", {}).get("query_input") or query_input_requirement(
+        notebook["phase"],
+        notebook.get("checkpoint", "query_input"),
+        any(a.get("intent") == "query_input" for a in notebook.get("pending_actions", [])),
     )
     for marker in markers:
-        if marker["source"] == "ocr":
+        if not marker_role_allowed(marker["source"], "edit"):
             continue  # OCR captions have no editable control extent.
         ask(
             f"input_scope:{marker['id']}",
@@ -200,12 +204,10 @@ def build_request(state: dict) -> ChoiceRequest:
                 "the business checkpoint does not change the login task. "
                 "On an editor/partner screen choose remaining record sources only. "
                 "On a query screen choose the supplied procedure's query source only. "
-                "Only on a query screen: if query_input_pending is true, the input was "
-                "already delivered; skip a matching value, allowing the next search command. "
-                "Otherwise match the required fresh query input even if its value matches. "
+                "Follow query_input.instruction on a query screen. "
                 "Return a source key, never a literal value or coordinates.",
                 "marker": contexts[str(marker["id"])],
-                "query_input_pending": query_input_pending,
+                "query_input": query_contract,
             },
             sources,
         )
@@ -240,12 +242,7 @@ def build_request(state: dict) -> ChoiceRequest:
     labels["none"] = "No observable label"
     for marker in markers:
         mid = marker["id"]
-        roles = [
-            r
-            for r in ROLES
-            if marker["source"] != "ocr"
-            or r not in {"edit", "combobox", "table", "row", "group", "window"}
-        ]
+        roles = [r for r in ROLES if marker_role_allowed(marker["source"], r)]
         ask(
             f"role:{mid}",
             {
