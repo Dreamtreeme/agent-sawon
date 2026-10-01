@@ -182,11 +182,20 @@ def test_navigation_cycle_requests_detailed_coordinate_inside_merged_tab(tmp_pat
     assert brain._act_node({}) == {"next": "verify"}
     pending = brain.pending
     assert pending is not None
+    target = brain.observation.elements[0]
+    scene = brain.observation.model_copy(
+        update={
+            "elements": [
+                target.model_copy(update={"name": "First  Second", "label_hint": None}),
+                *brain.observation.elements[1:],
+            ]
+        }
+    )
 
     assert brain.click_refinement.prepare(
         brain,
         pending,
-        brain.observation,
+        scene,
         failure="navigation_cycle",
     )
     assert len(model.prompts) == 1
@@ -196,6 +205,7 @@ def test_navigation_cycle_requests_detailed_coordinate_inside_merged_tab(tmp_pat
         e for e in brain.log.read_all() if e.payload.get("check") == "click_coordinate_review"
     )
     assert event.payload["failure"] == "navigation_cycle"
+    assert event.payload["target_binding"] == "semantic_target_key"
 
 
 def test_repeated_semantic_click_target_requests_detail_despite_changed_ocr_state(tmp_path, record):

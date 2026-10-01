@@ -14,7 +14,7 @@ from test_screen_matching import response, setup_brain
 
 from brain.graph.jev_matching import build_request, compile_answers
 from brain.graph.matching import compile_match
-from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
+from brain.graph.screen_batch import ScreenFillPlan
 from brain.runtime.storage import RunLog
 from brain.visual.markers import Marker, ground_meanings
 from models.base import UsageUnavailableError
@@ -139,8 +139,7 @@ def test_only_selected_branch_is_executed_and_duplicate_source_is_resolved(navig
         ),
     )
     if navigate:
-        assert not result.needs_image
-        assert len(result.steps) == 1 and result.steps[0].intent == "navigate"
+        assert result.needs_image and not result.steps
     else:
         assert not result.needs_image
         assert [(s.source, s.target) for s in result.steps] == [("hbl_no", 1)]
@@ -171,9 +170,6 @@ def test_field_choice_uses_source_key_and_skip_preserves_unmatched_fields(role):
 
 
 def test_login_field_mapping_retains_local_credential_values_and_input_order():
-    from types import SimpleNamespace
-    from uuid import uuid4
-
     data = state()
     data["procedure"][0].update(screen="login", actions=["login"])
     data["notebook"]["phase"] = "duplicate_query"
@@ -199,23 +195,7 @@ def test_login_field_mapping_retains_local_credential_values_and_input_order():
             },
         ),
     )
-    assert [(s.target, s.source) for s in result.steps] == [
-        (2, "credential.username"),
-        (1, "credential.password"),
-        (3, None),
-    ]
-    assert [s.intent for s in result.steps] == ["credential", "credential", "login"]
-    obs_id = uuid4()
-    refs = {i: f"e{obs_id.int}0{i}" for i in (1, 2, 3)}
-    observation = SimpleNamespace(
-        obs_id=obs_id, elements=[SimpleNamespace(ref=ref) for ref in refs.values()]
-    )
-    plan = compile_match(result, observation, LoginScreenPlan)
-    assert [(field.source, field.ref) for field in plan.fields] == [
-        ("credential.username", refs[2]),
-        ("credential.password", refs[1]),
-    ]
-    assert plan.login_ref == refs[3] and plan.next_decision is None
+    assert result.needs_image and not result.steps
 
 
 def test_exact_question_and_option_sets_required():
@@ -253,7 +233,7 @@ def test_ocr_text_tab_can_be_selected_without_detector_box():
             },
         ),
     )
-    assert result.steps[0].target == 3
+    assert result.needs_image and not result.steps
     assert result.controls[2].text_ids == [20]
 
 
@@ -487,7 +467,7 @@ def test_single_branch_owns_screen_procedure_and_command_with_business_checkpoin
         ),
     )
     assert (result.screen_kind, result.procedure_step) == ("login", "authenticate")
-    assert [s.intent for s in result.steps] == ["credential", "credential", "login"]
+    assert result.needs_image and not result.steps
     assert "query-key:login:query_input" not in request.questions["decision"].criteria
 
 

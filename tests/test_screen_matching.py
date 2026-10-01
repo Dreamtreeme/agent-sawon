@@ -114,7 +114,14 @@ def test_identical_capture_reuses_ocr_but_rematches_new_procedure_step(tmp_path,
     entry = response(
         meaning,
         procedure_step="open-entry",
-        steps=[{"target": meaning.controls[0].id, "action": "click", "intent": "navigate"}],
+        steps=[
+            {
+                "target": meaning.controls[0].id,
+                "action": "click",
+                "intent": "navigate",
+                "point": [175, 30],
+            }
+        ],
     )
     entry["controls"][0]["role"] = "button"
     entry["evidence"] = [{"field": "hbl_no", "target": meaning.controls[0].id}]
@@ -137,6 +144,9 @@ def test_identical_capture_reuses_ocr_but_rematches_new_procedure_step(tmp_path,
         {"hbl_no": brain.decision.action.ref},
     )
     assert brain.decision.action.ref.startswith("e" + str(brain.observation.obs_id.int))
+    action = brain._wire_action(brain.decision.action, brain.decision)
+    assert action.root.target.image_point == (175, 30)
+    assert action.root.target.evidence.startswith("image_planned:")
     relay.color = "black"
     brain._observe()
     assert ocr.calls == detector.calls == 2
@@ -206,7 +216,7 @@ def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
     elif bad == "wrong-target":
         data["steps"][0]["target"] = 999
     else:
-        data["steps"][0].update(action="click", intent="save", source=None)
+        data["steps"][0].update(action="click", intent="save", source=None, point=[175, 30])
     brain, model, _, _, _, _ = setup_brain(tmp_path, record, [data])
     if bad == "wrong-procedure":
         with pytest.raises(ValueError, match="procedure_mismatch"):
@@ -265,7 +275,7 @@ def test_login_and_record_arrays_compile_to_existing_batches():
                 "source": "credential.password",
                 "intent": "credential",
             },
-            {"target": 3, "action": "click", "intent": "login"},
+            {"target": 3, "action": "click", "intent": "login", "point": [1, 1]},
         ],
     )
     plan = compile_match(login, scene, LoginScreenPlan)
@@ -313,7 +323,14 @@ def test_save_result_and_proof_use_the_existing_contract():
         procedure_step="inspect-save",
         save_result="confirmation_required",
         message_targets=[1],
-        steps=[{"target": 2, "action": "click", "intent": "confirm_save"}],
+        steps=[
+            {
+                "target": 2,
+                "action": "click",
+                "intent": "confirm_save",
+                "point": [1, 1],
+            }
+        ],
     )
     review = compile_match(result, scene, SaveReviewResponse)
     assert review.evidence_refs == [prefix + "1"]
@@ -504,8 +521,19 @@ def test_selection_row_and_confirmation_compile_to_existing_executor():
             "controls": [],
             "procedure_step": "lookup-partner",
             "steps": [
-                {"target": 20, "action": "click", "source": "consignee", "intent": "select_option"},
-                {"target": 31, "action": "click", "intent": "select_option"},
+                {
+                    "target": 20,
+                    "action": "click",
+                    "source": "consignee",
+                    "intent": "select_option",
+                    "point": [1, 1],
+                },
+                {
+                    "target": 31,
+                    "action": "click",
+                    "intent": "select_option",
+                    "point": [1, 1],
+                },
             ],
         }
     )
@@ -614,7 +642,7 @@ def test_entry_prompt_contains_only_remaining_and_pending_record_fields(tmp_path
     from brain.graph.matching import RULES, match_screen
     from brain.graph.schemas import Choice, Decision
 
-    procedure_step = "save-entry" if pending else "fill-entry"
+    procedure_step = "save-entry" if pending else "fill-additional-entry"
     brain, model, _, _, _, _ = setup_brain(
         tmp_path,
         record,
@@ -658,6 +686,42 @@ def test_entry_prompt_contains_only_remaining_and_pending_record_fields(tmp_path
     checkpoints = {step["checkpoint"] for step in state["procedure"]}
     assert ("save" if pending else "fill_fields") in checkpoints
     assert checkpoints <= {"any", "save" if pending else "fill_fields"}
+    if not pending:
+        assert {step["id"] for step in state["procedure"] if step["field_scope"]} == {
+            "open-additional-entry",
+            "fill-additional-entry",
+        }
+
+
+def test_entry_step_rejects_a_field_outside_user_procedure_scope(tmp_path, record):
+    from brain.graph.matching import match_screen
+
+    meaning = fixture()[-1]
+    bad = response(
+        meaning,
+        screen_kind="editor",
+        procedure_step="fill-entry",
+        steps=[
+            {
+                "target": meaning.controls[0].id,
+                "action": "fill",
+                "source": "shipper",
+                "intent": "fill",
+            }
+        ],
+    )
+    brain, *_ = setup_brain(tmp_path, record, [bad])
+    brain.phase = "enter"
+    brain.duplicate_clear = True
+    with pytest.raises(ValueError, match="field_outside_procedure_scope"):
+        match_screen(
+            brain,
+            {
+                "ocr": [block.model_dump() for block in fixture()[0]],
+                "markers": [marker.model_dump() for marker in fixture()[2]],
+            },
+            None,
+        )
 
 
 def test_final_row_matching_receives_visibility_and_action_contract(tmp_path, record):
@@ -719,7 +783,7 @@ def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
             {"id": 5, "role": "edit", "text_ids": [4], "confidence": 1},
             {"id": 55, "role": "button", "text_ids": [5], "confidence": 1},
         ],
-        "steps": [{"target": 55, "action": "click", "intent": "navigate"}],
+        "steps": [{"target": 55, "action": "click", "intent": "navigate", "point": [50, 70]}],
     }
     required = []
     if dependency == "action":
@@ -757,7 +821,7 @@ def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
             ground_meanings(meanings, markers, blocks)
 
 
-@pytest.mark.parametrize("dependency", ["unrelated", "action", "direct_proof"])
+@pytest.mark.parametrize("dependency", ["unrelated", "dangling_unused", "action", "direct_proof"])
 def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, dependency):
     from brain.graph.matching import sanitize_unused_controls
     from brain.visual.markers import Marker, ground_meanings
@@ -790,6 +854,7 @@ def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, depend
                 "target": 31 if dependency == "action" else 34,
                 "action": "click",
                 "intent": "navigate",
+                "point": [150, 120],
             }
         ],
         # This field is irrelevant without save_result and must not promote decoration to proof.
@@ -798,6 +863,12 @@ def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, depend
     if dependency == "direct_proof":
         payload["grid"] = 16
         payload["evidence"] = [{"field": "hbl_no", "target": 31}]
+    elif dependency == "dangling_unused":
+        # A semantic response may identify a nested but unused decoration while
+        # omitting its parent control. That relationship must not invalidate the
+        # unrelated action plan during scene binding.
+        payload["controls"][1]["parent_id"] = 16
+        payload["controls"] = [payload["controls"][1], payload["controls"][2]]
     response = sanitize_unused_controls(
         brain,
         ScreenMatch.model_validate(payload),
@@ -845,7 +916,7 @@ def test_only_missing_evidence_for_already_verified_fields_is_omitted(tmp_path, 
                 "screen_kind": "editor",
                 "procedure_step": "save-entry",
                 "controls": [{"id": 34, "role": "button", "confidence": 1}],
-                "steps": [{"target": 34, "action": "click", "intent": "save"}],
+                "steps": [{"target": 34, "action": "click", "intent": "save", "point": [150, 20]}],
                 "evidence": [{"field": "hbl_no", "target": 31}],
                 "save_result": "unknown",
             }

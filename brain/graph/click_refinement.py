@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from brain.observe.evidence import matching_elements
-from brain.observe.progress import semantic_target_key
+from brain.observe.progress import navigation_target, semantic_target_key
 from brain.observe.summary import describe
 from brain.runtime.storage import atomic_write_json
 from brain.visual.markers import Marker, render_markers
@@ -104,9 +104,19 @@ class ClickRefinement:
         old_target = next(e for e in before.elements if e.ref == choice.ref)
         descriptor = describe(old_target, before.elements)
         matches = matching_elements(scene, descriptor)
+        target_binding = "strict_descriptor"
+        if len(matches) != 1 and pending.get("click_target") is not None:
+            key = semantic_target_key(pending["click_target"])
+            matches = [
+                element
+                for element in scene.elements
+                if element.enabled and semantic_target_key(navigation_target(element, scene)) == key
+            ]
+            target_binding = "semantic_target_key"
         if len(matches) != 1 or not matches[0].enabled:
             return False
         target = matches[0]
+        descriptor = describe(target, scene.elements)
         key = json.dumps(
             [
                 brain.phase,
@@ -163,6 +173,7 @@ class ClickRefinement:
                     "procedure": step.model_dump() if step else None,
                     "previous_expectation": decision.reason,
                     "failure": failure,
+                    "target_binding": target_binding,
                     "target": descriptor,
                     "target_bbox": target.bbox,
                     "previous_relative_point": [0.5, 0.5],
@@ -192,6 +203,7 @@ class ClickRefinement:
                 "obs_id": str(scene.obs_id),
                 "ref": target.ref,
                 "failure": failure,
+                "target_binding": target_binding,
                 **answer.model_dump(),
             },
         )

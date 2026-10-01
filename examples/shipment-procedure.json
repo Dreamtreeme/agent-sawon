@@ -80,11 +80,39 @@
       "phase": "enter",
       "screen": "editor",
       "checkpoint": "fill_fields",
-      "goal": "현재 보이는 미완료 레코드 필드를 한 번에 입력한다. 값이 맞는 필드는 다시 쓰지 않는다. 나머지 필드가 다른 탭이나 검색창에 있으면 그 화면을 연다.",
-      "completion": "현재 입력한 필드의 값이 레코드와 일치함",
+      "view": "entry.basic",
+      "field_scope": [
+        "hbl_no",
+        "mbl_no",
+        "packages.count",
+        "packages.unit",
+        "pol"
+      ],
+      "goal": "기본정보 화면에서 이 단계에 지정된 직접 입력 필드를 한 번에 입력한다. 다른 필드나 화면 이동은 이 단계에서 처리하지 않는다.",
+      "completion": "기본정보 직접 입력 필드의 값이 레코드와 일치함",
       "actions": [
-        "fill",
-        "select_tab",
+        "fill"
+      ]
+    },
+    {
+      "id": "open-shipper-lookup",
+      "phase": "enter",
+      "screen": "editor",
+      "checkpoint": "fill_fields",
+      "view": "entry.basic",
+      "field_scope": [
+        "shipper"
+      ],
+      "requires_verified": [
+        "hbl_no",
+        "mbl_no",
+        "packages.count",
+        "packages.unit",
+        "pol"
+      ],
+      "goal": "기본정보 화면에서 송하인 필드에 연결된 조회 화면을 연다.",
+      "completion": "송하인 조회 화면이 보임",
+      "actions": [
         "navigate"
       ]
     },
@@ -92,6 +120,18 @@
       "id": "lookup-partner",
       "phase": "enter",
       "screen": "partner",
+      "checkpoint": "fill_fields",
+      "view": "partner.lookup",
+      "field_scope": [
+        "shipper"
+      ],
+      "requires_verified": [
+        "hbl_no",
+        "mbl_no",
+        "packages.count",
+        "packages.unit",
+        "pol"
+      ],
       "goal": "미완료 거래처 필드의 값을 검색하고 일치하는 현재 결과를 선택한다.",
       "completion": "등록 화면의 해당 필드가 레코드 값과 일치함",
       "actions": [
@@ -99,6 +139,60 @@
         "search",
         "select_option",
         "cancel"
+      ]
+    },
+    {
+      "id": "open-additional-entry",
+      "phase": "enter",
+      "screen": "editor",
+      "checkpoint": "fill_fields",
+      "view": "entry.basic",
+      "field_scope": [
+        "consignee",
+        "description",
+        "gross_weight_kg",
+        "container_no",
+        "pod"
+      ],
+      "requires_verified": [
+        "hbl_no",
+        "mbl_no",
+        "shipper",
+        "packages.count",
+        "packages.unit",
+        "pol"
+      ],
+      "goal": "기본정보 화면에서 추가 입력 필드가 있는 다음 절차 화면을 연다.",
+      "completion": "추가정보 직접 입력 필드가 보임",
+      "actions": [
+        "select_tab"
+      ]
+    },
+    {
+      "id": "fill-additional-entry",
+      "phase": "enter",
+      "screen": "editor",
+      "checkpoint": "fill_fields",
+      "view": "entry.additional",
+      "field_scope": [
+        "consignee",
+        "description",
+        "gross_weight_kg",
+        "container_no",
+        "pod"
+      ],
+      "requires_verified": [
+        "hbl_no",
+        "mbl_no",
+        "shipper",
+        "packages.count",
+        "packages.unit",
+        "pol"
+      ],
+      "goal": "추가정보 화면에서 이 단계에 지정된 직접 입력 필드를 한 번에 입력한다. 기본정보 화면으로 돌아가지 않는다.",
+      "completion": "추가정보 직접 입력 필드의 값이 레코드와 일치함",
+      "actions": [
+        "fill"
       ]
     },
     {

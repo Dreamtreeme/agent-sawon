@@ -377,7 +377,14 @@ def matched_frame(prompt):
     response = dict(screen_kind=kind, controls=controls, operation="act", steps=[])
 
     def click(key, intent):
-        return dict(target=ids[key], action="click", intent=intent)
+        marker = next(m for m in screen["markers"] if m["id"] == ids[key])
+        x, y, width, height = marker["bbox"]
+        return dict(
+            target=ids[key],
+            action="click",
+            intent=intent,
+            point=[x + width / 2, y + height / 2],
+        )
 
     def fill(key, source, intent):
         return dict(target=ids[key], action="fill", source=source, intent=intent)
@@ -447,6 +454,25 @@ def test_screen_match_workflow_uses_actual_saved_snapshot(tmp_path, record, fail
     ocr, detector = FrameReplay(relay, "ocr"), FrameReplay(relay, "detector")
     log = RunLog(tmp_path, case_id=record.case_id, agent_id="visual-test")
     model = ScriptedModel(log, repeat(matched_frame))
+    # This replay has one editor view and no partner dialog. Give it the matching
+    # user procedure instead of borrowing the multi-view ERP demonstration.
+    procedure = json.loads(Path("examples/shipment-procedure.json").read_text(encoding="utf-8"))
+    procedure["steps"] = [
+        step
+        for step in procedure["steps"]
+        if step["id"]
+        not in {
+            "open-shipper-lookup",
+            "lookup-partner",
+            "open-additional-entry",
+            "fill-additional-entry",
+        }
+    ]
+    entry = next(step for step in procedure["steps"] if step["id"] == "fill-entry")
+    entry.pop("field_scope", None)
+    entry.pop("requires_verified", None)
+    procedure_path = tmp_path / "single-editor-procedure.json"
+    procedure_path.write_text(json.dumps(procedure, ensure_ascii=False), encoding="utf-8")
     brain = Brain(
         record=record,
         goal="Save for approval",
@@ -459,7 +485,7 @@ def test_screen_match_workflow_uses_actual_saved_snapshot(tmp_path, record, fail
             screen_matching=True,
             visual_screen_fill=True,
             max_steps=40,
-            procedure_path=Path("examples/shipment-procedure.json"),
+            procedure_path=procedure_path,
         ),
         case_dir=tmp_path,
         run_log=log,

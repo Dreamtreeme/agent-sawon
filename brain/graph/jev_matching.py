@@ -412,11 +412,10 @@ def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMa
                 )
             )
         if action in CLICK_ACTIONS:
-            selected = target("target:" + selected_branch)
-            if selected is None:
-                operation, steps = "image", []
-            else:
-                steps.append(MatchAction(target=selected, intent=action, action="click"))
+            # Choice classification can select a marker, but it cannot express an
+            # exact point within a merged visual target. Preserve Jev as the
+            # classification profile and route point actions to the image model.
+            operation, steps = "image", []
         if not steps and operation == "act":
             operation = "image"
     proof = operation in {"duplicate_clear", "duplicate_found", "complete"}

@@ -69,6 +69,7 @@ from .transitions import (
     ObservedEffect,
     TransitionFact,
 )
+from .visual_points import VisualPointBindings
 
 
 class Result(BaseModel):
@@ -184,6 +185,7 @@ class Brain:
         self.saved_bindings: tuple[str, dict[str, str]] | None = None
         self.pending: PendingAction | None = None
         self.click_refinement = ClickRefinement()
+        self.visual_points = VisualPointBindings()
         self.action_plan: ActionPlan | None = None
         self.failures: dict[str, int] = {}
         self.phase_failures: dict[str, int] = {}
@@ -287,6 +289,8 @@ class Brain:
                     },
                 )
             self._bind_saved_evidence(response)
+            assert isinstance(self.observation, SceneObservation)
+            self.visual_points.bind(self.observation, response.steps)
             selection_plan = compile_selection_plan(response, self.observation)
             if selection_plan is not None:
                 self.action_plan = selection_plan
@@ -1289,6 +1293,7 @@ class Brain:
             if isinstance(self.observation, SceneObservation):
                 target = next(item for item in self.observation.elements if item.ref == choice.ref)
                 x, y, width, height = target.bbox
+                planned_point = self.visual_points.get(self.observation, decision)
                 # OCR/model latency can exceed the capture TTL. Renew only when
                 # task pixels, scale and foreground identity match. A translation alone
                 # changes only the fresh capture origin, not image-relative targets.
@@ -1339,11 +1344,15 @@ class Brain:
                 data["target"] = {
                     "image_point": list(self.click_refinement.bound.point)
                     if self.click_refinement.applies(self, decision)
+                    else list(planned_point.point)
+                    if planned_point is not None
                     else [x + width / 2, y + height / 2],
                     "capture_id": str(new_shot.geometry.capture_id),
                     "evidence": (
                         "image_refined:"
                         if self.click_refinement.applies(self, decision)
+                        else "image_planned:"
+                        if planned_point is not None
                         else "ocr_visual:"
                     )
                     + target.ref
