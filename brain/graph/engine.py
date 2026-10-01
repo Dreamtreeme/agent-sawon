@@ -186,6 +186,10 @@ class Brain:
         self.pending: PendingAction | None = None
         self.click_refinement = ClickRefinement()
         self.visual_points = VisualPointBindings()
+        from .matching import ScreenInterpretationCache
+
+        self.screen_interpretations = ScreenInterpretationCache()
+        self.pending_screen_interpretation = None
         self.action_plan: ActionPlan | None = None
         self.failures: dict[str, int] = {}
         self.phase_failures: dict[str, int] = {}
@@ -265,6 +269,21 @@ class Brain:
             )
         return self._call(request.prompt(), SemanticDetection, page=request.page)
 
+    def _commit_screen_interpretation(self) -> None:
+        if self.pending_screen_interpretation is None:
+            return
+        key, interpretation = self.pending_screen_interpretation
+        self.screen_interpretations.put(key, interpretation)
+        self.pending_screen_interpretation = None
+        self.log.append(
+            "verify",
+            payload={
+                "check": "screen_interpretation_grounded",
+                "key": key,
+                "controls": len(interpretation.controls),
+            },
+        )
+
     def _selection_call(self, prompt: str, schema: type[BaseModel]):
         if self.settings.screen_matching:
             from .matching import compile_match, compile_selection_plan
@@ -273,6 +292,7 @@ class Brain:
             if response is None or self.visual_proposal_obs_id != self.observation.obs_id:
                 assert self.visual_perception is not None
                 self.observation = self.visual_perception.rematch(self.observation.wire)
+                self._commit_screen_interpretation()
                 response, self.visual_proposal = self.visual_proposal, None
                 assert response is not None
                 self.visual_proposal_obs_id = self.observation.obs_id
@@ -608,6 +628,7 @@ class Brain:
             self.visual_proposal = None
             observation = self.visual_perception.observe(observation)
             self.visual_proposal_obs_id = observation.obs_id
+            self._commit_screen_interpretation()
         self.observation = observation
         if self.settings.screen_matching and self.visual_proposal is not None:
             self._bind_saved_evidence(self.visual_proposal)

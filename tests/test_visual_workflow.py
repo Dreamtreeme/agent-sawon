@@ -23,7 +23,7 @@ from test_brain import FakeRelay, ScriptedModel, success_steps
 from test_brain import record as record
 
 from brain.graph.engine import Brain
-from brain.graph.matching import RULES
+from brain.graph.matching import PLAN_RULES, RULES, ScreenPlan
 from brain.observe.values import values_for
 from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
@@ -326,8 +326,9 @@ class FrameReplay:
 
 def matched_frame(prompt):
     """Scripted semantic/decision response using only the real provider request."""
-    assert prompt.startswith(RULES)
-    state, _ = json.JSONDecoder().raw_decode(prompt[len(RULES) :])
+    prefix = PLAN_RULES if prompt.startswith(PLAN_RULES) else RULES
+    assert prompt.startswith(prefix)
+    state, _ = json.JSONDecoder().raw_decode(prompt[len(prefix) :])
     screen = state["screen"]
     blocks = screen["ocr"]
     labels = [b for b in blocks if b["text"].startswith("K:")]
@@ -443,6 +444,8 @@ def matched_frame(prompt):
                 dict(field=f, target=ids[f]) for f in notebook["record"] if f in ids
             ]
     response["procedure_step"] = step
+    if prefix == PLAN_RULES:
+        return {key: value for key, value in response.items() if key in ScreenPlan.model_fields}
     return response
 
 

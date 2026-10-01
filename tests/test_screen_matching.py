@@ -11,7 +11,7 @@ from test_visual_markers import fixture
 from test_visual_scene import wire
 
 from brain.graph.engine import Brain
-from brain.graph.matching import ScreenMatch, compile_match
+from brain.graph.matching import PLAN_RULES, ScreenMatch, ScreenPlan, compile_match
 from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
 from brain.runtime.storage import RunLog
@@ -184,27 +184,22 @@ def test_local_grounding_retry_receives_only_the_relevant_correction(tmp_path, r
     assert "rejected_response" not in model.prompts[1]
 
 
-@pytest.mark.parametrize("missing_control", [False, True])
-def test_rematch_terminal_error_does_not_restart_local_repair(tmp_path, record, missing_control):
+def test_identical_rematch_reuses_grounded_interpretation(tmp_path, record):
     meaning = fixture()[-1]
-    bad = response(meaning)
-    if missing_control:
-        bad["needs_refinement"] = True
-    else:
-        bad["controls"][0]["id"] = 999
-    brain, model, _, ocr, detector, _ = setup_brain(tmp_path, record, [response(meaning), bad, bad])
+    full = response(meaning)
+    plan = {key: value for key, value in full.items() if key in ScreenPlan.model_fields}
+    brain, model, _, ocr, detector, _ = setup_brain(tmp_path, record, [full, plan])
     brain._observe()
-    brain._observe()  # Identical pixels keep OCR/detector; selection must rematch.
+    brain._observe()
     assert len(model.prompts) == 1
-    assert brain._select_node({}) == {"next": "finish"}
-    reason = (
-        "visual_required_control_missing" if missing_control else "unknown_or_duplicate_marker_id"
-    )
-    assert brain.result.reason == "visual_grounding:" + reason
-    assert brain.result.status == "failed"
-    assert len(model.prompts) == (2 if missing_control else 3)
+    assert brain._select_node({}) == {"next": "act"}
+    assert len(model.prompts) == 2
+    assert model.prompts[-1].startswith(PLAN_RULES)
     assert ocr.calls == detector.calls == 1
-    assert not any(event.kind == "act" for event in brain.log.read_all())
+    assert any(
+        event.payload.get("check") == "screen_interpretation_reused"
+        for event in brain.log.read_all()
+    )
 
 
 @pytest.mark.parametrize("bad", ["wrong-procedure", "wrong-target", "wrong-phase"])
