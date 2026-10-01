@@ -231,8 +231,10 @@ runtime verification decides whether that proposal is eligible. Otherwise propos
 Navigation/query/search/save is one command at a screen boundary. Use lowercase relay keys.
 Option selection may contain consecutive select_option clicks within the CURRENT dialog:
 click the matching visible row, then the visible confirmation button. Return both in order.
+The final select_option click that applies a record value MUST name that field as source.
 Do not mix these clicks with navigation to another screen or field inputs.
-Only fill actions need a source; click actions identify their target directly.
+Fill actions need a source. Other clicks identify their target directly, except the final
+record-applying select_option click described above.
 Duplicate results require grid and empty/rows evidence.
 Final verification starts with a current query grid/identified row. In linked detail
 screens, map each visible direct input field to evidence; identify hbl_no whenever visible.
@@ -772,17 +774,20 @@ def compile_selection_plan(response: ScreenMatch, observation):
     from .execution import ActionPlan, PlannedAction
     from .schemas import DecisionResponse
 
-    if response.operation != "act" or len(response.steps) < 2:
+    if response.operation != "act" or not response.steps:
         return None
     if not all(s.intent == "select_option" and s.action == "click" for s in response.steps):
         return None
+    if response.steps[-1].source is None or response.steps[-1].source.startswith("credential."):
+        raise ValueError("selection_effect_source_required")
     actions = tuple(
         PlannedAction(
             compile_match(
                 response.model_copy(update={"steps": [step]}), observation, DecisionResponse
-            ).to_decision()
+            ).to_decision(),
+            effect_source=step.source if index == len(response.steps) - 1 else None,
         )
-        for step in response.steps
+        for index, step in enumerate(response.steps)
     )
     return ActionPlan(
         actions,

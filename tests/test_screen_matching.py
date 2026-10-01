@@ -550,6 +550,7 @@ def test_selection_row_and_confirmation_compile_to_existing_executor():
                 {
                     "target": 31,
                     "action": "click",
+                    "source": "consignee",
                     "intent": "select_option",
                     "point": [1, 1],
                 },
@@ -559,11 +560,99 @@ def test_selection_row_and_confirmation_compile_to_existing_executor():
     plan = compile_selection_plan(match, scene)
     assert [a.decision.action.ref for a in plan.actions] == [prefix + "20", prefix + "31"]
     assert all(a.decision.action.source is None for a in plan.actions)
+    assert [a.effect_source for a in plan.actions] == [None, "consignee"]
     assert plan.verification == "single"
     mixed = match.model_copy(
         update={"steps": [match.steps[0], match.steps[1].model_copy(update={"intent": "navigate"})]}
     )
     assert compile_selection_plan(mixed, scene) is None
+
+
+def test_selection_plan_requires_and_preserves_final_record_effect():
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from brain.graph.matching import compile_selection_plan
+
+    obs_id = uuid4()
+    prefix = "e" + str(obs_id.int) + "0"
+    scene = SimpleNamespace(obs_id=obs_id, elements=[SimpleNamespace(ref=prefix + "31")])
+    match = ScreenMatch.model_validate(
+        {
+            "screen_kind": "partner",
+            "controls": [],
+            "procedure_step": "lookup-partner",
+            "steps": [
+                {
+                    "target": 31,
+                    "action": "click",
+                    "intent": "select_option",
+                    "point": [1, 1],
+                }
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="selection_effect_source_required"):
+        compile_selection_plan(match, scene)
+    sourced = match.model_copy(
+        update={"steps": [match.steps[0].model_copy(update={"source": "shipper"})]}
+    )
+    plan = compile_selection_plan(sourced, scene)
+    assert plan.actions[0].effect_source == "shipper"
+
+
+def test_selected_record_value_is_verified_on_return_to_editor(tmp_path, record):
+    from test_brain import element
+
+    from brain.graph.schemas import Choice, Decision
+    from brain.observe.progress import navigation_state, navigation_target
+    from brain.observe.summary import describe
+
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.phase, brain.duplicate_clear = "enter", True
+
+    old_wire = wire()
+    old_field = element("e101", "Edit", name="Shipper", value="")
+    old_editor = SceneObservation(wire=old_wire, screen_kind="editor", elements=[old_field])
+    partner_wire = wire()
+    select = element("e201", "Button", name="Select")
+    partner = SceneObservation(wire=partner_wire, screen_kind="partner", elements=[select])
+    new_wire = wire()
+    current_field = element("e301", "Edit", name="Shipper", value=brain.values["shipper"])
+    editor = SceneObservation(wire=new_wire, screen_kind="editor", elements=[current_field])
+    decision = Decision(
+        screen_kind="partner",
+        operation="act",
+        intent="select_option",
+        subgoal="lookup-partner",
+        reason="Apply the selected shipper",
+        action=Choice(type="click", ref=select.ref),
+    )
+    brain.observation = partner
+    brain.deferred_field_checks["shipper"] = describe(old_field, old_editor.elements)
+    brain.pending = {
+        "before_observation": partner,
+        "choice": decision.action,
+        "decision": decision,
+        "source_window_handle": partner.active_window.handle,
+        "source_navigation_state": navigation_state(partner),
+        "progress_scope": f"enter:fill_fields:{brain.business_revision}",
+        "click_target": navigation_target(select, partner),
+        "effect_source": "shipper",
+    }
+
+    def observe():
+        brain.observation = editor
+        return editor
+
+    brain._observe = observe
+    assert brain._verify_node({}) == {"next": "review"}
+    assert "shipper" in brain.verified
+    assert "shipper" not in brain.deferred_field_checks
+    assert any(
+        event.payload.get("check") == "selected_field_value_matches"
+        for event in brain.log.read_all()
+    )
 
 
 def test_save_matching_receives_same_action_contract_as_validator(tmp_path, record):

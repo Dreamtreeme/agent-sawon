@@ -16,7 +16,7 @@ from brain.observe import describe
 from brain.runtime.storage import RunLog
 
 from .policy import DecisionPolicy
-from .schemas import Choice, Decision
+from .schemas import Choice, Decision, FieldName
 from .transitions import ActionTransition, ObservedEffect, TransitionFact
 
 if TYPE_CHECKING:
@@ -42,12 +42,14 @@ class PendingAction(TypedDict):
     execution: NotRequired[PlanExecution]
     login_plan_descriptors: NotRequired[list[dict]]
     point_refined: NotRequired[bool]
+    effect_source: NotRequired[FieldName]
 
 
 @dataclass(frozen=True)
 class PlannedAction:
     decision: Decision
     policy: DecisionPolicy | None = None
+    effect_source: FieldName | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,11 @@ def execute_plan(brain: Brain, plan: ActionPlan) -> dict:
             brain.pending = None
             return outcome
         assert brain.pending is not None
+        if action.effect_source is not None:
+            brain.pending["effect_source"] = action.effect_source
+            brain.pending["transition"] = brain.pending["transition"].model_copy(
+                update={"source": action.effect_source}
+            )
         execution.delivered.append(brain.pending)
     # Preserve each action's pending evidence; the last action owns group verification.
     brain.pending = {**execution.delivered[-1], "execution": execution}

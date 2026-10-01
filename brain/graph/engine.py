@@ -210,6 +210,7 @@ class Brain:
         self.cache_rebind_calls = 0
         self.input_target_retries = 0
         self.cache_entry_id: str | None = None
+        self.deferred_field_checks: dict[str, dict] = {}
         self.review: EvidenceReview | None = None
         self.review_decision = False
         self.visual_perception = None
@@ -1432,6 +1433,18 @@ class Brain:
                     expected_effect=self._expected_effect(decision),
                 ),
             }
+            if decision.intent == "navigate" and decision.screen_kind == "editor":
+                by_ref = {item.ref: item for item in self.observation.elements}
+                for evidence in decision.evidence:
+                    target = by_ref.get(evidence.ref)
+                    if (
+                        target is not None
+                        and target.role.casefold() in {"edit", "combobox"}
+                        and is_record_input(target, self.observation)
+                    ):
+                        self.deferred_field_checks[evidence.field] = describe(
+                            target, self.observation.elements
+                        )
             if decision.intent in {"navigate", "select_tab", "login"} and choice.ref is not None:
                 target = next(item for item in self.observation.elements if item.ref == choice.ref)
                 self.pending["navigation_target"] = navigation_target(target, self.observation)
@@ -1567,6 +1580,27 @@ class Brain:
                         "obs_id": str(observation.obs_id),
                     },
                 )
+            effect_source = pending.get("effect_source")
+            if decision.intent == "select_option" and effect_source is not None:
+                descriptor = self.deferred_field_checks.get(effect_source)
+                matches = matching_elements(observation, descriptor) if descriptor else []
+                if len(matches) != 1:
+                    return self._fail("selected_field_target_not_observed")
+                if not self._record_verified_field(effect_source, matches[0]):
+                    return self._fail("selected_field_value_mismatch")
+                del self.deferred_field_checks[effect_source]
+                observed_effect = ObservedEffect.INPUT_VALUE_MATCHES
+                new_facts.append(effect_source)
+                self.log.append(
+                    "verify",
+                    payload={
+                        "ok": True,
+                        "check": "selected_field_value_matches",
+                        "field": effect_source,
+                        "ref": matches[0].ref,
+                        "obs_id": str(observation.obs_id),
+                    },
+                )
             current_scope = (
                 f"{self.phase}:{self._decision_policy().current_step}:{self.business_revision}"
             )
@@ -1662,7 +1696,7 @@ class Brain:
                 {
                     "ok": True,
                     "intent": decision.intent,
-                    "source": choice.source,
+                    "source": effect_source or choice.source,
                     "action": choice.type,
                     "subgoal": decision.subgoal,
                     "phase": self.phase,

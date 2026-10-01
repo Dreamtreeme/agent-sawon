@@ -253,3 +253,11 @@ ERP 라벨, 좌표, AutomationId, 탭 순서는 코드에 넣지 않는다.
 SHA-256·창 geometry별 catalog에 저장하며 A→B→A 재방문도 최대 16개 화면까지 재사용한다.
 입력 검증으로 중앙 상태를 갱신한 다음에만 선택 호출이 현재 절차·notebook과 고정된 의미를 받아
 행동과 클릭점을 반환한다. 픽셀이 달라지면 새 의미 인식을 하며 과거 행동·ref·좌표는 보관하지 않는다.
+
+### 외부 선택 결과의 필드 효과
+
+화면 클릭 Decision은 provider 정책상 레코드 source를 갖지 않으므로, `ScreenMatch`의
+select_option source를 버리면 ERP에 값이 반영돼도 중앙 상태가 알 수 없다. 선택형 ActionPlan은
+마지막 적용 클릭의 source를 별도 `effect_source`로 보존한다. 조회 진입 전 편집 칸 descriptor와
+복귀 후 현재 값을 대조해 일치할 때만 field verification을 기록한다. 이 사후조건이 실패하면
+같은 조회를 반복하지 않고 명시적으로 중단한다.
