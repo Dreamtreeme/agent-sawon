@@ -73,8 +73,13 @@ def setup_brain(tmp_path, record, responses):
 
 
 def response(meaning, **kwargs):
+    from brain.visual.marker_contract import model_controls
+
     return {
         **meaning.model_dump(),
+        "controls": model_controls(
+            meaning.controls, {"markers": [m.model_dump() for m in fixture()[2]]}
+        ),
         "screen_kind": "query",
         "procedure_step": "enter-duplicate-key",
         "steps": [
@@ -311,7 +316,13 @@ def test_query_verification_omission_is_repaired_without_reusing_old_value(tmp_p
     table = {"id": table_id, "role": "table", "table_state": "empty", "confidence": 0.95}
     initial = SemanticDetection(screen_kind="query", controls=[field, table])
     before = bind_scene(wire(), blocks, ground_meanings(initial, markers, blocks))
-    supplemental = {"controls": [] if mode == "still_missing" else [field]}
+    from brain.visual.marker_contract import model_controls
+
+    supplemental = {
+        "controls": []
+        if mode == "still_missing"
+        else model_controls(initial.controls[:1], {"markers": [m.model_dump() for m in markers]})
+    }
     brain, model, _, _, _, _ = setup_brain(tmp_path, record, [supplemental])
     brain.observation = before
     brain.query_descriptor = describe(
@@ -483,7 +494,14 @@ def test_save_matching_receives_same_action_contract_as_validator(tmp_path, reco
         ],
     )
     brain.phase = "save_result"
-    match_screen(brain, {"ocr": [], "markers": []}, None)
+    match_screen(
+        brain,
+        {
+            "ocr": [b.model_dump() for b in fixture()[0]],
+            "markers": [m.model_dump() for m in fixture()[2]],
+        },
+        None,
+    )
     prompt = model.prompts[-1]
     for intent in SAVE_RESULT_ACTIONS["ready_for_query"]:
         assert intent in prompt
@@ -521,7 +539,14 @@ def test_pending_query_input_proposes_search_without_claiming_verification(tmp_p
         action=Choice(type="set_text", ref="e1", source="hbl_no"),
     )
     brain.pending = {"decision": brain.decision}
-    match_screen(brain, {"ocr": [], "markers": []}, None)
+    match_screen(
+        brain,
+        {
+            "ocr": [b.model_dump() for b in fixture()[0]],
+            "markers": [m.model_dump() for m in fixture()[2]],
+        },
+        None,
+    )
     state = json.loads(model.prompts[-1][len(RULES) :])
     assert state["notebook"]["query_value_verified"] is False
     assert state["proposal_after_verification"]["checkpoint"] == "search"
@@ -552,7 +577,14 @@ def test_final_row_matching_receives_visibility_and_action_contract(tmp_path, re
     )
     brain.phase = "final_query"
     brain.query_value_verified = brain.query_submitted = True
-    match_screen(brain, {"ocr": [], "markers": []}, None)
+    match_screen(
+        brain,
+        {
+            "ocr": [b.model_dump() for b in fixture()[0]],
+            "markers": [m.model_dump() for m in fixture()[2]],
+        },
+        None,
+    )
     state = json.loads(model.prompts[-1][len(RULES) :])
     assert "search" not in state["execution"]["allowed_intents"]
     assert "window expansion" in state["execution"]["guidance"]

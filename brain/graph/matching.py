@@ -9,6 +9,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from brain.runtime.storage import atomic_write_json
+from brain.visual.marker_contract import local_response, model_controls, model_screen
 from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import SemanticDetection, overlap
 
@@ -131,7 +132,9 @@ RULES = """Match this current OCR/control form to the supplied task procedure an
 Do not create a new workflow. Pick a procedure_step belonging to the current phase and screen.
 Return only controls needed for actions, input verification, and current result evidence;
 include their actual parents (especially tables/rows), not an inventory of every decoration.
-Use local marker IDs only. OCR IDs name/value controls; contained_ocr_ids constrain text_ids.
+All IDs use the numbers printed on the image. OCR text entries use those SAME marker IDs.
+label_ids selects nearby text markers naming a control; text_ids selects contained text markers.
+Never translate to another numbering system. contained_ocr_ids lists allowed text marker IDs.
 Control confidence is semantic certainty, not detector candidate_confidence; do not copy it.
 Preserve visible labels and literal contained values for inputs that are being verified.
 OCR-group markers can be row/header/group/text, with OCR cells as children; never inputs/tables.
@@ -315,10 +318,14 @@ def retain_verification(
         "Return only missing verification controls and their necessary parents from CURRENT "
         "OCR/markers. Preserve their labels and literal contained text. No actions or invented "
         "values/boxes. Report uncertainty if they cannot be observed.\n"
-        + json.dumps({"required_verification": absent, "screen": screen}, ensure_ascii=False),
+        "All references, including label_ids/text_ids, use the printed text marker IDs.\n"
+        + json.dumps(
+            {"required_verification": absent, "screen": model_screen(screen)}, ensure_ascii=False
+        ),
         SemanticDetection,
         page=page,
     )
+    supplement = local_response(supplement, screen)
     controls = {c.id: c for c in response.controls}
     controls.update({c.id: c for c in supplement.controls})
     response = response.model_copy(
@@ -368,7 +375,7 @@ def match_screen(brain, screen: dict, page):
     state = {
         "procedure": [s.model_dump() for s in candidates],
         "notebook": notebook,
-        "screen": screen,
+        "screen": screen if brain.matching_model is not None else model_screen(screen),
         "execution": contract,
     }
     if contract["conditional"]:
@@ -385,12 +392,20 @@ def match_screen(brain, screen: dict, page):
         response = match_choices(brain, state)
     else:
         response = brain._call(prompt, ScreenMatch, page=page)
+        atomic_write_json(brain.case_dir / "matching" / f"{uuid4().hex}-markers.json", response)
+        response = local_response(response, screen)
     used_image = brain.matching_model is None or response.needs_image
     if response.needs_image:
+        image_state = {**state, "screen": model_screen(screen)}
         response = brain._call(
-            prompt + "\nResolve the reported ambiguity with this image.", ScreenMatch, page=page
+            RULES
+            + json.dumps(image_state, ensure_ascii=False)
+            + "\nResolve the reported ambiguity with this image.",
+            ScreenMatch,
+            page=page,
         )
         atomic_write_json(brain.case_dir / "matching" / f"{uuid4().hex}-image.json", response)
+        response = local_response(response, screen)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
     step = next((s for s in candidates if s.id == response.procedure_step), None)
@@ -420,8 +435,8 @@ def match_screen(brain, screen: dict, page):
                         "procedure": step.model_dump(),
                         "notebook": notebook,
                         "execution": contract,
-                        "screen": screen,
-                        "controls": [c.model_dump() for c in response.controls],
+                        "screen": model_screen(screen),
+                        "controls": model_controls(response.controls, screen),
                     },
                     ensure_ascii=False,
                 ),

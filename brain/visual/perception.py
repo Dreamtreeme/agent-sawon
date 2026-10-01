@@ -16,6 +16,7 @@ from pipeline.ocr import OcrEngine
 from pipeline.schemas import RenderedPage
 
 from .detector import ControlDetector, DetectorSettings, OmniParserDetector
+from .marker_contract import MarkerReferenceError
 from .markers import Marker, MergeSettings, build_markers, ground_meanings, render_markers
 from .rectangles import rectangular_candidates
 from .refinement import refinement_regions
@@ -218,9 +219,27 @@ class VisualPerception:
         refinement_attempted = False
         for attempt in range(3):
             detected_at = perf_counter()
-            meanings = self.detect(
-                prompt, SemanticDetection, page.model_copy(update={"image_path": marked_path})
-            )
+            try:
+                meanings = self.detect(
+                    prompt, SemanticDetection, page.model_copy(update={"image_path": marked_path})
+                )
+            except MarkerReferenceError as error:
+                self.log.append(
+                    "verify",
+                    payload={
+                        "stage": "visual_semantic_rejection",
+                        "obs_id": str(wire.obs_id),
+                        "attempt": attempt,
+                        "error": str(error),
+                        "retry": attempt == 0,
+                        "invalid_links": error.issues,
+                    },
+                )
+                if attempt:
+                    raise VisualGroundingError(str(error)) from error
+                prompt += "\nLOCAL VALIDATION REJECTED THE RESPONSE; NO ACTION WAS SENT.\n"
+                prompt += json.dumps({"error": str(error), "invalid_links": error.issues})
+                continue
             detection_ms += (perf_counter() - detected_at) * 1000
             atomic_write_json(
                 folder / f"meanings-attempt-{attempt}.json", meanings.model_dump(mode="json")
@@ -326,11 +345,14 @@ class VisualPerception:
                                 "invalid_ocr_ids": [
                                     i
                                     for i in c.text_ids
-                                    if i in {b.id for b in blocks}
-                                    and not contains(
+                                    if i not in {b.id for b in blocks}
+                                    or not contains(
                                         next(m.bbox for m in markers if m.id == c.id),
                                         next(b.bbox for b in blocks if b.id == i),
                                     )
+                                ],
+                                "invalid_label_ids": [
+                                    i for i in c.label_ids if i not in {b.id for b in blocks}
                                 ],
                             }
                             for c in meanings.controls

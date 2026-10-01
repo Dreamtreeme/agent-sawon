@@ -253,7 +253,9 @@ class Brain:
             if '{"error"' in feedback:
                 correction = json.loads(feedback[feedback.index('{"error"') :])
                 self.mapping_screen["correction"] = {
-                    k: correction[k] for k in ("error", "invalid_text_links") if k in correction
+                    k: correction[k]
+                    for k in ("error", "invalid_text_links", "invalid_links")
+                    if k in correction
                 }
             self.mapping_page = page
             response = match_screen(self, self.mapping_screen, page)
