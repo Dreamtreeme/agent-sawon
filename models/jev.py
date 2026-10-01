@@ -67,11 +67,19 @@ class ChoiceAnswer(BaseModel):
             raise ValueError("invalid_choice_distribution")
         # The live API rounds probabilities (observed sums of 0.99).
         # Preserve those reported values; do not reject or renormalize them.
-        if self.choice not in self.probabilities or self.probabilities[self.choice] < max(
-            self.probabilities.values()
-        ):
-            raise ValueError("choice_is_not_maximum")
+        if self.choice not in self.probabilities:
+            raise ValueError("choice_not_in_distribution")
         return self
+
+    @property
+    def selected_choice(self) -> str:
+        """Use reported argmax; keep the provider's choice on exact ties.
+
+        Live responses sometimes name a choice 0.01 below another option.
+        Preserve the original choice/distribution in artifacts rather than rewriting them.
+        """
+        best = max(self.probabilities, key=self.probabilities.get)
+        return self.choice if self.probabilities[self.choice] == self.probabilities[best] else best
 
 
 class ChoiceAnswers(BaseModel):

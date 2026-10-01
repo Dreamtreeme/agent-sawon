@@ -282,7 +282,7 @@ def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMa
     answers, state = response.answers, request.state
 
     def pick(key: str, default: str = "none") -> str:
-        return answers[key].choice if key in answers else default
+        return answers[key].selected_choice if key in answers else default
 
     def target(key: str) -> int | None:
         value = pick(key)

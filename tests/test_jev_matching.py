@@ -513,3 +513,26 @@ def test_jev_requires_explicit_procedure_actions_before_any_model_call():
     data["procedure"][0].pop("actions")
     with pytest.raises(ValueError, match="jev_procedure_requires_actions"):
         build_request(data)
+
+
+def test_reported_maximum_wins_without_discarding_provider_choice():
+    request = build_request(state())
+    response = answers(
+        request,
+        decision="fill:editor:navigate",
+        **{
+            "field:1": "hbl_no",
+            "role:1": "edit",
+        },
+    )
+    decision = response.answers["decision"]
+    decision.probabilities = dict.fromkeys(decision.probabilities, 0.0)
+    decision.probabilities.update(
+        {"fill:editor:navigate": 0.42, "fill:editor:fill": 0.43, "stop": 0.15}
+    )
+    response = ChoiceAnswers.model_validate_json(response.model_dump_json())
+    result = compile_answers(request, response)
+    assert response.answers["decision"].choice == "fill:editor:navigate"
+    assert [(a.intent, a.source) for a in result.steps] == [("fill", "hbl_no")]
+    decision.probabilities["fill:editor:navigate"] = 0.43
+    assert decision.selected_choice == "fill:editor:navigate"
