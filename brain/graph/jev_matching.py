@@ -296,12 +296,17 @@ def match_choices(brain, state: dict) -> ScreenMatch:
     request = build_request(state)
     directory = brain.case_dir / "jev" / uuid4().hex
     atomic_write_json(directory / "request.json", request)
-    response = brain._call(
-        request.model_dump_json(),
-        ChoiceAnswers,
-        model=brain.matching_model,
-        call_budget=brain.matching_budget,
-    )
+    try:
+        response = brain._call(
+            request.model_dump_json(),
+            ChoiceAnswers,
+            model=brain.matching_model,
+            call_budget=brain.matching_budget,
+        )
+    finally:
+        raw = getattr(brain.matching_model, "last_response", None)
+        if raw is not None:
+            atomic_write_json(directory / "provider-response.json", raw)
     atomic_write_json(directory / "answers.json", response)
     result = compile_answers(request, response)
     atomic_write_json(directory / "screen-match.json", result)

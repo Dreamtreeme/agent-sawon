@@ -41,8 +41,8 @@ class ChoiceAnswer(BaseModel):
             not 0 <= value <= 1 for value in self.probabilities.values()
         ):
             raise ValueError("invalid_choice_distribution")
-        if abs(sum(self.probabilities.values()) - 1) > 0.001:
-            raise ValueError("choice_distribution_not_normalized")
+        # The live API rounds probabilities (observed sums of 0.99).
+        # Preserve those reported values; do not reject or renormalize them.
         if self.choice not in self.probabilities or self.probabilities[self.choice] < max(
             self.probabilities.values()
         ):
@@ -74,10 +74,12 @@ class JevClient(MeasuredModelClient):
     ) -> None:
         super().__init__(provider="jev", model=model, run_log=run_log)
         self._api_key, self._price, self._timeout = api_key, price, timeout_seconds
+        self.last_response: dict | None = None
 
     def _generate(
         self, prompt: str, schema: type[BaseModel], *, images: list[Path] | None
     ) -> ProviderReply:
+        self.last_response = None
         if images or schema is not ChoiceAnswers:
             raise ValueError("jev_requires_text_choice_batch")
         batch = ChoiceRequest.model_validate_json(prompt)
@@ -94,6 +96,7 @@ class JevClient(MeasuredModelClient):
         # No SDK retries: one measured call represents exactly one HTTP attempt.
         with urlopen(request, timeout=self._timeout) as response:
             data = json.load(response)
+        self.last_response = data
         metadata = data.get("usage") or {}
         usage = None
         if metadata.get("input_tokens") is not None and metadata.get("output_tokens") is not None:

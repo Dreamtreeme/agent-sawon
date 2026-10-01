@@ -19,7 +19,7 @@ from brain.runtime.storage import RunLog
 from brain.visual.markers import Marker, ground_meanings
 from models.base import UsageUnavailableError
 from models.factory import create_model_client
-from models.jev import ChoiceAnswers, JevClient
+from models.jev import ChoiceAnswer, ChoiceAnswers, JevClient
 from models.pricing import PriceRate
 from pipeline.schemas import OcrBlock
 
@@ -182,6 +182,16 @@ def test_exact_question_and_option_sets_required():
     reply.answers["command_target"].probabilities["999"] = 0
     with pytest.raises(ValueError, match="option_set"):
         compile_answers(request, reply)
+
+
+def test_provider_rounded_probabilities_are_preserved():
+    answer = ChoiceAnswer(
+        type="choice",
+        choice="button",
+        confidence=0.9,
+        probabilities={"button": 0.94, "text": 0.03, "disabled:button": 0.02},
+    )
+    assert answer.probabilities["button"] == 0.94
 
 
 def test_ocr_text_tab_can_be_selected_without_detector_box():
