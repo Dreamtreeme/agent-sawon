@@ -152,28 +152,28 @@ def test_login_compiles_credentials_and_click_in_one_batch():
     assert len(compile_match(result, observation, LoginScreenPlan).fields) == 2
 
 
-@pytest.mark.parametrize(
-    "changes, message",
-    [
-        ({"input:mbl_no": "1"}, "conflicting_field_assignment"),
-        ({"command": "navigate", "command_target:navigate": "3"}, "mixed_fill_and_navigation"),
-    ],
-)
-def test_independent_answers_cannot_create_conflicting_actions(changes, message):
+@pytest.mark.parametrize("navigate", [False, True])
+def test_only_selected_branch_is_executed_and_conflicting_fills_request_image(navigate):
     request = build_request(state())
-    with pytest.raises(ValueError, match=message):
-        compile_answers(
+    result = compile_answers(
+        request,
+        answers(
             request,
-            answers(
-                request,
-                **{
-                    "screen": "editor",
-                    "operation": "act",
-                    "input:hbl_no": "1",
-                    **changes,
-                },
-            ),
-        )
+            **{
+                "screen": "editor",
+                "operation": "act",
+                "input:hbl_no": "1",
+                "input:mbl_no": "1",
+                "command": "navigate" if navigate else "none",
+                "command_target:navigate": "3",
+            },
+        ),
+    )
+    if navigate:
+        assert not result.needs_image
+        assert len(result.steps) == 1 and result.steps[0].intent == "navigate"
+    else:
+        assert result.needs_image and result.steps == []
 
 
 def test_exact_question_and_option_sets_required():
