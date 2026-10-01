@@ -173,6 +173,23 @@ def build_request(state: dict) -> ChoiceRequest:
         if marker["source"] == "ocr":
             continue  # OCR captions have no editable control extent.
         ask(
+            f"input_scope:{marker['id']}",
+            {
+                "question": "Classify this candidate's INPUT CONTEXT before assigning a value. "
+                "An editable cell within a repeated row/column grid is a line_item, even when "
+                "its role is edit and its caption matches a notebook field. "
+                "Use the surrounding screen geometry and OCR, including section captions.",
+                "marker": contexts[str(marker["id"])],
+            },
+            {
+                "direct": (
+                    "Standalone form input for the current task, including credentials/query."
+                ),
+                "line_item": "Cell in a repeated line-item table, not a direct record input.",
+                "not_input": "Caption, header, button, container or other non-input region.",
+            },
+        )
+        ask(
             f"field:{marker['id']}",
             {
                 "question": "Which notebook source belongs in THIS input candidate NOW? "
@@ -277,6 +294,32 @@ def build_request(state: dict) -> ChoiceRequest:
     return ChoiceRequest(state={"rules": CHOICE_RULES, **state}, questions=questions)
 
 
+def editable_targets(answers: ChoiceAnswers) -> set[int]:
+    """Use selected roles and semantic ancestry before assigning notebook values."""
+    selected = {key: value.selected_choice for key, value in answers.answers.items()}
+    eligible = set()
+    for key, role in selected.items():
+        if not key.startswith("role:") or role not in {"edit", "combobox"}:
+            continue
+        mid = int(key.split(":")[1])
+        if selected.get(f"input_scope:{mid}", "direct") != "direct":
+            continue
+        parent = selected.get(f"parent:{mid}", "none")
+        seen = {str(mid)}
+        while parent != "none" and parent not in seen:
+            seen.add(parent)
+            if selected.get(f"role:{parent}", "").removeprefix("disabled:") in {
+                "table",
+                "row",
+                "cell",
+            }:
+                break
+            parent = selected.get(f"parent:{parent}", "none")
+        else:
+            eligible.add(mid)
+    return eligible
+
+
 def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMatch:
     response.validate_request(request)
     answers, state = response.answers, request.state
@@ -345,12 +388,19 @@ def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMa
             sources = list(notebook["record"])
         elif action == "query_input":
             sources = ["hbl_no"]
+        eligible = editable_targets(response)
         assignments = [
             (pick(f"field:{m['id']}", "skip"), m["id"])
             for m in state["screen"]["markers"]
-            if m["source"] != "ocr" and pick(f"field:{m['id']}", "skip") in sources
+            if m["id"] in eligible and pick(f"field:{m['id']}", "skip") in sources
         ]
-        assignments.sort(key=lambda pair: sources.index(pair[0]))
+        # Preserve each marker's argmax; resolve only competing targets for one source.
+        winners = {}
+        for source, mid in assignments:
+            score = answers[f"field:{mid}"].probabilities[source]
+            if source not in winners or score > winners[source][1]:
+                winners[source] = (mid, score)
+        assignments = [(source, winners[source][0]) for source in sources if source in winners]
         for source, selected in assignments:
             steps.append(
                 MatchAction(
@@ -372,13 +422,6 @@ def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMa
                 steps.append(MatchAction(target=selected, intent=action, action="click"))
         if not steps and operation == "act":
             operation = "image"
-        fills = [s for s in steps if s.action == "fill"]
-        if len({s.source for s in fills}) != len(fills) or any(
-            c.role not in {"edit", "combobox"}
-            for c in controls
-            if c.id in {s.target for s in fills}
-        ):
-            operation, steps = "image", []
     proof = operation in {"duplicate_clear", "duplicate_found", "complete"}
     required_sources = {
         r["source"] for r in notebook.get("required_verification", []) if r["screen"] == screen_kind
@@ -410,26 +453,61 @@ def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMa
 
 def match_choices(brain, state: dict) -> ScreenMatch:
     request = build_request(state)
-    batches = request.batches(brain.settings.jev_request_max_bytes)
     directory = brain.case_dir / "jev" / uuid4().hex
     atomic_write_json(directory / "request.json", request)
     combined = {}
-    for index, batch in enumerate(batches):
-        atomic_write_json(directory / f"request-{index:03}.json", batch)
-        try:
-            part = brain._call(
-                batch.model_dump_json(),
-                ChoiceAnswers,
-                model=brain.matching_model,
-                call_budget=brain.matching_budget,
+    sent_questions = {}
+    index = 0
+
+    def send(stage: ChoiceRequest) -> None:
+        nonlocal index
+        for batch in stage.batches(brain.settings.jev_request_max_bytes):
+            atomic_write_json(directory / f"request-{index:03}.json", batch)
+            try:
+                part = brain._call(
+                    batch.model_dump_json(),
+                    ChoiceAnswers,
+                    model=brain.matching_model,
+                    call_budget=brain.matching_budget,
+                )
+            finally:
+                raw = getattr(brain.matching_model, "last_response", None)
+                if raw is not None:
+                    atomic_write_json(directory / f"provider-response-{index:03}.json", raw)
+            atomic_write_json(directory / f"answers-{index:03}.json", part)
+            part.validate_request(batch)
+            combined.update(part.answers)
+            sent_questions.update(batch.questions)
+            index += 1
+
+    send(
+        ChoiceRequest(
+            state=request.state,
+            questions={k: v for k, v in request.questions.items() if not k.startswith("field:")},
+        )
+    )
+    perception = ChoiceAnswers(answers=combined)
+    branch = request.questions["decision"].criteria[combined["decision"].selected_choice]
+    eligible = editable_targets(perception)
+    if isinstance(branch, dict) and branch["action"] in {"login", "fill", "query_input"}:
+        fields = {
+            k: v
+            for k, v in request.questions.items()
+            if k.startswith("field:") and int(k.split(":")[1]) in eligible
+        }
+        if fields:
+            send(
+                ChoiceRequest(
+                    state={
+                        **request.state,
+                        "selected_branch": branch,
+                        "editable_targets": sorted(eligible),
+                    },
+                    questions=fields,
+                )
             )
-        finally:
-            raw = getattr(brain.matching_model, "last_response", None)
-            if raw is not None:
-                atomic_write_json(directory / f"provider-response-{index:03}.json", raw)
-        atomic_write_json(directory / f"answers-{index:03}.json", part)
-        part.validate_request(batch)
-        combined.update(part.answers)
+    request = ChoiceRequest(state=request.state, questions=sent_questions)
+    atomic_write_json(directory / "compiled-request.json", request)
     response = ChoiceAnswers(answers=combined)
     atomic_write_json(directory / "answers.json", response)
     result = compile_answers(request, response)
@@ -439,7 +517,7 @@ def match_choices(brain, state: dict) -> ScreenMatch:
         payload={
             "check": "jev_choice_batch",
             "questions": len(request.questions),
-            "requests": len(batches),
+            "requests": index,
             "artifact": str(directory.relative_to(brain.case_dir)),
         },
     )

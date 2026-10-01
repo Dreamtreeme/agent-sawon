@@ -156,7 +156,7 @@ def test_login_compiles_credentials_and_click_in_one_batch():
 
 
 @pytest.mark.parametrize("navigate", [False, True])
-def test_only_selected_branch_is_executed_and_conflicting_fills_request_image(navigate):
+def test_only_selected_branch_is_executed_and_duplicate_source_is_resolved(navigate):
     request = build_request(state())
     result = compile_answers(
         request,
@@ -174,7 +174,8 @@ def test_only_selected_branch_is_executed_and_conflicting_fills_request_image(na
         assert not result.needs_image
         assert len(result.steps) == 1 and result.steps[0].intent == "navigate"
     else:
-        assert result.needs_image and result.steps == []
+        assert not result.needs_image
+        assert [(s.source, s.target) for s in result.steps] == [("hbl_no", 1)]
 
 
 @pytest.mark.parametrize("role", ["edit", "button"])
@@ -291,6 +292,15 @@ def test_actual_brain_uses_argmax_unless_image_explicitly_requested(
             assert not images
             request = ChoiceRequest.model_validate_json(prompt)
             self.request = request
+            if any(k.startswith("field:") for k in request.questions):
+                assert all(k.startswith("field:") for k in request.questions)
+                assert request.state["selected_branch"]["action"] == "query_input"
+                assert all(
+                    int(k.split(":")[1]) in request.state["editable_targets"]
+                    for k in request.questions
+                )
+            else:
+                assert "decision" in request.questions
             target = str(meaning.controls[0].id)
             reply = answers(
                 request,
@@ -301,7 +311,7 @@ def test_actual_brain_uses_argmax_unless_image_explicitly_requested(
                     "label:" + target: "8",
                 },
             )
-            if low_confidence:
+            if low_confidence and "role:" + target in reply.answers:
                 answer = reply.answers["role:" + target]
                 answer.confidence = 0.4
                 answer.probabilities = {
@@ -325,7 +335,7 @@ def test_actual_brain_uses_argmax_unless_image_explicitly_requested(
     brain._observe()
     assert brain._select_node({}) == {"next": "act"}
     assert seen == ([True] if needs_image else [])
-    assert sum(e.kind == "model_call" for e in brain.log.read_all()) == 1 + bool(needs_image)
+    assert sum(e.kind == "model_call" for e in brain.log.read_all()) == 2
     assert "SECRET_" not in brain.matching_model.request.model_dump_json()
     assert len(list((tmp_path / "jev").glob("*/answers.json"))) == 1
     if low_confidence:
@@ -536,3 +546,70 @@ def test_reported_maximum_wins_without_discarding_provider_choice():
     assert [(a.intent, a.source) for a in result.steps] == [("fill", "hbl_no")]
     decision.probabilities["fill:editor:navigate"] = 0.43
     assert decision.selected_choice == "fill:editor:navigate"
+
+
+def test_invalid_candidate_does_not_discard_valid_assignment():
+    request = build_request(state())
+    reply = answers(
+        request,
+        **{
+            "decision": "fill:editor:fill",
+            "field:1": "hbl_no",
+            "field:2": "mbl_no",
+            "role:1": "header",
+            "role:2": "edit",
+        },
+    )
+    result = compile_answers(request, reply)
+    assert not result.needs_image
+    assert [(s.source, s.target) for s in result.steps] == [("mbl_no", 2)]
+
+
+def test_duplicate_source_uses_highest_mapping_probability():
+    request = build_request(state())
+    reply = answers(
+        request,
+        **{
+            "decision": "fill:editor:fill",
+            "field:1": "hbl_no",
+            "field:2": "hbl_no",
+            "role:1": "edit",
+            "role:2": "edit",
+        },
+    )
+    reply.answers["field:1"].probabilities.update(hbl_no=0.6, skip=0.4)
+    reply.answers["field:2"].probabilities.update(hbl_no=0.8, skip=0.2)
+    result = compile_answers(request, reply)
+    assert [(s.source, s.target) for s in result.steps] == [("hbl_no", 2)]
+
+
+def test_table_descendant_is_not_direct_record_input():
+    from brain.graph.jev_matching import editable_targets
+
+    request = build_request(state())
+    reply = answers(request, **{"role:1": "edit", "role:2": "table"})
+    reply.answers["parent:1"] = ChoiceAnswer(
+        type="choice", choice="2", probabilities={"2": 1}, confidence=1
+    )
+    assert 1 not in editable_targets(reply)
+
+
+def test_editable_line_item_is_excluded_before_mapping():
+    from brain.graph.jev_matching import editable_targets
+
+    request = build_request(state())
+    reply = answers(
+        request,
+        **{
+            "decision": "fill:editor:fill",
+            "role:1": "edit",
+            "role:2": "edit",
+            "input_scope:1": "line_item",
+            "input_scope:2": "direct",
+            "field:1": "hbl_no",
+            "field:2": "mbl_no",
+        },
+    )
+    assert editable_targets(reply) == {2}
+    result = compile_answers(request, reply)
+    assert [(s.target, s.source) for s in result.steps] == [(2, "mbl_no")]
