@@ -297,8 +297,11 @@ def test_actual_brain_uses_argmax_unless_image_explicitly_requested(
     brain.credentials = {"credential.username": "SECRET_USER", "credential.password": "SECRET_PW"}
     brain._observe()
     assert brain._select_node({}) == {"next": "act"}
-    assert seen == ([True] if needs_image else [])
-    assert sum(e.kind == "model_call" for e in brain.log.read_all()) == 2
+    # Visual perception is grounded once by the primary image model before the
+    # experimental Jev planner runs. An explicit Jev image request adds one
+    # recovery call; confidence alone does not add another call.
+    assert seen == ([True, True] if needs_image else [True])
+    assert sum(e.kind == "model_call" for e in brain.log.read_all()) == 3
     assert "SECRET_" not in brain.matching_model.request.model_dump_json()
     assert len(list((tmp_path / "jev").glob("*/answers.json"))) == 1
     if low_confidence:

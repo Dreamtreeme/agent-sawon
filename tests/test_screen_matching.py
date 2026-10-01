@@ -1,6 +1,7 @@
 """Procedure-driven OCR matching shares one response with the existing executor."""
 
 import json
+from itertools import repeat
 from pathlib import Path
 
 import pytest
@@ -16,12 +17,13 @@ from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
 from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
-from brain.visual.scene import SceneObservation
+from brain.visual.perception import DETECTION_RULES
+from brain.visual.scene import SceneObservation, SemanticDetection
 
 PROCEDURE = Path(__file__).resolve().parents[1] / "examples/shipment-procedure.json"
 
 
-def setup_brain(tmp_path, record, responses):
+def setup_brain(tmp_path, record, responses, *, semantic_responses=None):
     blocks, boxes, _, meaning = fixture()
 
     class Relay:
@@ -52,7 +54,24 @@ def setup_brain(tmp_path, record, responses):
 
     relay, ocr, detector = Relay(), Ocr(), Detector()
     log = RunLog(tmp_path, case_id=record.case_id, agent_id="test")
-    model = ScriptedModel(log, responses)
+    plans = iter(responses)
+    semantics = iter(semantic_responses) if semantic_responses is not None else None
+    default_semantic = meaning.model_dump()
+    if responses and "screen_kind" in responses[0]:
+        default_semantic["screen_kind"] = responses[0]["screen_kind"]
+
+    def route(prompt):
+        if prompt.startswith(DETECTION_RULES):
+            item = next(semantics) if semantics is not None else default_semantic
+            return {
+                key: value for key, value in item.items() if key in SemanticDetection.model_fields
+            }
+        item = next(plans)
+        if prompt.startswith(PLAN_RULES):
+            return {key: value for key, value in item.items() if key in ScreenPlan.model_fields}
+        return item
+
+    model = ScriptedModel(log, repeat(route))
     brain = Brain(
         record=record,
         goal="Register synthetic shipment",
@@ -94,7 +113,7 @@ def response(meaning, **kwargs):
     }
 
 
-def test_procedure_is_loaded_without_model_and_form_match_is_single_call(tmp_path, record):
+def test_procedure_is_loaded_and_interpretation_precedes_plan(tmp_path, record):
     meaning = fixture()[-1]
     brain, model, _, _, _, _ = setup_brain(tmp_path, record, [response(meaning)])
     brain.credentials = {"credential.username": "secret-user", "credential.password": "secret-pw"}
@@ -103,7 +122,9 @@ def test_procedure_is_loaded_without_model_and_form_match_is_single_call(tmp_pat
     assert json.loads((tmp_path / "procedure.json").read_text())["steps"]
     brain._observe()
     assert brain._select_node({}) == {"next": "act"}
-    assert len(model.prompts) == 1
+    assert len(model.prompts) == 2
+    assert model.prompts[0].startswith(DETECTION_RULES)
+    assert model.prompts[1].startswith(PLAN_RULES)
     assert brain.decision.action.source == "hbl_no"
     assert brain.decision.action.ref.startswith("e" + str(brain.observation.obs_id.int))
     assert "secret-user" not in model.prompts[0] and "secret-pw" not in model.prompts[0]
@@ -125,9 +146,7 @@ def test_identical_capture_reuses_ocr_but_rematches_new_procedure_step(tmp_path,
     )
     entry["controls"][0]["role"] = "button"
     entry["evidence"] = [{"field": "hbl_no", "target": meaning.controls[0].id}]
-    brain, model, relay, ocr, detector, _ = setup_brain(
-        tmp_path, record, [response(meaning), entry, entry]
-    )
+    brain, model, relay, ocr, detector, _ = setup_brain(tmp_path, record, [entry, entry])
     brain._observe()
     old_id = brain.observation.obs_id
     brain.phase, brain.duplicate_clear = "enter", True
@@ -152,12 +171,12 @@ def test_identical_capture_reuses_ocr_but_rematches_new_procedure_step(tmp_path,
     assert ocr.calls == detector.calls == 2
 
 
-def test_gemini_matches_image_and_ocr_together_and_can_retry_ambiguity(tmp_path, record):
+def test_gemini_interpretation_and_plan_are_separate_image_calls(tmp_path, record):
     meaning = fixture()[-1]
     brain, model, _, _, _, _ = setup_brain(
         tmp_path,
         record,
-        [response(meaning, needs_image=True, steps=[], operation="stop"), response(meaning)],
+        [response(meaning)],
     )
     images_seen = []
     original = model._generate
@@ -170,16 +189,26 @@ def test_gemini_matches_image_and_ocr_together_and_can_retry_ambiguity(tmp_path,
     brain._observe()
     assert brain._select_node({}) == {"next": "act"}
     assert images_seen == [True, True]
+    assert model.prompts[0].startswith(DETECTION_RULES)
+    assert model.prompts[1].startswith(PLAN_RULES)
 
 
 def test_local_grounding_retry_receives_only_the_relevant_correction(tmp_path, record):
     meaning = fixture()[-1]
-    bad = response(meaning)
+    bad = meaning.model_dump()
+    bad["screen_kind"] = "query"
     bad["controls"][0]["id"] = 999
-    brain, model, _, _, _, _ = setup_brain(tmp_path, record, [bad, response(meaning)])
+    corrected = meaning.model_dump()
+    corrected["screen_kind"] = "query"
+    brain, model, _, _, _, _ = setup_brain(
+        tmp_path,
+        record,
+        [response(meaning)],
+        semantic_responses=[bad, corrected],
+    )
     brain._observe()
     assert brain._select_node({}) == {"next": "act"}
-    assert len(model.prompts) == 2
+    assert len(model.prompts) == 3
     assert '"error": "unknown_or_duplicate_marker_id"' in model.prompts[1]
     assert "rejected_response" not in model.prompts[1]
 
@@ -187,8 +216,7 @@ def test_local_grounding_retry_receives_only_the_relevant_correction(tmp_path, r
 def test_identical_rematch_reuses_grounded_interpretation(tmp_path, record):
     meaning = fixture()[-1]
     full = response(meaning)
-    plan = {key: value for key, value in full.items() if key in ScreenPlan.model_fields}
-    brain, model, _, ocr, detector, _ = setup_brain(tmp_path, record, [full, plan])
+    brain, model, _, ocr, detector, _ = setup_brain(tmp_path, record, [full])
     brain._observe()
     brain._observe()
     assert len(model.prompts) == 1
@@ -197,8 +225,7 @@ def test_identical_rematch_reuses_grounded_interpretation(tmp_path, record):
     assert model.prompts[-1].startswith(PLAN_RULES)
     assert ocr.calls == detector.calls == 1
     assert any(
-        event.payload.get("check") == "screen_interpretation_reused"
-        for event in brain.log.read_all()
+        event.payload.get("check") == "identical_form_reused" for event in brain.log.read_all()
     )
 
 
@@ -213,11 +240,8 @@ def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
     else:
         data["steps"][0].update(action="click", intent="save", source=None, point=[175, 30])
     brain, model, _, _, _, _ = setup_brain(tmp_path, record, [data])
-    if bad == "wrong-procedure":
-        with pytest.raises(ValueError, match="procedure_mismatch"):
-            brain._observe()
-    else:
-        brain._observe()
+    brain._observe()
+    if bad != "wrong-procedure":
         schema = brain._decision_policy().response_schema()
         assert compile_match(
             ScreenMatch.model_validate(response(meaning)), brain.observation, schema
@@ -230,15 +254,15 @@ def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
 
             with pytest.raises(ValidationError):
                 compile_match(ScreenMatch.model_validate(data), brain.observation, schema)
-        assert brain._select_node({}) == {"next": "observe"}
-        reason = "ValueError" if bad == "wrong-target" else "ValidationError"
-        failures = [
-            e.payload["reason"]
-            for e in brain.log.read_all()
-            if e.kind == "verify" and e.payload.get("ok") is False
-        ]
-        assert failures == ["selection_error:" + reason]
-    assert len(model.prompts) == 1
+    assert brain._select_node({}) == {"next": "observe"}
+    failures = [
+        e.payload["reason"]
+        for e in brain.log.read_all()
+        if e.kind == "verify" and e.payload.get("ok") is False
+    ]
+    expected = "ValidationError" if bad == "wrong-phase" else "ValueError"
+    assert failures == ["selection_error:" + expected]
+    assert len(model.prompts) == 2
     assert brain.pending is None and brain.action_plan is None
     assert not any(e.kind == "act" for e in brain.log.read_all())
 
@@ -453,7 +477,7 @@ def test_empty_action_is_completed_once_or_explicitly_stopped(tmp_path, record, 
     brain, model, _, _, _, _ = setup_brain(tmp_path, record, [initial, completion])
     brain._observe()
     result = brain._select_node({})
-    assert len(model.prompts) == 2
+    assert len(model.prompts) == 3
     if operation == "act":
         assert result == {"next": "act"}
         assert brain.decision.action.source == "hbl_no"

@@ -118,6 +118,7 @@ class VisualPerception:
         self.merge_settings = merge_settings or MergeSettings()
         self.reuse_identical = reuse_identical
         self._catalog: _SceneCatalog | None = None
+        self._catalogs: dict[tuple, _SceneCatalog] = {}
 
     def close(self) -> None:
         try:
@@ -151,7 +152,7 @@ class VisualPerception:
             width=shot.width,
             height=shot.height,
         )
-        previous = self._catalog
+        previous = self._catalogs.get(cache_key)
         if self.reuse_identical and previous is not None and previous.key == cache_key:
             assert previous.detection is not None
             scene = bind_scene(
@@ -162,6 +163,7 @@ class VisualPerception:
                 secrets=self.secrets,
             )
             self._catalog = replace(previous, page=page)
+            self._catalogs[cache_key] = self._catalog
             self.log.append(
                 "verify",
                 payload={
@@ -404,7 +406,6 @@ class VisualPerception:
                             for c in meanings.controls
                             if c.id in {m.id for m in markers}
                         ],
-                        "rejected_response": meanings.model_dump(mode="json"),
                         "instruction": "Correct the IDs/relationships using the original evidence. "
                         "Do not invent missing extents. Report uncertainty if not grounded.",
                     },
@@ -437,7 +438,33 @@ class VisualPerception:
         catalog.boxes, catalog.markers = boxes, markers
         catalog.detection, catalog.refined = detection, refinement_attempted
         self._catalog = catalog
+        self._catalogs[catalog.key] = catalog
+        while len(self._catalogs) > 16:
+            self._catalogs.pop(next(iter(self._catalogs)))
         return scene
+
+    def planning_context(self) -> tuple[SemanticRequest, SemanticDetection]:
+        """Expose the current grounded interpretation without task actions or stale refs."""
+        catalog = self._catalog
+        if catalog is None or catalog.detection is None:
+            raise ValueError("visual_interpretation_unavailable")
+        path = catalog.page.image_path
+        folder = path.parent
+        marked_path = folder / ("markers-refined.png" if catalog.refined else "markers.png")
+        request = self._semantic_request(
+            catalog.page, path, marked_path, catalog.markers, catalog.blocks
+        )
+        interpretation = SemanticDetection.model_validate(
+            {
+                "screen_kind": catalog.detection.screen_kind,
+                "controls": [
+                    control.model_dump(exclude={"bbox"}) for control in catalog.detection.controls
+                ],
+                "uncertainties": catalog.detection.uncertainties,
+                "needs_refinement": False,
+            }
+        )
+        return request, interpretation
 
     def _semantic_request(self, page, path, marked_path, markers, blocks) -> SemanticRequest:
         render_markers(path, marked_path, markers)

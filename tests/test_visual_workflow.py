@@ -28,6 +28,7 @@ from brain.observe.values import values_for
 from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
 from brain.visual.markers import Marker
+from brain.visual.perception import DETECTION_RULES
 from brain.visual.scene import SceneObservation
 from pipeline.schemas import OcrBlock
 
@@ -326,10 +327,16 @@ class FrameReplay:
 
 def matched_frame(prompt):
     """Scripted semantic/decision response using only the real provider request."""
-    prefix = PLAN_RULES if prompt.startswith(PLAN_RULES) else RULES
+    prefix = (
+        DETECTION_RULES
+        if prompt.startswith(DETECTION_RULES)
+        else PLAN_RULES
+        if prompt.startswith(PLAN_RULES)
+        else RULES
+    )
     assert prompt.startswith(prefix)
     state, _ = json.JSONDecoder().raw_decode(prompt[len(prefix) :])
-    screen = state["screen"]
+    screen = state if prefix == DETECTION_RULES else state["screen"]
     blocks = screen["ocr"]
     labels = [b for b in blocks if b["text"].startswith("K:")]
     candidates = [m for m in screen["markers"] if m["source"] == "omniparser"]
@@ -373,6 +380,13 @@ def matched_frame(prompt):
     kind = next(
         b["text"].removeprefix("Screen ") for b in blocks if b["text"].startswith("Screen ")
     )
+    if prefix == DETECTION_RULES:
+        return {
+            "screen_kind": kind,
+            "controls": controls,
+            "uncertainties": [],
+            "needs_refinement": False,
+        }
     notebook = state["notebook"]
     phase, checkpoint = notebook["phase"], state["execution"]["checkpoint"]
     response = dict(screen_kind=kind, controls=controls, operation="act", steps=[])

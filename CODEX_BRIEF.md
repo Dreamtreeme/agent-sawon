@@ -1676,3 +1676,20 @@ ruff check/format 및 diff 검사 통과. 실제 저장 캡처의 OCR37블록/�
 - 이 수정 뒤 유료 GUI 재실행은 아직 하지 않았고 M1/M2 완료도 아니다. 관련 fake/replay121개와
   코어 전체811개(325.72초), Ruff check/format check가 통과했다. 상세 근거는 bench
   `docs/luna-recorded-pilot-analysis-20261002.md`에 있다.
+
+### 2026-10-02 녹화 파일럿 022와 인식/계획 완전 분리
+
+- Luna022는 로그인·중복 조회·등록 진입 뒤 기본 직접 필드 5개(`hbl_no`, `mbl_no`,
+  `packages.count`, `packages.unit`, `pol`)를 실제로 입력했다. core 77.702초,
+  신규 알려진 비용 $0.019297600, 미확정0이며 알려진 누적 추정은 $7.335599275다.
+- 필드 입력 뒤 검증 관찰이 새 `ScreenMatch`를 만들면서 검증 전 상태의 같은 5개 fill 계획을
+  함께 저장했다. 검증기가 5개 필드를 완료 처리한 다음 그 오래된 계획을 컴파일해
+  `action_not_allowed_by_state`로 종료했다. 이는 중심 좌표나 모델 등급 문제가 아니라
+  화면 의미 인식과 업무 계획이 한 응답에 결합된 실행 순서 문제다.
+- 관찰 모델 계약을 task-independent `SemanticDetection`으로 제한했다. 로컬 grounding 뒤
+  이미지 SHA-256·창 geometry별 catalog에 의미만 저장하고 A→B→A 재방문도 재사용한다.
+  검증으로 중앙 상태를 갱신한 뒤 선택 단계가 현재 notebook·절차와 고정된 의미를 받아
+  `ScreenPlan`만 생성한다. 업무 값·행동·ref·좌표는 catalog에 저장하지 않는다.
+- 재시도 프롬프트에서 거절된 전체 응답을 제거하고 오류 코드와 잘못된 링크만 전달한다.
+  fake/replay 전체 흐름은 입력→재관찰→검증→다음 계획 순서를 검사한다. 실제 화면 완료는
+  이 변경의 전체 무료 회귀 뒤 제한 녹화 파일럿 1건으로 확인하며 M1/M2 완료로 간주하지 않는다.

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from typing import Literal
 from uuid import uuid4
@@ -187,48 +186,6 @@ class ScreenPlan(BaseModel):
     message_targets: list[int] = Field(default_factory=list, max_length=12)
     repair_fields: list[FieldName] = Field(default_factory=list, max_length=11)
     expected_result: str = Field(default="", max_length=240)
-
-
-class ScreenInterpretationCache:
-    """Reuse only grounded roles/relations for an identical screen and task scope."""
-
-    def __init__(self) -> None:
-        self._entries: dict[str, SemanticDetection] = {}
-
-    @staticmethod
-    def key(screen: dict, candidates: list[ProcedureStep], notebook: dict, page=None) -> str:
-        visible_screen = model_screen(screen)
-        visible_screen.pop("correction", None)
-        scope = {
-            "image_sha256": hashlib.sha256(page.image_path.read_bytes()).hexdigest()
-            if page is not None
-            else None,
-            "screen": visible_screen,
-            "procedure": [
-                {
-                    "id": step.id,
-                    "screen": step.screen,
-                    "view": step.view,
-                    "field_scope": step.field_scope,
-                    "actions": step.actions,
-                }
-                for step in candidates
-            ],
-            "remaining_fields": notebook["remaining_fields"],
-            "pending_verification_fields": notebook["pending_verification_fields"],
-            "required_verification": [
-                {"source": item["source"], "screen": item["screen"]}
-                for item in notebook["required_verification"]
-            ],
-        }
-        payload = json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(payload.encode()).hexdigest()
-
-    def get(self, key: str) -> SemanticDetection | None:
-        return self._entries.get(key)
-
-    def put(self, key: str, interpretation: SemanticDetection) -> None:
-        self._entries[key] = interpretation
 
 
 PLAN_RULES = """Use the supplied grounded screen interpretation as immutable evidence.
@@ -546,7 +503,7 @@ def retain_verification(
     return response
 
 
-def match_screen(brain, screen: dict, page):
+def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     policy = brain._decision_policy()
     contract = execution_context(brain, policy, anticipate=True)
     candidates = [s for s in brain.procedure.steps if s.phase == brain.phase]
@@ -611,24 +568,18 @@ def match_screen(brain, screen: dict, page):
     if "save_review" in contract:
         state["save_review"] = contract["save_review"]
     prompt = RULES + json.dumps(state, ensure_ascii=False)
-    interpretation_key = brain.screen_interpretations.key(screen, candidates, notebook, page)
-    cached_interpretation = (
-        None
-        if brain.matching_model is not None
-        else brain.screen_interpretations.get(interpretation_key)
-    )
     if brain.matching_model is not None:
         from .jev_matching import match_choices
 
         response = match_choices(brain, state)
-    elif cached_interpretation is not None:
+    elif grounded_interpretation is not None:
         plan_state = {
             **state,
             "screen": model_screen(screen),
             "grounded_interpretation": {
-                "screen_kind": cached_interpretation.screen_kind,
-                "controls": model_controls(cached_interpretation.controls, screen),
-                "uncertainties": cached_interpretation.uncertainties,
+                "screen_kind": grounded_interpretation.screen_kind,
+                "controls": model_controls(grounded_interpretation.controls, screen),
+                "uncertainties": grounded_interpretation.uncertainties,
             },
         }
         plan = brain._call(
@@ -637,15 +588,14 @@ def match_screen(brain, screen: dict, page):
             page=page,
         )
         response = ScreenMatch.model_validate(
-            {**cached_interpretation.model_dump(), **plan.model_dump()}
+            {**grounded_interpretation.model_dump(), **plan.model_dump()}
         )
         atomic_write_json(brain.case_dir / "matching" / f"{uuid4().hex}-cached-plan.json", response)
         brain.log.append(
             "verify",
             payload={
-                "check": "screen_interpretation_reused",
-                "key": interpretation_key,
-                "controls": len(cached_interpretation.controls),
+                "check": "grounded_interpretation_planned",
+                "controls": len(grounded_interpretation.controls),
             },
         )
     else:
@@ -722,17 +672,6 @@ def match_screen(brain, screen: dict, page):
                     "steps": len(completion.steps),
                 },
             )
-    if brain.matching_model is None and cached_interpretation is None:
-        brain.pending_screen_interpretation = (
-            interpretation_key,
-            SemanticDetection.model_validate(
-                {
-                    key: value
-                    for key, value in response.model_dump().items()
-                    if key in SemanticDetection.model_fields
-                }
-            ),
-        )
     brain.procedure_step = step.id
     brain.log.append(
         "select",

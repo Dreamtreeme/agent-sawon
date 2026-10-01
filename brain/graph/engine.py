@@ -186,10 +186,6 @@ class Brain:
         self.pending: PendingAction | None = None
         self.click_refinement = ClickRefinement()
         self.visual_points = VisualPointBindings()
-        from .matching import ScreenInterpretationCache
-
-        self.screen_interpretations = ScreenInterpretationCache()
-        self.pending_screen_interpretation = None
         self.action_plan: ActionPlan | None = None
         self.failures: dict[str, int] = {}
         self.phase_failures: dict[str, int] = {}
@@ -216,8 +212,6 @@ class Brain:
         self.cache_entry_id: str | None = None
         self.review: EvidenceReview | None = None
         self.review_decision = False
-        self.visual_proposal = None
-        self.visual_proposal_obs_id = None
         self.visual_perception = None
         self.procedure = None
         self.procedure_step = None
@@ -247,67 +241,21 @@ class Brain:
             )
 
     def _detect_visual(self, request: SemanticRequest) -> SemanticDetection:
-        if self.settings.screen_matching:
-            from .matching import match_screen
-
-            screen = dict(request.screen)
-            if request.correction is not None:
-                screen["correction"] = {
-                    key: request.correction[key]
-                    for key in ("error", "invalid_text_links", "invalid_links")
-                    if key in request.correction
-                }
-            response = match_screen(self, screen, request.page)
-            self.visual_proposal = response
-            atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
-            return SemanticDetection.model_validate(
-                {
-                    key: value
-                    for key, value in response.model_dump().items()
-                    if key in SemanticDetection.model_fields
-                }
-            )
         return self._call(request.prompt(), SemanticDetection, page=request.page)
-
-    def _commit_screen_interpretation(self) -> None:
-        if self.pending_screen_interpretation is None:
-            return
-        key, interpretation = self.pending_screen_interpretation
-        self.screen_interpretations.put(key, interpretation)
-        self.pending_screen_interpretation = None
-        self.log.append(
-            "verify",
-            payload={
-                "check": "screen_interpretation_grounded",
-                "key": key,
-                "controls": len(interpretation.controls),
-            },
-        )
 
     def _selection_call(self, prompt: str, schema: type[BaseModel]):
         if self.settings.screen_matching:
-            from .matching import compile_match, compile_selection_plan
+            from .matching import compile_match, compile_selection_plan, match_screen
 
-            response, self.visual_proposal = self.visual_proposal, None
-            if response is None or self.visual_proposal_obs_id != self.observation.obs_id:
-                assert self.visual_perception is not None
-                self.observation = self.visual_perception.rematch(self.observation.wire)
-                self._commit_screen_interpretation()
-                response, self.visual_proposal = self.visual_proposal, None
-                assert response is not None
-                self.visual_proposal_obs_id = self.observation.obs_id
-                self.observation_number += 1
-                snapshot = f"observations/{self.observation_number:04d}.json"
-                atomic_write_json(self.case_dir / snapshot, self.observation)
-                self.review = None
-                self.log.append(
-                    "observe",
-                    payload={
-                        "obs_id": str(self.observation.obs_id),
-                        "snapshot": snapshot,
-                        "source": "same_screen_rematched",
-                    },
-                )
+            assert self.visual_perception is not None
+            request, interpretation = self.visual_perception.planning_context()
+            response = match_screen(
+                self,
+                request.screen,
+                request.page,
+                grounded_interpretation=interpretation,
+            )
+            atomic_write_json(request.page.image_path.parent / "screen-plan.json", response)
             self._bind_saved_evidence(response)
             assert isinstance(self.observation, SceneObservation)
             self.visual_points.bind(self.observation, response.steps)
@@ -625,13 +573,8 @@ class Brain:
     def _observe(self) -> Observation:
         observation = redact(self.relay.observe(), self.secrets)
         if self.visual_perception is not None and not observation.blocked_reason:
-            self.visual_proposal = None
             observation = self.visual_perception.observe(observation)
-            self.visual_proposal_obs_id = observation.obs_id
-            self._commit_screen_interpretation()
         self.observation = observation
-        if self.settings.screen_matching and self.visual_proposal is not None:
-            self._bind_saved_evidence(self.visual_proposal)
         self.review = None
         self.observation_number += 1
         relative = f"observations/{self.observation_number:04d}.json"
