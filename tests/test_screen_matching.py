@@ -174,6 +174,29 @@ def test_local_grounding_retry_receives_only_the_relevant_correction(tmp_path, r
     assert "rejected_response" not in model.prompts[1]
 
 
+@pytest.mark.parametrize("missing_control", [False, True])
+def test_rematch_terminal_error_does_not_restart_local_repair(tmp_path, record, missing_control):
+    meaning = fixture()[-1]
+    bad = response(meaning)
+    if missing_control:
+        bad["needs_refinement"] = True
+    else:
+        bad["controls"][0]["id"] = 999
+    brain, model, _, ocr, detector, _ = setup_brain(tmp_path, record, [response(meaning), bad, bad])
+    brain._observe()
+    brain._observe()  # Identical pixels keep OCR/detector; selection must rematch.
+    assert len(model.prompts) == 1
+    assert brain._select_node({}) == {"next": "finish"}
+    reason = (
+        "visual_required_control_missing" if missing_control else "unknown_or_duplicate_marker_id"
+    )
+    assert brain.result.reason == "visual_grounding:" + reason
+    assert brain.result.status == "failed"
+    assert len(model.prompts) == (2 if missing_control else 3)
+    assert ocr.calls == detector.calls == 1
+    assert not any(event.kind == "act" for event in brain.log.read_all())
+
+
 @pytest.mark.parametrize("bad", ["wrong-procedure", "wrong-target", "wrong-phase"])
 def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
     meaning = fixture()[-1]

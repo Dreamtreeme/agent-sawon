@@ -55,6 +55,36 @@ def test_install_is_explicit_and_resolves_current_refs(tmp_path, record):
 
 
 @pytest.mark.parametrize(
+    "display,field",
+    [
+        ("1,200.50", "gross_weight_kg"),
+        ("1,2,00.5", None),
+        ("12 CT", None),
+    ],
+)
+def test_numeric_demonstrations_need_valid_values_and_one_source(tmp_path, record, display, field):
+    items = [
+        observation(seconds=0),
+        observation(display, shift=10, seconds=1),
+        observation(display, shift=20, seconds=2),
+    ]
+    cache = SemanticCache(tmp_path / "cache.json")
+    result = install_demonstration(items, record, cache)
+    assert [entry.field for entry in result.entries] == ([field] if field else [])
+    assert [entry.field for entry in cache.entries()] == ([field] if field else [])
+    # A combined package display matches both components; recording alone cannot
+    # identify which source was typed even though the displayed value is valid.
+    assert result.rejected == ({} if field else {"ambiguous_or_unmatched_source": 1})
+    if field:
+        hit = cache.start_run().lookup(
+            observation(shift=100), phase="enter", allowed_sources=[field], record=record
+        )
+        assert hit is not None
+        assert hit.decision.action.source == field
+        assert hit.decision.action.ref == "e101"
+
+
+@pytest.mark.parametrize(
     "kind",
     [
         "unfocused",

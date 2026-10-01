@@ -1582,3 +1582,28 @@ ruff check/format 및 diff 검사 통과. 실제 저장 캡처의 OCR37블록/�
 - 유료호출0/화면입력0. 이번 replay 통과는 실제OCR·모델응답·ERP 완료의 실증이 아니다.
   Luna004의 invalid_visual_parent_bounds 실패와 M1/M2 잔여 실측 상태는 그대로다.
 - 상세: [수정 결과와 항목별 대응표](docs/test-audit-20261001/remediation.md).
+
+### 2026-10-01 생산 코드 재사용 통합 완료
+
+- 사용자 `계획실행` 요청으로 함수 재사용 점검의 우선 6항목을 구현했다. 단순히 함수 수를
+  줄이는 대신 실행·캐시·시연의 값 비교, export 읽기, 화면 해석/재해석, 완료 선행 조건과
+  결과 셀 배정, 비용/schema/OCR 규칙, relay 행동 결과 처리를 공통 경계로 모았다.
+- 캐시·시연도 실행의 `values_for/field_matches`를 사용한다. 포장 합성값과 숫자 구분자에
+  대한 경로별 판정 차이를 해소하며 캐시 승격·변경 전후 증거·label 정규화 정책은 유지한다.
+- `SemanticRequest`로 화면 후보·이미지·보완 정보를 전달하고 프롬프트 역파싱을 제거했다.
+  rematch도 최초 인식과 같은 grounding·correction/refinement를 거쳐 검증된 해석을 갱신한다.
+  동일 화면에서 캡처/OCR/기본 탐지를 반복하지 않고, 현재 관측 ID에 다시 연결한다.
+  보완 소진 오류는 바깥 선택 루프에서 보완 한도를 새로 시작하지 않도록 종료한다.
+- 최종 조회의 다섯 선행 조건과 packages 공유 셀 배정을 공통화했다. 각 완료 경계의
+  실제 증거 검증은 유지한다. recorder 비용 집계, provider schema 축소, OCR 검증도 재사용한다.
+- 벤치는 CLI/하네스/사람 채점에 같은 strict export decoder를 사용한다. 지수형 중량과
+  중복 JSON key 처리 차이를 없앴고, 원본 shipment의 숫자 타입·정밀도를 별도 내부 근거로
+  보존해 저장 전후 불변 비교에서 float 반올림으로 변경을 놓치지 않도록 했다.
+  UIA/visual relay의 행동 결과 처리와 matrix/notebook의 시작 여부 불명 실패 기록도 통합했다.
+- 새 테스트 파일 없이 기존 검사 파일에 확인된 불일치와 호출/행동 경계 회귀를 보강했다.
+  core782→795개, bench562→571개 통과이며 GUI6개는 제외했다. 실행 시간은 각각346.16초,
+  17.44초다. 양쪽 Ruff check/format check 통과. 벤치 기존 FastAPI 경고1개는 남는다.
+- 유료 호출0/화면 입력0. 공통화 자체로 실화면 성공이나 속도 향상을 선언하지 않는다.
+  Luna004 부모 관계 실패와 M1/M2 잔여 실측은 그대로다. HTTP transport·저장 기반 전면 통합과
+  가격 정책 재설계는 이번 범위에서 제외했으며 core/bench 구현의 import 격리를 유지했다.
+- 상세: [아키텍처 기록](docs/architecture-review-20260930.md)의 생산 코드 재사용 통합 절.

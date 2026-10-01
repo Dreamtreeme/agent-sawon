@@ -7,6 +7,7 @@ available here. Environment evidence comes only from relay observations and imag
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
@@ -30,8 +31,8 @@ from brain.relay import Relay
 from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from brain.settings import BrainSettings
 from brain.visual.detector import OmniParserDetector
-from brain.visual.perception import VisualGroundingError, VisualPerception
-from brain.visual.scene import SceneObservation
+from brain.visual.perception import SemanticRequest, VisualGroundingError, VisualPerception
+from brain.visual.scene import SceneObservation, SemanticDetection
 from models.accounting import read_model_accounting
 from models.base import ModelClient
 from models.budget import CallBudget, ImageCallBudget
@@ -214,8 +215,6 @@ class Brain:
         self.visual_perception = None
         self.procedure = None
         self.procedure_step = None
-        self.mapping_screen = None
-        self.mapping_page = None
         if settings.screen_matching:
             from .matching import Procedure
 
@@ -241,63 +240,40 @@ class Brain:
                 reuse_identical=settings.screen_matching,
             )
 
-    def _detect_visual(self, prompt: str, schema: type[BaseModel], page: RenderedPage):
+    def _detect_visual(self, request: SemanticRequest) -> SemanticDetection:
         if self.settings.screen_matching:
             from .matching import match_screen
 
-            start = prompt.index('{"image_size"')
-            self.mapping_screen, end = json.JSONDecoder().raw_decode(prompt[start:])
-            feedback = prompt[start + end :]
-            if '{"error"' in feedback:
-                correction = json.loads(feedback[feedback.index('{"error"') :])
-                self.mapping_screen["correction"] = {
-                    k: correction[k]
-                    for k in ("error", "invalid_text_links", "invalid_links")
-                    if k in correction
+            screen = dict(request.screen)
+            if request.correction is not None:
+                screen["correction"] = {
+                    key: request.correction[key]
+                    for key in ("error", "invalid_text_links", "invalid_links")
+                    if key in request.correction
                 }
-            self.mapping_page = page
-            response = match_screen(self, self.mapping_screen, page)
+            response = match_screen(self, screen, request.page)
             self.visual_proposal = response
-            atomic_write_json(page.image_path.parent / "screen-match.json", response)
-            return schema.model_validate(
-                {k: v for k, v in response.model_dump().items() if k in schema.model_fields}
+            atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
+            return SemanticDetection.model_validate(
+                {
+                    key: value
+                    for key, value in response.model_dump().items()
+                    if key in SemanticDetection.model_fields
+                }
             )
-        return self._call(prompt, schema, page=page)
+        return self._call(request.prompt(), SemanticDetection, page=request.page)
 
     def _selection_call(self, prompt: str, schema: type[BaseModel]):
         if self.settings.screen_matching:
-            from .matching import compile_match, compile_selection_plan, match_screen
+            from .matching import compile_match, compile_selection_plan
 
             response, self.visual_proposal = self.visual_proposal, None
             if response is None or self.visual_proposal_obs_id != self.observation.obs_id:
-                response = match_screen(self, self.mapping_screen, self.mapping_page)
-                from brain.visual.markers import Marker, ground_meanings
-                from brain.visual.scene import SemanticDetection, bind_scene
-                from pipeline.schemas import OcrBlock
-
-                markers = [
-                    Marker.model_validate(
-                        {k: v for k, v in item.items() if k in Marker.model_fields}
-                        | {"confidence": item["candidate_confidence"]}
-                    )
-                    for item in self.mapping_screen["markers"]
-                ]
-                # OCR and detector markers share the same current local catalog.
-                blocks = [OcrBlock.model_validate(b) for b in self.mapping_screen["ocr"]]
-                meanings = SemanticDetection.model_validate(
-                    {
-                        k: v
-                        for k, v in response.model_dump().items()
-                        if k in SemanticDetection.model_fields
-                    }
-                )
-                self.observation = bind_scene(
-                    self.observation.wire,
-                    blocks,
-                    ground_meanings(meanings, markers, blocks),
-                    threshold=self.settings.visual_min_confidence,
-                    secrets=self.secrets,
-                )
+                assert self.visual_perception is not None
+                self.observation = self.visual_perception.rematch(self.observation.wire)
+                response, self.visual_proposal = self.visual_proposal, None
+                assert response is not None
+                self.visual_proposal_obs_id = self.observation.obs_id
                 self.observation_number += 1
                 snapshot = f"observations/{self.observation_number:04d}.json"
                 atomic_write_json(self.case_dir / snapshot, self.observation)
@@ -735,13 +711,7 @@ class Brain:
         assert self.observation is not None
         if self.review is not None and self.review.obs_id == str(self.observation.obs_id):
             return self.review
-        if (
-            self.phase == "final_query"
-            and self.duplicate_clear
-            and self.save_issued
-            and self.query_submitted
-            and self.query_value_verified
-        ):
+        if self._workflow_facts().final_query_workflow_ready:
             if (
                 self.settings.screen_matching
                 and self.saved_evidence.session_id
@@ -807,20 +777,25 @@ class Brain:
     def _phase_instruction(self, policy: DecisionPolicy | None = None) -> str:
         return execution_context(self, policy or self._decision_policy())["guidance"]
 
+    def _workflow_facts(self) -> ExecutionFacts:
+        return ExecutionFacts(
+            phase=self.phase,
+            query_value_verified=self.query_value_verified,
+            query_submitted=self.query_submitted,
+            duplicate_clear=self.duplicate_clear,
+            save_issued=self.save_issued,
+        )
+
     def _decision_policy(self) -> DecisionPolicy:
         return DecisionPolicy(
-            ExecutionFacts(
-                phase=self.phase,
+            replace(
+                self._workflow_facts(),
                 field_names=tuple(sorted(self.values)),
                 verified_field_names=tuple(sorted(self.verified)),
                 available_credential_sources=tuple(
                     sorted(source for source, value in self.credentials.items() if value)
                 ),
                 submitted_credentials=tuple(self._submitted_credentials()),
-                query_value_verified=self.query_value_verified,
-                query_submitted=self.query_submitted,
-                duplicate_clear=self.duplicate_clear,
-                save_issued=self.save_issued,
                 final_evidence_ready=(
                     self.observation is not None and self._current_review().status == "ready"
                 ),
@@ -1149,6 +1124,8 @@ class Brain:
             }:
                 return self._fail("duplicate_evidence_required")
             return self._finish("stopped", str(exc))
+        except VisualGroundingError as exc:
+            return self._finish("failed", "visual_grounding:" + str(exc))
         except ValidationError as exc:
             return self._fail(
                 "duplicate_evidence_required"
@@ -1770,11 +1747,7 @@ class Brain:
     def _complete_saved_evidence(self) -> dict:
         review = self._current_review()
         if not (
-            self.phase == "final_query"
-            and self.duplicate_clear
-            and self.save_issued
-            and self.query_submitted
-            and self.query_value_verified
+            self._workflow_facts().final_query_workflow_ready
             and self.saved_evidence.session_id
             and review.status == "ready"
         ):
@@ -1792,13 +1765,7 @@ class Brain:
 
     def _check_complete(self, decision: Decision) -> dict:
         assert self.observation is not None
-        if not (
-            self.phase == "final_query"
-            and self.duplicate_clear
-            and self.save_issued
-            and self.query_submitted
-            and self.query_value_verified
-        ):
+        if not self._workflow_facts().final_query_workflow_ready:
             raise GuardStop("completion_without_required_workflow")
         if self.saved_evidence.session_id:
             return self._complete_saved_evidence()

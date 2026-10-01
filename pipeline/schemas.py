@@ -9,6 +9,8 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sawon_interfaces import PackageCount, SourceLocation
 
+from models.schema import compact_provider_schema
+
 FieldName = Literal[
     "hbl_no",
     "mbl_no",
@@ -149,20 +151,7 @@ class PageExtraction(FrozenModel):
         Expanding nested bounded arrays and long strings can exceed provider
         decoding limits. These limits remain in the Pydantic validator.
         """
-        schema = super().model_json_schema(*args, **kwargs)
-
-        def visit(node: Any) -> None:
-            if isinstance(node, dict):
-                node.pop("maxLength", None)
-                node.pop("maxItems", None)
-                for child in node.values():
-                    visit(child)
-            elif isinstance(node, list):
-                for child in node:
-                    visit(child)
-
-        visit(schema)
-        return schema
+        return compact_provider_schema(super().model_json_schema(*args, **kwargs))
 
 
 class ExtractedField(FrozenModel):

@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Protocol
 
+from .ocr_validation import validate_ocr_blocks, validate_ocr_limits
 from .ocr_worker import create_engine, recognize
 from .persistent_worker import PersistentWorker, WorkerError
 from .render import PipelineDependencyError
@@ -46,16 +47,12 @@ class PaddleOcrEngine:
                     "configure ocr_python with an OCR environment. No OCR fallback was used."
                 ) from exc
         result = [OcrBlock.model_validate(block) for block in blocks]
-        if len(result) > self.settings.max_ocr_blocks:
-            raise ValueError("ocr_block_limit")
-        if sum(len(block.text) for block in result) > self.settings.max_ocr_characters:
-            raise ValueError("ocr_text_limit")
-        if len({block.id for block in result}) != len(result):
-            raise ValueError("duplicate_ocr_block_id")
-        for block in result:
-            x, y, width, height = block.bbox
-            if x + width > page.width or y + height > page.height:
-                raise ValueError("ocr_bbox_outside_page")
+        validate_ocr_limits(
+            result,
+            max_blocks=self.settings.max_ocr_blocks,
+            max_characters=self.settings.max_ocr_characters,
+        )
+        validate_ocr_blocks(result, width=page.width, height=page.height)
         return result
 
     def close(self) -> None:

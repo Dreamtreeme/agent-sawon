@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sawon_interfaces import Observation, UIElement
 
+from models.schema import compact_provider_schema
 from pipeline.schemas import OcrBlock
 
 
@@ -68,20 +69,7 @@ class Detection(BaseModel):
     def model_json_schema(cls, *args, **kwargs):
         # As in document extraction, enforce nested collection resource limits
         # locally; expanding them in provider decoding can exceed schema limits.
-        schema = super().model_json_schema(*args, **kwargs)
-
-        def compact(node):
-            if isinstance(node, dict):
-                node.pop("maxItems", None)
-                node.pop("maxLength", None)
-                for child in node.values():
-                    compact(child)
-            elif isinstance(node, list):
-                for child in node:
-                    compact(child)
-
-        compact(schema)
-        return schema
+        return compact_provider_schema(super().model_json_schema(*args, **kwargs))
 
 
 class SemanticDetection(Detection):

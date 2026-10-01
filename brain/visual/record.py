@@ -13,7 +13,9 @@ from brain.relay import HttpRelay
 from brain.runtime.storage import RunLog, atomic_write_json
 from brain.settings import BrainSettings
 from brain.visual.detector import OmniParserDetector
-from brain.visual.perception import VisualPerception
+from brain.visual.perception import SemanticRequest, VisualPerception
+from brain.visual.scene import SemanticDetection
+from models.accounting import read_model_accounting
 from models.budget import ImageCallBudget
 from models.factory import create_model_client
 from pipeline.ocr import PaddleOcrEngine
@@ -67,14 +69,15 @@ def main(argv=None) -> int:
     model = create_model_client(args.model_config, run_log=log, env_path=args.env_path)
     budget = ImageCallBudget.from_config(args.model_config)
 
-    def detect(prompt, schema, page):
-        calls = [event for event in log.read_all() if event.kind == "model_call"]
-        if any(event.cost.usd is None for event in calls):
+    def detect(request: SemanticRequest) -> SemanticDetection:
+        prompt, page = request.prompt(), request.page
+        accounting = read_model_accounting(log)
+        if accounting.unknown:
             raise ValueError("unknown_model_call_cost")
-        used = sum(Decimal(str(event.cost.usd)) for event in calls)
-        if used + budget(prompt, schema, page) > Decimal(str(args.max_cost_usd)):
+        used = accounting.known_usd
+        if used + budget(prompt, SemanticDetection, page) > Decimal(str(args.max_cost_usd)):
             raise ValueError("demonstration_cost_cap")
-        result = model.complete_json(prompt, schema, images=[page.image_path])
+        result = model.complete_json(prompt, SemanticDetection, images=[page.image_path])
         if used + result.usd > Decimal(str(args.max_cost_usd)):
             raise ValueError("demonstration_cost_cap")
         return result.response

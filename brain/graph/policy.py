@@ -85,6 +85,17 @@ class ExecutionFacts:
         return tuple(name for name in self.field_names if name not in self.verified_field_names)
 
     @property
+    def final_query_workflow_ready(self) -> bool:
+        """Prior actions permit result inspection; this does not prove its values."""
+        return (
+            self.phase == "final_query"
+            and self.duplicate_clear
+            and self.save_issued
+            and self.query_submitted
+            and self.query_value_verified
+        )
+
+    @property
     def remaining_credentials(self) -> tuple[CredentialSource, ...]:
         return tuple(
             name
@@ -281,14 +292,7 @@ class DecisionPolicy:
             and self.facts.query_value_verified
         ):
             return "duplicate"
-        if (
-            self.facts.phase == "final_query"
-            and self.facts.duplicate_clear
-            and self.facts.save_issued
-            and self.facts.query_value_verified
-            and self.facts.query_submitted
-            and self.facts.final_evidence_ready
-        ):
+        if self.facts.final_query_workflow_ready and self.facts.final_evidence_ready:
             return "complete"
         return None
 

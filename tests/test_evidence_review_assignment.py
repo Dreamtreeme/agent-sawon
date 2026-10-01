@@ -2,8 +2,10 @@
 
 from test_brain import FakeRelay, field_matches, values_for
 from test_brain import record as record
+from test_saved_evidence import scene
 
-from brain.graph.review import _assign_fields, review_final
+from brain.graph.review import _assign_fields, assign_result_fields, review_final
+from brain.graph.saved_evidence import SavedEvidence
 
 
 def test_equal_party_values_require_two_current_cells(record):
@@ -30,6 +32,12 @@ def test_combined_package_cell_is_the_only_shared_exception(record):
     report = review_final(combined, values_for(record), field_matches)
     assert report.status == "ready"
     assert report.missing_fields == ()
+    saved = SavedEvidence()
+    saved.begin()
+    result = saved.observe(scene("query", elements), values_for(record), field_matches, {})
+    assert result.status == "ready"
+    assert saved.fields["packages.count"]["ref"] == "e45"
+    assert saved.fields["packages.unit"]["ref"] == "e45"
 
 
 def test_package_shared_cell_cannot_cover_a_third_field(record):
@@ -45,9 +53,22 @@ def test_package_shared_cell_cannot_cover_a_third_field(record):
     )
     assert report.status == "needs_more"
     assert report.missing_fields
+    saved = SavedEvidence()
+    saved.begin()
+    result = saved.observe(scene("query", elements), values_for(record), field_matches, {})
+    assert result.status == "needs_more"
+    assert result.missing_fields == report.missing_fields
+    assert len(saved.fields) == len(values_for(record)) - 1
 
 
 def test_augmenting_path_finds_assignment_that_greedy_first_fit_misses():
     assignment = _assign_fields({"a": {"e1", "e2"}, "b": {"e1", "e3"}, "c": {"e1", "e3"}})
     assert set(assignment) == {"a", "b", "c"}
     assert len(set(assignment.values())) == 3
+
+
+def test_package_assignment_tries_another_shared_cell_to_preserve_other_field():
+    assignment = assign_result_fields(
+        {"packages.count": {"e1", "e2"}, "packages.unit": {"e1", "e2"}, "description": {"e1"}}
+    )
+    assert assignment == {"packages.count": "e2", "packages.unit": "e2", "description": "e1"}

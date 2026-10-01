@@ -191,16 +191,17 @@ def test_partner_selection_and_search_remain_available_during_unfinished_entry()
 
 
 @pytest.mark.parametrize(
-    "missing",
+    "missing,value,workflow_ready",
     [
-        "duplicate_clear",
-        "save_issued",
-        "query_value_verified",
-        "query_submitted",
-        "final_evidence_ready",
+        ("phase", "enter", False),
+        ("duplicate_clear", False, False),
+        ("save_issued", False, False),
+        ("query_value_verified", False, False),
+        ("query_submitted", False, False),
+        ("final_evidence_ready", False, True),
     ],
 )
-def test_final_completion_requires_all_prior_runtime_facts(missing):
+def test_final_completion_requires_all_prior_runtime_facts(missing, value, workflow_ready):
     ready = ExecutionFacts(
         "final_query",
         duplicate_clear=True,
@@ -209,8 +210,11 @@ def test_final_completion_requires_all_prior_runtime_facts(missing):
         query_submitted=True,
         final_evidence_ready=True,
     )
+    assert ready.final_query_workflow_ready
+    incomplete = replace(ready, **{missing: value})
+    assert incomplete.final_query_workflow_ready is workflow_ready
     assert_contract(DecisionPolicy(ready), proof("complete"), True)
-    assert_contract(DecisionPolicy(replace(ready, **{missing: False})), proof("complete"), False)
+    assert_contract(DecisionPolicy(incomplete), proof("complete"), False)
     assert_contract(DecisionPolicy(ready), proof("duplicate_clear"), False)
 
 

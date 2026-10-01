@@ -8,7 +8,7 @@ from uuid import uuid4
 from brain.observe.evidence import is_record_input
 from brain.visual.scene import SceneObservation
 
-from .review import EvidenceReview, Matcher, _assign_fields, _within, review_final
+from .review import EvidenceReview, Matcher, _within, assign_result_fields, review_final
 from .schemas import Decision
 
 
@@ -154,22 +154,7 @@ class SavedEvidence:
                     name: {e.ref for e in cells if matches(name, e.value or e.name, values)}
                     for name in values
                 }
-                assignment = _assign_fields(candidates)
-                shared = candidates.get("packages.count", set()) & candidates.get(
-                    "packages.unit", set()
-                )
-                if shared:
-                    ref = sorted(shared)[0]
-                    others = _assign_fields(
-                        {
-                            k: v - {ref}
-                            for k, v in candidates.items()
-                            if k not in {"packages.count", "packages.unit"}
-                        }
-                    )
-                    others.update({"packages.count": ref, "packages.unit": ref})
-                    if len(others) > len(assignment):
-                        assignment = others
+                assignment = assign_result_fields(candidates)
                 for name, ref in assignment.items():
                     self._store(name, by_ref[ref], observation, values, matches, explicit=False)
                 self.query_identity = self.fields.get("hbl_no")

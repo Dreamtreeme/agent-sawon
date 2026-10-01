@@ -94,12 +94,22 @@ def test_missing_paddle_is_actionable_not_fake_ocr(monkeypatch, page):
 
 def test_ocr_outside_page_rejected(monkeypatch, page):
     monkeypatch.setattr("pipeline.ocr.create_engine", lambda *_: object())
-    monkeypatch.setattr(
-        "pipeline.ocr.recognize",
-        lambda *_: [{"id": 0, "text": "Too wide", "confidence": 0.99, "bbox": [0, 0, 200, 40]}],
-    )
-    with pytest.raises(ValueError, match="outside_page"):
-        PaddleOcrEngine(PipelineSettings(ocr_execution="in_process")).read(page)
+    block = {"id": 0, "text": "Cargo", "confidence": 0.99, "bbox": [0, 0, 100, 40]}
+    supplied = [block]
+    monkeypatch.setattr("pipeline.ocr.recognize", lambda *_: supplied)
+    assert PaddleOcrEngine(PipelineSettings(ocr_execution="in_process")).read(page) == [
+        OcrBlock.model_validate(block)
+    ]
+    for invalid, limits, error in [
+        ([{**block, "bbox": [0, 0, 200, 40]}], {}, "ocr_bbox_outside_page"),
+        ([block, block], {}, "duplicate_ocr_block_id"),
+        # Preserve the adapter's capacity check before duplicate-ID validation.
+        ([block, block], {"max_ocr_blocks": 1}, "ocr_block_limit"),
+        ([{**block, "text": "x" * 101}], {"max_ocr_characters": 100}, "ocr_text_limit"),
+    ]:
+        supplied = invalid
+        with pytest.raises(ValueError, match=error):
+            PaddleOcrEngine(PipelineSettings(ocr_execution="in_process", **limits)).read(page)
 
 
 def test_image_render_preserves_real_pixels_and_page_coordinates(tmp_path):

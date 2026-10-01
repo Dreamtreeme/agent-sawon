@@ -12,9 +12,8 @@ import json
 import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID
 
 import portalocker
@@ -24,6 +23,7 @@ from sawon_interfaces import Observation, ShipmentRecord, UIElement
 from brain.graph.schemas import Choice, Decision, FieldName
 from brain.observe.evidence import is_record_input
 from brain.observe.summary import ancestors
+from brain.observe.values import field_matches, values_for
 from brain.runtime.storage import atomic_write_json
 
 AUTH_TERMS = (
@@ -53,24 +53,11 @@ def normalized(value: str) -> str:
 
 
 def record_values(record: ShipmentRecord) -> dict[FieldName, str]:
-    values = {name: str(field.value) for name, field in record.fields if name != "packages"}
-    values["packages.count"] = str(record.fields.packages.value.count)
-    values["packages.unit"] = record.fields.packages.value.unit
-    return values
+    return cast(dict[FieldName, str], values_for(record))
 
 
 def value_matches(field: FieldName, actual: str | None, record: ShipmentRecord) -> bool:
-    if actual is None:
-        return False
-    expected = record_values(record)[field]
-    if field in {"packages.count", "gross_weight_kg"}:
-        try:
-            left = Decimal(unicodedata.normalize("NFKC", actual).replace(",", "").strip())
-            right = Decimal(expected)
-            return left.is_finite() and left == right
-        except InvalidOperation:
-            return False
-    return normalized(actual) == normalized(expected)
+    return field_matches(field, actual, values_for(record))
 
 
 class SemanticContext(CacheModel):

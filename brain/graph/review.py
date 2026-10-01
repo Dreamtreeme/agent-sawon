@@ -58,18 +58,19 @@ def _assign_fields(candidates: dict[str, set[str]]) -> dict[str, str]:
     return {field: ref for ref, field in owner.items()}
 
 
-def _covered_fields(candidates: dict[str, set[str]]) -> set[str]:
-    """Mirror the final guard's sole shared-cell exception for package values."""
-    best = set(_assign_fields(candidates))
+def assign_result_fields(candidates: dict[str, set[str]]) -> dict[str, str]:
+    """Assign the most fields, sharing a cell only for package count and unit."""
+    best = _assign_fields(candidates)
     packages = {"packages.count", "packages.unit"}
     shared = candidates.get("packages.count", set()) & candidates.get("packages.unit", set())
     for ref in sorted(shared):
         other_candidates = {
             field: refs - {ref} for field, refs in candidates.items() if field not in packages
         }
-        covered = set(_assign_fields(other_candidates)) | packages
-        if len(covered) > len(best):
-            best = covered
+        assignment = _assign_fields(other_candidates)
+        assignment.update({field: ref for field in packages})
+        if len(assignment) > len(best):
+            best = assignment
     return best
 
 
@@ -138,7 +139,7 @@ def review_final(
         }
         for field in values
     }
-    missing = tuple(sorted(set(values) - _covered_fields(candidates)))
+    missing = tuple(sorted(set(values) - assign_result_fields(candidates).keys()))
     if row_ref is None:
         return EvidenceReview(
             **base,

@@ -180,11 +180,10 @@ def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_pat
 
     calls = []
 
-    def interpret(prompt, schema, page):
-        assert schema is SemanticDetection
+    def interpret(request):
+        prompt, page, payload = request.prompt(), request.page, request.screen
         assert page.image_path.name == "markers.png"
         assert "markers" in prompt
-        payload, _ = json.JSONDecoder().raw_decode(prompt[prompt.index('{"image_size"') :])
         assert all("confidence" not in marker for marker in payload["markers"])
         assert all("candidate_confidence" in marker for marker in payload["markers"])
         assert {marker["source"] for marker in payload["markers"]} == {"omniparser", "ocr"}
@@ -302,9 +301,9 @@ def test_refinement_budget_stops_before_a_model_call(tmp_path):
     assert not log.read_all()
 
 
-@pytest.mark.parametrize("missing", [False, True])
+@pytest.mark.parametrize("missing,on_rematch", [(False, False), (True, False), (True, True)])
 def test_perception_refines_only_after_basic_detection_reports_failure(
-    tmp_path, missing, monkeypatch
+    tmp_path, missing, on_rematch, monkeypatch
 ):
     blocks, boxes, _, meaning = fixture()
     blocks.append(OcrBlock(id=9, text="Second", confidence=0.99, bbox=(10, 120, 60, 15)))
@@ -335,22 +334,86 @@ def test_perception_refines_only_after_basic_detection_reports_failure(
         def read(self, page):
             return blocks
 
-    def interpret(prompt, schema, page):
+    def interpret(request):
+        prompt = request.prompt()
         calls.append("meaning")
         clock[0] += 1
         assert '"refinement' not in prompt  # Search regions are not selectable markers.
         return meaning.model_copy(
-            update={"needs_refinement": missing and calls.count("meaning") == 1}
+            update={"needs_refinement": missing and calls.count("meaning") == 1 + on_rematch}
         )
 
     perception = VisualPerception(
         Relay(), Ocr(), tmp_path, log, interpret, detector=Detector(DetectorSettings(), log)
     )
-    perception.observe(wire())
-    assert calls == (["full", "meaning", "refine", "meaning"] if missing else ["full", "meaning"])
-    event = next(e for e in log.read_all() if e.payload.get("stage") == "visual_perception")
+    current = wire()
+    perception.observe(current)
+    if on_rematch:
+        perception.rematch(current)
+    assert calls == ["full", "meaning"] + (["meaning"] if on_rematch else []) + (
+        ["refine", "meaning"] if missing else []
+    )
+    event = [e for e in log.read_all() if e.payload.get("stage") == "visual_perception"][-1]
     assert event.payload["detection_ms"] == (2000 if missing else 1000)
-    assert event.payload["local_detector_ms"] == (12000 if missing else 2000)
+    assert event.payload["local_detector_ms"] == (
+        (10000 if missing else 0) + (0 if on_rematch else 2000)
+    )
+
+
+def test_same_screen_rematch_corrects_and_updates_cached_meaning_without_new_ocr(tmp_path):
+    blocks, boxes, _, meaning = fixture()
+    calls = {"capture": 0, "ocr": 0, "detector": 0}
+    requests = []
+
+    class Relay:
+        def screenshot(self, observation, path):
+            calls["capture"] += 1
+            path.parent.mkdir(parents=True)
+            Image.new("RGB", (400, 200), "white").save(path)
+            return path
+
+    class Ocr:
+        def read(self, page):
+            calls["ocr"] += 1
+            return blocks
+
+    class Detector:
+        def read(self, page):
+            calls["detector"] += 1
+            return boxes
+
+    def interpret(request):
+        requests.append(request)
+        update = {"text_ids": [8]} if len(requests) == 2 else {"role": "combobox"}
+        return (
+            meaning
+            if len(requests) == 1
+            else meaning.model_copy(
+                update={"controls": [meaning.controls[0].model_copy(update=update)]}
+            )
+        )
+
+    perception = VisualPerception(
+        Relay(),
+        Ocr(),
+        tmp_path,
+        RunLog(tmp_path, case_id="rematch", agent_id="test"),
+        interpret,
+        detector=Detector(),
+        reuse_identical=True,
+    )
+    assert perception.observe(wire()).elements[0].role == "edit"
+    current = wire()
+    assert perception.observe(current).elements[0].role == "edit"
+    before_rematch = calls.copy()
+    corrected = perception.rematch(current)
+    assert calls == before_rematch  # Rematching must not capture or run local models.
+    assert corrected.obs_id == current.obs_id and corrected.elements[0].role == "combobox"
+    assert requests[1].correction is None
+    assert requests[2].correction["error"] == "value_outside_local_marker"
+    assert perception.observe(wire()).elements[0].role == "combobox"
+    assert calls == {"capture": 3, "ocr": 1, "detector": 1}
+    assert len(requests) == 3
 
 
 def test_input_value_comes_from_contained_ocr_when_model_omits_text_ids():

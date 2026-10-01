@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 
 from .ocr import OcrEngine
+from .ocr_validation import validate_ocr_blocks, validate_ocr_limits
 from .schemas import OcrBlock, OcrInput, PipelineSettings, RenderedPage
 
 
@@ -69,15 +70,12 @@ def read_ocr_views(
         views.insert(0, (original, "original"))
     for page, variant in views:
         observed = engine.read(page)
-        if len({block.id for block in observed}) != len(observed):
-            raise ValueError("duplicate_ocr_block_id")
+        validate_ocr_blocks(observed, width=original.width, height=original.height)
         for block in observed:
-            x, y, width, height = block.bbox
-            if x + width > original.width or y + height > original.height:
-                raise ValueError("ocr_bbox_outside_page")
             blocks.append(block.model_copy(update={"id": len(blocks), "input_variant": variant}))
-        if len(blocks) > settings.max_ocr_blocks:
-            raise ValueError("ocr_block_limit")
-        if sum(len(block.text) for block in blocks) > settings.max_ocr_characters:
-            raise ValueError("ocr_text_limit")
+        validate_ocr_limits(
+            blocks,
+            max_blocks=settings.max_ocr_blocks,
+            max_characters=settings.max_ocr_characters,
+        )
     return blocks

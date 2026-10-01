@@ -192,3 +192,40 @@ GPU 첫 요청은 한국어 OCR4.89초/탐지5.19초였고, 앞선 영어 실험
 근거: cases/gpu-visual-20260930-002(영어),003(한국어)의 measurement/verification.json.
 001은 진단 스크립트 로그 생성 인자 오류로 모델 실행 전에 종료했다. 모든 측정 worker의
 종료와 잔존0을 확인했다. API 호출0/ERP 행동0이며 기존 비용과 미확정 호출은 유지한다.
+
+## 생산 코드 재사용 통합 · 2026-10-01
+
+사용자의 `계획실행` 요청으로 재사용 점검의 우선 6항목을 구현했다. 새 화면 실행이나
+유료 호출은 하지 않으며, 기존 테스트와 합성 회귀로 공통 계약을 검증한다.
+
+| 책임 | 공통 경계 | 유지한 차이 |
+| --- | --- | --- |
+| 레코드 값 동등성 | `observe.values.values_for/field_matches`를 cache/demo에서도 사용 | 캐시 label 정규화·변경 전후 증거·승격 조건 |
+| 최종 조회 선행 조건 | `ExecutionFacts.final_query_workflow_ready` | 실제 row/field 증거·saved session 조건은 각 경계에서 추가 검증 |
+| 결과 행 필드 배정 | `review.assign_result_fields` | review의 진단과 SavedEvidence의 관측 연결·충돌 관리 |
+| 화면 해석/재해석 | `SemanticRequest`와 `VisualPerception._resolve/rematch` | 새 화면은 캡처/OCR/기본 탐지, 동일 화면은 기존 후보 재사용 |
+| 비용·schema·OCR 규칙 | 기존 `read_model_accounting`, `compact_provider_schema`, `validate_ocr_blocks/limits` | 실제 비용 한도 정책, 로컬 schema 제한, 개별 view/합산 검증 시점 |
+| 벤치 채점 입력 | `grader.io`의 strict JSON 및 ERP export 읽기 | CLI 출력·종료 코드, 사람 실행의 완료 조건, 하네스 실행 정책 |
+| 벤치 행동 결과 | `RelayService._execute_action` | UIA/visual 대상·입력·실패 후 screenshot 옵션 |
+
+ScreenMatch는 프롬프트 문자열에서 JSON을 다시 찾지 않는다. perception이 화면 후보와
+교정 정보를 `SemanticRequest`로 전달하고, 모델 호출 직전에만 필요한 프롬프트로 만든다.
+같은 화면의 재해석도 공통 grounding·제한된 correction/refinement·검증된 detection 갱신을
+거친다. rematch 때문에 캡처·OCR·기본 탐지를 반복하지 않는다. 보완을 소진한 오류는
+observe/verify/select 어디에서든 종료되어 바깥 선택 루프가 보완 횟수를 다시 만들지 않는다.
+
+`_workflow_facts`는 관측 증거 review를 호출하지 않으므로 policy와 review가 서로 재귀하지
+않는다. 조건을 공통 함수로 모아도 실제 실행·완료 경계에서의 검사는 계속 수행한다.
+단일·로그인·필드 묶음은 기존 `ActionPlan → execute_plan → act → verify`를 유지한다.
+
+벤치는 부가적으로 matrix/notebook의 외부 예외를 `uncertain_failure_row`로 연결하여,
+시작 여부를 모르는 실행을 미시작으로 기록하던 차이를 제거했다. Core와 bench의 구현은
+서로 import하지 않는다. HTTP transport·파일 저장 기반 전면 통합과 가격 정책 재설계는
+이번 6항목 범위에 포함하지 않았다.
+
+공통 export decoder는 한 번 읽은 원본에서 shipment의 숫자 타입·Decimal 정밀도를 보존한
+내부 identity도 만든다. 저장 전후 비교는 현재 모델 비교와 원본 identity를 함께 사용한다.
+이렇게 지수형 중량의 채점은 통일하면서, float 변환이 미세 변경을 지우는 회귀를 막는다.
+identity는 공개 export schema에 추가되지 않으며 JSON 공백/객체 key 순서는 무시한다.
+
+최종 검사 수와 실행 결과는 bench `docs/progress.md`의 같은 날짜 구현 기록에 남긴다.

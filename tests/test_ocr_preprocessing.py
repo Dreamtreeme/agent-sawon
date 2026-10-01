@@ -81,7 +81,14 @@ def test_dual_views_have_unique_ids_and_do_not_claim_an_extra_document(tmp_path)
     filtered, metadata = prepare_ocr_input(page, settings, case_dir=tmp_path)
 
     class Readings:
+        def __init__(self, supplied_blocks=None):
+            self.supplied_blocks = supplied_blocks
+            self.calls = []
+
         def read(self, supplied):
+            self.calls.append(supplied.image_path)
+            if self.supplied_blocks is not None:
+                return self.supplied_blocks
             return [
                 OcrBlock(
                     id=0,
@@ -98,10 +105,24 @@ def test_dual_views_have_unique_ids_and_do_not_claim_an_extra_document(tmp_path)
     assert metadata.original_image == page.image_path.relative_to(tmp_path).as_posix()
     assert metadata.original_sha256 == hashlib.sha256(page.image_path.read_bytes()).hexdigest()
     assert filtered.document == page.document and filtered.page == page.page
-    with pytest.raises(ValueError, match="ocr_block_limit"):
-        read_ocr_views(
-            Readings(), page, filtered, settings.model_copy(update={"max_ocr_blocks": 1})
-        )
+    block = blocks[0]
+    for supplied, limits, error, calls in [
+        (None, {"max_ocr_blocks": 1}, "ocr_block_limit", 2),
+        ([block, block], {}, "duplicate_ocr_block_id", 1),
+        ([block.model_copy(update={"bbox": (390, 20, 30, 10)})], {}, "ocr_bbox_outside_page", 1),
+        (
+            [block.model_copy(update={"text": "x" * 51})],
+            {"max_ocr_characters": 100},
+            "ocr_text_limit",
+            2,
+        ),
+    ]:
+        readings = Readings(supplied)
+        with pytest.raises(ValueError, match=error):
+            read_ocr_views(readings, page, filtered, settings.model_copy(update=limits))
+        # Invalid per-view IDs/bounds fail before renumbering or reading the next
+        # view; individually valid resource sizes can still exceed the combined cap.
+        assert readings.calls == [page.image_path, filtered.image_path][:calls]
 
 
 def test_duplicate_views_without_filter_are_invalid():

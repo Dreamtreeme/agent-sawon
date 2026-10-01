@@ -268,6 +268,48 @@ def test_current_scope_and_existing_values_are_ineligible(tmp_path, record):
     )
 
 
+@pytest.mark.parametrize(
+    "field,canonical,display,matches",
+    [
+        ("packages.count", "12", "12 CT", True),
+        ("packages.unit", "CT", "12 CT", True),
+        ("gross_weight_kg", "1200.5", "1,2,00.5", False),
+        ("gross_weight_kg", "1200.5", "1,200.50", True),
+    ],
+)
+def test_cache_learning_and_existing_value_checks_use_record_display_rules(
+    tmp_path, record, field, canonical, display, matches
+):
+    cache = SemanticCache(tmp_path / "cache.json")
+    seed_session = cache.start_run()
+    assert seed_session.stage_validated(
+        observation(), observation(canonical, seconds=1), fill(source=field), record
+    )
+    assert seed_session.finish(success=True) == 1
+
+    session = cache.start_run()
+    hit = session.lookup(
+        observation(display, shift=20, seconds=2),
+        phase="enter",
+        allowed_sources=[field],
+        record=record,
+    )
+    if matches:
+        assert hit is None
+    else:
+        assert hit is not None
+        assert hit.decision.action.source == field
+        assert hit.decision.action.ref == "e21"
+    assert (
+        session.stage_validated(
+            observation(), observation(display, seconds=1), fill(source=field), record
+        )
+        is matches
+    )
+    assert [entry.field for entry in session.proposed_entries] == ([field] if matches else [])
+    session.finish(success=False)
+
+
 def test_concurrent_successes_preserve_all_counts(tmp_path, record):
     path = tmp_path / "cache.json"
 
