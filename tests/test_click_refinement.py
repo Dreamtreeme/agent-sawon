@@ -19,7 +19,17 @@ from brain.visual.scene import SemanticDetection, bind_scene
 from pipeline.schemas import OcrBlock
 
 
-def setup(tmp_path, record, answer, *, success=True, enabled=True):
+def setup(
+    tmp_path,
+    record,
+    answer,
+    *,
+    success=True,
+    enabled=True,
+    expected_failure="navigation_no_progress",
+    intent="select_tab",
+    target_role="tabitem",
+):
     class Relay:
         changed = False
         actions = []
@@ -52,7 +62,7 @@ def setup(tmp_path, record, answer, *, success=True, enabled=True):
     def capture(prompt, schema, *, images=None):
         assert images and images[0].name == "ocr-markers.png"
         assert "Open the second panel" in prompt
-        assert "navigation_no_progress" in prompt
+        assert expected_failure in prompt
         return generate(prompt, schema, images=images)
 
     model._generate = capture
@@ -79,7 +89,7 @@ def setup(tmp_path, record, answer, *, success=True, enabled=True):
         meanings = SemanticDetection.model_validate(
             {
                 "screen_kind": "editor",
-                "controls": [{"id": 8, "role": "tabitem", "text_ids": [], "confidence": 1}],
+                "controls": [{"id": 8, "role": target_role, "text_ids": [], "confidence": 1}],
             }
         )
         scene = bind_scene(current, [block], ground_meanings(meanings, [marker], [block]))
@@ -97,7 +107,7 @@ def setup(tmp_path, record, answer, *, success=True, enabled=True):
     brain.decision = Decision(
         screen_kind="editor",
         operation="act",
-        intent="select_tab",
+        intent=intent,
         subgoal="switch-panel",
         reason="Open the second panel",
         action=Choice(type="click", ref=brain.observation.elements[0].ref),
@@ -160,6 +170,52 @@ def test_refined_point_still_requires_fresh_unchanged_capture(tmp_path, record):
     assert brain._act_node({}) == {"next": "observe"}
     assert len(relay.actions) == 1
     assert brain.click_refinement.bound is None
+
+
+def test_navigation_cycle_requests_detailed_coordinate_inside_merged_tab(tmp_path, record):
+    brain, relay, model = setup(
+        tmp_path,
+        record,
+        {"outcome": "retry", "x": 160, "y": 35, "explanation": "Use the right caption"},
+        expected_failure="navigation_cycle",
+    )
+    assert brain._act_node({}) == {"next": "verify"}
+    pending = brain.pending
+    assert pending is not None
+
+    assert brain.click_refinement.prepare(
+        brain,
+        pending,
+        brain.observation,
+        failure="navigation_cycle",
+    )
+    assert len(model.prompts) == 1
+    assert brain.feedback[-1]["reason"] == "navigation_cycle"
+    assert brain.click_refinement.bound.point == (160, 35)
+    event = next(
+        e for e in brain.log.read_all() if e.payload.get("check") == "click_coordinate_review"
+    )
+    assert event.payload["failure"] == "navigation_cycle"
+
+
+def test_repeated_semantic_click_target_requests_detail_despite_changed_ocr_state(tmp_path, record):
+    brain, relay, model = setup(
+        tmp_path,
+        record,
+        {"outcome": "retry", "x": 160, "y": 35, "explanation": "Use the right caption"},
+        expected_failure="semantic_target_repeated",
+        intent="navigate",
+        target_role="button",
+    )
+    assert brain._act_node({}) == {"next": "verify"}
+    assert brain.pending is not None
+    scope = brain.pending["progress_scope"]
+    assert not brain.click_refinement.repeated_target(brain.pending, scope)
+    relay.changed = True
+    assert brain._verify_node({}) == {"next": "act"}
+    assert len(model.prompts) == 1
+    assert brain.click_refinement.bound.point == (160, 35)
+    assert brain.feedback[-1]["reason"] == "semantic_target_repeated"
 
 
 def test_successful_first_click_has_no_coordinate_model_call(tmp_path, record):

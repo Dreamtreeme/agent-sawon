@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from brain.runtime.storage import atomic_write_json
 from brain.visual.marker_contract import local_response, model_controls, model_screen
 from brain.visual.markers import marker_role_allowed
-from brain.visual.scene import SemanticDetection, overlap
+from brain.visual.scene import SemanticDetection, contains, overlap
 
 from .context import execution_context
 from .execution import GuardStop
@@ -173,6 +173,9 @@ needs_image=true without actions. Never guess empty solely from lack of OCR text
 Report needs_refinement only when a required control extent is missing. Never transmit/approve.
 Include every required_verification control on its specified screen, even when the next
 action/proof uses a different control. Keep its current label_ids and contained text_ids.
+remaining_fields is the authoritative work list after pending verification. Never plan,
+search, navigate, or fill for a record field absent from remaining_fields and
+pending_verification_fields.
 """
 
 
@@ -215,16 +218,37 @@ def verification_requirements(
     return result, matched_ids
 
 
-def omit_unused_invalid_roles(brain, response: ScreenMatch, screen: dict, required: list[dict]):
-    """An unrelated role mistake must not veto a valid action or result proof."""
+def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, required: list[dict]):
+    """Discard unrelated role mistakes and impossible parent links before grounding."""
     markers = {m["id"]: m for m in screen.get("markers", [])}
     controls = {c.id: c for c in response.controls}
-    needed = {s.target for s in response.steps} | {e.target for e in response.evidence}
-    needed.update(response.message_targets)
-    needed.update(i for i in (response.grid, response.row) if i is not None)
+    omitted_evidence = []
+    if response.operation == "act":
+        omitted_evidence = [
+            evidence
+            for evidence in response.evidence
+            if evidence.target not in controls and evidence.field in brain.verified
+        ]
+        if omitted_evidence:
+            response = response.model_copy(
+                update={
+                    "evidence": [
+                        evidence
+                        for evidence in response.evidence
+                        if evidence not in omitted_evidence
+                    ]
+                }
+            )
+    ignored_save_result = brain.phase != "save_result" and response.save_result is not None
+    if ignored_save_result:
+        response = response.model_copy(update={"save_result": None, "message_targets": []})
+    direct_needed = {s.target for s in response.steps} | {e.target for e in response.evidence}
+    if response.save_result is not None:
+        direct_needed.update(response.message_targets)
+    direct_needed.update(i for i in (response.grid, response.row) if i is not None)
     # Verification controls are mandatory even when they are not action targets.
     if required:
-        needed.update(
+        direct_needed.update(
             verification_requirements(
                 response.controls,
                 screen,
@@ -233,33 +257,90 @@ def omit_unused_invalid_roles(brain, response: ScreenMatch, screen: dict, requir
                 brain.settings.visual_min_confidence,
             )[1]
         )
+    needed = set(direct_needed)
     for control_id in list(needed):
         visited = set()
         while control_id in controls and control_id not in visited:
             visited.add(control_id)
-            needed.add(control_id)
-            control_id = controls[control_id].parent_id
+            control = controls[control_id]
+            parent_id = control.parent_id
+            if parent_id is None or parent_id not in controls:
+                break
+            child_marker = markers.get(control_id)
+            parent_marker = markers.get(parent_id)
+            parent = controls[parent_id]
+            if (
+                child_marker is None
+                or parent_marker is None
+                or not marker_role_allowed(parent_marker["source"], parent.role)
+                or not contains(tuple(parent_marker["bbox"]), tuple(child_marker["bbox"]))
+            ):
+                break
+            needed.add(parent_id)
+            control_id = parent_id
     invalid = {
         c.id
         for c in response.controls
         if c.id in markers and not marker_role_allowed(markers[c.id]["source"], c.role)
     }
     # Children depend on a parent's classification; never leave dangling parents.
-    removed = invalid - needed
+    removed = invalid - direct_needed
     while True:
         descendants = {c.id for c in response.controls if c.parent_id in removed}
         expanded = removed | (descendants - needed)
         if expanded == removed:
             break
         removed = expanded
-    if not removed:
-        return response
-    brain.log.append(
-        "verify", payload={"check": "unused_invalid_roles_omitted", "marker_ids": sorted(removed)}
-    )
-    return response.model_copy(
-        update={"controls": [c for c in response.controls if c.id not in removed]}
-    )
+    controls = [c for c in response.controls if c.id not in removed]
+    invalid_parents = []
+    normalized = []
+    for control in controls:
+        child = markers.get(control.id)
+        parent = markers.get(control.parent_id) if control.parent_id is not None else None
+        parent_removed = control.parent_id in removed
+        relation_is_direct_proof = (
+            control.id in direct_needed and control.parent_id in direct_needed
+        )
+        if (
+            control.parent_id is not None
+            and not relation_is_direct_proof
+            and (
+                parent_removed
+                or parent is None
+                or child is None
+                or not contains(tuple(parent["bbox"]), tuple(child["bbox"]))
+            )
+        ):
+            invalid_parents.append({"marker_id": control.id, "parent_id": control.parent_id})
+            control = control.model_copy(update={"parent_id": None})
+        normalized.append(control)
+    if removed:
+        brain.log.append(
+            "verify",
+            payload={"check": "unused_invalid_roles_omitted", "marker_ids": sorted(removed)},
+        )
+    if omitted_evidence:
+        brain.log.append(
+            "verify",
+            payload={
+                "check": "stale_verified_evidence_omitted",
+                "fields": sorted(evidence.field for evidence in omitted_evidence),
+            },
+        )
+    if ignored_save_result:
+        brain.log.append(
+            "verify",
+            payload={"check": "out_of_phase_save_result_omitted"},
+        )
+    if invalid_parents:
+        brain.log.append(
+            "verify",
+            payload={
+                "check": "unused_invalid_parent_links_omitted",
+                "links": invalid_parents,
+            },
+        )
+    return response.model_copy(update={"controls": normalized})
 
 
 def required_verification(brain) -> list[dict]:
@@ -355,10 +436,24 @@ def match_screen(brain, screen: dict, page):
     if brain.pending is None or contract["conditional"]:
         candidates = [s for s in candidates if s.checkpoint in {"any", contract["checkpoint"]}]
     required = required_verification(brain)
+    pending_verification_fields = sorted(
+        {
+            item["source"]
+            for item in contract["pending_actions"]
+            if item["intent"] == "fill" and item["source"] in brain.values
+        }
+    )
+    remaining_fields = contract["remaining_fields"]
+    record = brain.values
+    if brain.phase == "enter":
+        active_fields = set(remaining_fields) | set(pending_verification_fields)
+        record = {field: brain.values[field] for field in sorted(active_fields)}
     notebook = {
         "phase": brain.phase,
         "checkpoint": policy.current_step,
         "verified_fields": sorted(brain.verified),
+        "remaining_fields": remaining_fields,
+        "pending_verification_fields": pending_verification_fields,
         "duplicate_clear": brain.duplicate_clear,
         "query_value_verified": brain.query_value_verified,
         "query_submitted": brain.query_submitted,
@@ -368,7 +463,7 @@ def match_screen(brain, screen: dict, page):
         "recent_feedback": brain.feedback[-3:],
         "required_verification": required,
         "available_credentials": sorted(k for k, value in brain.credentials.items() if value),
-        "record": brain.values
+        "record": record
         if brain.phase in {"enter", "save_result", "final_query"}
         else {"hbl_no": brain.values["hbl_no"]},
     }
@@ -416,7 +511,7 @@ def match_screen(brain, screen: dict, page):
     if brain.pending is None and step.checkpoint not in {"any", policy.current_step}:
         raise ValueError("screen_match_checkpoint_mismatch")
     if not response.needs_refinement:
-        response = omit_unused_invalid_roles(brain, response, screen, required)
+        response = sanitize_unused_controls(brain, response, screen, required)
         response = retain_verification(
             brain,
             response,

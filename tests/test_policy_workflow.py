@@ -328,12 +328,13 @@ def test_semantic_abab_cycle_stops_at_existing_failure_cap_without_business_prog
     assert result.status == "stopped"
     assert result.reason.startswith("repeated_")
     assert relay.navigation_count <= 5
-    cycle_failures = [
+    stalled_navigation = [
         event.payload
         for event in brain.log.read_all()
-        if event.kind == "verify" and event.payload.get("reason") == "navigation_cycle"
+        if event.kind == "verify"
+        and event.payload.get("reason") in {"navigation_cycle", "semantic_target_repeated"}
     ]
-    assert len(cycle_failures) == 2
+    assert len(stalled_navigation) == 2
     assert not brain.verified
     assert not brain.save_issued
 

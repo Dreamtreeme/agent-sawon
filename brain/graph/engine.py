@@ -519,6 +519,11 @@ class Brain:
             self.progress_marks.add(key)
             self.phase_failures[self.phase] = 0
             if business:
+                self.failures = {
+                    key: count
+                    for key, count in self.failures.items()
+                    if not key.startswith(self.phase + ":")
+                }
                 self.business_revision += 1
 
     def _retry_input_target_selection(self, reason: str) -> dict:
@@ -1391,6 +1396,9 @@ class Brain:
         decision, choice = self.decision, self.decision.action
         assert choice is not None
         try:
+            progress_scope = (
+                f"{self.phase}:{self._decision_policy().current_step}:{self.business_revision}"
+            )
             point_refined = self.click_refinement.applies(self, decision)
             action = self._wire_action(choice, decision, screen_batch=screen_batch)
             logged = action.model_dump(mode="json")
@@ -1442,6 +1450,7 @@ class Brain:
                 "point_refined": point_refined,
                 "source_window_handle": self.observation.active_window.handle,
                 "source_navigation_state": navigation_state(self.observation),
+                "progress_scope": progress_scope,
                 "transition": ActionTransition(
                     action_id=str(action.root.action_id),
                     before_obs_id=str(self.observation.obs_id),
@@ -1453,6 +1462,9 @@ class Brain:
             if decision.intent in {"navigate", "select_tab", "login"} and choice.ref is not None:
                 target = next(item for item in self.observation.elements if item.ref == choice.ref)
                 self.pending["navigation_target"] = navigation_target(target, self.observation)
+            if choice.type in {"click", "double_click"} and choice.ref is not None:
+                target = next(item for item in self.observation.elements if item.ref == choice.ref)
+                self.pending["click_target"] = navigation_target(target, self.observation)
             if choice.type in {"set_text", "type_text"}:
                 target = next(item for item in self.observation.elements if item.ref == choice.ref)
                 self.pending["descriptor"] = describe(target, self.observation.elements)
@@ -1563,6 +1575,13 @@ class Brain:
                     f"{self.phase}:{self.business_revision}",
                 ):
                     self.pending = None
+                    if self.click_refinement.prepare(
+                        self,
+                        pending,
+                        observation,
+                        failure="navigation_cycle",
+                    ):
+                        return {"next": "act"}
                     return self._fail("navigation_cycle")
                 # Distinct observed states count once per phase, never model prose.
                 self._record_progress("navigation_state:" + observed_state, business=False)
@@ -1575,6 +1594,19 @@ class Brain:
                         "obs_id": str(observation.obs_id),
                     },
                 )
+            current_scope = (
+                f"{self.phase}:{self._decision_policy().current_step}:{self.business_revision}"
+            )
+            if self.click_refinement.repeated_target(pending, current_scope):
+                self.pending = None
+                if self.click_refinement.prepare(
+                    self,
+                    pending,
+                    observation,
+                    failure="semantic_target_repeated",
+                ):
+                    return {"next": "act"}
+                return self._fail("semantic_target_repeated")
             if choice.type in {"set_text", "type_text"}:
                 descriptor = self.pending["descriptor"]
                 matches = matching_delivered_input(

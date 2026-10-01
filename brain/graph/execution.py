@@ -36,6 +36,8 @@ class PendingAction(TypedDict):
     transition: ActionTransition
     descriptor: NotRequired[dict]
     navigation_target: NotRequired[dict]
+    click_target: NotRequired[dict]
+    progress_scope: NotRequired[str]
     blur_recheck: NotRequired[bool]
     execution: NotRequired[PlanExecution]
     login_plan_descriptors: NotRequired[list[dict]]

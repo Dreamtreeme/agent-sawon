@@ -430,6 +430,16 @@ def test_new_navigation_window_resets_failure_once_and_cycle_cannot_erase_it(tmp
     assert brain.business_revision == 0
 
 
+def test_business_progress_clears_prior_same_phase_subgoal_failures(tmp_path, record):
+    brain = navigation_verifier(tmp_path, record, observed_handle=2)
+
+    brain._record_progress("field:consignee")
+
+    assert brain.phase_failures["enter"] == 0
+    assert "enter:decision" not in brain.failures
+    assert brain.business_revision == 1
+
+
 @pytest.mark.parametrize(
     "intent,action,observed_handle",
     [

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from brain.observe.evidence import matching_elements
+from brain.observe.progress import semantic_target_key
 from brain.observe.summary import describe
 from brain.runtime.storage import atomic_write_json
 from brain.visual.markers import Marker, render_markers
@@ -50,7 +51,24 @@ class BoundClick:
 class ClickRefinement:
     def __init__(self) -> None:
         self.attempted: set[str] = set()
+        self.target_attempts: set[tuple[str, str]] = set()
         self.bound: BoundClick | None = None
+
+    def repeated_target(self, pending: PendingAction, current_scope: str) -> bool:
+        """Detect the same semantic point target without relying on screen type."""
+        choice = pending["choice"]
+        target = pending.get("click_target")
+        if (
+            choice.type not in {"click", "double_click"}
+            or target is None
+            or pending.get("point_refined")
+            or pending.get("progress_scope") != current_scope
+        ):
+            return False
+        key = (current_scope, semantic_target_key(target))
+        repeated = key in self.target_attempts
+        self.target_attempts.add(key)
+        return repeated
 
     def applies(self, brain: Brain, decision: Decision) -> bool:
         return bool(
@@ -63,13 +81,21 @@ class ClickRefinement:
             and decision.intent == self.bound.intent
         )
 
-    def prepare(self, brain: Brain, pending: PendingAction, scene: SceneObservation) -> bool:
+    def prepare(
+        self,
+        brain: Brain,
+        pending: PendingAction,
+        scene: SceneObservation,
+        *,
+        failure: Literal[
+            "navigation_no_progress", "navigation_cycle", "semantic_target_repeated"
+        ] = "navigation_no_progress",
+    ) -> bool:
         decision, choice = pending["decision"], pending["choice"]
         if (
             not brain.settings.visual_click_refinement
             or not isinstance(scene, SceneObservation)
-            or choice.type != "click"
-            or decision.intent not in {"navigate", "select_tab", "login"}
+            or choice.type not in {"click", "double_click"}
             or pending.get("point_refined")
             or pending["source_window_handle"] != scene.active_window.handle
         ):
@@ -122,7 +148,8 @@ class ClickRefinement:
             else None
         )
         prompt = (
-            "The previous click was delivered but navigation produced no new task evidence. "
+            "The previous point action was delivered, but its intended task goal did not "
+            "advance or the same semantic target was selected again. "
             "Inspect this CURRENT numbered OCR/control screenshot and the intended destination. "
             "A text box may combine several captions. Only if a different point INSIDE the "
             "current target reaches the intended destination, return retry with original-image "
@@ -135,7 +162,7 @@ class ClickRefinement:
                     "task_goal": brain.goal,
                     "procedure": step.model_dump() if step else None,
                     "previous_expectation": decision.reason,
-                    "failure": "navigation_no_progress",
+                    "failure": failure,
                     "target": descriptor,
                     "target_bbox": target.bbox,
                     "previous_relative_point": [0.5, 0.5],
@@ -153,7 +180,7 @@ class ClickRefinement:
         brain.feedback.append(
             {
                 "ok": False,
-                "reason": "navigation_no_progress",
+                "reason": failure,
                 "coordinate_review": answer.model_dump(),
                 "expected_result": decision.reason,
             }
@@ -164,6 +191,7 @@ class ClickRefinement:
                 "check": "click_coordinate_review",
                 "obs_id": str(scene.obs_id),
                 "ref": target.ref,
+                "failure": failure,
                 **answer.model_dump(),
             },
         )

@@ -82,3 +82,68 @@ def test_pending_proposal_does_not_mutate_actual_facts_or_runtime_policy(tmp_pat
     assert proposed["query_input"]["pending"] and not proposed["query_input"]["required"]
     assert not brain.query_value_verified
     assert brain._decision_policy().current_step == "query_input"
+
+
+def test_pending_last_record_fill_proposes_save_without_mutating_verified_fields(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.phase = "enter"
+    brain.duplicate_clear = True
+    last_field = "consignee"
+    brain.verified = {field: f"ref-{field}" for field in brain.values if field != last_field}
+    brain.decision = Decision(
+        screen_kind="editor",
+        operation="act",
+        intent="fill",
+        subgoal="fill-entry",
+        reason="fill final field",
+        action=Choice(type="set_text", ref="e1", source=last_field),
+    )
+    brain.pending = {"decision": brain.decision}
+
+    actual = execution_context(brain)
+    proposed = execution_context(brain, anticipate=True)
+
+    assert actual["checkpoint"] == "fill_fields"
+    assert proposed["checkpoint"] == "save"
+    assert proposed["conditional"]
+    assert proposed["remaining_fields"] == []
+    assert proposed["pending_actions"] == [{"intent": "fill", "source": last_field}]
+    assert proposed["allowed_intents"] == [
+        "cancel",
+        "navigate",
+        "save",
+        "select_tab",
+        "stop",
+        "wait",
+    ]
+    assert last_field not in brain.verified
+    assert brain._decision_policy().current_step == "fill_fields"
+
+
+def test_pending_login_proposes_post_authentication_work_without_resubmitting_credentials(
+    tmp_path, record
+):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.credentials = {
+        "credential.username": "fixture-user",
+        "credential.password": "fixture-password",
+    }
+    brain.decision = Decision(
+        screen_kind="login",
+        operation="act",
+        intent="login",
+        subgoal="login",
+        reason="submit credentials",
+        action=Choice(type="click", ref="e1"),
+    )
+    brain.pending = {"decision": brain.decision}
+
+    actual = execution_context(brain)
+    proposed = execution_context(brain, anticipate=True)
+
+    assert "credential" in actual["allowed_intents"]
+    assert proposed["conditional"]
+    assert "credential" not in proposed["allowed_intents"]
+    assert "login" not in proposed["allowed_intents"]
+    assert "Check for an existing record" in proposed["guidance"]
+    assert brain._decision_policy().facts.available_credential_sources

@@ -21,6 +21,29 @@ def navigation_target(element: UIElement, observation: Observation) -> dict:
     }
 
 
+def semantic_target_key(target: dict) -> str:
+    """Return a stable key when OCR spacing or duplicate label hints fluctuate."""
+
+    def normalized(value: str | None) -> str:
+        return "".join((value or "").split()).casefold()
+
+    return json.dumps(
+        {
+            "role": normalized(target.get("role")),
+            "name": normalized(target.get("name")),
+            "context": [
+                {
+                    "role": normalized(parent.get("role")),
+                    "name": normalized(parent.get("name")),
+                }
+                for parent in target.get("context", [])
+            ],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
 def navigation_state(observation: Observation) -> str:
     """Hash the visible semantic tree, preserving duplicate nodes and ancestry.
 

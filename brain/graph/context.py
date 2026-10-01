@@ -139,18 +139,48 @@ def execution_context(
             if execution
             else [pending.get("decision", brain.decision)]
         )
+        facts = actual.facts
+        if facts.phase == "enter":
+            pending_fields = {
+                decision.action.source
+                for decision in decisions
+                if decision is not None
+                and decision.intent == "fill"
+                and decision.action is not None
+                and decision.action.source in facts.field_names
+            }
+            anticipated_fields = set(facts.verified_field_names) | pending_fields
+            if anticipated_fields != set(facts.verified_field_names):
+                facts = replace(
+                    facts,
+                    verified_field_names=tuple(sorted(anticipated_fields)),
+                )
         last = decisions[-1]
-        if last is not None and actual.facts.phase in {"duplicate_query", "final_query"}:
+        if last is not None and last.intent == "login":
+            # A pending login batch is evaluated against the freshly observed
+            # post-action screen.  Its conditional next-step proposal must not
+            # ask the matcher to reconcile or resubmit the credentials that
+            # were already part of that batch.  The verifier still owns the
+            # actual authentication decision and discards this proposal when
+            # the login screen remains visible.
+            facts = replace(
+                facts,
+                available_credential_sources=(),
+                submitted_credentials=(),
+            )
+        if last is not None and facts.phase in {"duplicate_query", "final_query"}:
             if last.intent == "query_input":
-                proposal = DecisionPolicy(replace(actual.facts, query_value_verified=True))
+                facts = replace(facts, query_value_verified=True)
             elif last.intent == "search" and last.screen_kind == "query":
-                proposal = DecisionPolicy(replace(actual.facts, query_submitted=True))
+                facts = replace(facts, query_submitted=True)
+        if facts != actual.facts:
+            proposal = DecisionPolicy(facts)
     query_pending = any(d and d.intent == "query_input" for d in decisions)
+    proposal_prompt = proposal.as_prompt()
     contract = {
         "checkpoint": proposal.current_step,
-        "allowed_intents": sorted(
-            {c["intent"] for c in proposal.as_prompt()["allowed_next_choices"]}
-        ),
+        "allowed_intents": sorted({c["intent"] for c in proposal_prompt["allowed_next_choices"]}),
+        "remaining_fields": proposal_prompt["remaining_fields"],
         "guidance": phase_instruction(proposal),
         "query_input": query_input_requirement(
             actual.facts.phase, actual.current_step, query_pending

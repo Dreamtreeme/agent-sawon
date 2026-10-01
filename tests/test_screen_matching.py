@@ -609,6 +609,57 @@ def test_pending_query_input_proposes_search_without_claiming_verification(tmp_p
     assert brain.query_value_verified is False
 
 
+@pytest.mark.parametrize("pending", [False, True])
+def test_entry_prompt_contains_only_remaining_and_pending_record_fields(tmp_path, record, pending):
+    from brain.graph.matching import RULES, match_screen
+    from brain.graph.schemas import Choice, Decision
+
+    procedure_step = "save-entry" if pending else "fill-entry"
+    brain, model, _, _, _, _ = setup_brain(
+        tmp_path,
+        record,
+        [
+            response(
+                fixture()[-1],
+                screen_kind="editor",
+                procedure_step=procedure_step,
+                steps=[],
+                operation="stop",
+            )
+        ],
+    )
+    brain.phase = "enter"
+    brain.duplicate_clear = True
+    brain.verified = {field: f"prior-{field}" for field in brain.values if field != "consignee"}
+    if pending:
+        brain.decision = Decision(
+            screen_kind="editor",
+            operation="act",
+            intent="fill",
+            subgoal="fill-entry",
+            reason="fill final field",
+            action=Choice(type="set_text", ref="e1", source="consignee"),
+        )
+        brain.pending = {"decision": brain.decision}
+
+    match_screen(
+        brain,
+        {
+            "ocr": [block.model_dump() for block in fixture()[0]],
+            "markers": [marker.model_dump() for marker in fixture()[2]],
+        },
+        None,
+    )
+    state = json.loads(model.prompts[-1][len(RULES) :])
+    notebook = state["notebook"]
+    assert set(notebook["record"]) == {"consignee"}
+    assert notebook["remaining_fields"] == ([] if pending else ["consignee"])
+    assert notebook["pending_verification_fields"] == (["consignee"] if pending else [])
+    checkpoints = {step["checkpoint"] for step in state["procedure"]}
+    assert ("save" if pending else "fill_fields") in checkpoints
+    assert checkpoints <= {"any", "save" if pending else "fill_fields"}
+
+
 def test_final_row_matching_receives_visibility_and_action_contract(tmp_path, record):
     import json
 
@@ -647,7 +698,7 @@ def test_final_row_matching_receives_visibility_and_action_contract(tmp_path, re
     "dependency", ["none", "action", "evidence", "parent", "verification", "other_verification"]
 )
 def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
-    from brain.graph.matching import omit_unused_invalid_roles
+    from brain.graph.matching import sanitize_unused_controls
     from brain.visual.markers import Marker, ground_meanings
     from brain.visual.scene import SemanticDetection, bind_scene
     from pipeline.schemas import OcrBlock
@@ -682,7 +733,7 @@ def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
     elif dependency == "other_verification":
         required = [{"screen": "query", "descriptor": {"role": "edit", "name": "Other"}}]
     response = ScreenMatch.model_validate(payload)
-    cleaned = omit_unused_invalid_roles(
+    cleaned = sanitize_unused_controls(
         brain,
         response,
         {"markers": [m.model_dump() for m in markers], "ocr": [b.model_dump() for b in blocks]},
@@ -691,15 +742,133 @@ def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
     meanings = SemanticDetection.model_validate(
         {k: v for k, v in cleaned.model_dump().items() if k in SemanticDetection.model_fields}
     )
-    if dependency in {"none", "other_verification"}:
+    if dependency in {"none", "parent", "other_verification"}:
         scene = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
         decision = compile_match(cleaned, scene, DecisionResponse).decision
         assert decision.intent == "navigate"
         assert next(e for e in scene.elements if e.ref == decision.action.ref).name == "Details"
         assert not any(e.role == "edit" for e in scene.elements)
+        if dependency == "parent":
+            assert (
+                next(e for e in scene.elements if e.ref == decision.action.ref).parent_ref is None
+            )
     else:
         with pytest.raises(ValueError, match="ocr_text_is_not_control_extent"):
             ground_meanings(meanings, markers, blocks)
+
+
+@pytest.mark.parametrize("dependency", ["unrelated", "action", "direct_proof"])
+def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, dependency):
+    from brain.graph.matching import sanitize_unused_controls
+    from brain.visual.markers import Marker, ground_meanings
+    from brain.visual.scene import SemanticDetection, bind_scene
+    from pipeline.schemas import OcrBlock
+
+    brain, *_ = setup_brain(tmp_path, record, [])
+    blocks = [OcrBlock(id=0, text="조회 결과 0건", bbox=(10, 110, 70, 15), confidence=1)]
+    markers = [
+        Marker(id=16, bbox=(0, 0, 100, 100), source="pixel_rectangle", confidence=1),
+        Marker(id=31, bbox=blocks[0].bbox, source="ocr", text_ids=(0,), confidence=1),
+        Marker(id=34, bbox=(120, 110, 80, 25), source="omniparser", confidence=1),
+    ]
+    payload = {
+        "screen_kind": "query",
+        "procedure_step": "open-entry",
+        "controls": [
+            {"id": 16, "role": "table", "confidence": 1, "table_state": "empty"},
+            {
+                "id": 31,
+                "role": "text",
+                "parent_id": 16,
+                "text_ids": [0],
+                "confidence": 1,
+            },
+            {"id": 34, "role": "button", "confidence": 1},
+        ],
+        "steps": [
+            {
+                "target": 31 if dependency == "action" else 34,
+                "action": "click",
+                "intent": "navigate",
+            }
+        ],
+        # This field is irrelevant without save_result and must not promote decoration to proof.
+        "message_targets": [31],
+    }
+    if dependency == "direct_proof":
+        payload["grid"] = 16
+        payload["evidence"] = [{"field": "hbl_no", "target": 31}]
+    response = sanitize_unused_controls(
+        brain,
+        ScreenMatch.model_validate(payload),
+        {
+            "markers": [marker.model_dump() for marker in markers],
+            "ocr": [block.model_dump() for block in blocks],
+        },
+        [],
+    )
+    meanings = SemanticDetection.model_validate(
+        {
+            key: value
+            for key, value in response.model_dump().items()
+            if key in SemanticDetection.model_fields
+        }
+    )
+    if dependency == "direct_proof":
+        with pytest.raises(ValueError, match="invalid_visual_parent_bounds"):
+            bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
+    else:
+        scene = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
+        result_count = next(
+            element for element in scene.elements if element.value == "조회 결과 0건"
+        )
+        assert result_count.parent_ref is None
+
+
+@pytest.mark.parametrize("verified", [False, True])
+def test_only_missing_evidence_for_already_verified_fields_is_omitted(tmp_path, record, verified):
+    from brain.graph.matching import sanitize_unused_controls
+    from brain.visual.markers import Marker, ground_meanings
+    from brain.visual.scene import SemanticDetection, bind_scene
+
+    brain, *_ = setup_brain(tmp_path, record, [])
+    if verified:
+        brain.verified["hbl_no"] = "prior-editor-ref"
+    markers = [
+        Marker(id=31, bbox=(10, 10, 80, 25), source="omniparser", confidence=1),
+        Marker(id=34, bbox=(120, 10, 80, 25), source="omniparser", confidence=1),
+    ]
+    response = sanitize_unused_controls(
+        brain,
+        ScreenMatch.model_validate(
+            {
+                "screen_kind": "editor",
+                "procedure_step": "save-entry",
+                "controls": [{"id": 34, "role": "button", "confidence": 1}],
+                "steps": [{"target": 34, "action": "click", "intent": "save"}],
+                "evidence": [{"field": "hbl_no", "target": 31}],
+                "save_result": "unknown",
+            }
+        ),
+        {"markers": [marker.model_dump() for marker in markers], "ocr": []},
+        [],
+    )
+    assert response.save_result is None
+    assert bool(response.evidence) is not verified
+    meanings = SemanticDetection.model_validate(
+        {
+            key: value
+            for key, value in response.model_dump().items()
+            if key in SemanticDetection.model_fields
+        }
+    )
+    scene = bind_scene(wire(), [], ground_meanings(meanings, markers, []))
+    if verified:
+        decision = compile_match(response, scene, DecisionResponse).to_decision()
+        assert decision.intent == "save"
+    else:
+        with pytest.raises(ValueError, match="visual_proposal_unknown_marker"):
+            compile_match(response, scene, DecisionResponse)
 
 
 @pytest.mark.parametrize(
