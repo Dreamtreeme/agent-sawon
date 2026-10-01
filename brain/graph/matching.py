@@ -179,7 +179,10 @@ def retain_verification(
             for control in controls:
                 if (
                     not control.enabled
-                    or control.confidence < brain.settings.visual_min_confidence
+                    or (
+                        control.confidence_policy == "threshold"
+                        and control.confidence < brain.settings.visual_min_confidence
+                    )
                     or control.role != descriptor["role"]
                 ):
                     continue

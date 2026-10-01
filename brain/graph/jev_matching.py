@@ -287,6 +287,7 @@ def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMa
                 ),
                 text_ids=text_ids,
                 confidence=confidence,
+                confidence_policy="argmax",
                 enabled=enabled,
                 table_state=pick(f"table:{mid}", "uncertain") if role == "table" else "not_table",
             )
@@ -396,20 +397,6 @@ def match_choices(brain, state: dict) -> ScreenMatch:
     response = ChoiceAnswers(answers=combined)
     atomic_write_json(directory / "answers.json", response)
     result = compile_answers(request, response)
-    needed = {s.target for s in result.steps} | {e.target for e in result.evidence}
-    needed.update(i for i in (result.grid, result.row) if i is not None)
-    ambiguous = [
-        c.id
-        for c in result.controls
-        if c.id in needed and c.confidence < brain.settings.visual_min_confidence
-    ]
-    if ambiguous and not result.needs_image and not result.needs_refinement:
-        # Reuse image recovery only for ambiguity that would block the selected action/proof.
-        # Jev's distribution confidence is not interchangeable with Gemini self-report.
-        result = result.model_copy(update={"needs_image": True, "steps": [], "operation": "stop"})
-        brain.log.append(
-            "verify", payload={"check": "jev_ambiguous_selected_controls", "marker_ids": ambiguous}
-        )
     atomic_write_json(directory / "screen-match.json", result)
     brain.log.append(
         "select",

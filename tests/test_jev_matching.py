@@ -220,7 +220,7 @@ def test_ocr_text_tab_can_be_selected_without_detector_box():
 @pytest.mark.parametrize(
     "needs_image,low_confidence", [(False, False), (True, False), (False, True)]
 )
-def test_actual_brain_routes_only_ambiguity_to_image_model(
+def test_actual_brain_uses_argmax_unless_image_explicitly_requested(
     tmp_path, record, needs_image, low_confidence
 ):
     from test_visual_markers import fixture
@@ -248,7 +248,12 @@ def test_actual_brain_routes_only_ambiguity_to_image_model(
                 },
             )
             if low_confidence:
-                reply.answers["role:" + target].confidence = 0.4
+                answer = reply.answers["role:" + target]
+                answer.confidence = 0.4
+                answer.probabilities = {
+                    key: 0.4 if key == answer.choice else 0.6 / (len(answer.probabilities) - 1)
+                    for key in answer.probabilities
+                }
             return ProviderReply(
                 reply.model_dump_json(), TokenUsage(input_tokens=0, response_tokens=0)
             )
@@ -265,12 +270,15 @@ def test_actual_brain_routes_only_ambiguity_to_image_model(
     brain.credentials = {"credential.username": "SECRET_USER", "credential.password": "SECRET_PW"}
     brain._observe()
     assert brain._select_node({}) == {"next": "act"}
-    assert seen == ([True] if needs_image or low_confidence else [])
-    assert sum(e.kind == "model_call" for e in brain.log.read_all()) == 1 + bool(
-        needs_image or low_confidence
-    )
+    assert seen == ([True] if needs_image else [])
+    assert sum(e.kind == "model_call" for e in brain.log.read_all()) == 1 + bool(needs_image)
     assert "SECRET_" not in brain.matching_model.request.model_dump_json()
     assert len(list((tmp_path / "jev").glob("*/answers.json"))) == 1
+    if low_confidence:
+        saved = json.loads(next((tmp_path / "jev").glob("*/screen-match.json")).read_text())
+        control = next(c for c in saved["controls"] if c["id"] == meaning.controls[0].id)
+        assert control["confidence"] == 0.4
+        assert control["confidence_policy"] == "argmax"
 
 
 def test_disabled_target_is_preserved_for_existing_execution_guard():

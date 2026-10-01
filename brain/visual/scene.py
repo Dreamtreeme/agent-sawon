@@ -44,6 +44,7 @@ class ControlMeaning(BaseModel):
         allow_inf_nan=False,
         description="Semantic role/relationship confidence, independent of detector score",
     )
+    confidence_policy: Literal["threshold", "argmax"] = "threshold"
     enabled: bool = True
     focused: bool = False
     visual_description: str = Field(default="", max_length=160)
@@ -217,7 +218,9 @@ def bind_scene(
             )
             > 1
         )
-        uncertain = control.confidence < threshold or duplicate
+        uncertain = (
+            control.confidence_policy == "threshold" and control.confidence < threshold
+        ) or duplicate
         if control.role == "table":
             rows = [
                 other
