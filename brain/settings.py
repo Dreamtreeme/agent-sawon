@@ -43,6 +43,7 @@ class BrainSettings(BaseModel):
     visual_joint_planning: bool = False
     numbered_selection: bool = False
     screen_matching: bool = False
+    jev_request_max_bytes: int = Field(default=48_000, ge=8_000, le=48_000)
     procedure_path: Path | None = None
     visual_detector: DetectorSettings = Field(default_factory=DetectorSettings)
     visual_merge: MergeSettings = Field(default_factory=MergeSettings)

@@ -319,6 +319,17 @@ def test_pending_query_does_not_request_a_second_fill():
     assert "select hbl_no even if it already matches" not in instruction
 
 
+def test_question_packing_preserves_every_question_and_shared_state():
+    request = build_request(state())
+    parts = request.batches(8_000)
+    assert len(parts) > 1
+    assert all(len(p.model_dump_json().encode("utf-8")) <= 8_000 for p in parts)
+    assert all(p.state == request.state for p in parts)
+    assert [k for p in parts for k in p.questions] == list(request.questions)
+    combined = ChoiceAnswers(answers={k: a for p in parts for k, a in answers(p).answers.items()})
+    combined.validate_request(request)
+
+
 def client(tmp_path):
     log = RunLog(tmp_path, case_id="jev-test", agent_id="test")
     model = JevClient(

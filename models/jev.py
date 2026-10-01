@@ -27,6 +27,30 @@ class ChoiceRequest(BaseModel):
     state: dict
     questions: dict[str, ChoiceQuestion] = Field(min_length=1)
 
+    def batches(self, max_bytes: int = 48_000) -> list[ChoiceRequest]:
+        """Pack independent questions without another capture or dependent inference.
+
+        UTF-8 bytes are a conservative local token proxy, not provider billing.
+        Keep state below the separate state+question context limit as well.
+        """
+        if len(json.dumps(self.state, ensure_ascii=False).encode("utf-8")) > 24_000:
+            raise ValueError("jev_state_requires_compaction")
+        result, pending = [], {}
+        for key, question in self.questions.items():
+            candidate = ChoiceRequest(state=self.state, questions={**pending, key: question})
+            if len(candidate.model_dump_json().encode("utf-8")) > max_bytes:
+                if pending:
+                    result.append(ChoiceRequest(state=self.state, questions=pending))
+                pending = {key: question}
+                single = ChoiceRequest(state=self.state, questions=pending)
+                if len(single.model_dump_json().encode("utf-8")) > max_bytes:
+                    raise ValueError("jev_question_requires_compaction")
+            else:
+                pending[key] = question
+        if pending:
+            result.append(ChoiceRequest(state=self.state, questions=pending))
+        return result
+
 
 class ChoiceAnswer(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -94,8 +118,16 @@ class JevClient(MeasuredModelClient):
             method="POST",
         )
         # No SDK retries: one measured call represents exactly one HTTP attempt.
-        with urlopen(request, timeout=self._timeout) as response:
-            data = json.load(response)
+        try:
+            with urlopen(request, timeout=self._timeout) as response:
+                data = json.load(response)
+        except HTTPError as error:
+            # Private diagnostic artifact only, never headers/key or public event payload.
+            self.last_response = {
+                "http_status": error.code,
+                "error_body": error.read(65_536).decode("utf-8", errors="replace"),
+            }
+            raise
         self.last_response = data
         metadata = data.get("usage") or {}
         usage = None

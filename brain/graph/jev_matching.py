@@ -373,19 +373,27 @@ def compile_answers(request: ChoiceRequest, response: ChoiceAnswers) -> ScreenMa
 
 def match_choices(brain, state: dict) -> ScreenMatch:
     request = build_request(state)
+    batches = request.batches(brain.settings.jev_request_max_bytes)
     directory = brain.case_dir / "jev" / uuid4().hex
     atomic_write_json(directory / "request.json", request)
-    try:
-        response = brain._call(
-            request.model_dump_json(),
-            ChoiceAnswers,
-            model=brain.matching_model,
-            call_budget=brain.matching_budget,
-        )
-    finally:
-        raw = getattr(brain.matching_model, "last_response", None)
-        if raw is not None:
-            atomic_write_json(directory / "provider-response.json", raw)
+    combined = {}
+    for index, batch in enumerate(batches):
+        atomic_write_json(directory / f"request-{index:03}.json", batch)
+        try:
+            part = brain._call(
+                batch.model_dump_json(),
+                ChoiceAnswers,
+                model=brain.matching_model,
+                call_budget=brain.matching_budget,
+            )
+        finally:
+            raw = getattr(brain.matching_model, "last_response", None)
+            if raw is not None:
+                atomic_write_json(directory / f"provider-response-{index:03}.json", raw)
+        atomic_write_json(directory / f"answers-{index:03}.json", part)
+        part.validate_request(batch)
+        combined.update(part.answers)
+    response = ChoiceAnswers(answers=combined)
     atomic_write_json(directory / "answers.json", response)
     result = compile_answers(request, response)
     needed = {s.target for s in result.steps} | {e.target for e in result.evidence}
@@ -408,6 +416,7 @@ def match_choices(brain, state: dict) -> ScreenMatch:
         payload={
             "check": "jev_choice_batch",
             "questions": len(request.questions),
+            "requests": len(batches),
             "artifact": str(directory.relative_to(brain.case_dir)),
         },
     )
