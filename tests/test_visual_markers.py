@@ -363,7 +363,8 @@ def test_input_value_comes_from_contained_ocr_when_model_omits_text_ids():
 
 
 @pytest.mark.parametrize("clipped", [False, True])
-def test_ocr_rows_feed_existing_final_review_without_inventing_values(clipped):
+@pytest.mark.parametrize("explicit_cells", [True, False])
+def test_ocr_rows_feed_existing_final_review_without_inventing_values(clipped, explicit_cells):
     from test_visual_scene import wire
 
     from brain.graph.review import review_final
@@ -401,6 +402,7 @@ def test_ocr_rows_feed_existing_final_review_without_inventing_values(clipped):
                     "text_ids": list(m.text_ids),
                 }
                 for m in cells
+                if explicit_cells
             ],
         ],
     )

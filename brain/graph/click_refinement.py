@@ -81,7 +81,17 @@ class ClickRefinement:
         if len(matches) != 1 or not matches[0].enabled:
             return False
         target = matches[0]
-        key = json.dumps([brain.phase, decision.intent, descriptor], sort_keys=True)
+        key = json.dumps(
+            [
+                brain.phase,
+                decision.intent,
+                descriptor,
+                scene.screen_hash,
+                scene.active_window.handle,
+                target.bbox,
+            ],
+            sort_keys=True,
+        )
         if key in self.attempted:
             return False
         self.attempted.add(key)

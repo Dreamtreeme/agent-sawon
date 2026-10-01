@@ -113,6 +113,7 @@ def test_identical_capture_reuses_ocr_but_rematches_new_procedure_step(tmp_path,
         steps=[{"target": meaning.controls[0].id, "action": "click", "intent": "navigate"}],
     )
     entry["controls"][0]["role"] = "button"
+    entry["evidence"] = [{"field": "hbl_no", "target": meaning.controls[0].id}]
     brain, model, relay, ocr, detector, _ = setup_brain(
         tmp_path, record, [response(meaning), entry, entry]
     )
@@ -127,6 +128,10 @@ def test_identical_capture_reuses_ocr_but_rematches_new_procedure_step(tmp_path,
     assert "open-entry" in model.prompts[-1]
     assert "enter-duplicate-key" not in model.prompts[-1]
     assert brain.decision.intent == "navigate"
+    assert brain.saved_bindings == (
+        str(brain.observation.obs_id),
+        {"hbl_no": brain.decision.action.ref},
+    )
     assert brain.decision.action.ref.startswith("e" + str(brain.observation.obs_id.int))
     relay.color = "black"
     brain._observe()
@@ -554,7 +559,9 @@ def test_final_row_matching_receives_visibility_and_action_contract(tmp_path, re
     assert "reuse earlier refs" in state["execution"]["guidance"]
 
 
-@pytest.mark.parametrize("dependency", ["none", "action", "evidence", "parent", "verification"])
+@pytest.mark.parametrize(
+    "dependency", ["none", "action", "evidence", "parent", "verification", "other_verification"]
+)
 def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
     from brain.graph.matching import omit_unused_invalid_roles
     from brain.visual.markers import Marker, ground_meanings
@@ -587,15 +594,20 @@ def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
     elif dependency == "parent":
         payload["controls"][1]["parent_id"] = 5
     elif dependency == "verification":
-        required = [{"screen": "query", "descriptor": {"role": "edit"}}]
+        required = [{"screen": "query", "descriptor": {"role": "edit", "name": ""}}]
+    elif dependency == "other_verification":
+        required = [{"screen": "query", "descriptor": {"role": "edit", "name": "Other"}}]
     response = ScreenMatch.model_validate(payload)
     cleaned = omit_unused_invalid_roles(
-        brain, response, {"markers": [m.model_dump() for m in markers]}, required
+        brain,
+        response,
+        {"markers": [m.model_dump() for m in markers], "ocr": [b.model_dump() for b in blocks]},
+        required,
     )
     meanings = SemanticDetection.model_validate(
         {k: v for k, v in cleaned.model_dump().items() if k in SemanticDetection.model_fields}
     )
-    if dependency == "none":
+    if dependency in {"none", "other_verification"}:
         scene = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
         decision = compile_match(cleaned, scene, DecisionResponse).decision
         assert decision.intent == "navigate"
@@ -604,3 +616,20 @@ def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
     else:
         with pytest.raises(ValueError, match="ocr_text_is_not_control_extent"):
             ground_meanings(meanings, markers, blocks)
+
+
+@pytest.mark.parametrize(
+    ("phase", "submitted", "required"),
+    [("final_query", True, False), ("final_query", False, True), ("duplicate_query", True, True)],
+)
+def test_query_input_requirement_ends_only_after_final_search(
+    tmp_path, record, phase, submitted, required
+):
+    from brain.graph.matching import required_verification
+
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.phase = phase
+    brain.query_submitted = submitted
+    brain.query_value_verified = True
+    brain.query_descriptor = {"role": "edit", "name": "Identifier"}
+    assert bool(required_verification(brain)) is required

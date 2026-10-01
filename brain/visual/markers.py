@@ -180,10 +180,12 @@ def ground_meanings(
     # Unclassified text remains visible as static evidence, never an input target.
     for marker in markers:
         if marker.id not in used and marker.source == "ocr":
+            rows = [c for c in controls if c.role == "row" and contains(c.bbox, marker.bbox)]
             controls.append(
                 VisualControl(
                     id=marker.id,
-                    role="text",
+                    role="cell" if len(rows) == 1 else "text",
+                    parent_id=rows[0].id if len(rows) == 1 else None,
                     bbox=list(marker.bbox),
                     text_ids=list(marker.text_ids),
                     confidence=marker.confidence,

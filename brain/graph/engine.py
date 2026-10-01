@@ -40,12 +40,13 @@ from pipeline.ocr import OcrEngine
 from pipeline.schemas import RenderedPage
 
 from .click_refinement import ClickRefinement
-from .context import DUPLICATE_EVIDENCE_GUIDANCE, execution_context, phase_instruction
+from .context import DUPLICATE_EVIDENCE_GUIDANCE, execution_context
 from .execution import ActionPlan, PendingAction, execute_plan, log_transition
 from .execution import GuardStop as GuardStop
 from .policy import DecisionPolicy, ExecutionFacts
 from .review import EvidenceReview, review_final
 from .save_review import SaveReviewResponse, validate_save_review
+from .saved_evidence import SavedEvidence
 from .schemas import (
     Choice,
     Decision,
@@ -180,6 +181,8 @@ class Brain:
         self.query_window_handle: int | None = None
         self.duplicate_clear = False
         self.save_issued = False
+        self.saved_evidence = SavedEvidence()
+        self.saved_bindings: tuple[str, dict[str, str]] | None = None
         self.pending: PendingAction | None = None
         self.click_refinement = ClickRefinement()
         self.action_plan: ActionPlan | None = None
@@ -363,6 +366,7 @@ class Brain:
                         "source": "same_screen_rematched",
                     },
                 )
+            self._bind_saved_evidence(response)
             selection_plan = compile_selection_plan(response, self.observation)
             if selection_plan is not None:
                 self.action_plan = selection_plan
@@ -688,6 +692,16 @@ class Brain:
     def _duplicate_checkpoint_pending(self) -> bool:
         return self.phase == "duplicate_query" and self.query_submitted
 
+    def _bind_saved_evidence(self, response) -> None:
+        self.saved_bindings = (
+            str(self.observation.obs_id),
+            {
+                e.field: "e" + str(self.observation.obs_id.int) + "0" + str(e.target)
+                for e in response.evidence
+            },
+        )
+        self.review = None
+
     def _observe(self) -> Observation:
         observation = redact(self.relay.observe(), self.secrets)
         if self.visual_perception is not None and not observation.blocked_reason:
@@ -695,6 +709,8 @@ class Brain:
             observation = self.visual_perception.observe(observation)
             self.visual_proposal_obs_id = observation.obs_id
         self.observation = observation
+        if self.settings.screen_matching and self.visual_proposal is not None:
+            self._bind_saved_evidence(self.visual_proposal)
         self.review = None
         self.observation_number += 1
         relative = f"observations/{self.observation_number:04d}.json"
@@ -827,7 +843,25 @@ class Brain:
             and self.query_submitted
             and self.query_value_verified
         ):
-            self.review = review_final(self.observation, self.values, field_matches)
+            if (
+                self.settings.screen_matching
+                and self.saved_evidence.session_id
+                and isinstance(self.observation, SceneObservation)
+            ):
+                bindings = (
+                    self.saved_bindings[1]
+                    if self.saved_bindings
+                    and self.saved_bindings[0] == str(self.observation.obs_id)
+                    else {}
+                )
+                self.review = self.saved_evidence.observe(
+                    self.observation, self.values, field_matches, bindings
+                )
+                atomic_write_json(
+                    self.case_dir / "saved-evidence.json", self.saved_evidence.snapshot(self.values)
+                )
+            else:
+                self.review = review_final(self.observation, self.values, field_matches)
         else:
             self.review = EvidenceReview(
                 obs_id=str(self.observation.obs_id),
@@ -847,7 +881,7 @@ class Brain:
                 return self._check_complete(self.decision)
             review = self._current_review()
             if review.status != "not_due":
-                if not self._current_query_matches():
+                if not self.saved_evidence.session_id and not self._current_query_matches():
                     raise GuardStop("query_value_changed")
                 self.log.append(
                     "verify",
@@ -856,6 +890,8 @@ class Brain:
                         **review.model_dump(mode="json"),
                     },
                 )
+            if self.saved_evidence.session_id and review.status == "ready":
+                return self._complete_saved_evidence()
             if review.status == "blocked":
                 return self._finish("stopped", review.reason)
             return {"next": "select"}
@@ -870,7 +906,7 @@ class Brain:
             return self._fail("review_error:" + type(exc).__name__)
 
     def _phase_instruction(self, policy: DecisionPolicy | None = None) -> str:
-        return phase_instruction(policy or self._decision_policy())
+        return execution_context(self, policy or self._decision_policy())["guidance"]
 
     def _decision_schema(self) -> type[BaseModel]:
         return self._decision_policy().response_schema()
@@ -1188,6 +1224,8 @@ class Brain:
             )
             if decision.screen_kind == "unknown":
                 raise GuardStop("unknown_window_type")
+            if self.saved_evidence.session_id and self._current_review().status == "ready":
+                return self._complete_saved_evidence()
             if decision.operation == "stop":
                 return self._finish("stopped", "model_requested_stop")
             if decision.operation in {"duplicate_clear", "duplicate_found", "complete"}:
@@ -1491,6 +1529,9 @@ class Brain:
             if choice.source and choice.source.startswith("credential."):
                 logged["text"] = "[REDACTED]"
             self.log.append("act", payload={"stage": "requested", "action": logged})
+            if self.settings.screen_matching and isinstance(self.observation, SceneObservation):
+                self.saved_evidence.after_action(decision, self.observation)
+                self.review = None
             response = self.relay.act(action)
             self.log.append(
                 "act",
@@ -1549,6 +1590,9 @@ class Brain:
                 self.pending["descriptor"] = describe(target, self.observation.elements)
             if decision.intent == "search" and decision.screen_kind == "query":
                 self.query_submitted = True
+                if self.settings.screen_matching and self.phase == "final_query":
+                    self.saved_evidence.begin(str(self.observation.obs_id))
+                    self.review = None
             if decision.intent == "save":
                 self.save_issued = True
                 self.phase = "save_result"
@@ -1832,6 +1876,29 @@ class Brain:
                 return outcome
         return None
 
+    def _complete_saved_evidence(self) -> dict:
+        review = self._current_review()
+        if not (
+            self.phase == "final_query"
+            and self.duplicate_clear
+            and self.save_issued
+            and self.query_submitted
+            and self.query_value_verified
+            and self.saved_evidence.session_id
+            and review.status == "ready"
+        ):
+            raise GuardStop("incomplete_saved_record_evidence")
+        self.log.append(
+            "verify",
+            payload={
+                "ok": True,
+                "check": "final_query_fields",
+                "proof_kind": "linked_saved_record_observations",
+                **self.saved_evidence.snapshot(self.values),
+            },
+        )
+        return self._finish("success", "saved_and_verified_awaiting_approval")
+
     def _check_complete(self, decision: Decision) -> dict:
         assert self.observation is not None
         if not (
@@ -1842,6 +1909,8 @@ class Brain:
             and self.query_value_verified
         ):
             raise GuardStop("completion_without_required_workflow")
+        if self.saved_evidence.session_id:
+            return self._complete_saved_evidence()
         if not self._current_query_matches():
             raise GuardStop("query_value_changed")
         grid = self._grid(decision)

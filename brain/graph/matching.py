@@ -158,8 +158,12 @@ Option selection may contain consecutive select_option clicks within the CURRENT
 click the matching visible row, then the visible confirmation button. Return both in order.
 Do not mix these clicks with navigation to another screen or field inputs.
 Only fill actions need a source; click actions identify their target directly.
-Duplicate results require grid and empty/rows evidence. Final complete requires current
-grid/row and field evidence. Save result requires current message_targets and next command.
+Duplicate results require grid and empty/rows evidence.
+Final verification starts with a current query grid/identified row. In linked detail
+screens, map each visible direct input field to evidence; identify hbl_no whenever visible.
+Preserve the full literal field values. Code accumulates post-save evidence and decides completion.
+Navigate to expose missing fields; never refill or save during final verification.
+Save result requires current message_targets and next command.
 expected_result describes an expectation only; it never proves that execution succeeded.
 If OCR/geometry cannot determine a needed relation or empty-table evidence, return
 needs_image=true without actions. Never guess empty solely from lack of OCR text.
@@ -167,6 +171,45 @@ Report needs_refinement only when a required control extent is missing. Never tr
 Include every required_verification control on its specified screen, even when the next
 action/proof uses a different control. Keep its current label_ids and contained text_ids.
 """
+
+
+def verification_requirements(
+    controls, screen: dict, required: list[dict], screen_kind: str, threshold: float
+):
+    relevant = [r for r in required if r["screen"] == screen_kind]
+    blocks = {b["id"]: b for b in screen["ocr"]}
+    markers = {m["id"]: m for m in screen.get("markers", [])}
+    result = []
+    matched_ids = set()
+    for item in relevant:
+        descriptor = item["descriptor"]
+        matches = []
+        for control in controls:
+            if (
+                not control.enabled
+                or (control.confidence_policy == "threshold" and control.confidence < threshold)
+                or control.role != descriptor["role"]
+            ):
+                continue
+            labels = [blocks[i] for i in control.label_ids if i in blocks]
+            name = " ".join(
+                b["text"] for b in sorted(labels, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+            )
+            region = item.get("input_region")
+            if item.get("input_image_size") and screen.get("image_size") not in (
+                None,
+                item["input_image_size"],
+            ):
+                region = None  # A resized window invalidates the transient extent.
+            marker = markers.get(control.id)
+            if (
+                region is not None and marker is not None and overlap(region, marker["bbox"]) >= 0.7
+            ) or (region is None and name == (descriptor.get("label") or descriptor["name"])):
+                matches.append(control)
+        matched_ids.update(c.id for c in matches)
+        if not matches:
+            result.append(item)
+    return result, matched_ids
 
 
 def omit_unused_invalid_roles(brain, response: ScreenMatch, screen: dict, required: list[dict]):
@@ -177,10 +220,16 @@ def omit_unused_invalid_roles(brain, response: ScreenMatch, screen: dict, requir
     needed.update(response.message_targets)
     needed.update(i for i in (response.grid, response.row) if i is not None)
     # Verification controls are mandatory even when they are not action targets.
-    required_roles = {
-        r["descriptor"]["role"] for r in required if r["screen"] == response.screen_kind
-    }
-    needed.update(c.id for c in response.controls if c.role in required_roles)
+    if required:
+        needed.update(
+            verification_requirements(
+                response.controls,
+                screen,
+                required,
+                response.screen_kind,
+                brain.settings.visual_min_confidence,
+            )[1]
+        )
     for control_id in list(needed):
         visited = set()
         while control_id in controls and control_id not in visited:
@@ -213,7 +262,11 @@ def omit_unused_invalid_roles(brain, response: ScreenMatch, screen: dict, requir
 def required_verification(brain) -> list[dict]:
     """Carry identities and transient input regions, never previously read values."""
     required = []
-    if brain.query_value_verified and brain.query_descriptor is not None:
+    if (
+        brain.query_value_verified
+        and brain.query_descriptor is not None
+        and not (brain.phase == "final_query" and brain.query_submitted)
+    ):
         required.append(
             {"source": "hbl_no", "screen": "query", "descriptor": brain.query_descriptor}
         )
@@ -248,45 +301,10 @@ def required_verification(brain) -> list[dict]:
 def retain_verification(
     brain, response: ScreenMatch, screen: dict, required: list[dict], page=None
 ):
-    relevant = [r for r in required if r["screen"] == response.screen_kind]
-    blocks = {b["id"]: b for b in screen["ocr"]}
-    markers = {m["id"]: m for m in screen.get("markers", [])}
-
     def missing(controls):
-        result = []
-        for item in relevant:
-            descriptor = item["descriptor"]
-            matches = []
-            for control in controls:
-                if (
-                    not control.enabled
-                    or (
-                        control.confidence_policy == "threshold"
-                        and control.confidence < brain.settings.visual_min_confidence
-                    )
-                    or control.role != descriptor["role"]
-                ):
-                    continue
-                labels = [blocks[i] for i in control.label_ids if i in blocks]
-                name = " ".join(
-                    b["text"] for b in sorted(labels, key=lambda b: (b["bbox"][1], b["bbox"][0]))
-                )
-                region = item.get("input_region")
-                if item.get("input_image_size") and screen.get("image_size") not in (
-                    None,
-                    item["input_image_size"],
-                ):
-                    region = None  # A resized window invalidates the transient extent.
-                marker = markers.get(control.id)
-                if (
-                    region is not None
-                    and marker is not None
-                    and overlap(region, marker["bbox"]) >= 0.7
-                ) or (region is None and name == (descriptor.get("label") or descriptor["name"])):
-                    matches.append(control)
-            if not matches:
-                result.append(item)
-        return result
+        return verification_requirements(
+            controls, screen, required, response.screen_kind, brain.settings.visual_min_confidence
+        )[0]
 
     absent = missing(response.controls)
     if not absent:

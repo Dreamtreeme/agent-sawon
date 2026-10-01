@@ -163,6 +163,18 @@ def execution_context(
         "conditional": proposal is not actual,
         "final_required_fields": sorted(brain.values) if brain.phase == "final_query" else [],
     }
+    saved = getattr(brain, "saved_evidence", None)
+    if saved is not None and saved.session_id:
+        proof = saved.snapshot(brain.values)
+        contract["saved_record_review"] = {k: v for k, v in proof.items() if k != "evidence"}
+        contract["guidance"] = (
+            "Verify the saved record using CURRENT query-row and linked detail-screen values. "
+            "Identify the matching query row, then the same record in its detail form. "
+            "Map visible input values to field evidence, including hbl_no when visible. "
+            "Use observed navigation/tabs to expose missing values. Do not fill, save, transmit "
+            "or approve. Code joins validated observations and determines completion. "
+            "Truncated values and the original record are not proof of persisted values."
+        )
     if proposal is not actual:
         contract["condition"] = (
             "ONLY after code verifies the pending action from the CURRENT screen. "

@@ -1439,3 +1439,27 @@ ruff check/format 및 diff 검사 통과. 실제 저장 캡처의 OCR37블록/�
   core cases/visual-pilot/5be6bdcbddd907bbb4d3/case-a6e2736fa7d14c69ab3b286119d3a8ce/case;
   최종 visual/ea2478cb-14fb-4c0b-af5b-0a24d92c1f90/capture.png 및 screen-match.json.
 - 이번 요청은 실측·분석·기록으로 마무리했고 코드 변경/추가 유료 반복은 하지 않았다.
+
+
+### 2026-10-01 저장 후 근거 연결 수정 및 파일럿 013 성공
+- 사용자 승인 구조 수정: 검증 대상 ID 범위 공통화, 최종 검색 후 조회 입력 요구 해제,
+  저장 후 새 조회→같은 기록의 상세→동일 창 탭 관찰의 근거 연결을 구현했다.
+- SavedEvidence는 실제 OCR 값과 관찰/캡처/좌표/창/세션 출처를 기록한다. 다른 기록,
+  값 충돌, 말줄임, 편집/재검색의 오래된 근거를 완료에 사용하지 않는다.
+- 모델은 공통 execution_context의 확인/누락 필드를 받고 기존 탐색 도구를 선택한다.
+  같은 화면 재매칭도 같은 근거 연결 함수를 거친다. 토큰8192 및 추론low 유지.
+- 010·012 저장 프레임 무료 재처리: 잘못된 edit5만 제외, 상세 행동55와 대상 행 유지.
+  누락5개를 성공으로 간주하지 않고 상세 확인 대상으로 남겼다.
+- 파일럿013: seed0/none/visual_only, Gemini 3.8 Flash, 회당$1 한도로1회 실행.
+  작업자 success/saved_and_verified_awaiting_approval, harness task_success=true,
+  matched_fields=10. 조회→기본 상세→추가 탭 캡처를 직접 검토, 누락6→3→0 확인.
+  저장 후 재입력/재저장 없이 완료했다. 전송 시도0, 중복 생성0.
+- harness151.16초/작업자144.12초, 행동30/관찰51, Gemini20회+로컬19회.
+  비용$0.154917000/신규 미확정0, 알려진 누적$6.846104645 / 총$50 한도.
+- 전체787개 통과(544.54초), 이후 재매칭/완료·검증 범위·OCR 셀 연결의 추가 관련
+  테스트도 통과했다. ruff check/format 및 diff 검사 통과.
+- 근거: bench evidence/runs/gemini-worker-20261001-013;
+  core cases/visual-pilot/5909f4880d42a351dbfc/case-352dea35efff408a83b88c58baf22c86/case;
+  saved-evidence.json, run_log.jsonl 및 최종 조회/기본/추가 capture.png.
+- 상세 변경/근거는 bench docs/saved-evidence-remediation-20261001.md에 기록했다.
+  단일 시드1회 성공이며 타 시드 성공률/캐시 재사용과 M1/M2 종료는 미검증이다.
