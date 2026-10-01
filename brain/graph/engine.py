@@ -39,6 +39,7 @@ from models.validation import safe_validation_errors
 from pipeline.ocr import OcrEngine
 from pipeline.schemas import RenderedPage
 
+from .click_refinement import ClickRefinement
 from .execution import ActionPlan, PendingAction, execute_plan, log_transition
 from .execution import GuardStop as GuardStop
 from .policy import DecisionPolicy, ExecutionFacts
@@ -211,6 +212,7 @@ class Brain:
         self.duplicate_clear = False
         self.save_issued = False
         self.pending: PendingAction | None = None
+        self.click_refinement = ClickRefinement()
         self.action_plan: ActionPlan | None = None
         self.failures: dict[str, int] = {}
         self.phase_failures: dict[str, int] = {}
@@ -364,19 +366,8 @@ class Brain:
                     )
                     for item in self.mapping_screen["markers"]
                 ]
-                # OCR-only markers also belong to the local catalog.
+                # OCR and detector markers share the same current local catalog.
                 blocks = [OcrBlock.model_validate(b) for b in self.mapping_screen["ocr"]]
-                for block in blocks:
-                    marker_ref = self.mapping_screen["ocr_evidence_refs"][str(block.id)]
-                    markers.append(
-                        Marker(
-                            id=int(marker_ref[1:]),
-                            bbox=block.bbox,
-                            source="ocr",
-                            confidence=block.confidence,
-                            text_ids=(block.id,),
-                        )
-                    )
                 meanings = SemanticDetection.model_validate(
                     {
                         k: v
@@ -1436,9 +1427,11 @@ class Brain:
         if decision.intent == "search" and decision.screen_kind == "query":
             if not self._current_query_matches():
                 raise GuardStop("query_value_changed")
-        if decision.intent in {"navigate", "select_tab", "login"} and choice.ref in {
-            item["ref"] for item in self._unproductive_navigation_targets()
-        }:
+        if (
+            decision.intent in {"navigate", "select_tab", "login"}
+            and choice.ref in {item["ref"] for item in self._unproductive_navigation_targets()}
+            and not self.click_refinement.applies(self, decision)
+        ):
             raise GuardStop("navigation_no_progress")
 
     def _wire_action(
@@ -1504,9 +1497,18 @@ class Brain:
                 data["obs_id"] = str(fresh.obs_id)
                 data["schema_version"] = "0.2"
                 data["target"] = {
-                    "image_point": [x + width / 2, y + height / 2],
+                    "image_point": list(self.click_refinement.bound.point)
+                    if self.click_refinement.applies(self, decision)
+                    else [x + width / 2, y + height / 2],
                     "capture_id": str(new_shot.geometry.capture_id),
-                    "evidence": "ocr_visual:" + target.ref + ":sha1:" + fresh.screen_hash,
+                    "evidence": (
+                        "image_refined:"
+                        if self.click_refinement.applies(self, decision)
+                        else "ocr_visual:"
+                    )
+                    + target.ref
+                    + ":sha1:"
+                    + fresh.screen_hash,
                     "source": "visual",
                 }
                 self.log.append(
@@ -1554,6 +1556,7 @@ class Brain:
         decision, choice = self.decision, self.decision.action
         assert choice is not None
         try:
+            point_refined = self.click_refinement.applies(self, decision)
             action = self._wire_action(choice, decision, screen_batch=screen_batch)
             logged = action.model_dump(mode="json")
             if choice.source and choice.source.startswith("credential."):
@@ -1598,6 +1601,7 @@ class Brain:
                 "before_observation": self.observation,
                 "choice": choice,
                 "decision": decision,
+                "point_refined": point_refined,
                 "source_window_handle": self.observation.active_window.handle,
                 "source_navigation_state": navigation_state(self.observation),
                 "transition": ActionTransition(
@@ -1627,6 +1631,9 @@ class Brain:
             return self._finish("stopped", str(exc))
         except Exception as exc:
             return self._fail("action_error:" + type(exc).__name__)
+
+        finally:
+            self.click_refinement.bound = None
 
     def _blur_visual_input(self, element: UIElement, decision: Decision) -> dict:
         """One guarded focus move; never infer the next control or modify its value."""
@@ -1706,6 +1713,8 @@ class Brain:
                         if target not in failed:
                             failed.append(target)
                     self.pending = None
+                    if self.click_refinement.prepare(self, pending, observation):
+                        return {"next": "act"}
                     return self._fail("navigation_no_progress")
                 if self.navigation_history.observe(
                     self.pending["source_navigation_state"],
@@ -1815,6 +1824,7 @@ class Brain:
             if (
                 self.cache_session.cache.enabled
                 and not pending.get("blur_recheck")
+                and not pending.get("point_refined")
                 and (execution is None or execution.plan.verification == "single")
             ):
                 self.cache_session.stage_validated(

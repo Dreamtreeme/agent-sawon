@@ -38,6 +38,7 @@ class BrainSettings(BaseModel):
     perception_mode: Literal["legacy_uia", "visual_only"] = "legacy_uia"
     visual_min_confidence: float = Field(default=0.8, ge=0, le=1, allow_inf_nan=False)
     visual_input_blur_recheck: bool = True
+    visual_click_refinement: bool = True
     visual_screen_fill: bool = False
     visual_joint_planning: bool = False
     numbered_selection: bool = False

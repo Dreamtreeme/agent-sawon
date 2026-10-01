@@ -39,6 +39,7 @@ class PendingAction(TypedDict):
     blur_recheck: NotRequired[bool]
     execution: NotRequired[PlanExecution]
     login_plan_descriptors: NotRequired[list[dict]]
+    point_refined: NotRequired[bool]
 
 
 @dataclass(frozen=True)

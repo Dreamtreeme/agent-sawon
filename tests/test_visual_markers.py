@@ -96,6 +96,21 @@ def test_label_is_never_promoted_to_input():
         ground_meanings(meaning, markers, blocks)
 
 
+def test_ocr_caption_can_be_a_tab_target_without_detector_extent():
+    blocks, _, markers, _ = fixture()
+    label = next(m for m in markers if m.source == "ocr")
+    meaning = SemanticDetection.model_validate(
+        {
+            "screen_kind": "editor",
+            "controls": [{"id": label.id, "role": "tabitem", "text_ids": [8], "confidence": 0.95}],
+        }
+    )
+    scene = bind_scene(wire(), blocks, ground_meanings(meaning, markers, blocks))
+    tab = next(e for e in scene.elements if e.role == "tabitem")
+    assert tab.enabled and tab.bbox == blocks[0].bbox
+    assert tab.name == "Reference"
+
+
 def test_resize_rounding_is_inverted_per_axis():
     assert original_box([0, 0, 640, 317], (1001, 497), (640, 317)) == [0, 0, 1001, 497]
     assert original_box([64, 31.7, 128, 63.4], (1001, 497), (640, 317)) == [100, 49, 101, 51]
@@ -159,8 +174,11 @@ def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_pat
         payload, _ = json.JSONDecoder().raw_decode(prompt[prompt.index('{"image_size"') :])
         assert all("confidence" not in marker for marker in payload["markers"])
         assert all("candidate_confidence" in marker for marker in payload["markers"])
-        assert all(marker["source"] == "omniparser" for marker in payload["markers"])
-        assert payload["markers"][0]["contained_ocr_ids"] == []
+        assert {marker["source"] for marker in payload["markers"]} == {"omniparser", "ocr"}
+        text = next(m for m in payload["markers"] if m["source"] == "ocr")
+        assert text["contained_ocr_ids"] == [8]
+        with Image.open(page.image_path) as picture:
+            assert picture.getpixel((10, 20)) == (255, 0, 0)
         assert "NOT markers[].id" in prompt
         calls.append(page)
         if outcome == "provider_error":

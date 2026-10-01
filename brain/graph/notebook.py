@@ -95,6 +95,7 @@ def remember(brain: Brain) -> dict:
         "query_submitted": brain.query_submitted,
         "duplicate_clear": brain.duplicate_clear,
         "save_issued": brain.save_issued,
+        "recent_feedback": brain.feedback[-3:],
         "observation_id": str(scene.obs_id) if scene else None,
         "observation_path": f"observations/{brain.observation_number:04d}.json" if scene else None,
         "result": brain.result.model_dump(mode="json") if brain.result else None,
