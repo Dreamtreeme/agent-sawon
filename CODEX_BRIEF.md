@@ -1607,3 +1607,27 @@ ruff check/format 및 diff 검사 통과. 실제 저장 캡처의 OCR37블록/�
   Luna004 부모 관계 실패와 M1/M2 잔여 실측은 그대로다. HTTP transport·저장 기반 전면 통합과
   가격 정책 재설계는 이번 범위에서 제외했으며 core/bench 구현의 import 격리를 유지했다.
 - 상세: [아키텍처 기록](docs/architecture-review-20260930.md)의 생산 코드 재사용 통합 절.
+
+### 2026-10-01 Gemini 경로의 Luna 교체 호환 확인
+
+- 사용자 요청으로 Gemini 성공 경로의 모델 설정만 `models.luna.toml`로 바꿔 확인했다.
+  `ScreenMatch → compile → visual action → verification`과 업무 절차·OCR·로컬 탐지·완료
+  검증은 동일하다. OpenAI 어댑터/화면 경로 관련 무료 검사88개와 Luna plan-only가 통과했다.
+- 첫 실측005는 Gemini013과 달리 `--desktop-handoff`를 넣어 시작했고, Luna가 올바른 로그인
+  입력 칸을 선택했지만 relay 좌표 hit-test에서 `point_outside_allowed_window`로 중단됐다.
+  2회 요청 비용$0.002752450, 미확정0이다. 모델 비교 조건으로 사용하지 않는다.
+- Gemini013과 같은 relay 관리 전경 조건으로006을 재실행했다. Luna는 로그인, 메뉴 이동,
+  중복 조회값 입력, 조회, 결과0건 판정까지 실제 행동6회를 모두 성공했다. 후보/OCR 번호
+  혼동과 좌표 거절은 재발하지 않았다.
+- 006은 다음 `open-entry` 판단에서 표 아래의 `조회 결과 0건` 텍스트를 표16의 자식으로
+  연결했다. 자식 bbox가 표 밖이라 `invalid_visual_parent_bounds`였고, 1회 보완도 같은 관계를
+  반환해 기존 제한대로 종료했다. 실제로 선택한 `새 건 등록` 버튼34와 클릭 계획은 맞았지만,
+  응답 전체의 잘못된 비행동 관계 때문에 실행 전에 거절됐다.
+- 006: harness79.88초/작업자74.74초, 관찰12, OpenAI9회+로컬5회,
+  비용$0.019359550, 신규 미확정0. 005+006 신규 알려진 비용$0.022112000,
+  알려진 누적$6.907841845이며 Luna002의 과거 미기록 청구액은 별도다.
+- 결론: Gemini용 경로를 Luna로 교체해 실행하는 API·schema·공통 실행 호환성은 확인됐다.
+  Luna의 저장·최종조회 전체 완료는 확인되지 않았고 현재 차이는 모델의 불필요한 parent 관계
+  생성이다. Gemini를 주 경로로 유지하고 Luna를 비교 프로필로 둔다. 추가 유료 반복은 없다.
+- 근거: bench `evidence/runs/luna-compatibility-20261001-005`, `-006` 및 core
+  `cases/visual-pilot/be83e0955d2fd4459875`, `63d9197d31844069f0d7`.
