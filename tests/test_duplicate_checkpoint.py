@@ -22,6 +22,7 @@ from test_brain import (
 )
 
 from brain.graph.engine import Brain
+from brain.graph.policy import DecisionPolicy, ExecutionFacts
 from brain.graph.schemas import Choice, Decision
 from brain.observe.progress import navigation_state
 from brain.runtime.storage import RunLog
@@ -125,40 +126,21 @@ def test_login_typing_intent_is_repaired_before_credential_reaches_relay(tmp_pat
     assert all("synthetic-login-fixture" not in prompt for prompt in model.prompts)
 
 
-def test_repeated_login_typing_intent_is_bounded_without_credential_write(tmp_path, record):
-    relay = FakeRelay(record)
-    relay.mode = "login"
-    invalid = decision(
-        kind="login", intent="login", action=text_choice("credential.password", "e8")
-    )
-    result, brain, _, model = run_brain(
-        tmp_path,
-        record,
-        [invalid, invalid],
-        relay=relay,
-        password="synthetic-login-fixture",
-    )
-    assert result.status == "stopped"
-    assert result.reason.startswith("repeated_")
-    assert result.steps == 2
-    assert len(model.prompts) == 3
-    assert not relay.actions
-    assert [item["reason"] for item in failures(brain)] == [
-        "selection_error:ValidationError",
-        "selection_error:ValidationError",
-    ]
-    assert not brain.query_submitted and not brain.save_issued
-
-
 @pytest.mark.parametrize("action_type", ["set_text", "type_text"])
 def test_credential_typing_outside_login_is_bounded_without_any_write(
     tmp_path, record, action_type
 ):
     invalid = decision(
         kind="query",
-        intent="login",
+        intent="credential",
         action={"type": action_type, "ref": "e1", "source": "credential.password"},
     )
+    policy = DecisionPolicy(
+        ExecutionFacts("duplicate_query", available_credential_sources=("credential.password",))
+    )
+    # Changing only the claimed screen must distinguish the allowed and rejected branch.
+    assert policy.allows(Decision.model_validate({**invalid, "screen_kind": "login"}))
+    assert not policy.allows(Decision.model_validate(invalid))
     result, brain, relay, model = run_brain(
         tmp_path,
         record,
@@ -386,20 +368,6 @@ def test_null_text_target_is_repaired_before_write_and_workflow_completes(tmp_pa
     assert len(failures(brain)) == 1
 
 
-def test_repeated_null_text_target_is_bounded_without_write(tmp_path, record):
-    steps = success_steps(record)
-    index = consignee_step(steps)
-    invalid = {**steps[index], "action": {**steps[index]["action"], "ref": None}}
-    result, brain, relay, model = run_brain(tmp_path, record, [*steps[:index], invalid, invalid])
-    assert result.status == "stopped"
-    assert result.reason.startswith("repeated_")
-    assert len(failures(brain)) == 2
-    assert len(model.prompts) == result.steps + 1
-    assert len(relay.actions) == index - 1
-    assert relay.inputs["consignee"] == ""
-    assert not relay.saved
-
-
 @pytest.mark.parametrize(
     "choice",
     [
@@ -411,29 +379,6 @@ def test_repeated_null_text_target_is_bounded_without_write(tmp_path, record):
 def test_text_choice_requires_nonempty_target_and_source(choice):
     with pytest.raises(ValidationError):
         Choice.model_validate(choice)
-
-
-def test_known_disabled_text_target_remains_fatal_without_retry(tmp_path, record):
-    class DisabledFieldRelay(FakeRelay):
-        def observe(self):
-            observation = super().observe()
-            for item in observation.elements:
-                if self.mode == "editor" and item.ref == self.field_refs["consignee"]:
-                    item.enabled = False
-            return observation
-
-    steps = success_steps(record)
-    index = consignee_step(steps)
-    result, brain, relay, _ = run_brain(
-        tmp_path,
-        record,
-        steps[: index + 1],
-        relay=DisabledFieldRelay(record),
-    )
-    assert result.reason == "target_not_current_or_enabled"
-    assert len(relay.actions) == index - 1
-    assert not failures(brain)
-    assert relay.inputs["consignee"] == ""
 
 
 def navigation_verifier(tmp_path, record, *, observed_handle):
@@ -543,20 +488,45 @@ def test_entry_repairs_action_intent_mismatch_before_navigation(tmp_path, record
     assert len(failures(brain)) == 1
 
 
-def test_repeated_entry_action_intent_mismatch_is_bounded_before_navigation(tmp_path, record):
-    invalid = decision(intent="verify", action={"type": "click", "ref": "e3"})
+@pytest.mark.parametrize("scenario", ["login-intent", "entry-intent", "null-text-target"])
+def test_repeated_malformed_decisions_are_bounded_before_dispatch(tmp_path, record, scenario):
+    relay = FakeRelay(record)
+    steps = success_steps(record)
+    password = None
+    if scenario == "login-intent":
+        relay.mode = "login"
+        password = "synthetic-login-fixture"
+        prefix = []
+        invalid = decision(
+            kind="login", intent="login", action=text_choice("credential.password", "e8")
+        )
+    elif scenario == "entry-intent":
+        prefix = steps[:3]
+        invalid = decision(intent="verify", action={"type": "click", "ref": "e3"})
+    else:
+        index = consignee_step(steps)
+        prefix = steps[:index]
+        invalid = {**steps[index], "action": {**steps[index]["action"], "ref": None}}
     result, brain, relay, model = run_brain(
-        tmp_path, record, [*query_steps(), clear_decision(), invalid, invalid]
+        tmp_path, record, [*prefix, invalid, invalid], relay=relay, password=password
     )
+    phase = "duplicate_query" if scenario == "login-intent" else "enter"
     assert result.status == "stopped"
-    assert result.reason.startswith("repeated_")
-    assert result.steps == 5
-    assert len(model.prompts) == 6
-    assert len(failures(brain)) == 2
-    assert brain.duplicate_clear
-    assert len(relay.actions) == 2
-    assert relay.mode == "query"
-    assert not relay.saved
+    assert result.reason == f"repeated_subgoal_failure:{phase}:decision"
+    assert result.steps == len(prefix) + 2
+    assert len(model.prompts) == result.steps + 1
+    assert [item["reason"] for item in failures(brain)] == ["selection_error:ValidationError"] * 2
+    assert len(relay.actions) == (len(prefix) - 1 if prefix else 0)
+    assert brain.duplicate_clear is (scenario != "login-intent")
+    assert not brain.query_submitted and not brain.save_issued and not relay.saved
+    if scenario == "null-text-target":
+        assert relay.mode == "editor" and relay.inputs["consignee"] == ""
+        for step in prefix:
+            source = (step.get("action") or {}).get("source")
+            if step["intent"] == "fill":
+                assert relay.inputs[source] == relay.values[source]
+    else:
+        assert relay.mode == ("login" if scenario == "login-intent" else "query")
 
 
 def test_completion_with_attached_action_needs_repair_without_executing_action(tmp_path, record):
@@ -631,32 +601,46 @@ def test_final_evidence_mislabeled_as_action_repairs_to_complete_without_ui_acti
 def test_final_query_requires_fresh_input_before_search_and_can_recover(tmp_path, record):
     steps = success_steps(record)
     relay = FakeRelay(record)
+    ready_review = {
+        "result": "ready_for_query",
+        "evidence_refs": ["e2"],
+        "repair_fields": [],
+        "next_decision": {
+            "decision": decision(intent="wait", action={"type": "wait", "duration_ms": 0})
+        },
+    }
+
+    def premature_search(prompt):
+        state = json.loads(prompt.split("\nTRUSTED_TASK=", 1)[1].split("\nUI_TEXT=", 1)[0])
+        assert state["phase"] == "final_query"
+        assert not state["query_value_verified"] and not state["query_submitted"]
+        assert relay.saved and relay.query == relay.values["hbl_no"]
+        assert len(relay.actions) == len(steps) - 3  # Includes the allowed review wait.
+        return steps[-2]
 
     def corrected_input(prompt):
-        # The previous query value still matches, but saving invalidated its proof.
-        assert relay.saved
-        assert relay.query == relay.values["hbl_no"]
-        assert len(relay.actions) == len(steps) - 4
         state = json.loads(prompt.split("\nTRUSTED_TASK=", 1)[1].split("\nUI_TEXT=", 1)[0])
-        assert state["phase"] == "save_result"
-        assert state["query_value_verified"] is False
-        assert any(item.get("reason") == "save_result_required" for item in state["feedback"])
-        policy = state["execution_policy"]
-        assert policy["current_step"] == "save_result"
-        assert "search" not in {rule["intent"] for rule in policy["allowed_next_choices"]}
+        assert state["phase"] == "final_query"
+        assert not state["query_value_verified"] and not state["query_submitted"]
+        assert state["execution_policy"]["current_step"] == "query_input"
+        assert "search" not in {
+            rule["intent"] for rule in state["execution_policy"]["allowed_next_choices"]
+        }
+        assert any(item.get("reason") == "final_query_required" for item in state["feedback"])
+        assert len(relay.actions) == len(steps) - 3  # Rejected search did not dispatch.
         return steps[-3]
 
     result, brain, _, model = run_brain(
         tmp_path,
         record,
-        [*steps[:-3], steps[-2], corrected_input, *steps[-2:]],
+        [*steps[:-3], ready_review, premature_search, corrected_input, *steps[-2:]],
         relay=relay,
     )
     assert result.status == "success", result
-    assert result.steps == len(steps) + 1
+    assert result.steps == len(steps) + 2
     assert len(model.prompts) == result.steps + 1
-    assert len(relay.actions) == len(steps) - 2
-    assert [item["reason"] for item in failures(brain)] == ["save_result_required"]
+    assert len(relay.actions) == len(steps) - 1
+    assert [item["reason"] for item in failures(brain)] == ["final_query_required"]
 
 
 def test_premature_final_completion_repairs_through_explicit_input_search_and_evidence(
@@ -705,22 +689,23 @@ def test_premature_final_completion_repairs_through_explicit_input_search_and_ev
     assert [item["reason"] for item in failures(brain)] == ["save_result_required"]
 
 
-def test_repeated_premature_final_completion_stops_without_query_or_extra_save(tmp_path, record):
+@pytest.mark.parametrize("proposal", ["complete", "search"])
+def test_repeated_commands_before_save_review_are_bounded_without_dispatch(
+    tmp_path, record, proposal
+):
     steps = success_steps(record)
-    result, brain, relay, model = run_brain(tmp_path, record, [*steps[:-3], steps[-1], steps[-1]])
+    invalid = steps[-1] if proposal == "complete" else steps[-2]
+    result, brain, relay, model = run_brain(tmp_path, record, [*steps[:-3], invalid, invalid])
     assert result.status == "stopped"
-    assert result.reason.startswith("repeated_")
+    assert result.reason == "repeated_subgoal_failure:save_result:decision"
     assert result.steps == len(steps) - 1
     assert len(model.prompts) == result.steps + 1
     assert len(relay.actions) == len(steps) - 4
-    assert relay.saved
-    assert relay.inputs == relay.values
+    assert relay.saved and relay.saved_snapshot == relay.inputs == relay.values
     assert brain.phase == "save_result" and brain.save_issued and brain.duplicate_clear
     assert not brain.query_value_verified and not brain.query_submitted
-    assert [item["reason"] for item in failures(brain)] == [
-        "save_result_required",
-        "save_result_required",
-    ]
+    assert [item["reason"] for item in failures(brain)] == ["save_result_required"] * 2
+    assert relay.actions[-1].root.target.ref == "e7"
 
 
 def test_incomplete_final_evidence_requires_observed_navigation_and_fresh_visible_cells(
@@ -805,23 +790,6 @@ def test_incomplete_final_evidence_requires_observed_navigation_and_fresh_visibl
     assert len(final_checks) == 1
     assert set(final_checks[0]["fields"]) == set(relay.values)
     assert final_checks[0]["row_ref"] == "e6"
-
-
-def test_repeated_final_search_without_fresh_input_stops_before_search(tmp_path, record):
-    steps = success_steps(record)
-    result, brain, relay, model = run_brain(tmp_path, record, [*steps[:-3], steps[-2], steps[-2]])
-    assert result.status == "stopped"
-    assert result.reason.startswith("repeated_")
-    assert result.steps == len(steps) - 1
-    assert len(model.prompts) == result.steps + 1
-    assert len(relay.actions) == len(steps) - 4
-    assert relay.saved
-    assert brain.phase == "save_result"
-    assert not brain.query_value_verified
-    assert [item["reason"] for item in failures(brain)] == [
-        "save_result_required",
-        "save_result_required",
-    ]
 
 
 def test_initial_query_search_before_input_can_recover_without_running_search(tmp_path, record):

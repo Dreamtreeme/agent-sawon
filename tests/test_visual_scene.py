@@ -9,8 +9,9 @@ import pytest
 from PIL import Image
 from sawon_interfaces import CaptureGeometry, Observation, Screenshot, WindowInfo
 
+from brain.graph.matching import ScreenMatch
 from brain.relay import HttpRelay, RelayError
-from brain.visual.scene import Detection, VisualControl, bind_scene
+from brain.visual.scene import Detection, SemanticDetection, VisualControl, bind_scene
 from pipeline.schemas import OcrBlock
 
 
@@ -192,7 +193,10 @@ def test_fetch_verifies_png_hash_geometry_and_refuses_redirect_paths(tmp_path):
     relay = HttpRelay("http://localhost:8765", "synthetic", visual=True)
 
     class Opener:
+        calls = 0
+
         def open(self, request, timeout):
+            self.calls += 1
             assert request.full_url == "http://localhost:8765/screenshots/test.png"
             return io.BytesIO(raw)
 
@@ -200,6 +204,14 @@ def test_fetch_verifies_png_hash_geometry_and_refuses_redirect_paths(tmp_path):
     assert relay.screenshot(observation, tmp_path / "good.png").read_bytes() == raw
     with pytest.raises(RelayError, match="integrity"):
         relay.screenshot(wire(), tmp_path / "bad.png")
+    assert not (tmp_path / "bad.png").exists()
+    wrong_size = observation.model_copy(
+        update={"screenshot": observation.screenshot.model_copy(update={"width": 399})}
+    )
+    # Hash still matches: only the declared dimensions disagree with the valid PNG.
+    with pytest.raises(RelayError, match="geometry_mismatch"):
+        relay.screenshot(wrong_size, tmp_path / "wrong-size.png")
+    assert not (tmp_path / "wrong-size.png").exists()
     bad = observation.model_copy(
         update={
             "screenshot": observation.screenshot.model_copy(
@@ -209,6 +221,7 @@ def test_fetch_verifies_png_hash_geometry_and_refuses_redirect_paths(tmp_path):
     )
     with pytest.raises(RelayError, match="path"):
         relay.screenshot(bad, tmp_path / "bad.png")
+    assert relay._opener.calls == 3  # Invalid paths never reach the transport.
 
 
 def test_table_rows_and_cells_preserve_ocr_grounded_hierarchy():
@@ -243,8 +256,19 @@ def test_provider_schema_is_compact_but_local_limits_remain():
 
     from pydantic import ValidationError
 
-    schema = json.dumps(Detection.model_json_schema())
-    assert "prefixItems" not in schema and "maxItems" not in schema
+    meaning = {"id": 0, "role": "edit", "confidence": 1, "visual_description": "x" * 160}
+    for model, extra in [(SemanticDetection, {}), (ScreenMatch, {"procedure_step": "fill"})]:
+        schema = json.dumps(model.model_json_schema())
+        assert "prefixItems" not in schema and "maxItems" not in schema
+        assert "maxLength" not in schema and "bbox" not in schema
+        assert len(model.model_validate({**extra, "controls": [meaning] * 500}).controls) == 500
+        for invalid in [
+            {**extra, "controls": [meaning] * 501},
+            {**extra, "controls": [{**meaning, "visual_description": "x" * 161}]},
+            {**extra, "controls": [{**meaning, "bbox": [1, 2, 3, 4]}]},
+        ]:
+            with pytest.raises(ValidationError):
+                model.model_validate(invalid)
     with pytest.raises(ValidationError):
         Detection.model_validate(
             {"controls": [{"id": 0, "role": "edit", "bbox": [1, 2, 3], "confidence": 1}]}

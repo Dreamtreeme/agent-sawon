@@ -184,13 +184,35 @@ def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
         data["steps"][0]["target"] = 999
     else:
         data["steps"][0].update(action="click", intent="save", source=None)
-    brain, _, _, _, _, _ = setup_brain(tmp_path, record, [data])
+    brain, model, _, _, _, _ = setup_brain(tmp_path, record, [data])
     if bad == "wrong-procedure":
         with pytest.raises(ValueError, match="procedure_mismatch"):
             brain._observe()
     else:
         brain._observe()
-        assert brain._select_node({}) != {"next": "act"}
+        schema = brain._decision_policy().response_schema()
+        assert compile_match(
+            ScreenMatch.model_validate(response(meaning)), brain.observation, schema
+        )
+        if bad == "wrong-target":
+            with pytest.raises(ValueError, match="^visual_proposal_unknown_marker$"):
+                compile_match(ScreenMatch.model_validate(data), brain.observation, schema)
+        else:
+            from pydantic import ValidationError
+
+            with pytest.raises(ValidationError):
+                compile_match(ScreenMatch.model_validate(data), brain.observation, schema)
+        assert brain._select_node({}) == {"next": "observe"}
+        reason = "ValueError" if bad == "wrong-target" else "ValidationError"
+        failures = [
+            e.payload["reason"]
+            for e in brain.log.read_all()
+            if e.kind == "verify" and e.payload.get("ok") is False
+        ]
+        assert failures == ["selection_error:" + reason]
+    assert len(model.prompts) == 1
+    assert brain.pending is None and brain.action_plan is None
+    assert not any(e.kind == "act" for e in brain.log.read_all())
 
 
 def test_login_and_record_arrays_compile_to_existing_batches():
@@ -475,8 +497,8 @@ def test_selection_row_and_confirmation_compile_to_existing_executor():
 
 
 def test_save_matching_receives_same_action_contract_as_validator(tmp_path, record):
-    from brain.graph.matching import match_screen
-    from brain.graph.save_review import SAVE_RESULT_ACTIONS
+    from brain.graph.matching import RULES, match_screen
+    from brain.graph.save_review import SAVE_RESULT_ACTIONS, SAVE_REVIEW_GUIDANCE
 
     brain, model, _, _, _, meaning = setup_brain(
         tmp_path,
@@ -501,11 +523,19 @@ def test_save_matching_receives_same_action_contract_as_validator(tmp_path, reco
         },
         None,
     )
-    prompt = model.prompts[-1]
-    for intent in SAVE_RESULT_ACTIONS["ready_for_query"]:
-        assert intent in prompt
-    assert '"schema_mapping"' in prompt
-    assert "not acknowledgement" in prompt
+    state = json.loads(model.prompts[-1][len(RULES) :])
+    expected = {
+        "allowed_intents": {
+            result: sorted(intents) for result, intents in SAVE_RESULT_ACTIONS.items()
+        },
+        "instructions": SAVE_REVIEW_GUIDANCE,
+        "schema_mapping": {
+            "result": "save_result",
+            "evidence_refs": "message_targets",
+            "next_decision": "steps",
+        },
+    }
+    assert state["save_review"] == state["execution"]["save_review"] == expected
 
 
 @pytest.mark.parametrize("phase", ["duplicate_query", "final_query"])

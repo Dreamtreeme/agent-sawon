@@ -8,6 +8,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 from sawon_interfaces import ActionResult, Observation, ShipmentRecord, UIElement, WindowInfo
 
 from brain.graph.engine import Brain, GuardStop, field_matches, values_for
@@ -63,6 +64,7 @@ class FakeRelay:
         self.values = values_for(record)
         self.mode = "query"
         self.saved = duplicate
+        self.saved_snapshot = self.values.copy() if duplicate else {}
         self.corrupt = corrupt
         self.blocked = blocked
         self.inputs = {field: "" for field in self.values}
@@ -92,7 +94,7 @@ class FakeRelay:
                 items.append(element("e6", "DataItem", name="Row 1", parent="e4"))
                 items.extend(
                     element(f"e{index + 40}", "DataItem", value=value, parent="e6")
-                    for index, value in enumerate(self.values.values())
+                    for index, value in enumerate(self.saved_snapshot.values())
                 )
         elif self.mode == "editor":
             items.extend(
@@ -149,7 +151,7 @@ class FakeRelay:
             if item.target.ref == "e3":
                 self.mode = "editor"
             elif item.target.ref == "e7":
-                self.saved = True
+                self.persist_inputs()
                 self.mode = "query"
         return ActionResult(
             action_id=item.action_id,
@@ -157,6 +159,11 @@ class FakeRelay:
             post_obs_id=uuid4(),
             duration_ms=0.0,
         )
+
+    def persist_inputs(self):
+        """Keep saved results separate from expected values and later editor changes."""
+        self.saved_snapshot = self.inputs.copy()
+        self.saved = True
 
 
 def decision(operation="act", *, intent="navigate", kind="query", action=None, **kwargs):
@@ -299,6 +306,15 @@ def test_complete_relay_workflow_requires_fresh_field_evidence(tmp_path, record,
     assert all("UI_TEXT=" in prompt for prompt in model.prompts[1:])
     assert all("automation_id" not in prompt and '"bbox"' not in prompt for prompt in model.prompts)
     assert json.loads((tmp_path / "result.json").read_text()) == result.model_dump()
+    stored = values_for(record)
+    assert relay.saved_snapshot == stored
+    assert relay.saved_snapshot is not relay.inputs and relay.saved_snapshot is not relay.values
+    # Later edits and the expected-value oracle must not rewrite persisted results.
+    relay.inputs["gross_weight_kg"] = "999"
+    relay.values["gross_weight_kg"] = "888"
+    assert [e.value for e in relay.observe().elements if e.parent_ref == "e6"] == list(
+        stored.values()
+    )
 
 
 @pytest.mark.parametrize("operation", ["complete", "duplicate_clear"])
@@ -452,9 +468,16 @@ def test_final_cells_must_belong_to_same_result_row(tmp_path, record):
     steps = success_steps(record)
     steps[-1]["evidence"][0]["ref"] = "e1"  # Query input has the value, but is not a result cell.
     steps.append(steps[-1])
-    result, _, _, _ = run_brain(tmp_path, record, steps)
+    result, brain, relay, _ = run_brain(tmp_path, record, steps)
     assert result.status == "stopped"
-    assert result.reason.startswith("repeated_subgoal_failure")
+    assert result.reason == "repeated_subgoal_failure:final_query:decision"
+    failures = [
+        e.payload["reason"]
+        for e in brain.log.read_all()
+        if e.kind == "verify" and e.payload.get("ok") is False
+    ]
+    assert failures == ["final_field_mismatch:hbl_no"] * 2
+    assert len(relay.actions) == 17
 
 
 def test_password_resolved_only_at_relay_and_not_in_prompts_or_logs(tmp_path, record):
@@ -498,8 +521,34 @@ def test_summary_preserves_grid_relationships_and_omits_ids(record):
 
 def test_snapshot_redaction_scrubs_all_ui_strings(record):
     observation = FakeRelay(record).observe()
-    observation.elements[1].value = "prefix TOKEN suffix"
-    assert "TOKEN" not in redact(observation, ("TOKEN",)).model_dump_json()
+    secret = "TOKEN"
+    for field in ("name", "label_hint", "value", "automation_id"):
+        setattr(observation.elements[1], field, f"{field}: {secret}")
+    observation.active_window = observation.active_window.model_copy(
+        update={"title": f"active title {secret}", "process": f"active process {secret}"}
+    )
+    observation.windows = [
+        observation.active_window.model_copy(),
+        observation.windows[0].model_copy(
+            update={
+                "handle": 2,
+                "title": f"listed title {secret}",
+                "process": f"listed process {secret}",
+            }
+        ),
+    ]
+    observation.blocked_reason = f"blocked {secret}"
+    redacted = redact(observation, (secret,))
+    assert secret not in redacted.model_dump_json()
+    for field in ("name", "label_hint", "value", "automation_id"):
+        assert getattr(redacted.elements[1], field) == f"{field}: [REDACTED]"
+    assert redacted.active_window.title == "active title [REDACTED]"
+    assert redacted.active_window.process == "active process [REDACTED]"
+    assert redacted.windows[0] == redacted.active_window
+    assert redacted.windows[1].title == "listed title [REDACTED]"
+    assert redacted.windows[1].process == "listed process [REDACTED]"
+    assert redacted.blocked_reason == "blocked [REDACTED]"
+    assert observation.elements[1].value == "value: TOKEN"
 
 
 def test_short_password_redaction_preserves_protocol_identity(record):
@@ -539,19 +588,27 @@ def test_decision_schema_has_no_freeform_text_or_coordinate_action():
     choice = schema["$defs"]["Choice"]["properties"]
     assert "text" not in choice
     assert "point" not in choice
+    assert schema["$defs"]["Choice"]["additionalProperties"] is False
+    base = decision(intent="query_input", action=text_choice("hbl_no", "e1"))
+    assert Decision.model_validate(base).action.source == "hbl_no"
+    for key, value in {"text": "untrusted literal", "point": [1, 2], "image_point": [1, 2]}.items():
+        with pytest.raises(ValidationError) as error:
+            Decision.model_validate({**base, "action": {**base["action"], key: value}})
+        assert [(e["loc"], e["type"]) for e in error.value.errors()] == [
+            (("action", key), "extra_forbidden")
+        ]
 
 
-@pytest.mark.parametrize("intent", ["search", "save", "confirm_save", "login"])
-def test_wait_cannot_be_claimed_as_executed_command(tmp_path, record, intent):
-    invalid = decision(intent=intent, action={"type": "wait", "duration_ms": 0})
+def test_wait_cannot_be_claimed_as_executed_command(tmp_path, record):
+    invalid = decision(intent="search", action={"type": "wait", "duration_ms": 0})
     result, brain, relay, model = run_brain(
         tmp_path,
         record,
-        [invalid, invalid],
+        [query_steps()[0], invalid, invalid],
     )
-    assert result.reason.startswith("repeated_")
-    assert result.steps == 2
-    assert len(model.prompts) == 3
+    assert result.reason == "repeated_subgoal_failure:duplicate_query:decision"
+    assert result.steps == 3
+    assert len(model.prompts) == 4
     failures = [
         event.payload
         for event in brain.log.read_all()
@@ -561,8 +618,10 @@ def test_wait_cannot_be_claimed_as_executed_command(tmp_path, record, intent):
         "selection_error:ValidationError",
         "selection_error:ValidationError",
     ]
-    assert not relay.actions
+    assert [a.root.type for a in relay.actions] == ["set_text"]
+    assert brain.query_value_verified
     assert not brain.query_submitted and not brain.save_issued
+    assert brain._decision_policy().allows(Decision.model_validate(query_steps()[1]))
     with pytest.raises(GuardStop, match="^action_not_allowed_by_state$"):
         brain._guard_action(Decision.model_validate(invalid))
 

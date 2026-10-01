@@ -1,0 +1,308 @@
+{
+  "schema_version": "1.0",
+  "scope": "core_graph",
+  "original_audit": "docs/test-audit-20261001/audit.json",
+  "paid_calls": 0,
+  "gui_calls": 0,
+  "production_changes": [],
+  "fixture_changes": [
+    {
+      "file": "tests/test_brain.py",
+      "change": "FakeRelay는 duplicate=True일 때만 기존 레코드 스냅샷을 명시적으로 초기화한다. 저장명령은 persist_inputs()로 현재 inputs.copy()를 보관하고 조회행은 saved_snapshot만 사용한다.",
+      "verification": "기존 성공 workflow에서 saved_snapshot==record를 확인하고 inputs와 expected values를 서로 다른 오답으로 바꿔도 조회행이 저장 당시 값 그대로임을 확인한다."
+    },
+    {
+      "file": "tests/test_evidence_review.py",
+      "change": "저장된 레코드가 필요한 단위fixture는 saved=True 대입 대신 duplicate=True로 시작한다."
+    },
+    {
+      "file": "tests/test_phase_contract.py",
+      "change": "최종행 증거 상태는 duplicate=True 초기 스냅샷을 사용하는 명시적 기존레코드 fixture로 만든다."
+    },
+    {
+      "file": "tests/test_save_review.py",
+      "change": "확인 dialog의 실제 저장완료는 persist_inputs()를 사용하여 입력값을 스냅샷으로 복사한다."
+    }
+  ],
+  "changes": [
+    {
+      "audit_id": "tests/test_brain.py::test_final_cells_must_belong_to_same_result_row",
+      "audit_disposition": "rewrite_candidate",
+      "new_test_ids": [
+        "tests/test_brain.py::test_final_cells_must_belong_to_same_result_row"
+      ],
+      "change": "범위가 넓은 중지 assertion을 행 밖 hbl 셀의 정확한 실패원인으로 고정했다.",
+      "preserved_assertions": [
+        "repeated_subgoal_failure:final_query:decision",
+        "final_field_mismatch:hbl_no 두 로그",
+        "완료거절 동안 추가 UI 전달 없음(action17)"
+      ]
+    },
+    {
+      "audit_id": "tests/test_brain.py::test_snapshot_redaction_scrubs_all_ui_strings",
+      "audit_disposition": "rewrite_candidate",
+      "new_test_ids": [
+        "tests/test_brain.py::test_snapshot_redaction_scrubs_all_ui_strings"
+      ],
+      "change": "value뿐 아니라 모든 구현된 UI 문자열 필드에 비밀을 주입하고 각각의 치환 결과를 확인한다.",
+      "preserved_assertions": [
+        "name/label_hint/value/automation_id",
+        "active window 및 별도 observed window의 title/process",
+        "blocked_reason",
+        "원본 observation 불변",
+        "기존 short-password protocol identity 테스트 유지"
+      ]
+    },
+    {
+      "audit_id": "tests/test_brain.py::test_decision_schema_has_no_freeform_text_or_coordinate_action",
+      "audit_disposition": "rewrite_candidate",
+      "new_test_ids": [
+        "tests/test_brain.py::test_decision_schema_has_no_freeform_text_or_coordinate_action"
+      ],
+      "change": "유효한 record-source action을 먼저 수락한 뒤 text/point/image_point만 추가하여 extra_forbidden을 고립한다.",
+      "preserved_assertions": [
+        "기존 schema text/point 부재",
+        "additionalProperties=False",
+        "정확한 오류 위치 action/key 및 extra_forbidden"
+      ]
+    },
+    {
+      "audit_id": "tests/test_brain.py::test_wait_cannot_be_claimed_as_executed_command",
+      "audit_disposition": "merge_candidate",
+      "new_test_ids": [
+        "tests/test_brain.py::test_wait_cannot_be_claimed_as_executed_command",
+        "tests/test_decision_policy.py::test_broad_action_types_cannot_bypass_intent_or_source_contract[wait-as-eligible-search]",
+        "tests/test_decision_policy.py::test_broad_action_types_cannot_bypass_intent_or_source_contract[wait-as-eligible-save]",
+        "tests/test_decision_policy.py::test_broad_action_types_cannot_bypass_intent_or_source_contract[wait-as-eligible-confirm-save]",
+        "tests/test_decision_policy.py::test_broad_action_types_cannot_bypass_intent_or_source_contract[wait-as-eligible-login]"
+      ],
+      "change": "네 command의 선행조건을 충족한 policy 사례로 옮기고 실제 query 입력 후 search만 wait로 바꾼 graph 대표를 보존했다.",
+      "preserved_assertions": [
+        "각 facts에서 정상click 허용→wait만 거절",
+        "exported schema/Pydantic/runtime policy 일치",
+        "graph의 두 ValidationError, steps3/prompts4",
+        "query 입력만 전달되고 search/save facts는 변하지 않음",
+        "직접 _guard_action의 state 거절"
+      ]
+    },
+    {
+      "audit_id": "tests/test_duplicate_checkpoint.py::test_repeated_login_typing_intent_is_bounded_without_credential_write",
+      "audit_disposition": "merge_candidate",
+      "new_test_ids": [
+        "tests/test_duplicate_checkpoint.py::test_repeated_malformed_decisions_are_bounded_before_dispatch[login-intent]"
+      ],
+      "change": "login/entry/null-target의 반복 schema오류 제어를 공통 시나리오 표로 합쳤다.",
+      "preserved_assertions": [
+        "configured password+login 화면",
+        "실패2/steps2/prompts3",
+        "무전달 및 query/save facts false"
+      ]
+    },
+    {
+      "audit_id": "tests/test_duplicate_checkpoint.py::test_credential_typing_outside_login_is_bounded_without_any_write",
+      "audit_disposition": "rewrite_candidate",
+      "new_test_ids": [
+        "tests/test_duplicate_checkpoint.py::test_credential_typing_outside_login_is_bounded_without_any_write[set_text]",
+        "tests/test_duplicate_checkpoint.py::test_credential_typing_outside_login_is_bounded_without_any_write[type_text]"
+      ],
+      "change": "intent를 credential로 교정하여 screen 외의 잘못된 조건을 제거했다.",
+      "preserved_assertions": [
+        "screen만 login으로 바꾸면 허용/query면 거절하는 양방향 대조",
+        "두 action type 유지",
+        "실패한도/무전달/비밀비노출 assertions 유지"
+      ]
+    },
+    {
+      "audit_id": "tests/test_duplicate_checkpoint.py::test_repeated_null_text_target_is_bounded_without_write",
+      "audit_disposition": "merge_candidate",
+      "new_test_ids": [
+        "tests/test_duplicate_checkpoint.py::test_repeated_malformed_decisions_are_bounded_before_dispatch[null-text-target]"
+      ],
+      "change": "공통 malformed-decision 표로 합치되 부분입력 이후의 null-target 시나리오는 보존했다.",
+      "preserved_assertions": [
+        "consignee 이전 성공prefix 유지",
+        "consignee 빈값/미저장",
+        "기존 입력필드 값 보존",
+        "실패2/prompts=steps+1/action prefix수"
+      ]
+    },
+    {
+      "audit_id": "tests/test_duplicate_checkpoint.py::test_known_disabled_text_target_remains_fatal_without_retry",
+      "audit_disposition": "merge_candidate",
+      "new_test_ids": [
+        "tests/test_input_target_recovery.py::test_missing_or_disabled_target_remains_a_hard_stop[editor-disabled]"
+      ],
+      "change": "기존 query missing/disabled 표에 editor disabled-consignee 시나리오를 합쳤다.",
+      "preserved_assertions": [
+        "target_not_current_or_enabled",
+        "retry0/repair로그0/verify-failure로그0",
+        "consignee 비전달/빈값",
+        "선행 action수와 모델호출수 유지"
+      ]
+    },
+    {
+      "audit_id": "tests/test_duplicate_checkpoint.py::test_final_query_requires_fresh_input_before_search_and_can_recover",
+      "audit_disposition": "rewrite_candidate",
+      "new_test_ids": [
+        "tests/test_duplicate_checkpoint.py::test_final_query_requires_fresh_input_before_search_and_can_recover"
+      ],
+      "change": "유효한 ready_for_query+wait로 저장검토를 끝낸 다음 실제 final_query 상태에서 검색을 먼저 제안한다.",
+      "preserved_assertions": [
+        "검색 전 query_value_verified/query_submitted false",
+        "기존 query 값 일치에도 proof 필요",
+        "final_query_required 정확한 오류",
+        "거절 search 비전달",
+        "새 input→search→final proof로 정상완료"
+      ]
+    },
+    {
+      "audit_id": "tests/test_duplicate_checkpoint.py::test_repeated_final_search_without_fresh_input_stops_before_search",
+      "audit_disposition": "merge_candidate",
+      "new_test_ids": [
+        "tests/test_duplicate_checkpoint.py::test_repeated_commands_before_save_review_are_bounded_without_dispatch[search]"
+      ],
+      "change": "조기 complete와 search를 저장검토 이전의 불법명령 표로 합치고 제목을 실제 guard에 맞췄다.",
+      "preserved_assertions": [
+        "save_result_required 두번",
+        "phase save_result/save issued/duplicate clear 유지",
+        "query flags false",
+        "저장 snapshot·입력값보존",
+        "추가 query/save전달0와 steps/model/actions 수"
+      ]
+    },
+    {
+      "audit_id": "tests/test_evidence_review.py::test_hidden_fields_cannot_be_completed_by_model_repeatedly_claiming_success",
+      "audit_disposition": "rewrite_candidate",
+      "new_test_ids": [
+        "tests/test_evidence_review.py::test_hidden_fields_cannot_be_completed_by_model_repeatedly_claiming_success"
+      ],
+      "change": "missing evidence 때문에 완료가 거절됐음을 reason·비용호출수·review내용으로 고정한다.",
+      "preserved_assertions": [
+        "repeated_subgoal_failure:final_query:decision",
+        "ValidationError2",
+        "모든 current review가 needs_more이며 missing hbl_no/pod",
+        "무확장/추가action없음/final_query_fields없음"
+      ]
+    },
+    {
+      "audit_id": "tests/test_screen_matching.py::test_invalid_mapping_cannot_reach_action",
+      "audit_disposition": "rewrite_candidate",
+      "new_test_ids": [
+        "tests/test_screen_matching.py::test_invalid_mapping_cannot_reach_action[wrong-procedure]",
+        "tests/test_screen_matching.py::test_invalid_mapping_cannot_reach_action[wrong-target]",
+        "tests/test_screen_matching.py::test_invalid_mapping_cannot_reach_action[wrong-phase]"
+      ],
+      "change": "유효한 baseline 컴파일을 확인하고 잘못된 현재target/phase의 컴파일거절과 graph 실패이유를 고립했다.",
+      "preserved_assertions": [
+        "wrong-procedure 기존 정확한 ValueError 유지",
+        "wrong-target visual_proposal_unknown_marker",
+        "wrong-phase ValidationError",
+        "두 경우 정확한 selection_error 및 observe 경로",
+        "모델1회/무act로그/pending와 action_plan 없음"
+      ]
+    },
+    {
+      "audit_id": "tests/test_screen_matching.py::test_save_matching_receives_same_action_contract_as_validator",
+      "audit_disposition": "rewrite_candidate",
+      "new_test_ids": [
+        "tests/test_screen_matching.py::test_save_matching_receives_same_action_contract_as_validator"
+      ],
+      "change": "프롬프트 전체 substring 대신 RULES 다음 JSON을 파싱하여 결과별 action contract를 비교한다.",
+      "preserved_assertions": [
+        "save_review와 execution.save_review 구조 동일",
+        "모든 SAVE_RESULT_ACTIONS의 정렬된 intent 목록",
+        "SAVE_REVIEW_GUIDANCE 동일",
+        "result/evidence_refs/next_decision schema mapping 정확성"
+      ]
+    },
+    {
+      "audit_id": "tests/test_transition_contract.py::test_changed_observation_does_not_create_business_proof",
+      "audit_disposition": "merge_candidate",
+      "new_test_ids": [
+        "tests/test_transition_contract.py::test_changed_observation_does_not_create_business_proof"
+      ],
+      "change": "intent를 분기하지 않는 transition.complete의 동일 경로 네 case를 login 대표 하나로 통합했다.",
+      "preserved_assertions": [
+        "CHANGED+after observation을 전달해도 new_facts==()",
+        "실제 intent별 graph transition/proof 검증은 policy_workflow에서 그대로 유지"
+      ]
+    },
+    {
+      "audit_id": "tests/test_transition_contract.py::test_verified_field_or_phase_progress_resets_cycle_scope",
+      "audit_disposition": "merge_candidate",
+      "new_test_ids": [
+        "tests/test_transition_contract.py::test_changed_checkpoint_resets_cycle_scope"
+      ],
+      "change": "의미를 해석하지 않는 checkpoint 문자열 변경 테스트를 실제 계약에 맞는 이름의 단일 case로 통합했다.",
+      "preserved_assertions": [
+        "이전 A→B→A 뒤 checkpoint 변경",
+        "다음 A→B cycle=false",
+        "states==(A,B)",
+        "policy_workflow의 query_input/fill business evidence 두 integration case 유지"
+      ]
+    }
+  ],
+  "supporting_migrations": [
+    {
+      "audit_id": "tests/test_duplicate_checkpoint.py::test_repeated_entry_action_intent_mismatch_is_bounded_before_navigation",
+      "new_test_ids": [
+        "tests/test_duplicate_checkpoint.py::test_repeated_malformed_decisions_are_bounded_before_dispatch[entry-intent]"
+      ],
+      "reason": "병합 대상의 원래 enter 시나리오도 보존했다."
+    },
+    {
+      "audit_id": "tests/test_duplicate_checkpoint.py::test_repeated_premature_final_completion_stops_without_query_or_extra_save",
+      "new_test_ids": [
+        "tests/test_duplicate_checkpoint.py::test_repeated_commands_before_save_review_are_bounded_without_dispatch[complete]"
+      ],
+      "reason": "병합 대상의 원래 premature complete 시나리오도 보존했다."
+    },
+    {
+      "audit_id": "tests/test_input_target_recovery.py::test_missing_or_disabled_target_remains_a_hard_stop[e999]",
+      "new_test_ids": [
+        "tests/test_input_target_recovery.py::test_missing_or_disabled_target_remains_a_hard_stop[query-missing]"
+      ],
+      "reason": "기존 query missing target 보존."
+    },
+    {
+      "audit_id": "tests/test_input_target_recovery.py::test_missing_or_disabled_target_remains_a_hard_stop[e1]",
+      "new_test_ids": [
+        "tests/test_input_target_recovery.py::test_missing_or_disabled_target_remains_a_hard_stop[query-disabled]"
+      ],
+      "reason": "기존 query disabled target 보존."
+    },
+    {
+      "audit_id": "tests/test_transition_contract.py::test_cycle_history_has_finite_useful_bounds[0]",
+      "new_test_ids": [
+        "tests/test_transition_contract.py::test_cycle_history_has_finite_useful_bounds[3]",
+        "tests/test_transition_contract.py::test_cycle_history_has_finite_useful_bounds[65]"
+      ],
+      "reason": "원래 keep 함수의 case override merge 권고도 반영하여 같은 하한분기의0을 최소바로아래3에 통합하고 상한바로위65를 유지했다."
+    }
+  ],
+  "validation": {
+    "status": "passed",
+    "runtime": ".venv/Scripts/python.exe",
+    "targeted_pytest": {
+      "command": ".venv/Scripts/python.exe -m pytest tests/test_brain.py tests/test_duplicate_checkpoint.py tests/test_evidence_review.py tests/test_screen_matching.py tests/test_transition_contract.py tests/test_decision_policy.py tests/test_input_target_recovery.py tests/test_phase_contract.py tests/test_save_review.py -q",
+      "passed": 224,
+      "failed": 0,
+      "elapsed_seconds": 152.17
+    },
+    "ruff_check": {
+      "command": ".venv/Scripts/python.exe -m ruff check tests/test_brain.py tests/test_duplicate_checkpoint.py tests/test_evidence_review.py tests/test_screen_matching.py tests/test_transition_contract.py tests/test_decision_policy.py tests/test_input_target_recovery.py tests/test_phase_contract.py tests/test_save_review.py",
+      "status": "passed"
+    },
+    "ruff_format_check": {
+      "command": ".venv/Scripts/python.exe -m ruff format --check tests/test_brain.py tests/test_duplicate_checkpoint.py tests/test_evidence_review.py tests/test_screen_matching.py tests/test_transition_contract.py tests/test_decision_policy.py tests/test_input_target_recovery.py tests/test_phase_contract.py tests/test_save_review.py",
+      "status": "passed",
+      "files": 9
+    },
+    "initial_iteration": {
+      "passed": 67,
+      "failed": 1,
+      "reason": "확대한 redaction fixture에서 active_window와 같은 handle의 windows 항목을 서로 다른 내용으로 구성하여 Observation 계약이 거절했다. active_window 일치 항목과 별도 handle의 추가창을 구성하여 고쳤고 최종 224건 재실행에 포함했다."
+    },
+    "integration_scope": "부모 에이전트의 전체 core suite에서 공유 FakeRelay의 cache/policy_workflow/screen_batch 및 새 ScreenMatch 종단경로를 함께 검증한다. 이 파일의 224건 결과는 GUI/OCR 엔진/외부 모델의 실측 성공을 의미하지 않는다."
+  }
+}

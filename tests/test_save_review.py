@@ -55,7 +55,7 @@ class SaveDialogRelay(FakeRelay):
         if a.type == "click" and a.target.ref == "e91":
             self.mode = "editor" if self.dialog_kind == "rejected" else "query"
             if self.dialog_kind != "rejected":
-                self.saved = True
+                self.persist_inputs()
         return super().act(action)
 
 

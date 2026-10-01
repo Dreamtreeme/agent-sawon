@@ -19,7 +19,9 @@ def observations(record, **kwargs):
     ]
 
 
-def test_converts_to_private_proposals_without_action_replay(tmp_path, record):
+def test_converts_to_private_proposals_without_action_replay(tmp_path, record, monkeypatch):
+    # Conversion's proposal-only cache path is relative to the working directory.
+    monkeypatch.chdir(tmp_path)
     result = convert_demonstration(observations(record), record)
     assert result.status == "proposed"
     assert len(result.entries) == 1

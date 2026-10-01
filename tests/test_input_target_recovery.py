@@ -177,20 +177,46 @@ def test_retry_honors_cost_cap_before_next_measured_selection(tmp_path, record):
     assert len(model.prompts) == 2 and not relay.actions
 
 
-@pytest.mark.parametrize("ref", ["e999", "e1"])
-def test_missing_or_disabled_target_remains_a_hard_stop(tmp_path, record, ref):
+@pytest.mark.parametrize("scenario", ["query-missing", "query-disabled", "editor-disabled"])
+def test_missing_or_disabled_target_remains_a_hard_stop(tmp_path, record, scenario):
     class DisabledInput(FakeRelay):
         def observe(self):
             observation = super().observe()
-            next(item for item in observation.elements if item.ref == "e1").enabled = False
+            ref = self.field_refs["consignee"] if scenario == "editor-disabled" else "e1"
+            for item in observation.elements:
+                if item.ref == ref:
+                    item.enabled = False
             return observation
 
+    steps = success_steps(record)
+    if scenario == "editor-disabled":
+        index = next(
+            i
+            for i, step in enumerate(steps)
+            if (step.get("action") or {}).get("source") == "consignee"
+        )
+        responses, delivered = steps[: index + 1], index - 1
+    else:
+        responses = [bad_input(ref="e999" if scenario == "query-missing" else "e1")]
+        delivered = 0
     result, brain, relay, model = run_brain(
-        tmp_path, record, [bad_input(ref=ref)], relay=DisabledInput(record)
+        tmp_path, record, responses, relay=DisabledInput(record)
     )
     assert result.reason == "target_not_current_or_enabled"
     assert brain.input_target_retries == 0
-    assert len(model.prompts) == 2 and not relay.actions
+    assert len(model.prompts) == len(responses) + 1
+    assert len(relay.actions) == delivered
+    assert not repairs(brain)
+    assert not [
+        e for e in brain.log.read_all() if e.kind == "verify" and e.payload.get("ok") is False
+    ]
+    if scenario == "editor-disabled":
+        assert relay.inputs["consignee"] == ""
+        assert not any(
+            a.root.type in {"set_text", "type_text"}
+            and a.root.target.ref == relay.field_refs["consignee"]
+            for a in relay.actions
+        )
 
 
 def test_dispatch_error_with_same_reason_never_uses_selection_retry(tmp_path, record):

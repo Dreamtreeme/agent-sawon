@@ -250,23 +250,68 @@ def test_save_confirmation_requires_a_prior_save_and_a_dialog_activation():
 
 
 @pytest.mark.parametrize(
-    "payload",
+    "payload,facts,valid",
     [
-        action("navigate", kind="set_text", source="hbl_no"),
-        action("navigate", kind="select_option", source="hbl_no"),
-        action("navigate", kind="key", keys="enter"),
-        action("navigate", kind="wait"),
-        action("search", kind="double_click"),
-        action("search", kind="set_text", source="hbl_no"),
-        action("query_input", kind="click"),
-        action("query_input", kind="set_text", source="mbl_no"),
-        action("fill", screen="editor", kind="click"),
-        action("wait", kind="click"),
-        action("cancel", kind="set_text", source="hbl_no"),
-        action("navigate", screen="unknown"),
+        pytest.param(payload, None, None, id=f"payload{index}")
+        for index, payload in enumerate(
+            [
+                action("navigate", kind="set_text", source="hbl_no"),
+                action("navigate", kind="select_option", source="hbl_no"),
+                action("navigate", kind="key", keys="enter"),
+                action("navigate", kind="wait"),
+                action("search", kind="double_click"),
+                action("search", kind="set_text", source="hbl_no"),
+                action("query_input", kind="click"),
+                action("query_input", kind="set_text", source="mbl_no"),
+                action("fill", screen="editor", kind="click"),
+                action("wait", kind="click"),
+                action("cancel", kind="set_text", source="hbl_no"),
+                action("navigate", screen="unknown"),
+            ]
+        )
+    ]
+    + [
+        pytest.param(
+            action("search", kind="wait"),
+            ExecutionFacts("duplicate_query", query_value_verified=True),
+            action("search"),
+            id="wait-as-eligible-search",
+        ),
+        pytest.param(
+            action("save", screen="editor", kind="wait"),
+            ExecutionFacts(
+                "enter",
+                field_names=("hbl_no",),
+                verified_field_names=("hbl_no",),
+                duplicate_clear=True,
+            ),
+            action("save", screen="editor"),
+            id="wait-as-eligible-save",
+        ),
+        pytest.param(
+            action("confirm_save", screen="dialog", kind="wait"),
+            ExecutionFacts("save_result", duplicate_clear=True, save_issued=True),
+            action("confirm_save", screen="dialog"),
+            id="wait-as-eligible-confirm-save",
+        ),
+        pytest.param(
+            action("login", screen="login", kind="wait"),
+            ExecutionFacts(
+                "duplicate_query",
+                available_credential_sources=("credential.username", "credential.password"),
+                submitted_credentials=("credential.username", "credential.password"),
+            ),
+            action("login", screen="login"),
+            id="wait-as-eligible-login",
+        ),
     ],
 )
-def test_broad_action_types_cannot_bypass_intent_or_source_contract(payload):
+def test_broad_action_types_cannot_bypass_intent_or_source_contract(payload, facts, valid):
+    if facts is not None:
+        policy = DecisionPolicy(facts)
+        assert_contract(policy, valid, True)
+        assert_contract(policy, payload, False)
+        return
     for facts in (
         ExecutionFacts("duplicate_query"),
         ExecutionFacts("enter", field_names=("hbl_no", "mbl_no"), duplicate_clear=True),

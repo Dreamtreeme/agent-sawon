@@ -114,11 +114,33 @@ def test_ready_gate_rejects_mismatched_confidences_and_checks():
     candidate = record()
     assert can_enter(candidate, report())
     manipulated = json.loads(candidate.model_dump_json())
-    manipulated["fields"]["description"]["confidence"] = 0.1
-    assert not can_enter(ShipmentRecord.model_validate(manipulated), report())
+    manipulated["fields"]["description"]["confidence"] = 0.9
+    changed = ShipmentRecord.model_validate(manipulated)
+    matching_hash = report().model_copy(update={"record_sha256": record_fingerprint(changed)})
+    assert matching_hash.ready  # Both scores pass the threshold; only equality fails.
+    assert not can_enter(changed, matching_hash)
+    matching_scores = matching_hash.model_copy(
+        update={"field_confidences": {**matching_hash.field_confidences, "description": 0.9}}
+    )
+    assert can_enter(changed, matching_scores)
+
+    advisory = report([Check(code="review_note", severity="low", message="reviewed")])
+    assert advisory.ready and advisory.record_sha256 == record_fingerprint(candidate)
+    assert not can_enter(candidate, advisory)  # Only the attached check list differs.
+    with_advisory = candidate.model_copy(
+        update={"checks": [check.model_dump(mode="json") for check in advisory.checks]}
+    )
+    assert can_enter(with_advisory, advisory)
+
     blocked = report([Check(code="missing_document", severity="blocking", message="missing")])
-    assert not can_enter(candidate, blocked)
-    assert not can_enter(candidate.model_copy(update={"origin": "manual"}), report())
+    with_block = candidate.model_copy(
+        update={"checks": [check.model_dump(mode="json") for check in blocked.checks]}
+    )
+    assert blocked.record_sha256 == record_fingerprint(with_block)
+    assert not can_enter(with_block, blocked)
+    manual = candidate.model_copy(update={"origin": "manual"})
+    manual_report = report().model_copy(update={"record_sha256": record_fingerprint(manual)})
+    assert not can_enter(manual, manual_report)
     assert not can_enter(candidate, report().model_copy(update={"record_sha256": None}))
 
 

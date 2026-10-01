@@ -123,38 +123,6 @@ def test_parallel_field_mapping_compiles_shared_batch_and_grounding():
     assert "field:3" not in request.questions  # OCR is not an input
 
 
-def test_login_compiles_credentials_and_click_in_one_batch():
-    data = state()
-    data["procedure"][0]["screen"] = "login"
-    data["procedure"][0]["actions"] = ["login"]
-    data["notebook"]["available_credentials"] = ["credential.username", "credential.password"]
-    request = build_request(data)
-    result = compile_answers(
-        request,
-        answers(
-            request,
-            **{
-                "decision": "fill:login:login",
-                "field:1": "credential.username",
-                "field:2": "credential.password",
-                "target:fill:login:login": "3",
-                "role:1": "edit",
-                "role:2": "edit",
-                "role:3": "button",
-            },
-        ),
-    )
-    assert [s.intent for s in result.steps] == ["credential", "credential", "login"]
-    from types import SimpleNamespace
-    from uuid import uuid4
-
-    obs_id = uuid4()
-    observation = SimpleNamespace(
-        obs_id=obs_id, elements=[SimpleNamespace(ref=f"e{obs_id.int}0{i}") for i in (1, 2, 3)]
-    )
-    assert len(compile_match(result, observation, LoginScreenPlan).fields) == 2
-
-
 @pytest.mark.parametrize("navigate", [False, True])
 def test_only_selected_branch_is_executed_and_duplicate_source_is_resolved(navigate):
     request = build_request(state())
@@ -203,6 +171,9 @@ def test_field_choice_uses_source_key_and_skip_preserves_unmatched_fields(role):
 
 
 def test_login_field_mapping_retains_local_credential_values_and_input_order():
+    from types import SimpleNamespace
+    from uuid import uuid4
+
     data = state()
     data["procedure"][0].update(screen="login", actions=["login"])
     data["notebook"]["phase"] = "duplicate_query"
@@ -233,6 +204,18 @@ def test_login_field_mapping_retains_local_credential_values_and_input_order():
         (1, "credential.password"),
         (3, None),
     ]
+    assert [s.intent for s in result.steps] == ["credential", "credential", "login"]
+    obs_id = uuid4()
+    refs = {i: f"e{obs_id.int}0{i}" for i in (1, 2, 3)}
+    observation = SimpleNamespace(
+        obs_id=obs_id, elements=[SimpleNamespace(ref=ref) for ref in refs.values()]
+    )
+    plan = compile_match(result, observation, LoginScreenPlan)
+    assert [(field.source, field.ref) for field in plan.fields] == [
+        ("credential.username", refs[2]),
+        ("credential.password", refs[1]),
+    ]
+    assert plan.login_ref == refs[3] and plan.next_decision is None
 
 
 def test_exact_question_and_option_sets_required():
@@ -442,14 +425,25 @@ def test_failure_keeps_accounting_and_does_not_retry(tmp_path, monkeypatch, bad)
 
 
 @pytest.mark.parametrize("key_name", ["TYPESAFE_API_KEY", "JEV_API_KEY"])
-def test_jev_factory_uses_explicit_key_and_profile(tmp_path, key_name):
+def test_jev_factory_uses_explicit_key_and_profile(tmp_path, key_name, monkeypatch):
     from pathlib import Path
 
-    model, log = client(tmp_path / "logs")
+    log = RunLog(tmp_path / "logs", case_id="jev-factory", agent_id="test")
     env = tmp_path / ".env"
     env.write_text(f"{key_name}=fake-key\n", encoding="utf-8")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ambient-typesafe-must-not-be-used")
+    monkeypatch.setenv("JEV_API_KEY", "ambient-jev-must-not-be-used")
+    constructor = Mock()
+    monkeypatch.setattr("models.factory.JevClient", constructor)
     config = Path(__file__).resolve().parents[1] / "config/models.jev.toml"
-    assert isinstance(create_model_client(config, run_log=log, env_path=env), JevClient)
+    assert create_model_client(config, run_log=log, env_path=env) is constructor.return_value
+    constructor.assert_called_once_with(
+        api_key="fake-key",
+        model="jev-1.13.0",
+        price=PriceRate(input_usd_per_million=Decimal("0.042"), output_usd_per_million=Decimal(0)),
+        run_log=log,
+        timeout_seconds=60,
+    )
 
 
 def test_single_branch_owns_screen_procedure_and_command_with_business_checkpoint():

@@ -14,7 +14,7 @@ from brain.settings import BrainSettings
 
 @pytest.mark.parametrize("step", ["query_input", "search", "final_row_evidence"])
 def test_final_request_only_explains_current_checkpoint(tmp_path, record, step):
-    relay = FakeRelay(record)
+    relay = FakeRelay(record, duplicate=step == "final_row_evidence")
     log = RunLog(tmp_path, case_id=record.case_id, agent_id="phase-test")
     brain = Brain(
         record=record,
@@ -29,7 +29,6 @@ def test_final_request_only_explains_current_checkpoint(tmp_path, record, step):
     brain.save_issued = brain.duplicate_clear = True
     brain.query_value_verified = step != "query_input"
     brain.query_submitted = step == "final_row_evidence"
-    relay.saved = step == "final_row_evidence"
     brain.observation = relay.observe()
     brain.feedback = [
         {"phase": "enter", "required_response": "obsolete entry repair"},

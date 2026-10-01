@@ -351,16 +351,36 @@ def test_cli_without_isolation_preserves_legacy_cache_path(cli):
     assert not (cli.case / "cache-experiment").exists()
 
 
-def test_cli_disabled_cache_has_no_cache_reads_or_writes(cli):
+def test_cli_disabled_cache_has_no_cache_reads_or_writes(cli, monkeypatch):
+    from unittest.mock import Mock
+
+    from test_brain import FakeRelay, ScriptedModel, success_steps, values_for
+
+    from brain.graph import Brain
+
     cli.settings = settings(cli.settings.cache.path, enabled=False)
     cli.settings.cache.path.write_bytes(b"corrupt global cache must remain ignored")
+    record = ShipmentRecord.model_validate_json(Path(cli.args[1]).read_bytes())
+    relay = FakeRelay(record)
 
-    def check_disabled(data):
-        cache = data["settings"].cache
-        assert SemanticCache(cache.path, enabled=cache.enabled).entries() == ()
+    def factory(*_args, run_log, **_kwargs):
+        cli.calls.append("model_factory")
+        return ScriptedModel(run_log, success_steps(record))
 
-    cli.action = check_disabled
+    read_cache = Mock(side_effect=AssertionError("disabled cache must not be read"))
+    write_cache = Mock(side_effect=AssertionError("disabled cache must not be written"))
+    monkeypatch.setattr(run, "Brain", Brain)
+    monkeypatch.setattr(run, "HttpRelay", lambda *_args, **_kwargs: relay)
+    monkeypatch.setattr(run, "create_model_client", factory)
+    monkeypatch.setattr(SemanticCache, "_read_unlocked", read_cache)
+    monkeypatch.setattr("brain.cache.semantic.atomic_write_json", write_cache)
     assert run.main(cli.args) == 0
+    assert cli.calls == ["model_factory"]
+    assert json.loads((cli.case / "result.json").read_text())["status"] == "success"
+    assert json.loads((cli.case / "status.json").read_text())["status"] == "awaiting_approval"
+    assert relay.inputs == relay.saved_snapshot == values_for(record)
+    read_cache.assert_not_called()
+    write_cache.assert_not_called()
     assert cli.settings.cache.path.read_bytes() == b"corrupt global cache must remain ignored"
     assert not cli.settings.cache.path.with_suffix(".json.lock").exists()
     assert not (cli.case / "cache-experiment").exists()

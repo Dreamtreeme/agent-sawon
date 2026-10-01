@@ -1,3 +1,4 @@
+from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -117,6 +118,9 @@ def test_long_context_cache_write_pricing_and_reservation(tmp_path):
         cache_write_tokens=20_000,
     )
     assert client._cost(usage) == Decimal("0.11858")
+    # 272,000 input tokens still use the standard tier; the next token changes all rates.
+    assert client._cost(usage.model_copy(update={"input_tokens": 272_000})) == Decimal("0.05372")
+    assert client._cost(usage.model_copy(update={"input_tokens": 272_001})) == Decimal("0.1073804")
     budget = CallBudget.from_config(Path("config/models.luna.toml"))
     assert budget("x" * 300_000, Answer) > client._cost(usage)
     with pytest.raises(ValidationError):
@@ -126,11 +130,32 @@ def test_long_context_cache_write_pricing_and_reservation(tmp_path):
 
 
 def test_screen_matching_schema_is_converted_without_changing_local_contract(tmp_path):
-    client, sdk, _ = setup(tmp_path)
-    with pytest.raises(ValidationError):
-        client.complete_json("screen", ScreenMatch)
+    local_schema = deepcopy(ScreenMatch.model_json_schema())
+    minimal = {
+        "controls": [{"id": 1, "role": "edit", "confidence": 0.99}],
+        "procedure_step": "fill",
+        "operation": "stop",
+    }
+    expected = ScreenMatch.model_validate(minimal)
+    client, sdk, log = setup(tmp_path, text=expected.model_dump_json())
+    reply = client.complete_json("screen", ScreenMatch)
+    assert reply.response == expected
+    assert len(log.read_all()) == sdk.responses.create.call_count == 1
     schema = sdk.responses.create.call_args.kwargs["text"]["format"]["schema"]
-    for obj in [schema, *schema["$defs"].values()]:
-        if obj.get("type") == "object":
-            assert obj["additionalProperties"] is False
-            assert set(obj["required"]) == set(obj["properties"])
+
+    def assert_strict(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                assert node["additionalProperties"] is False
+                assert set(node["required"]) == set(node["properties"])
+            for child in node.values():
+                assert_strict(child)
+        elif isinstance(node, list):
+            for child in node:
+                assert_strict(child)
+
+    assert_strict(schema)
+    assert "steps" in schema["required"] and "steps" not in local_schema["required"]
+    assert ScreenMatch.model_json_schema() == local_schema
+    assert ScreenMatch.model_validate(minimal) == expected
+    assert expected.steps == [] and expected.grid is None and expected.controls[0].enabled

@@ -1,0 +1,106 @@
+{
+  "metadata": {
+    "date": "2026-10-01",
+    "scope": "core support/root 감사 지적 7개 교정, Jev 로그인 1개 통합, 기존 보존 테스트 2개 보강",
+    "audit_source": "docs/test-audit-20261001/audit.json",
+    "production_changed": false,
+    "gui_calls": 0,
+    "paid_calls": 0,
+    "new_test_functions": 0,
+    "removed_test_functions": 1,
+    "test_function_delta": -1,
+    "collected_case_delta": -1,
+    "note": "기존 감사의 기준 시점과 판정은 보존했다. 이 파일은 승인 후 수정 기록이며 실제 화면 완료나 공급자 정확도 검증을 뜻하지 않는다."
+  },
+  "remediations": [
+    {
+      "audit_id": "tests/test_cache_experiment.py::test_cli_disabled_cache_has_no_cache_reads_or_writes",
+      "original_disposition": "rewrite_candidate",
+      "action": "corrected",
+      "test_ids": ["tests/test_cache_experiment.py::test_cli_disabled_cache_has_no_cache_reads_or_writes"],
+      "rationale": "FakeBrain을 실제 Brain으로 교체하고 CLI→중복조회→전체 필드입력→저장→최종조회 경로를 fake relay와 measured scripted model로 실행한다. 결과 success/awaiting_approval과 실제 입력에서 저장된 snapshot을 확인하며 캐시 읽기/쓰기 경계가 전혀 호출되지 않고 손상된 원본 바이트·lock 부재가 유지되는지 검사한다."
+    },
+    {
+      "audit_id": "tests/test_pipeline_adapters.py::test_budget_includes_image_and_output_reservation",
+      "original_disposition": "rewrite_candidate",
+      "action": "corrected",
+      "test_ids": ["tests/test_pipeline_adapters.py::test_budget_includes_image_and_output_reservation"],
+      "rationale": "image>text 비교를 정확한 Decimal 금액으로 교체했다. 100×100 이미지의 8192 token floor, 1201×1601 이미지의 올림 결과 120176 token, 설정 출력예약 4096 token 및 출력 1 token 증가에 따른 $0.0000025 증가를 독립 기대값으로 확인한다. replay의 비용 0 검증도 보존했다."
+    },
+    {
+      "audit_id": "tests/test_pipeline_evaluate.py::test_ready_gate_rejects_mismatched_confidences_and_checks",
+      "original_disposition": "rewrite_candidate",
+      "action": "corrected",
+      "test_ids": ["tests/test_pipeline_evaluate.py::test_ready_gate_rejects_mismatched_confidences_and_checks"],
+      "rationale": "confidence만 다른 사례는 갱신된 fingerprint와 기준 이상 점수를 사용하고 점수를 일치시키면 통과하는 양성 대조를 붙였다. check list 불일치는 low advisory로 report.ready가 참인 상태에서만 검사하고 record checks를 맞추면 통과한다. blocking 검사는 양쪽 checks를 맞추고, manual origin 검사는 fingerprint를 다시 계산해 각 거부 조건이 다른 실패에 가려지지 않게 했다."
+    },
+    {
+      "audit_id": "tests/test_openai_client.py::test_screen_matching_schema_is_converted_without_changing_local_contract",
+      "original_disposition": "rewrite_candidate",
+      "action": "corrected",
+      "test_ids": ["tests/test_openai_client.py::test_screen_matching_schema_is_converted_without_changing_local_contract"],
+      "rationale": "엉뚱한 Answer 응답의 ValidationError를 성공 조건으로 삼던 검사를 유효한 ScreenMatch stop 응답의 실제 파싱으로 교체했다. 전송 schema의 모든 nested object에서 strict required/additionalProperties를 확인하고 전후 local schema 전체 동등성, 생략된 steps/default/null 값의 정상 로컬 검증을 함께 확인한다."
+    },
+    {
+      "audit_id": "tests/test_visual_scene.py::test_fetch_verifies_png_hash_geometry_and_refuses_redirect_paths",
+      "original_disposition": "rewrite_candidate",
+      "action": "corrected",
+      "test_ids": ["tests/test_visual_scene.py::test_fetch_verifies_png_hash_geometry_and_refuses_redirect_paths"],
+      "rationale": "정상 PNG의 올바른 hash를 유지하면서 선언 width만 399로 바꿔 geometry_mismatch 경로를 독립 실행한다. integrity/geometry 실패가 파일을 남기지 않는지, 외부 경로가 transport 호출 전에 차단되는지도 기존 함수 안에서 확인한다."
+    },
+    {
+      "audit_id": "tests/test_visual_scene.py::test_provider_schema_is_compact_but_local_limits_remain",
+      "original_disposition": "rewrite_candidate",
+      "action": "corrected",
+      "test_ids": ["tests/test_visual_scene.py::test_provider_schema_is_compact_but_local_limits_remain"],
+      "rationale": "실제 공급자 계약 SemanticDetection 및 이를 상속한 ScreenMatch schema를 검사한다. 전송 schema에서 collection/string 한도와 bbox가 제외돼도 로컬에서 control 500개·description 160자는 허용하고 501개·161자·모델 생성 bbox는 거부하는지 확인한다. 내부 Detection의 3좌표 bbox 거부 검증은 별도로 보존했다."
+    },
+    {
+      "audit_id": "tests/test_jev_matching.py::test_jev_factory_uses_explicit_key_and_profile",
+      "original_disposition": "rewrite_candidate",
+      "action": "corrected",
+      "test_ids": ["tests/test_jev_matching.py::test_jev_factory_uses_explicit_key_and_profile"],
+      "parameters": ["TYPESAFE_API_KEY", "JEV_API_KEY"],
+      "rationale": "isinstance만 확인하던 검사를 fake 생성자에 전달된 api_key, jev-1.13.0 model, $0.042/M input 및 $0 output 가격, run_log, 60초 timeout의 정확한 검증으로 교체했다. 두 ambient 키를 별도 값으로 설정해 두 .env 별칭 각각에서 명시적 파일의 키가 선택되는지 입증한다."
+    },
+    {
+      "audit_id": "tests/test_jev_matching.py::test_login_compiles_credentials_and_click_in_one_batch",
+      "original_disposition": "merge_candidate",
+      "action": "merged",
+      "test_ids": ["tests/test_jev_matching.py::test_login_field_mapping_retains_local_credential_values_and_input_order"],
+      "rationale": "기본 로그인 함수를 역순 credential 매핑 검사에 통합했다. credential/credential/login intent 순서를 보존하고 기존의 field 개수만 검사하던 LoginScreenPlan assertion을 username→현재 ref2, password→현재 ref1 및 login_ref→현재 ref3의 정확한 컴파일 검증으로 강화했다. 두 credential 후보 순서와 실제 입력 순서가 달라도 username 우선이라는 계약을 한 함수에서 확인한다."
+    },
+    {
+      "audit_id": "tests/test_demo_learning.py::test_converts_to_private_proposals_without_action_replay",
+      "original_disposition": "keep",
+      "action": "strengthened",
+      "test_ids": ["tests/test_demo_learning.py::test_converts_to_private_proposals_without_action_replay"],
+      "rationale": "변환 전에 cwd를 tmp_path로 옮겨 실제 상대경로 proposal-only cache가 놓일 위치에서 파일 부재를 검사한다. 기존 기밀 값 제외와 의미 제안 내용 검증은 보존했다."
+    },
+    {
+      "audit_id": "tests/test_openai_client.py::test_long_context_cache_write_pricing_and_reservation",
+      "original_disposition": "keep",
+      "action": "strengthened",
+      "test_ids": ["tests/test_openai_client.py::test_long_context_cache_write_pricing_and_reservation"],
+      "rationale": "기존 300000 input token 사례에 더해 동일한 cached/write/output 사용량으로 272000 token은 $0.05372, 272001 token은 $0.1073804라는 정확한 경계 금액을 확인한다. tier 경계가 >=로 잘못 바뀌거나 일부 요율의 증가가 빠져도 실패한다."
+    }
+  ],
+  "validation": {
+    "targeted_pytest": {
+      "command": ".venv/Scripts/python.exe -m pytest tests/test_cache_experiment.py tests/test_pipeline_adapters.py tests/test_pipeline_evaluate.py tests/test_openai_client.py tests/test_visual_scene.py tests/test_jev_matching.py tests/test_demo_learning.py -q",
+      "passed": 118,
+      "failed": 0,
+      "seconds": 10.76
+    },
+    "last_semantic_change_recheck": {
+      "command": ".venv/Scripts/python.exe -m pytest tests/test_openai_client.py::test_screen_matching_schema_is_converted_without_changing_local_contract -q",
+      "passed": 1,
+      "failed": 0,
+      "seconds": 1.70,
+      "note": "유효 응답 operation을 명시적 stop으로 최종 정리한 후 재실행했다. distinct 테스트 총수에 중복 합산하지 않는다."
+    },
+    "ruff_check": "7개 수정 테스트 파일 통과",
+    "ruff_format_check": "7 files already formatted",
+    "production_defects_found": []
+  }
+}

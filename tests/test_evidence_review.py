@@ -29,8 +29,7 @@ class HiddenFinalRelay(FakeRelay):
 
 
 def test_query_input_value_never_substitutes_for_hidden_row_identifier(record):
-    relay = HiddenFinalRelay(record)
-    relay.saved = True
+    relay = HiddenFinalRelay(record, duplicate=True)
     relay.query = record.fields.hbl_no.value
     observation = relay.observe()
     result = review_final(observation, values_for(record), field_matches)
@@ -97,12 +96,23 @@ def test_configured_recovery_uses_separately_measured_model_on_missing_evidence(
 
 def test_hidden_fields_cannot_be_completed_by_model_repeatedly_claiming_success(tmp_path, record):
     steps = success_steps(record)
-    result, brain, relay, _ = run_brain(
+    result, brain, relay, model = run_brain(
         tmp_path,
         record,
         [*steps, steps[-1]],
         relay=HiddenFinalRelay(record),
     )
     assert result.status == "stopped"
+    assert result.reason == "repeated_subgoal_failure:final_query:decision"
+    assert result.steps == len(steps) + 1
+    assert len(model.prompts) == result.steps + 1
+    assert len(relay.actions) == len(steps) - 2
     assert not relay.expanded
-    assert not any(e.payload.get("check") == "final_query_fields" for e in brain.log.read_all())
+    events = brain.log.read_all()
+    assert [
+        e.payload["reason"] for e in events if e.kind == "verify" and e.payload.get("ok") is False
+    ] == ["selection_error:ValidationError"] * 2
+    reviews = [e.payload for e in events if e.payload.get("check") == "current_evidence_review"]
+    assert reviews and all(r["status"] == "needs_more" for r in reviews)
+    assert all(set(r["missing_fields"]) == {"hbl_no", "pod"} for r in reviews)
+    assert not any(e.payload.get("check") == "final_query_fields" for e in events)
