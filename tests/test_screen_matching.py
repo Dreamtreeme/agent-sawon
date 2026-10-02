@@ -258,6 +258,38 @@ def test_identical_catalog_rematches_when_new_step_targets_unclassified_marker(t
     )
 
 
+def test_partner_lookup_fill_uses_single_decision_instead_of_editor_batch(tmp_path, record):
+    meaning = fixture()[-1]
+    partner = response(
+        meaning,
+        screen_kind="partner",
+        procedure_step="lookup-partner",
+        steps=[
+            {
+                "target": meaning.controls[0].id,
+                "action": "fill",
+                "source": "shipper",
+                "intent": "fill",
+            }
+        ],
+    )
+    brain, _, _, _, _, _ = setup_brain(tmp_path, record, [partner])
+    brain.phase = "enter"
+    brain.duplicate_clear = True
+    brain.verified = {
+        field: f"ref-{field}"
+        for field in {"hbl_no", "mbl_no", "packages.count", "packages.unit", "pol"}
+    }
+
+    brain._observe()
+
+    assert brain.observation.screen_kind == "partner"
+    assert brain._select_node({}) == {"next": "act"}
+    assert brain.action_plan is None
+    assert brain.decision.intent == "fill"
+    assert brain.decision.action.source == "shipper"
+
+
 @pytest.mark.parametrize("bad", ["wrong-procedure", "wrong-target", "wrong-phase"])
 def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
     meaning = fixture()[-1]

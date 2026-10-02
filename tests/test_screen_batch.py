@@ -28,7 +28,8 @@ class CountPerception(SyntheticPerception):
 
     def observe(self, wire):
         self.action_counts.append(len(self.relay.actions))
-        return super().observe(wire)
+        scene = super().observe(wire)
+        return scene.model_copy(update={"screen_kind": self.relay.mode})
 
 
 def screen_plan(record):
@@ -59,11 +60,7 @@ def make_brain(tmp_path, record, relay, responses):
 def test_complete_workflow_fills_all_fields_before_one_reread(tmp_path, record):
     ordinary = success_steps(record)
     batch = screen_plan(record)
-    responses = (
-        ordinary[:3]
-        + [{"fields": [], "next_decision": {"decision": ordinary[3]}}, batch]
-        + ordinary[4 + len(batch["fields"]) :]
-    )
+    responses = ordinary[:4] + [batch] + ordinary[4 + len(batch["fields"]) :]
     relay = ChangingPixelsRelay(record)
     brain, perception, model = make_brain(tmp_path, record, relay, responses)
     result = brain.run()

@@ -994,6 +994,7 @@ class Brain:
             screen_fill = (
                 self.settings.visual_screen_fill
                 and isinstance(self.observation, SceneObservation)
+                and self.observation.screen_kind == "editor"
                 and self.phase == "enter"
                 and self.duplicate_clear
                 and bool(policy.facts.remaining_fields)
