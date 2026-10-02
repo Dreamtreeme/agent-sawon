@@ -296,7 +296,8 @@ def test_actual_brain_uses_argmax_unless_image_explicitly_requested(
     gemini._generate = image_call
     brain.credentials = {"credential.username": "SECRET_USER", "credential.password": "SECRET_PW"}
     brain._observe()
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     # Jev now receives local OCR/markers directly. The primary image model is
     # called only when Jev explicitly requests image recovery.
     assert seen == ([True] if needs_image else [])

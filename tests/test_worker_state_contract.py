@@ -25,6 +25,12 @@ def test_worker_graph_and_state_have_four_explicit_responsibilities():
 
     assert set(state) == {"observation", "decision", "execution", "review", "lifecycle"}
     assert state["decision"]["task_plan"] == []
+    assert state["execution"] == {"pending": None, "authorized": False}
+    assert state["review"] == {
+        "current": None,
+        "decision_pending": False,
+        "execution_pending": False,
+    }
     assert {
         name
         for name in build_worker_graph(WorkerStub()).get_graph().nodes

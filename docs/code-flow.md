@@ -41,7 +41,10 @@ flowchart TD
     POLICY -->|최종 근거 needs_more| HIGH
     HIGH --> G
     G -->|모델의 비입력 대상 선택 · 재선택 한도 내| O
-    G --> ACT["Execution: ActionPlan 공통 실행·relay HTTP"]
+    G --> PR["Review: 판단 evidence 저장·현재 근거 재검토"]
+    PR -->|완료 근거 충족| DONE
+    PR -->|충돌·차단| STOP
+    PR -->|행동 허용| ACT["Execution: ActionPlan 공통 실행·relay HTTP"]
     ACT --> O
     O -->|검증된 최신 장면| R
     O -->|캐시 실패| RETRY["설정된 재시도 → 무효화 → 모델 복구"]
@@ -57,8 +60,10 @@ flowchart TD
 
 계획 준비는 그래프 진입 전에 끝난다. 실제 LangGraph 노드는 `observation`, `decision`,
 `execution`, `review` 네 개뿐이며 `state.WorkerState`의 동일 이름 구역과 lifecycle을 공유한다.
-정책·캐시·모델 선택은 `decision`에서 ActionPlan을 준비한다.
-로그인·등록 묶음도 `execution`의 공통 실행기를 거치며, pending 행동이 있는
+정책·캐시·모델 선택은 `decision`에서 ActionPlan과 evidence 제안만 준비한다. 이 evidence를
+현재 관찰에 결합한 뒤 `review`가 완료·충돌·실행 허용을 판정하며, 허용 전에는 어떤 행동도
+전달하지 않는다. 허용 시에만 일회성 `execution.authorized` 상태를 발급하며 Execution이 이를
+소비한다. 로그인·등록 묶음도 이 게이트 뒤 `execution`의 공통 실행기를 거치며, pending 행동이 있는
 `observation`이 한 번 재관찰해 효과를 검증한다.
 [2026-09-30 공통화 점검](architecture-review-20260930.md)이 최신 구조와 미해결 항목을 설명한다.
 `review`는 현재 관찰의 완료 가능 여부와 제출된 업무 근거 검증을 담당하며 별도 LLM을 호출하지 않는다.
@@ -97,6 +102,7 @@ pipeline/workflow.py
           │   ├─ save_result: 현재 근거·결과·다음 행동을 한 응답으로 판단
           │   │   └─ 거절→해당 필드 수정, 확인창→처리 후 재판정, 준비됨→최종 조회
           │   └─ 공통 _guard_action
+          ├─ review_node → 판단 evidence 저장 결과 재검토 → 완료/차단 또는 실행 허용
           ├─ execution_node → execute_plan → 전체 계획 선검사 → 순서대로 relay.act
           ├─ state.WorkerState → 관찰·결정·실행·검토 구역의 명시적 인계
           └─ 성공 후 CacheSession.finish → 원자적 승격·결재 대기

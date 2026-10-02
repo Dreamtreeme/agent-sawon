@@ -10,9 +10,15 @@ and an observed final query row before success. Success changes case status from
 
 `observation` captures current evidence. When `execution.pending` exists, it also
 rereads the application and verifies the delivered action's observable effect.
-`decision` owns policy, cache/model selection and `ActionPlan` preparation.
-`execution` dispatches the selected plan but cannot claim success. `review` owns
-current result evidence and deterministic duplicate/completion proof. The legacy
+The reviewer first settles evidence already present in that observation so deterministic
+conflicts and completion do not spend a model call. After `decision` proposes work, the
+same reviewer runs again with the proposal's newly stored evidence before execution.
+`decision` owns policy, cache/model selection and `ActionPlan` preparation. It stores
+the decision's evidence bindings but cannot dispatch the proposed work. `review` owns
+current result evidence, deterministic duplicate/completion proof, and the mandatory
+pre-execution gate. `execution` dispatches only a proposal accepted by that gate and
+cannot claim success. Review issues a one-use `execution.authorized` state token; a
+direct or stale execution call without it stops before relay input. The legacy
 private helpers remain implementation details; only these four nodes are registered
 with LangGraph.
 

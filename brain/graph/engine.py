@@ -184,6 +184,14 @@ class Brain:
         self._worker_state["execution"]["pending"] = value
 
     @property
+    def execution_authorized(self) -> bool:
+        return self._worker_state["execution"]["authorized"]
+
+    @execution_authorized.setter
+    def execution_authorized(self, value: bool) -> None:
+        self._worker_state["execution"]["authorized"] = value
+
+    @property
     def review(self) -> EvidenceReview | None:
         return self._worker_state["review"]["current"]
 
@@ -198,6 +206,14 @@ class Brain:
     @review_decision.setter
     def review_decision(self, value: bool) -> None:
         self._worker_state["review"]["decision_pending"] = value
+
+    @property
+    def review_execution(self) -> bool:
+        return self._worker_state["review"]["execution_pending"]
+
+    @review_execution.setter
+    def review_execution(self, value: bool) -> None:
+        self._worker_state["review"]["execution_pending"] = value
 
     @property
     def phase(self) -> str:
@@ -262,6 +278,7 @@ class Brain:
         self.saved_evidence = SavedEvidence()
         self.saved_bindings: tuple[str, dict[str, str]] | None = None
         self.pending: PendingAction | None = None
+        self.execution_authorized = False
         self.click_refinement = ClickRefinement()
         self.visual_points = VisualPointBindings()
         self.action_plan: ActionPlan | None = None
@@ -291,6 +308,7 @@ class Brain:
         self.deferred_field_checks: dict[str, dict] = {}
         self.review: EvidenceReview | None = None
         self.review_decision = False
+        self.review_execution = False
         self.visual_proposal = None
         self.visual_proposal_obs_id = None
         self.visual_perception = None
@@ -893,15 +911,38 @@ class Brain:
                     "verify",
                     payload={
                         "check": "current_evidence_review",
+                        "stage": "before_action" if self.review_execution else "after_observation",
+                        **review.model_dump(mode="json"),
+                    },
+                )
+            if self.review_execution:
+                self.log.append(
+                    "verify",
+                    payload={
+                        "check": "proposed_execution_review",
+                        "stage": "before_action",
                         **review.model_dump(mode="json"),
                     },
                 )
             if self.saved_evidence.session_id and review.status == "ready":
+                self.review_execution = False
+                self.execution_authorized = False
+                self.action_plan = None
                 return self._complete_saved_evidence()
             if review.status == "blocked":
+                self.review_execution = False
+                self.execution_authorized = False
+                self.action_plan = None
                 return self._finish("stopped", review.reason)
+            if self.review_execution:
+                self.review_execution = False
+                self.execution_authorized = True
+                return {"next": "act"}
             return {"next": "select"}
         except GuardStop as exc:
+            self.review_execution = False
+            self.execution_authorized = False
+            self.action_plan = None
             if self._duplicate_checkpoint_pending() and str(exc) in {
                 "missing_query_grid_evidence",
                 "evidence_not_query_screen",
@@ -909,6 +950,9 @@ class Brain:
                 return self._fail("duplicate_evidence_required")
             return self._finish("stopped", str(exc))
         except Exception as exc:
+            self.review_execution = False
+            self.execution_authorized = False
+            self.action_plan = None
             return self._fail("review_error:" + type(exc).__name__)
 
     def _phase_instruction(self, policy: DecisionPolicy | None = None) -> str:
@@ -1084,6 +1128,7 @@ class Brain:
             policy = self._decision_policy()
             self.decision = None
             self.action_plan = None
+            self.execution_authorized = False
             self.cache_entry_id = None
             schema = policy.response_schema()
             screen_fill = (
@@ -1201,14 +1246,16 @@ class Brain:
                     plan = self._selection_call(prompt + LOGIN_GUIDANCE, schema)
                     if plan.fields:
                         self.action_plan = prepare_login_plan(self.observation, plan, policy)
-                        return {"next": "act"}
+                        self.review_execution = True
+                        return {"next": "review"}
                     self.decision = plan.next_decision.to_decision()
                 elif screen_fill:
                     schema = ScreenFillPlan
                     plan = self._selection_call(prompt + SCREEN_FILL_GUIDANCE, schema)
                     if plan.fields:
                         self.action_plan = prepare_screen_fill(self.observation, plan)
-                        return {"next": "act"}
+                        self.review_execution = True
+                        return {"next": "review"}
                     self.decision = plan.next_decision.to_decision()
                 else:
                     self.decision = self._choose_decision(prompt, schema)
@@ -1228,8 +1275,6 @@ class Brain:
             )
             if decision.screen_kind == "unknown":
                 raise GuardStop("unknown_window_type")
-            if self.saved_evidence.session_id and self._current_review().status == "ready":
-                return self._complete_saved_evidence()
             if decision.operation == "stop":
                 return self._finish("stopped", "model_requested_stop")
             if decision.operation in {"duplicate_clear", "duplicate_found", "complete"}:
@@ -1239,7 +1284,8 @@ class Brain:
                 self._collect_editor_evidence(decision)
                 policy = self._decision_policy()
             self._guard_action(decision, policy)
-            return {"next": "act"}
+            self.review_execution = True
+            return {"next": "review"}
         except GuardStop as exc:
             if (
                 str(exc) == "target_not_text_input"
@@ -1520,6 +1566,9 @@ class Brain:
 
     def _act_node(self, state: dict) -> dict:
         assert self.decision is not None or self.action_plan is not None
+        if not self.execution_authorized:
+            return self._finish("stopped", "execution_review_required")
+        self.execution_authorized = False
         plan = self.action_plan or ActionPlan.single(self.decision)
         self.action_plan = None
         try:
@@ -1719,6 +1768,7 @@ class Brain:
                             failed.append(target)
                     self.pending = None
                     if self.click_refinement.prepare(self, pending, observation):
+                        self.execution_authorized = True
                         return {"next": "act"}
                     return self._fail("navigation_no_progress")
                 if self.navigation_history.observe(
@@ -1733,6 +1783,7 @@ class Brain:
                         observation,
                         failure="navigation_cycle",
                     ):
+                        self.execution_authorized = True
                         return {"next": "act"}
                     return self._fail("navigation_cycle")
                 # Distinct observed states count once per phase, never model prose.
@@ -1778,6 +1829,7 @@ class Brain:
                     observation,
                     failure="semantic_target_repeated",
                 ):
+                    self.execution_authorized = True
                     return {"next": "act"}
                 return self._fail("semantic_target_repeated")
             if choice.type in {"set_text", "type_text"}:

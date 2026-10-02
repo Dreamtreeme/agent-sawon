@@ -32,13 +32,15 @@ class ExecutionState(TypedDict):
     """Delivered action awaiting an observed, verified effect."""
 
     pending: PendingAction | None
+    authorized: bool
 
 
 class ReviewState(TypedDict):
-    """Evidence assessment and a model decision awaiting deterministic review."""
+    """Evidence assessment and proposed work awaiting deterministic review."""
 
     current: EvidenceReview | None
     decision_pending: bool
+    execution_pending: bool
 
 
 class LifecycleState(TypedDict):
@@ -63,8 +65,12 @@ def create_worker_state() -> WorkerState:
     return {
         "observation": {"current": None, "sequence": 0},
         "decision": {"current": None, "action_plan": None, "task_plan": []},
-        "execution": {"pending": None},
-        "review": {"current": None, "decision_pending": False},
+        "execution": {"pending": None, "authorized": False},
+        "review": {
+            "current": None,
+            "decision_pending": False,
+            "execution_pending": False,
+        },
         "lifecycle": {
             "route": "observation",
             "phase": "duplicate_query",

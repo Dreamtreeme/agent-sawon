@@ -123,7 +123,16 @@ def test_procedure_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path,
     assert not model.prompts
     assert json.loads((tmp_path / "procedure.json").read_text())["steps"]
     brain._observe()
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain.review_execution
+    assert not any(event.kind == "act" for event in brain.log.read_all())
+    assert brain._review_node({}) == {"next": "act"}
+    assert not brain.review_execution
+    assert any(
+        event.payload.get("check") == "proposed_execution_review"
+        and event.payload.get("stage") == "before_action"
+        for event in brain.log.read_all()
+    )
     assert len(model.prompts) == 1
     assert model.prompts[0].startswith(RULES)
     assert brain.decision.action.source == "hbl_no"
@@ -156,7 +165,8 @@ def test_identical_capture_reuses_ocr_but_rematches_new_procedure_step(tmp_path,
     brain._observe()
     assert brain.observation.obs_id != old_id
     assert ocr.calls == detector.calls == len(model.prompts) == 1
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert len(model.prompts) == 2
     assert "open-entry" in model.prompts[-1]
     assert "enter-duplicate-key" not in model.prompts[-1]
@@ -190,7 +200,8 @@ def test_gemini_interprets_and_plans_in_one_image_call(tmp_path, record):
 
     model._generate = generate
     brain._observe()
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert images_seen == [True]
     assert model.prompts[0].startswith(RULES)
 
@@ -202,7 +213,8 @@ def test_local_grounding_retry_receives_only_the_relevant_correction(tmp_path, r
     corrected = response(meaning)
     brain, model, _, _, _, _ = setup_brain(tmp_path, record, [bad, corrected])
     brain._observe()
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert len(model.prompts) == 2
     assert '"error": "unknown_or_duplicate_marker_id"' in model.prompts[1]
     assert "rejected_response" not in model.prompts[1]
@@ -215,7 +227,8 @@ def test_identical_rematch_reuses_grounded_interpretation(tmp_path, record):
     brain._observe()
     brain._observe()
     assert len(model.prompts) == 1
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert len(model.prompts) == 2
     assert model.prompts[-1].startswith(PLAN_RULES)
     assert ocr.calls == detector.calls == 1
@@ -260,7 +273,8 @@ def test_identical_catalog_grounds_new_target_without_replacing_plan(tmp_path, r
     brain.duplicate_clear = True
     brain._observe()
 
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert len(model.prompts) == 3
     assert model.prompts[1].startswith(PLAN_RULES)
     assert model.prompts[2].startswith(TARGET_GROUNDING_RULES)
@@ -303,7 +317,8 @@ def test_partner_lookup_fill_uses_single_decision_instead_of_editor_batch(tmp_pa
     brain._observe()
 
     assert brain.observation.screen_kind == "partner"
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert brain.action_plan is None
     assert brain.decision.intent == "fill"
     assert brain.decision.action.source == "shipper"
@@ -362,7 +377,8 @@ def test_combined_match_keeps_grounding_and_corrects_only_invalid_action(tmp_pat
 
     brain._observe()
 
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert len(model.prompts) == 2
     assert model.prompts[0].startswith(RULES)
     assert model.prompts[1].startswith(PLAN_RULES)
@@ -382,7 +398,8 @@ def test_action_correction_grounds_real_target_without_replanning(tmp_path, reco
 
     brain._observe()
 
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert brain.decision.intent == "query_input"
     assert len(model.prompts) == 3
     assert model.prompts[-1].startswith(TARGET_GROUNDING_RULES)
@@ -423,7 +440,8 @@ def test_missing_action_semantics_preserves_original_single_click(tmp_path, reco
     brain.duplicate_clear = True
 
     brain._observe()
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
 
     assert len(model.prompts) == 2
     assert model.prompts[1].startswith(TARGET_GROUNDING_RULES)
@@ -683,7 +701,8 @@ def test_empty_action_is_completed_once_or_explicitly_stopped(tmp_path, record, 
     result = brain._select_node({})
     assert len(model.prompts) == 2
     if operation == "act":
-        assert result == {"next": "act"}
+        assert result == {"next": "review"}
+        assert brain._review_node({}) == {"next": "act"}
         assert brain.decision.action.source == "hbl_no"
     else:
         assert result == {"next": "finish"}

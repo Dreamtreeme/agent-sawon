@@ -103,11 +103,13 @@ def test_wrong_field_is_not_verified_and_only_that_field_is_replanned(tmp_path, 
     brain, perception, _ = make_brain(tmp_path, record, relay, [screen_plan(record), repair])
     brain.phase, brain.duplicate_clear = "enter", True
     brain._observe()
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert brain._act_node({}) == {"next": "verify"}
     assert brain._verify_node({}) == {"next": "review"}
     assert set(brain.verified) == set(brain.values) - {"mbl_no"}
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert brain._act_node({}) == {"next": "verify"}
     assert brain._verify_node({}) == {"next": "review"}
     assert set(brain.verified) == set(brain.values)
@@ -148,6 +150,8 @@ def test_invalid_plan_and_mid_batch_geometry_change_stop_remaining_inputs(
     brain.phase, brain.duplicate_clear = "enter", True
     brain._observe()
     selected = brain._select_node({})
+    if selected["next"] == "review":
+        selected = brain._review_node({})
     if selected["next"] == "act":
         brain._act_node({})
     assert len(relay.actions) == (1 if failure in {"window_change", "move"} else 0)
@@ -172,7 +176,8 @@ def test_shared_executor_checks_whole_plan_step_budget_before_delivery(
     brain.settings = brain.settings.model_copy(update={"max_steps": max_steps})
     brain.phase, brain.duplicate_clear = "enter", True
     brain._observe()
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert not relay.actions and perception.action_counts == [0]
     outcome = brain._act_node({})
     assert len(relay.actions) == delivered
@@ -210,7 +215,8 @@ def test_detail_row_cannot_substitute_for_flat_record_field(tmp_path, record, ro
     table = element("e90", "Table", name="Optional detail lines")
     cell = element("e91", role, name="Description", value=brain.values["description"], parent="e90")
     brain.observation = scene.model_copy(update={"elements": [*scene.elements, table, cell]})
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert brain._act_node({}) == {"next": "observe"}
     assert not relay.actions
     assert not brain._record_verified_field("description", cell)
@@ -276,7 +282,8 @@ def test_login_plan_sends_two_credentials_and_click_before_any_reread(tmp_path, 
     }
     brain.secrets = ("fixture-secret-901",)
     brain._observe()
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert not relay.actions
     assert brain._act_node({}) == {"next": "verify"}
     assert perception.action_counts == [0]
@@ -317,7 +324,8 @@ def test_joint_verification_survives_corrected_visual_label(tmp_path, record, wr
     perception.observe = corrected_labels
     brain.phase, brain.duplicate_clear = "enter", True
     brain._observe()
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert brain._act_node({}) == {"next": "verify"}
     if wrong_value:
         relay.inputs["mbl_no"] = "WRONG"
@@ -348,5 +356,6 @@ def test_save_policy_uses_current_verified_evidence(tmp_path, record):
     brain.phase, brain.duplicate_clear = "enter", True
     brain._observe()
     assert not brain.verified
-    assert brain._select_node({}) == {"next": "act"}
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
     assert set(brain.verified) == set(brain.values)

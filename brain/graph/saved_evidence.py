@@ -209,6 +209,20 @@ class SavedEvidence:
                     and (self.tab_continuity or unchanged)
                 )
             if current_link:
+                # The reviewer verifies unambiguous current values itself. Model bindings
+                # remain useful for ambiguous equal values, but are not required for a
+                # field whose current input has exactly one valid assignment.
+                candidates = {
+                    name: {
+                        ref
+                        for ref, element in inputs.items()
+                        if matches(name, element.value, values)
+                    }
+                    for name in values
+                }
+                assignment = assign_result_fields(candidates)
+                for name, ref in assignment.items():
+                    self._store(name, inputs[ref], observation, values, matches, explicit=False)
                 # Every field has its own current value; one arbitrary box cannot prove many fields.
                 owners: dict[str, list[str]] = {}
                 for name, ref in bindings.items():
@@ -216,6 +230,9 @@ class SavedEvidence:
                         owners.setdefault(ref, []).append(name)
                 for ref, names in owners.items():
                     if len(names) > 1:
+                        for name in names:
+                            if self.fields.get(name, {}).get("obs_id") == oid or name in bindings:
+                                self.fields.pop(name, None)
                         continue
                     self._store(names[0], inputs[ref], observation, values, matches, explicit=True)
             else:

@@ -112,7 +112,18 @@ def setup(
         reason="Open the second panel",
         action=Choice(type="click", ref=brain.observation.elements[0].ref),
     )
+    brain.execution_authorized = True
     return brain, relay, model
+
+
+def test_execution_rejects_a_decision_that_review_did_not_authorize(tmp_path, record):
+    brain, relay, _ = setup(tmp_path, record, {})
+    before = len(relay.actions)
+    brain.execution_authorized = False
+
+    assert brain._act_node({}) == {"next": "finish"}
+    assert brain.result.reason == "execution_review_required"
+    assert len(relay.actions) == before
 
 
 def test_failed_center_click_refines_once_then_uses_shared_execution_and_verification(

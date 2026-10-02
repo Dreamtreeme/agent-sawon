@@ -82,7 +82,8 @@ def test_actual_observation_retry_reports_bad_label_and_is_bounded(tmp_path, rec
     brain, model, *_ = setup_brain(tmp_path, record, [bad, corrected if fixed else bad])
     if fixed:
         brain._observe()
-        assert brain._select_node({}) == {"next": "act"}
+        assert brain._select_node({}) == {"next": "review"}
+        assert brain._review_node({}) == {"next": "act"}
     else:
         with pytest.raises(VisualGroundingError, match="invalid_text_marker_reference"):
             brain._observe()

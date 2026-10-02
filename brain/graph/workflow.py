@@ -1,4 +1,4 @@
-"""Observation → Decision → Execution → Review worker graph."""
+"""Observation → Decision → Review → Execution worker graph."""
 
 from __future__ import annotations
 

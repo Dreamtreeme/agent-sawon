@@ -28,7 +28,9 @@ flowchart TD
     O --> R[Review: 현재 업무 근거]
     R --> S[Select: 모델·캐시·로그인/등록 계획]
     S --> P[ActionPlan: 행동 목록·검증 종류]
-    P --> A[Act: 공통 execute_plan]
+    P --> PR[Review: 판단 evidence 저장·실행 전 검토]
+    PR -->|완료| F
+    PR -->|계속| A[Act: 공통 execute_plan]
     A --> G[전체 계획의 정책·대상·단계 한도 검사]
     G --> X[공통 dispatch·좌표 갱신·relay 입력·기록]
     X -->|같은 화면의 다음 행동| X

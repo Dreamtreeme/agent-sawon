@@ -199,10 +199,7 @@ def test_merged_query_cell_is_missing_evidence_not_a_field_conflict(record):
     assert proof.conflict is None
 
 
-@pytest.mark.parametrize("rematched", [False, True])
-def test_graph_review_completes_from_linked_proof_without_old_query_input(
-    tmp_path, record, monkeypatch, rematched
-):
+def test_graph_review_completes_from_unambiguous_current_inputs_without_rematch(tmp_path, record):
     brain, *_ = setup_brain(tmp_path, record, [])
     brain.phase = "final_query"
     brain.save_issued = brain.duplicate_clear = True
@@ -226,25 +223,7 @@ def test_graph_review_completes_from_linked_proof_without_old_query_input(
     last = detail({"container_no": values["container_no"]})
     brain.observation = last
     brain.review = None
-    if rematched:
-        assert brain._review_node({}) == {"next": "select"}
-
-        def rematch(*_):
-            brain.saved_bindings = (str(last.obs_id), {"container_no": ref("container_no")})
-            brain.review = None
-            return Decision(
-                screen_kind="editor",
-                operation="stop",
-                intent="stop",
-                subgoal="verified",
-                reason="all visible",
-            )
-
-        monkeypatch.setattr(brain, "_choose_decision", rematch)
-        assert brain._select_node({}) == {"next": "finish"}
-    else:
-        brain.saved_bindings = (str(last.obs_id), {"container_no": ref("container_no")})
-        assert brain._review_node({}) == {"next": "finish"}
+    assert brain._review_node({}) == {"next": "finish"}
     assert brain.result.status == "success"
     assert brain.query_descriptor is None
     assert (tmp_path / "saved-evidence.json").exists()
