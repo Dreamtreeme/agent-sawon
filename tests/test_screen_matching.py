@@ -319,10 +319,14 @@ def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
         data["steps"][0]["target"] = 999
     else:
         data["steps"][0].update(action="click", intent="save", source=None, point=[175, 30])
-    responses = [data, data] if bad == "wrong-procedure" else [data]
+    responses = [data, data] if bad in {"wrong-procedure", "wrong-phase"} else [data]
     brain, model, _, _, _, _ = setup_brain(tmp_path, record, responses)
-    if bad == "wrong-procedure":
-        with pytest.raises(ValueError, match="screen_match_procedure_mismatch"):
+    if bad in {"wrong-procedure", "wrong-phase"}:
+        expected = {
+            "wrong-procedure": "screen_match_procedure_mismatch",
+            "wrong-phase": "screen_match_action_outside_procedure",
+        }[bad]
+        with pytest.raises(ValueError, match=expected):
             brain._observe()
         assert len(model.prompts) == 2
         assert model.prompts[-1].startswith(PLAN_RULES)
@@ -334,11 +338,6 @@ def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
     if bad == "wrong-target":
         with pytest.raises(ValueError, match="^visual_proposal_unknown_marker$"):
             compile_match(ScreenMatch.model_validate(data), brain.observation, schema)
-    else:
-        from pydantic import ValidationError
-
-        with pytest.raises(ValidationError):
-            compile_match(ScreenMatch.model_validate(data), brain.observation, schema)
     assert brain._select_node({}) == {"next": "observe"}
     failures = [
         e.payload["reason"]
@@ -348,7 +347,6 @@ def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
     expected = {
         "wrong-procedure": "screen_match_procedure_mismatch",
         "wrong-target": "visual_proposal_unknown_marker",
-        "wrong-phase": "ValidationError",
     }[bad]
     assert failures == ["selection_error:" + expected]
     assert len(model.prompts) == 1
@@ -1155,6 +1153,109 @@ def test_entry_prompt_contains_only_remaining_and_pending_record_fields(tmp_path
             "open-additional-entry",
             "fill-additional-entry",
         }
+
+
+def test_pending_tab_navigation_offers_its_successor_not_the_same_step(tmp_path, record):
+    from brain.graph.matching import RULES, match_screen
+    from brain.graph.schemas import Choice, Decision
+
+    brain, model, _, _, _, _ = setup_brain(
+        tmp_path,
+        record,
+        [
+            response(
+                fixture()[-1],
+                screen_kind="editor",
+                procedure_step="fill-additional-entry",
+                steps=[],
+                operation="stop",
+            )
+        ],
+    )
+    brain.phase = "enter"
+    brain.duplicate_clear = True
+    brain.verified = {
+        field: f"prior-{field}"
+        for field in brain.values
+        if field not in {"consignee", "description", "gross_weight_kg", "container_no", "pod"}
+    }
+    brain.decision = Decision(
+        screen_kind="editor",
+        operation="act",
+        intent="select_tab",
+        subgoal="open-additional-entry",
+        reason="open the additional form",
+        action=Choice(type="click", ref="e1"),
+    )
+    brain.pending = {"decision": brain.decision}
+
+    match_screen(
+        brain,
+        {
+            "ocr": [block.model_dump() for block in fixture()[0]],
+            "markers": [marker.model_dump() for marker in fixture()[2]],
+        },
+        None,
+    )
+
+    state = json.loads(model.prompts[-1][len(RULES) :])
+    candidate_ids = {step["id"] for step in state["procedure"]}
+    assert "open-additional-entry" not in candidate_ids
+    assert "fill-additional-entry" in candidate_ids
+
+
+def test_multi_action_verification_step_remains_eligible_after_navigation(tmp_path, record):
+    from brain.graph.matching import exclude_current_navigation_step
+    from brain.graph.schemas import Choice, Decision
+
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.phase = "final_query"
+    brain.decision = Decision(
+        screen_kind="query",
+        operation="act",
+        intent="navigate",
+        subgoal="verify-final",
+        reason="open the linked detail",
+        action=Choice(type="click", ref="e1"),
+    )
+    brain.pending = {"decision": brain.decision}
+    candidates = [step for step in brain.procedure.steps if step.id == "verify-final"]
+
+    assert exclude_current_navigation_step(brain, candidates) == candidates
+
+
+def test_match_plan_rejects_an_action_outside_the_procedure_step(tmp_path, record):
+    from brain.graph.matching import match_screen
+
+    meaning = fixture()[-1]
+    bad = response(
+        meaning,
+        screen_kind="editor",
+        procedure_step="open-final-query",
+        steps=[
+            {
+                "target": meaning.controls[0].id,
+                "action": "click",
+                "source": None,
+                "intent": "select_tab",
+                "point": [25.0, 25.0],
+            }
+        ],
+    )
+    brain, *_ = setup_brain(tmp_path, record, [bad, bad])
+    brain.phase = "final_query"
+    brain.duplicate_clear = brain.save_issued = True
+    brain.query_value_verified = brain.query_submitted = True
+
+    with pytest.raises(ValueError, match="action_outside_procedure"):
+        match_screen(
+            brain,
+            {
+                "ocr": [block.model_dump() for block in fixture()[0]],
+                "markers": [marker.model_dump() for marker in fixture()[2]],
+            },
+            None,
+        )
 
 
 def test_pending_fields_are_verification_context_not_repeat_action_candidates(tmp_path, record):

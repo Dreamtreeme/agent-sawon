@@ -642,6 +642,7 @@ def require_deferred_field_evidence(
 _REPLANNABLE_MATCH_ERRORS = {
     "screen_match_procedure_mismatch",
     "screen_match_checkpoint_mismatch",
+    "screen_match_action_outside_procedure",
     "field_bound_navigation_evidence_required",
     "field_bound_navigation_evidence_not_input",
     "screen_match_field_outside_procedure_scope",
@@ -663,6 +664,13 @@ def validate_match_plan(
     # checks the action against the actual, verified facts before any input.
     if brain.pending is None and step.checkpoint not in {"any", policy.current_step}:
         raise ValueError("screen_match_checkpoint_mismatch")
+    allowed_intents = set(step.actions)
+    if "login" in allowed_intents:
+        allowed_intents.add("credential")
+    if brain.phase != "save_result" and any(
+        action.intent not in allowed_intents for action in response.steps
+    ):
+        raise ValueError("screen_match_action_outside_procedure")
     response = bind_selection_effect(response, step, active_fields)
     require_deferred_field_evidence(response, step, brain.procedure.steps, active_fields)
     scoped_sources = {
@@ -673,6 +681,33 @@ def validate_match_plan(
     if step.field_scope and not scoped_sources <= set(step.field_scope):
         raise ValueError("screen_match_field_outside_procedure_scope")
     return response, step
+
+
+def exclude_current_navigation_step(brain, candidates: list[ProcedureStep]) -> list[ProcedureStep]:
+    """Offer the successor while current-screen navigation verification is pending."""
+    completed = None
+    if brain.pending is not None:
+        execution = brain.pending.get("execution")
+        decision = (
+            execution.plan.actions[-1].decision
+            if execution is not None and execution.plan.actions
+            else brain.pending.get("decision")
+        )
+        if decision is not None and decision.intent in {"navigate", "select_tab"}:
+            completed = decision.subgoal
+    elif brain.feedback:
+        latest = brain.feedback[-1]
+        if (
+            latest.get("ok") is True
+            and latest.get("phase") == brain.phase
+            and latest.get("navigation_changed") is True
+            and latest.get("intent") in {"navigate", "select_tab"}
+        ):
+            completed = latest.get("subgoal")
+    completed_step = next((step for step in candidates if step.id == completed), None)
+    if completed_step is None or not set(completed_step.actions) <= {"navigate", "select_tab"}:
+        return candidates
+    return [step for step in candidates if step.id != completed]
 
 
 def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
@@ -704,6 +739,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         if set(step.requires_verified) <= verified_fields
         and (not step.field_scope or bool(set(step.field_scope) & active_fields))
     ]
+    candidates = exclude_current_navigation_step(brain, candidates)
     if not candidates:
         raise ValueError("procedure_has_no_eligible_step")
     record = brain.values
