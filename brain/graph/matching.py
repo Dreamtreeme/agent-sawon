@@ -726,6 +726,23 @@ def validate_match_plan(
     step = next((item for item in candidates if item.id == response.procedure_step), None)
     if step is None or step.screen not in {"any", response.screen_kind}:
         raise ValueError("screen_match_procedure_mismatch")
+    if step.id == "task-action":
+        # Query fields and record fields share the same runtime primitive in a
+        # generic task: write a named task input, then reread it.  Keep login
+        # credentials separate, but do not make ERP screen terminology part of
+        # the common action contract.
+        response = response.model_copy(
+            update={
+                "steps": [
+                    item.model_copy(update={"intent": "fill"})
+                    if item.action == "fill"
+                    and item.source is not None
+                    and not item.source.startswith("credential.")
+                    else item
+                    for item in response.steps
+                ]
+            }
+        )
     # Pending verification may advance the checkpoint, but the executor still
     # checks the action against the actual, verified facts before any input.
     if brain.pending is None and step.checkpoint not in {"any", policy.current_step}:
@@ -1156,7 +1173,7 @@ def compile_match(response: ScreenMatch, observation, schema):
             "login_ref": ref(commands[0].target),
             "next_decision": None,
         }
-    elif fills and response.screen_kind == "editor":
+    elif fills and (response.screen_kind == "editor" or response.procedure_step == "task-action"):
         if len(fills) != len(response.steps) or any(s.intent != "fill" for s in fills):
             raise ValueError("screen_match_mixed_field_batch")
         data = {

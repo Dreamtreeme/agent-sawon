@@ -149,8 +149,6 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(t
     task_response = response(
         meaning,
         procedure_step="로그인",
-        steps=[],
-        operation="stop",
     )
     brain, model, *_ = setup_brain(tmp_path, record, [task_response])
     brain.task_instruction = TaskInstruction.model_validate_json(
@@ -172,6 +170,9 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(t
     assert [step["id"] for step in state["procedure"]] == ["task-action"]
     assert state["procedure"][0]["view"] == "current.observed.screen"
     assert brain.visual_proposal.procedure_step == "task-action"
+    assert brain.visual_proposal.steps[0].intent == "fill"
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain.action_plan.actions[0].decision.action.source == "hbl_no"
     assert not {
         "open-shipper-lookup",
         "lookup-partner",
