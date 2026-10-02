@@ -975,6 +975,11 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         response = local_response(response, screen)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
+    if brain.task_instruction is not None:
+        # There is exactly one synthetic capability envelope in generic task
+        # mode.  Its internal ID is compiler metadata, not a business decision
+        # the model should have to echo instead of a human-readable subgoal.
+        response = response.model_copy(update={"procedure_step": candidates[0].id})
     try:
         response, step = validate_match_plan(response, candidates, policy, brain, active_fields)
     except ValueError as error:

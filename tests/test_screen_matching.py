@@ -148,7 +148,7 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(t
     meaning = fixture()[-1]
     task_response = response(
         meaning,
-        procedure_step="task-action",
+        procedure_step="로그인",
         steps=[],
         operation="stop",
     )
@@ -171,6 +171,7 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(t
     assert state["notebook"]["record"] == brain.values
     assert [step["id"] for step in state["procedure"]] == ["task-action"]
     assert state["procedure"][0]["view"] == "current.observed.screen"
+    assert brain.visual_proposal.procedure_step == "task-action"
     assert not {
         "open-shipper-lookup",
         "lookup-partner",
