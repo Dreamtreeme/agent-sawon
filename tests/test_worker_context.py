@@ -84,6 +84,43 @@ def test_pending_proposal_does_not_mutate_actual_facts_or_runtime_policy(tmp_pat
     assert brain._decision_policy().current_step == "query_input"
 
 
+def test_saved_review_context_excludes_run_local_provenance(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.phase = "final_query"
+    brain.saved_evidence.begin("origin-a")
+    brain.saved_evidence.query_row_seen = True
+    brain.saved_evidence.fields["hbl_no"] = {"obs_id": "obs-a", "ref": "ref-a"}
+    brain.saved_evidence.query_identity = {
+        "obs_id": "obs-a",
+        "capture_id": "capture-a",
+        "screenshot": "run-a.png",
+        "ref": "ref-a",
+        "session_id": brain.saved_evidence.session_id,
+    }
+    first = execution_context(brain)["saved_record_review"]
+
+    brain.saved_evidence.session_id = "different-session"
+    brain.saved_evidence.origin_obs_id = "origin-b"
+    brain.saved_evidence.query_identity = {
+        "obs_id": "obs-b",
+        "capture_id": "capture-b",
+        "screenshot": "run-b.png",
+        "ref": "ref-b",
+        "session_id": "different-session",
+    }
+    second = execution_context(brain)["saved_record_review"]
+
+    assert first == second
+    assert first == {
+        "record_id": brain.values["hbl_no"],
+        "query_row_seen": True,
+        "confirmed_fields": ["hbl_no"],
+        "missing_fields": sorted(set(brain.values) - {"hbl_no"}),
+        "conflict": None,
+        "detail_identity_observed": False,
+    }
+
+
 def test_pending_last_record_fill_proposes_save_without_mutating_verified_fields(tmp_path, record):
     brain, *_ = setup_brain(tmp_path, record, [])
     brain.phase = "enter"

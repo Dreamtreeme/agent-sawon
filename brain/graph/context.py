@@ -203,7 +203,20 @@ def execution_context(
     saved = getattr(brain, "saved_evidence", None)
     if saved is not None and saved.session_id:
         proof = saved.snapshot(brain.values)
-        contract["saved_record_review"] = {k: v for k, v in proof.items() if k != "evidence"}
+        # The model needs review progress, not run-local provenance.  UUIDs,
+        # observation/capture IDs, paths and refs made an otherwise identical
+        # verified screen produce a different persistent visual-cache key.
+        contract["saved_record_review"] = {
+            key: proof[key]
+            for key in (
+                "record_id",
+                "query_row_seen",
+                "confirmed_fields",
+                "missing_fields",
+                "conflict",
+                "detail_identity_observed",
+            )
+        }
         contract["guidance"] = (
             "Verify the saved record using CURRENT query-row and linked detail-screen values. "
             "Identify the matching query row, then the same record in its detail form. "
