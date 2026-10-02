@@ -271,8 +271,10 @@ class Brain:
             from .matching import compile_match, compile_selection_plan, match_screen
 
             assert self.visual_perception is not None
+            used_catalog_plan = False
             response, self.visual_proposal = self.visual_proposal, None
             if response is None or self.visual_proposal_obs_id != self.observation.obs_id:
+                used_catalog_plan = True
                 request, interpretation = self.visual_perception.planning_context()
                 response = match_screen(
                     self,
@@ -292,7 +294,36 @@ class Brain:
                 )
             self._bind_saved_evidence(response)
             assert isinstance(self.observation, SceneObservation)
-            self.visual_points.bind(self.observation, response.steps)
+            try:
+                self.visual_points.bind(self.observation, response.steps)
+            except ValueError as error:
+                if not used_catalog_plan or str(error) != "visual_click_point_unknown_target":
+                    raise
+                # The exact-image catalog contains only meanings that were relevant
+                # when it was grounded. A later procedure step may need another marker
+                # on the unchanged image. Reuse OCR/detection, but run one fresh
+                # combined image match so the new target is locally grounded.
+                observation = self.visual_perception.rematch(self.observation.wire)
+                response, self.visual_proposal = self.visual_proposal, None
+                if response is None:
+                    raise ValueError("visual_catalog_rematch_missing_proposal") from error
+                self.observation = observation
+                self.visual_proposal_obs_id = observation.obs_id
+                atomic_write_json(
+                    self.case_dir / f"observations/{self.observation_number:04d}.json",
+                    observation,
+                )
+                self.log.append(
+                    "verify",
+                    payload={
+                        "check": "catalog_target_rematched",
+                        "obs_id": str(observation.obs_id),
+                        "reason": str(error),
+                        "procedure_step": response.procedure_step,
+                    },
+                )
+                self._bind_saved_evidence(response)
+                self.visual_points.bind(observation, response.steps)
             selection_plan = compile_selection_plan(response, self.observation)
             if selection_plan is not None:
                 self.action_plan = selection_plan

@@ -212,6 +212,52 @@ def test_identical_rematch_reuses_grounded_interpretation(tmp_path, record):
     )
 
 
+def test_identical_catalog_rematches_when_new_step_targets_unclassified_marker(tmp_path, record):
+    meaning = fixture()[-1]
+    empty = response(
+        meaning,
+        controls=[],
+        procedure_step="enter-duplicate-key",
+        steps=[],
+        operation="stop",
+    )
+    open_entry = response(
+        meaning,
+        screen_kind="query",
+        procedure_step="open-entry",
+        controls=[
+            {
+                **response(meaning)["controls"][0],
+                "role": "button",
+            }
+        ],
+        steps=[
+            {
+                "target": meaning.controls[0].id,
+                "action": "click",
+                "intent": "navigate",
+                "point": [175, 30],
+            }
+        ],
+    )
+    brain, model, _, ocr, detector, _ = setup_brain(
+        tmp_path, record, [empty, open_entry, open_entry]
+    )
+    brain._observe()
+    brain.phase = "enter"
+    brain.duplicate_clear = True
+    brain._observe()
+
+    assert brain._select_node({}) == {"next": "act"}
+    assert len(model.prompts) == 3
+    assert model.prompts[1].startswith(PLAN_RULES)
+    assert model.prompts[2].startswith(RULES)
+    assert ocr.calls == detector.calls == 1
+    assert any(
+        event.payload.get("check") == "catalog_target_rematched" for event in brain.log.read_all()
+    )
+
+
 @pytest.mark.parametrize("bad", ["wrong-procedure", "wrong-target", "wrong-phase"])
 def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
     meaning = fixture()[-1]
