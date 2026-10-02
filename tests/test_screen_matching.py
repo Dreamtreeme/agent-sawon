@@ -260,7 +260,11 @@ def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
         for e in brain.log.read_all()
         if e.kind == "verify" and e.payload.get("ok") is False
     ]
-    expected = "ValidationError" if bad == "wrong-phase" else "ValueError"
+    expected = {
+        "wrong-procedure": "screen_match_procedure_mismatch",
+        "wrong-target": "visual_proposal_unknown_marker",
+        "wrong-phase": "ValidationError",
+    }[bad]
     assert failures == ["selection_error:" + expected]
     assert len(model.prompts) == 2
     assert brain.pending is None and brain.action_plan is None
@@ -599,6 +603,51 @@ def test_selection_plan_requires_and_preserves_final_record_effect():
     )
     plan = compile_selection_plan(sourced, scene)
     assert plan.actions[0].effect_source == "shipper"
+
+
+def test_unique_procedure_field_binds_selection_effect_without_model_echo():
+    from brain.graph.matching import ProcedureStep, bind_selection_effect
+
+    match = ScreenMatch.model_validate(
+        {
+            "screen_kind": "partner",
+            "controls": [],
+            "procedure_step": "lookup-partner",
+            "steps": [
+                {
+                    "target": 18,
+                    "action": "click",
+                    "intent": "select_option",
+                    "point": [200, 170],
+                },
+                {
+                    "target": 39,
+                    "action": "click",
+                    "intent": "select_option",
+                    "point": [87, 539],
+                },
+            ],
+        }
+    )
+    step = ProcedureStep.model_validate(
+        {
+            "id": "lookup-partner",
+            "phase": "enter",
+            "screen": "partner",
+            "checkpoint": "fill_fields",
+            "field_scope": ["shipper"],
+            "goal": "Select the matching partner",
+            "completion": "The editor field matches",
+            "actions": ["select_option"],
+        }
+    )
+
+    bound = bind_selection_effect(match, step, {"shipper"})
+    assert [item.source for item in bound.steps] == [None, "shipper"]
+
+    ambiguous = step.model_copy(update={"field_scope": ["shipper", "consignee"]})
+    unchanged = bind_selection_effect(match, ambiguous, {"shipper", "consignee"})
+    assert all(item.source is None for item in unchanged.steps)
 
 
 def test_selected_record_value_is_verified_on_return_to_editor(tmp_path, record):

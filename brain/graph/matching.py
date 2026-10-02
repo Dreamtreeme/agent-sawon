@@ -505,6 +505,28 @@ def retain_verification(
     return response
 
 
+def bind_selection_effect(
+    response: ScreenMatch, step: ProcedureStep, active_fields: set[str]
+) -> ScreenMatch:
+    """Bind a unique procedure-owned field effect to the final selection click."""
+    selection_clicks = all(
+        item.intent == "select_option" and item.action == "click" for item in response.steps
+    )
+    if (
+        response.operation != "act"
+        or not response.steps
+        or not selection_clicks
+        or response.steps[-1].source is not None
+    ):
+        return response
+    candidates = [field for field in step.field_scope if field in active_fields]
+    if len(candidates) != 1:
+        return response
+    steps = [*response.steps]
+    steps[-1] = steps[-1].model_copy(update={"source": candidates[0]})
+    return response.model_copy(update={"steps": steps})
+
+
 def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     policy = brain._decision_policy()
     contract = execution_context(brain, policy, anticipate=True)
@@ -625,6 +647,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     # checks the action against the actual, verified facts before any input.
     if brain.pending is None and step.checkpoint not in {"any", policy.current_step}:
         raise ValueError("screen_match_checkpoint_mismatch")
+    response = bind_selection_effect(response, step, active_fields)
     scoped_sources = {
         action.source
         for action in response.steps

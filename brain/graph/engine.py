@@ -1111,6 +1111,8 @@ class Brain:
                 else "selection_error:ValidationError",
                 validation_errors=safe_validation_errors(exc, schema),
             )
+        except ValueError as exc:
+            return self._fail("selection_error:" + str(exc))
         except Exception as exc:
             return self._fail("selection_error:" + type(exc).__name__)
 
