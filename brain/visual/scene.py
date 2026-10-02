@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sawon_interfaces import Observation, UIElement
 
 from models.schema import compact_provider_schema
@@ -50,6 +50,12 @@ class ControlMeaning(BaseModel):
     focused: bool = False
     visual_description: str = Field(default="", max_length=160)
     table_state: Literal["not_table", "empty", "rows", "uncertain"] = "not_table"
+
+    @field_validator("visual_description", mode="before")
+    @classmethod
+    def bound_visual_description(cls, value):
+        """Bound provider prose that compact JSON schemas cannot constrain."""
+        return value[:160] if isinstance(value, str) else value
 
 
 class VisualControl(ControlMeaning):

@@ -264,9 +264,12 @@ def test_provider_schema_is_compact_but_local_limits_remain():
         assert "prefixItems" not in schema and "maxItems" not in schema
         assert "maxLength" not in schema and "bbox" not in schema
         assert len(model.model_validate({**extra, "controls": [meaning] * 500}).controls) == 500
+        bounded = model.model_validate(
+            {**extra, "controls": [{**meaning, "visual_description": "x" * 161}]}
+        )
+        assert bounded.controls[0].visual_description == "x" * 160
         for invalid in [
             {**extra, "controls": [meaning] * 501},
-            {**extra, "controls": [{**meaning, "visual_description": "x" * 161}]},
             {**extra, "controls": [{**meaning, "bbox": [1, 2, 3, 4]}]},
         ]:
             with pytest.raises(ValidationError):

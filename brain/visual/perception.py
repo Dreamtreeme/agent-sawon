@@ -365,6 +365,16 @@ class VisualPerception:
                     "duplicate_ocr_reference",
                     "invalid_visual_parent_bounds",
                 }:
+                    self.log.append(
+                        "verify",
+                        payload={
+                            "stage": "visual_grounding_error",
+                            "obs_id": str(wire.obs_id),
+                            "error": code
+                            if code.replace("_", "").isalnum() and len(code) <= 80
+                            else type(error).__name__,
+                        },
+                    )
                     raise
                 self.log.append(
                     "verify",
