@@ -51,7 +51,9 @@ Jev 파일럿은 기존 `brain.visual.toml`을 사용하고 `--matching-model-co
 상세 동작·재현 명령·현재 한계는 [Jev 파일럿](../docs/jev-pilot.md)을 따른다.
 
 
-2026-10-01 정리: 현재 화면 작업자는 `screen_matching=true`를 사용한다.
+2026-10-03 정리: 현재 화면 작업자는 `screen_matching=true`와 `task_path`를 사용한다.
+`task_path` 파일은 목표·요구사항·완료 조건·제약만 포함하며 화면 순서나 좌표를 정의하지 않는다.
+기존 `procedure_path`는 과거 비교 호환용이다. CLI에서는 `--task`로 업무 설명을 바꿀 수 있다.
 이 방식으로 대체된 `numbered_selection`/`visual_joint_planning` 옵션과 전용 실행기는
 제거했다. 이전 옵션을 켠 별도 로컬 설정은 현재 화면 매칭 설정으로 갱신해야 한다.
 저장소의 여섯 `brain*.toml` 프로필은 모두 로드 검증을 통과했다.

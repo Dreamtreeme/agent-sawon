@@ -21,16 +21,17 @@ if TYPE_CHECKING:
 
 SCREEN_FILL_GUIDANCE = """
 SCREEN INPUT MODE overrides the single-action instruction for field entry.
-Only editor screens may have field assignments; on query/menu/dialog screens,
-return an empty fields list and the appropriate next_decision instead.
+Any non-login business screen may have field assignments when it visibly contains
+directly editable inputs. On screens without such inputs, return an empty fields list
+and the appropriate next_decision instead.
 Plan ALL currently visible, directly editable remaining record fields in one fields
 list, ordered for execution. Each entry maps a CURRENT ref to a record source;
 never supply literal values or invented coordinates. Each ref/source occurs once.
 The runtime fills every planned field without OCR/model calls between inputs,
 then moves focus once and rereads the whole screen to verify the assignments.
 Only include fields whose input does not open a dialog, change tabs or navigate.
-Sources belong to the flat ShipmentRecord, not repeated line items. Never use cells
-inside a table/list/row as substitutes for similarly named record-level fields.
+Sources are exactly the keys in the supplied task input record. Never use cells inside
+a table/list/row as substitutes for similarly named record-level fields.
 If remaining fields are absent from the current form, use observed tabs/navigation.
 For fields requiring lookup/dialog/selection, first fill other directly editable
 fields; handle that boundary in the next plan after verification.
@@ -48,7 +49,7 @@ class ScreenField(StrictModel):
 
 
 class ScreenFillPlan(StrictModel):
-    fields: list[ScreenField] = Field(max_length=11)
+    fields: list[ScreenField] = Field(max_length=100)
     next_decision: DecisionResponse | None
 
     @model_validator(mode="after")
@@ -166,7 +167,7 @@ def prepare_screen_fill(scene: Observation, plan: ScreenFillPlan) -> ActionPlan:
     actions = [
         PlannedAction(
             Decision(
-                screen_kind="editor",
+                screen_kind=scene.screen_kind,
                 operation="act",
                 intent="fill",
                 subgoal="Fill visible screen",

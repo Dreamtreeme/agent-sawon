@@ -42,8 +42,8 @@ or infer persistence from a delivered click. Fresh final query proof is still re
 
 class SaveReviewResponse(StrictModel):
     result: Literal["rejected", "confirmation_required", "ready_for_query", "unknown"]
-    evidence_refs: list[str] = Field(max_length=12)
-    repair_fields: list[FieldName] = Field(max_length=11)
+    evidence_refs: list[str] = Field(max_length=50)
+    repair_fields: list[FieldName] = Field(max_length=100)
     next_decision: DecisionResponse
 
     @model_validator(mode="after")

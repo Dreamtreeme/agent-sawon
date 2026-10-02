@@ -40,7 +40,7 @@
         "config/models.lite.toml",
         "config/pricing.toml",
         "config/pipeline.korean.toml",
-        "examples/shipment-procedure.json"
+        "examples/shipment-task.json"
       ]
     },
     "core_visual": {
@@ -80,7 +80,7 @@
         "config/models.lite.toml",
         "config/pricing.toml",
         "config/pipeline.korean.toml",
-        "examples/shipment-procedure.json"
+        "examples/shipment-task.json"
       ]
     }
   }

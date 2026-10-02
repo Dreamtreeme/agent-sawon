@@ -11,6 +11,7 @@ from sawon_interfaces import Observation, ShipmentRecord, UIElement, WindowInfo
 
 from brain.cache import CacheIntegrityError, SemanticCache
 from brain.graph.schemas import Choice, Decision
+from brain.task_instruction import TaskInputRecord
 
 
 @pytest.fixture
@@ -88,6 +89,45 @@ def seed(cache, record):
     assert session.stage_validated(before, after, fill(), record)
     assert session.finish(success=True) == 1
     return cache.entries()[0]
+
+
+def test_generic_task_cache_uses_runtime_field_and_task_phase(tmp_path):
+    record = TaskInputRecord(case_id="invoice", inputs={"invoice.number": "INV-17"})
+    cache = SemanticCache(tmp_path / "generic-cache.json")
+    session = cache.start_run()
+    decision = Decision(
+        screen_kind="dialog",
+        operation="act",
+        intent="fill",
+        subgoal="task-action",
+        reason="Current task input",
+        action=Choice(type="set_text", ref="e1", source="invoice.number"),
+    )
+    assert session.stage_validated(
+        observation(label="Invoice number"),
+        observation("INV-17", shift=20, seconds=1, label="Invoice number"),
+        decision,
+        record,
+        phase="task",
+    )
+    assert session.finish(success=True) == 1
+
+    hit = cache.start_run().lookup(
+        observation(shift=40, seconds=2, label="Invoice number"),
+        phase="task",
+        allowed_sources=["invoice.number"],
+        record=record,
+    )
+    assert hit is not None
+    assert hit.decision.action.source == "invoice.number"
+    assert (
+        cache.start_run().lookup(
+            observation(label="Invoice number"),
+            phase="enter",
+            allowed_sources=["invoice.number"],
+        )
+        is None
+    )
 
 
 def test_promotes_only_after_full_success(tmp_path, record):

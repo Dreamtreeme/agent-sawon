@@ -4,18 +4,9 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-FieldName = Literal[
-    "hbl_no",
-    "mbl_no",
-    "shipper",
-    "consignee",
-    "description",
-    "packages.count",
-    "packages.unit",
-    "gross_weight_kg",
-    "container_no",
-    "pol",
-    "pod",
+FieldName = Annotated[
+    str,
+    Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.-]+$"),
 ]
 
 
@@ -29,6 +20,13 @@ class Plan(StrictModel):
 
 class Evidence(StrictModel):
     field: FieldName
+    ref: str
+
+
+class CompletionEvidence(StrictModel):
+    """Current UI evidence supporting one user-authored completion condition."""
+
+    condition_index: int = Field(ge=0)
     ref: str
 
 
@@ -49,24 +47,7 @@ class Choice(StrictModel):
             "Current enabled target ref; required for every action except wait/focus_window."
         ),
     )
-    source: (
-        Literal[
-            "hbl_no",
-            "mbl_no",
-            "shipper",
-            "consignee",
-            "description",
-            "packages.count",
-            "packages.unit",
-            "gross_weight_kg",
-            "container_no",
-            "pol",
-            "pod",
-            "credential.username",
-            "credential.password",
-        ]
-        | None
-    ) = None
+    source: FieldName | None = None
     keys: str | None = None
     option: str | None = None
     handle: int | None = None
@@ -120,6 +101,7 @@ class Decision(StrictModel):
     grid_ref: str | None = None
     row_ref: str | None = None
     evidence: list[Evidence] = Field(default_factory=list)
+    completion_evidence: list[CompletionEvidence] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def require_consistent_operation(self) -> "Decision":
@@ -139,7 +121,7 @@ class Decision(StrictModel):
 # cannot encode cross-field requirements in the JSON schema sent to the model.
 # The internal Decision/Choice API and environment-dependent guards stay intact.
 NonemptyRef = Annotated[str, Field(min_length=1, pattern=r"\S")]
-TextSource = FieldName | Literal["credential.username", "credential.password"]
+TextSource = FieldName
 ScreenKind = Literal["login", "menu", "query", "editor", "partner", "dialog", "unknown"]
 ExecutableIntent = Literal[
     "credential",
@@ -239,6 +221,11 @@ class WireEvidence(WireModel):
     ref: NonemptyRef
 
 
+class WireCompletionEvidence(WireModel):
+    condition_index: int = Field(ge=0)
+    ref: NonemptyRef
+
+
 class WireDecisionBase(WireModel):
     screen_kind: ScreenKind
     subgoal: str = Field(min_length=1, max_length=160)
@@ -283,10 +270,25 @@ class WireCompleteDecision(WireDecisionBase):
     evidence: list[WireEvidence]
 
 
+class WireTaskCompleteDecision(WireDecisionBase):
+    screen_kind: Literal["login", "menu", "query", "editor", "partner", "dialog"]
+    operation: Literal["complete"]
+    intent: Literal["verify"]
+    action: None = None
+    evidence: list[WireEvidence] = Field(default_factory=list)
+    completion_evidence: list[WireCompletionEvidence] = Field(min_length=1)
+
+
 class DecisionResponse(WireModel):
     """Top-level object with provider-visible operation/intent/action alternatives."""
 
-    decision: WireActDecision | WireStopDecision | WireDuplicateDecision | WireCompleteDecision
+    decision: (
+        WireActDecision
+        | WireStopDecision
+        | WireDuplicateDecision
+        | WireCompleteDecision
+        | WireTaskCompleteDecision
+    )
 
     def to_decision(self) -> Decision:
         return Decision.model_validate(self.decision.model_dump(mode="python"))

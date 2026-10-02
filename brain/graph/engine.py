@@ -29,6 +29,7 @@ from brain.observe.values import values_for as values_for
 from brain.relay import Relay
 from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from brain.settings import BrainSettings
+from brain.task_instruction import TaskInputRecord
 from brain.visual.detector import OmniParserDetector
 from brain.visual.perception import SemanticRequest, VisualGroundingError, VisualPerception
 from brain.visual.scene import SceneObservation, SemanticDetection
@@ -234,7 +235,7 @@ class Brain:
     def __init__(
         self,
         *,
-        record: ShipmentRecord,
+        record: ShipmentRecord | TaskInputRecord,
         goal: str,
         relay: Relay,
         model: ModelClient,
@@ -317,17 +318,29 @@ class Brain:
         self.visual_proposal = None
         self.visual_proposal_obs_id = None
         self.visual_perception = None
+        self.task_instruction = None
         self.procedure = None
         self.procedure_step = None
         if settings.screen_matching:
+            from brain.task_instruction import TaskInstruction
+
             from .matching import Procedure
 
-            if settings.perception_mode != "visual_only" or settings.procedure_path is None:
+            if settings.perception_mode != "visual_only" or (
+                settings.task_path is None and settings.procedure_path is None
+            ):
                 raise ValueError("screen_matching_requires_visual_procedure")
-            self.procedure = Procedure.model_validate_json(
-                settings.procedure_path.read_text(encoding="utf-8")
-            )
-            atomic_write_json(self.case_dir / "procedure.json", self.procedure)
+            if settings.task_path is not None:
+                self.task_instruction = TaskInstruction.model_validate_json(
+                    settings.task_path.read_text(encoding="utf-8")
+                )
+                atomic_write_json(self.case_dir / "task-instruction.json", self.task_instruction)
+                self.phase = "task"
+            else:
+                self.procedure = Procedure.model_validate_json(
+                    settings.procedure_path.read_text(encoding="utf-8")
+                )
+                atomic_write_json(self.case_dir / "procedure.json", self.procedure)
         if settings.perception_mode == "visual_only":
             if visual_ocr is None:
                 raise ValueError("visual_ocr_required")
@@ -628,7 +641,7 @@ class Brain:
         elif reason == "record_input_scope_mismatch":
             feedback["required_response"] = (
                 "No record input was sent. The selected control belongs to a repeated "
-                "detail row/table, not the flat ShipmentRecord. Keep verified form fields; "
+                "detail row/table, not the task's direct input form. Keep verified fields; "
                 "choose observed tabs/navigation to find the missing record field."
             )
         elif reason == "save_rejected":
@@ -786,7 +799,7 @@ class Brain:
             for source, entry in self.credential_submissions.items()
             if entry["window_handle"] == observation.active_window.handle
         }
-        if self.phase == "enter":
+        if self.phase in {"task", "enter"}:
             self._invalidate_editor_evidence()
         if (
             self.query_value_verified
@@ -814,14 +827,31 @@ class Brain:
             if self.settings.screen_matching:
                 from .notebook import remember
 
-                self.plan = [s.goal for s in self.procedure.steps]
-                self.log.append(
-                    "plan",
-                    payload={
-                        "source": "procedure.json",
-                        "steps": [s.id for s in self.procedure.steps],
-                    },
-                )
+                if self.task_instruction is not None:
+                    self.plan = [
+                        self.task_instruction.objective,
+                        *self.task_instruction.requirements,
+                        *self.task_instruction.completion_conditions,
+                    ]
+                    self.log.append(
+                        "plan",
+                        payload={
+                            "source": "task-instruction.json",
+                            "requirements": len(self.task_instruction.requirements),
+                            "completion_conditions": len(
+                                self.task_instruction.completion_conditions
+                            ),
+                        },
+                    )
+                else:
+                    self.plan = [s.goal for s in self.procedure.steps]
+                    self.log.append(
+                        "plan",
+                        payload={
+                            "source": "procedure.json",
+                            "steps": [s.id for s in self.procedure.steps],
+                        },
+                    )
                 remember(self)
                 return {"next": "observe"}
             plan = self._call(
@@ -871,7 +901,13 @@ class Brain:
         assert self.observation is not None
         if self.review is not None and self.review.obs_id == str(self.observation.obs_id):
             return self.review
-        if self._workflow_facts().final_query_workflow_ready:
+        if self.phase == "task":
+            self.review = EvidenceReview(
+                obs_id=str(self.observation.obs_id),
+                status="not_due",
+                reason="task_completion_requires_current_model_evidence",
+            )
+        elif self._workflow_facts().final_query_workflow_ready:
             if (
                 self.settings.screen_matching
                 and self.saved_evidence.session_id
@@ -1143,21 +1179,23 @@ class Brain:
             screen_fill = (
                 self.settings.visual_screen_fill
                 and isinstance(self.observation, SceneObservation)
-                and self.observation.screen_kind == "editor"
-                and self.phase == "enter"
-                and self.duplicate_clear
+                and self.observation.screen_kind != "login"
+                and self.phase in {"task", "enter"}
+                and (self.phase == "task" or self.observation.screen_kind == "editor")
+                and (self.phase == "task" or self.duplicate_clear)
                 and bool(policy.facts.remaining_fields)
             )
             login_batch = (
                 self.settings.visual_screen_fill
                 and isinstance(self.observation, SceneObservation)
-                and self.phase == "duplicate_query"
+                and self.observation.screen_kind == "login"
+                and self.phase in {"task", "duplicate_query"}
                 and not self.query_submitted
                 and bool(policy.facts.remaining_credentials)
             )
             allowed_sources = (
                 policy.facts.remaining_fields
-                if self.phase == "enter"
+                if self.phase in {"task", "enter"}
                 else ("hbl_no",)
                 if not self.query_value_verified and not self.query_submitted
                 else ()
@@ -1289,7 +1327,7 @@ class Brain:
             if decision.operation in {"duplicate_clear", "duplicate_found", "complete"}:
                 self.review_decision = True
                 return {"next": "review"}
-            if decision.screen_kind == "editor" and self.phase == "enter":
+            if self.phase == "task" or (decision.screen_kind == "editor" and self.phase == "enter"):
                 self._collect_editor_evidence(decision)
                 policy = self._decision_policy()
             self._guard_action(decision, policy)
@@ -1449,7 +1487,7 @@ class Brain:
         if choice.type in {"set_text", "type_text"}:
             if by_ref[choice.ref].role.casefold() not in TEXT_INPUT_ROLES:
                 raise GuardStop("target_not_text_input")
-        if decision.intent == "fill" and decision.screen_kind == "editor":
+        if decision.intent == "fill" and (self.phase == "task" or decision.screen_kind == "editor"):
             if not is_record_input(by_ref[choice.ref], self.observation):
                 raise GuardStop("record_input_scope_mismatch")
         if isinstance(self.observation, SceneObservation) and choice.type == "select_option":
@@ -1661,7 +1699,9 @@ class Brain:
                     expected_effect=self._expected_effect(decision),
                 ),
             }
-            if decision.intent == "navigate" and decision.screen_kind == "editor":
+            if decision.intent == "navigate" and (
+                self.phase == "task" or decision.screen_kind == "editor"
+            ):
                 by_ref = {item.ref: item for item in self.observation.elements}
                 for evidence in decision.evidence:
                     target = by_ref.get(evidence.ref)
@@ -1689,10 +1729,11 @@ class Brain:
                     self.review = None
             if decision.intent == "save":
                 self.save_issued = True
-                self.phase = "save_result"
-                self.query_submitted = self.query_value_verified = False
-                self.query_descriptor = None
-                self.query_window_handle = None
+                if self.phase != "task":
+                    self.phase = "save_result"
+                    self.query_submitted = self.query_value_verified = False
+                    self.query_descriptor = None
+                    self.query_window_handle = None
             return {"next": "verify"}
         except GuardStop as exc:
             return self._finish("stopped", str(exc))
@@ -1903,7 +1944,9 @@ class Brain:
                         self.query_window_handle = observation.active_window.handle
                         self._record_progress("query_input")
                         new_facts.append("query_input_verified")
-                    if decision.intent == "fill" and decision.screen_kind == "editor":
+                    if decision.intent == "fill" and (
+                        self.phase == "task" or decision.screen_kind == "editor"
+                    ):
                         if not self._record_verified_field(source, element):
                             return self._fail("record_input_scope_mismatch")
                         new_facts.append(source)
@@ -1951,6 +1994,7 @@ class Brain:
                     observation,
                     decision,
                     self.record,
+                    phase=self.phase,
                 )
             self.cache_entry_id = None
             self._stage_visual_match_candidate(pending)
@@ -2052,6 +2096,46 @@ class Brain:
 
     def _check_complete(self, decision: Decision) -> dict:
         assert self.observation is not None
+        if self.phase == "task":
+            by_ref = {item.ref: item for item in self.observation.elements}
+            evidence = {item.field: item.ref for item in decision.evidence}
+            if len(evidence) != len(decision.evidence):
+                return self._fail("incomplete_task_field_evidence")
+            if len(set(evidence.values())) != len(evidence):
+                raise GuardStop("task_field_ref_reused")
+            for field, ref in evidence.items():
+                element = by_ref.get(ref)
+                actual = element.value if element is not None else None
+                if element is None or not field_matches(field, actual, self.values):
+                    return self._fail("task_field_mismatch:" + field)
+                self._record_verified_field(field, element)
+            conditions = self.task_instruction.completion_conditions
+            condition_evidence: dict[int, list[str]] = {}
+            for item in decision.completion_evidence:
+                if item.condition_index >= len(conditions):
+                    raise GuardStop("task_completion_condition_unknown")
+                element = by_ref.get(item.ref)
+                if element is None or not any(
+                    value and str(value).strip()
+                    for value in (element.name, element.value, element.help_text)
+                ):
+                    raise GuardStop("task_completion_evidence_missing")
+                condition_evidence.setdefault(item.condition_index, []).append(item.ref)
+            if not condition_evidence:
+                return self._fail("task_completion_evidence_required")
+            self.log.append(
+                "verify",
+                payload={
+                    "ok": True,
+                    "check": "task_completion_fields",
+                    "fields": evidence,
+                    "conditions": {
+                        conditions[index]: refs for index, refs in condition_evidence.items()
+                    },
+                    "obs_id": str(self.observation.obs_id),
+                },
+            )
+            return self._finish("success", "task_completed_with_verified_evidence")
         if not self._workflow_facts().final_query_workflow_ready:
             raise GuardStop("completion_without_required_workflow")
         if self.saved_evidence.session_id:
@@ -2170,10 +2254,16 @@ class Brain:
 
     def _run(self) -> Result:
         self.started = perf_counter()
-        if self.record.origin == "extracted" and not self.prepared_case:
+        if (
+            isinstance(self.record, ShipmentRecord)
+            and self.record.origin == "extracted"
+            and not self.prepared_case
+        ):
             raise ValueError("Extracted records require a validated prepared case")
         current = self.state_store.initialize()
         if current.status == CaseStatus.READY and self.prepared_case:
+            if not isinstance(self.record, ShipmentRecord):
+                raise ValueError("Prepared extraction requires a shipment record")
             from pipeline.checks import can_enter
             from pipeline.schemas import CheckReport
 

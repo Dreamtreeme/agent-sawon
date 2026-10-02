@@ -55,7 +55,7 @@ def test_changed_observation_does_not_create_business_proof():
         {"observed_effect": ObservedEffect.CHANGED},
         {"after_obs_id": "observation-2"},
         {"new_facts": ("save_issued",)},
-        {"source": "actual-secret-value"},
+        {"source": "actual secret value"},
         {"new_facts": ("actual-secret-value",)},
         {"password": "actual-secret-value"},
         {"control_label": "Untrusted screen text"},
@@ -64,6 +64,16 @@ def test_changed_observation_does_not_create_business_proof():
 def test_transition_rejects_unverified_effects_and_arbitrary_data(overrides):
     with pytest.raises(ValidationError):
         pending_transition(**overrides)
+
+
+def test_transition_accepts_a_valid_runtime_task_key():
+    transition = pending_transition(
+        intent="fill",
+        source="invoice.number",
+        expected_effect=ExpectedEffect.INPUT_VALUE_MATCHES,
+    )
+
+    assert transition.source == "invoice.number"
 
 
 def test_completed_transition_requires_checked_observation():

@@ -29,11 +29,13 @@ from brain.graph.schemas import (
     WireDuplicateDecision,
     WireModel,
     WireStopDecision,
+    WireTaskCompleteDecision,
 )
 
-Phase = Literal["duplicate_query", "enter", "save_result", "final_query"]
+Phase = Literal["task", "duplicate_query", "enter", "save_result", "final_query"]
 CredentialSource = Literal["credential.username", "credential.password"]
 CurrentStep = Literal[
+    "task",
     "save_result",
     "query_input",
     "search",
@@ -65,14 +67,21 @@ class ExecutionFacts:
     def __post_init__(self) -> None:
         if self.phase not in get_args(Phase):
             raise ValueError("Unknown execution phase")
-        for attribute, allowed in (
-            ("field_names", get_args(FieldName)),
-            ("verified_field_names", get_args(FieldName)),
-            ("available_credential_sources", get_args(CredentialSource)),
-            ("submitted_credentials", get_args(CredentialSource)),
-        ):
+        for attribute in ("field_names", "verified_field_names"):
             value = getattr(self, attribute)
-            if not isinstance(value, tuple) or any(item not in allowed for item in value):
+            if (
+                not isinstance(value, tuple)
+                or any(not isinstance(item, str) or not item.strip() for item in value)
+                or any(item.startswith("credential.") for item in value)
+            ):
+                raise ValueError("Execution facts contain unsupported names")
+            object.__setattr__(self, attribute, tuple(sorted(set(value))))
+        allowed_credentials = get_args(CredentialSource)
+        for attribute in ("available_credential_sources", "submitted_credentials"):
+            value = getattr(self, attribute)
+            if not isinstance(value, tuple) or any(
+                item not in allowed_credentials for item in value
+            ):
                 raise ValueError("Execution facts contain unsupported names")
             object.__setattr__(self, attribute, tuple(sorted(set(value))))
         if not set(self.verified_field_names).issubset(self.field_names):
@@ -141,6 +150,49 @@ class _ActionRule:
 
 
 def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
+    if facts.phase == "task":
+        screens = _SCREENS
+        work_screens = tuple(screen for screen in screens if screen != "login")
+        rules = [
+            _ActionRule(
+                "navigate",
+                screens,
+                click_types=("click", "double_click"),
+                keys=_NAVIGATION_KEYS,
+                focus=True,
+            ),
+            _ActionRule("cancel", screens, click_types=("click",), keys=("esc",)),
+            _ActionRule("wait", screens, wait=True),
+            _ActionRule("select_tab", work_screens, click_types=("click",), keys=_NAVIGATION_KEYS),
+        ]
+        if facts.remaining_credentials:
+            rules.append(
+                _ActionRule("credential", ("login",), text_sources=facts.remaining_credentials)
+            )
+        elif facts.available_credential_sources:
+            rules.append(_ActionRule("login", ("login",), click_types=("click",), keys=("enter",)))
+        if facts.remaining_fields:
+            rules.extend(
+                [
+                    _ActionRule("fill", work_screens, text_sources=facts.remaining_fields),
+                    _ActionRule("search", work_screens, click_types=("click",), keys=("enter",)),
+                    _ActionRule(
+                        "select_option",
+                        work_screens,
+                        click_types=("click", "double_click"),
+                        keys=("enter",),
+                        option_sources=facts.remaining_fields,
+                        named_option=True,
+                    ),
+                ]
+            )
+        rules.extend(
+            [
+                _ActionRule("save", work_screens, click_types=("click",), keys=("enter",)),
+                _ActionRule("confirm_save", ("dialog",), click_types=("click",), keys=("enter",)),
+            ]
+        )
+        return tuple(rules)
     if facts.phase == "duplicate_query" and facts.query_submitted:
         return ()  # The result must be examined before another action changes it.
     screens = tuple(
@@ -244,7 +296,8 @@ def _action_model(rule: _ActionRule) -> Any:
 
 @lru_cache(maxsize=128)
 def _response_schema(
-    rules: tuple[_ActionRule, ...], proof: Literal["duplicate", "complete"] | None
+    rules: tuple[_ActionRule, ...],
+    proof: Literal["duplicate", "complete", "task_complete"] | None,
 ) -> type[DecisionResponse]:
     alternatives: list[type[WireModel]] = [WireStopDecision]
     for rule in rules:
@@ -261,6 +314,8 @@ def _response_schema(
         alternatives.append(WireDuplicateDecision)
     elif proof == "complete":
         alternatives.append(WireCompleteDecision)
+    elif proof == "task_complete":
+        alternatives.append(WireTaskCompleteDecision)
     return create_model(
         "PolicyDecisionResponse",
         __base__=DecisionResponse,
@@ -274,6 +329,8 @@ class DecisionPolicy:
 
     @property
     def current_step(self) -> CurrentStep:
+        if self.facts.phase == "task":
+            return "task"
         if self.facts.phase == "save_result":
             return "save_result"
         if self.facts.phase == "enter":
@@ -285,7 +342,9 @@ class DecisionPolicy:
         return "final_row_evidence" if self.facts.query_submitted else "search"
 
     @property
-    def _proof(self) -> Literal["duplicate", "complete"] | None:
+    def _proof(self) -> Literal["duplicate", "complete", "task_complete"] | None:
+        if self.facts.phase == "task":
+            return "task_complete"
         if (
             self.facts.phase == "duplicate_query"
             and self.facts.query_submitted
@@ -333,6 +392,16 @@ class DecisionPolicy:
                     "screen_kind": ["query"],
                     "action": None,
                     "requires": ["current_grid_ref", "current_row_ref", "all_field_evidence"],
+                }
+            )
+        elif self._proof == "task_complete":
+            choices.append(
+                {
+                    "operation": "complete",
+                    "intent": "verify",
+                    "screen_kind": list(_SCREENS),
+                    "action": None,
+                    "requires": ["current_evidence_for_applicable_user_completion_condition"],
                 }
             )
         return {

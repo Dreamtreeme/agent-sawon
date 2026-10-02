@@ -15,6 +15,7 @@ from brain.graph import Brain, Result
 from brain.relay import HttpRelay
 from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from brain.settings import BrainSettings
+from brain.task_instruction import TaskInputRecord
 from models.budget import CallBudget
 from models.factory import create_model_client
 
@@ -25,6 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--case-dir", type=Path, required=True)
     parser.add_argument("--relay-url", required=True)
     parser.add_argument("--goal", required=True)
+    parser.add_argument("--task", type=Path, help="User-authored task description JSON")
     parser.add_argument("--procedure", type=Path, help="User-supplied ordered workflow JSON")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--model-config", type=Path, required=True)
@@ -66,12 +68,29 @@ def main(argv: list[str] | None = None) -> int:
     error_type = None
     exit_code = 2
     try:
-        record = ShipmentRecord.model_validate_json(args.record.read_bytes())
-        if record.origin == "extracted" and not args.prepared_case:
+        raw_record = json.loads(args.record.read_text(encoding="utf-8"))
+        record = (
+            TaskInputRecord.model_validate(raw_record)
+            if "inputs" in raw_record
+            else ShipmentRecord.model_validate(raw_record)
+        )
+        if (
+            isinstance(record, ShipmentRecord)
+            and record.origin == "extracted"
+            and not args.prepared_case
+        ):
             raise ValueError("Extracted records require a validated prepared case")
         settings = BrainSettings.load(args.config)
+        if args.task is not None and args.procedure is not None:
+            parser.error("--task cannot be combined with --procedure")
+        if args.task is not None:
+            settings = settings.model_copy(
+                update={"task_path": args.task.resolve(), "procedure_path": None}
+            )
         if args.procedure is not None:
-            settings = settings.model_copy(update={"procedure_path": args.procedure.resolve()})
+            settings = settings.model_copy(
+                update={"procedure_path": args.procedure.resolve(), "task_path": None}
+            )
         if args.cache_path is not None:
             if not settings.cache.enabled:
                 raise ValueError("A cache path requires cache-enabled configuration")
@@ -95,6 +114,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         # mkdir(exist_ok=False) makes retries explicitly choose a fresh case directory.
         if args.prepared_case:
+            if not isinstance(record, ShipmentRecord):
+                raise ValueError("Prepared extraction requires a shipment record")
             if args.record.resolve() != (args.case_dir / "record.json").resolve():
                 raise ValueError("Prepared extraction must use its own record path")
             validate_prepared_case(args.case_dir, record)
@@ -105,7 +126,11 @@ def main(argv: list[str] | None = None) -> int:
         if not args.prepared_case:
             atomic_write_json(args.case_dir / "record.json", record)
         if experiment is not None:
-            settings = experiment.start(prepared_record=record if args.prepared_case else None)
+            settings = experiment.start(
+                prepared_record=record
+                if args.prepared_case and isinstance(record, ShipmentRecord)
+                else None
+            )
         case_created = True
         if settings.recovery_enabled and args.recovery_model_config is None:
             raise ValueError("Recovery requires an explicit model configuration")

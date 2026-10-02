@@ -18,6 +18,9 @@ def remember(brain: Brain) -> dict:
         "plan": brain.plan,
         "phase": brain.phase,
         "record_path": "record.json",
+        "task_path": (
+            "task-instruction.json" if getattr(brain, "task_instruction", None) else None
+        ),
         "procedure_path": "procedure.json" if getattr(brain, "procedure", None) else None,
         "proposed_procedure_step": getattr(brain, "procedure_step", None),
         "verified_fields": sorted(brain.verified),

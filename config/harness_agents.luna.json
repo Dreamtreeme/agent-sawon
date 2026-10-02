@@ -38,7 +38,7 @@
         "config/models.luna.toml",
         "config/pricing.openai.toml",
         "config/pipeline.korean.toml",
-        "examples/shipment-procedure.json"
+        "examples/shipment-task.json"
       ]
     }
   }

@@ -40,7 +40,7 @@
         "config/models.visual.toml",
         "config/pricing.toml",
         "config/pipeline.korean.toml",
-        "examples/shipment-procedure.json",
+        "examples/shipment-task.json",
         "config/models.jev.toml",
         "config/pricing.jev.toml"
       ]

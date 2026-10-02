@@ -23,7 +23,7 @@ from .visual_turn import adapt_proposal, bind_proposal
 class ProcedureStep(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: str = Field(min_length=1)
-    phase: Literal["duplicate_query", "enter", "save_result", "final_query"]
+    phase: Literal["task", "duplicate_query", "enter", "save_result", "final_query"]
     screen: Literal["login", "menu", "query", "editor", "partner", "dialog", "any"]
     checkpoint: str = "any"
     view: str = Field(
@@ -55,6 +55,7 @@ class ProcedureStep(BaseModel):
             "select_tab",
             "select_option",
             "cancel",
+            "wait",
             "duplicate_clear",
             "duplicate_found",
             "complete",
@@ -139,10 +140,16 @@ class MatchEvidence(BaseModel):
     target: int = Field(ge=0)
 
 
+class MatchCompletionEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    condition_index: int = Field(ge=0)
+    target: int = Field(ge=0)
+
+
 class ActionCompletion(BaseModel):
     model_config = ConfigDict(extra="forbid")
     operation: Literal["act", "stop"]
-    steps: list[MatchAction] = Field(max_length=12)
+    steps: list[MatchAction] = Field(max_length=50)
 
     @model_validator(mode="after")
     def executable_or_stop(self):
@@ -155,21 +162,22 @@ class ScreenMatch(SemanticDetection):
     """Only relevant controls/verification anchors; no nested execution union."""
 
     procedure_step: str
-    steps: list[MatchAction] = Field(default_factory=list, max_length=12)
+    steps: list[MatchAction] = Field(default_factory=list, max_length=50)
     operation: Literal["act", "duplicate_clear", "duplicate_found", "complete", "stop"] = "act"
     grid: int | None = Field(default=None, ge=0)
     row: int | None = Field(default=None, ge=0)
     evidence: list[MatchEvidence] = Field(
         default_factory=list,
-        max_length=11,
+        max_length=100,
         description="Current field observations. Completion maps these to final row proof; "
         "duplicate checks verify the query input separately.",
     )
+    completion_evidence: list[MatchCompletionEvidence] = Field(default_factory=list, max_length=50)
     save_result: (
         Literal["rejected", "confirmation_required", "ready_for_query", "unknown"] | None
     ) = None
-    message_targets: list[int] = Field(default_factory=list, max_length=12)
-    repair_fields: list[FieldName] = Field(default_factory=list, max_length=11)
+    message_targets: list[int] = Field(default_factory=list, max_length=50)
+    repair_fields: list[FieldName] = Field(default_factory=list, max_length=100)
     expected_result: str = Field(default="", max_length=240)
     needs_image: bool = False
 
@@ -179,16 +187,17 @@ class ScreenPlan(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     procedure_step: str
-    steps: list[MatchAction] = Field(default_factory=list, max_length=12)
+    steps: list[MatchAction] = Field(default_factory=list, max_length=50)
     operation: Literal["act", "duplicate_clear", "duplicate_found", "complete", "stop"] = "act"
     grid: int | None = Field(default=None, ge=0)
     row: int | None = Field(default=None, ge=0)
-    evidence: list[MatchEvidence] = Field(default_factory=list, max_length=11)
+    evidence: list[MatchEvidence] = Field(default_factory=list, max_length=100)
+    completion_evidence: list[MatchCompletionEvidence] = Field(default_factory=list, max_length=50)
     save_result: (
         Literal["rejected", "confirmation_required", "ready_for_query", "unknown"] | None
     ) = None
-    message_targets: list[int] = Field(default_factory=list, max_length=12)
-    repair_fields: list[FieldName] = Field(default_factory=list, max_length=11)
+    message_targets: list[int] = Field(default_factory=list, max_length=50)
+    repair_fields: list[FieldName] = Field(default_factory=list, max_length=100)
     expected_result: str = Field(default="", max_length=240)
 
 
@@ -206,6 +215,16 @@ Return one screen-boundary action batch: direct fills only, login credentials pl
 same-intent navigation clicks, or consecutive select_option row/confirmation clicks. Never mix
 fill/search with select_option when the matching result row is already visible.
 Return only the task plan fields in the schema. Never return control roles or relationships.
+"""
+
+TASK_PLAN_RULES = """Use the supplied grounded screen interpretation as immutable evidence.
+Use the user task description, input data and runtime notebook to choose the next action from the
+execution contract. The task description is business intent, not a UI route. Do not assume labels,
+menus, tabs, coordinates or screen order that are absent from the current interpretation. Return one
+screen-boundary batch and do not mix direct fills with navigation or selection. For complete, map
+CURRENT visible proof to the applicable zero-based user completion condition in completion_evidence;
+map visible business values separately in evidence. Return only task-plan schema fields and never
+reclassify controls or invent IDs.
 """
 
 TARGET_GROUNDING_RULES = """Ground only the listed action target markers on the CURRENT image.
@@ -279,6 +298,22 @@ search, navigate, or fill for a record field absent from remaining_fields and
 pending_verification_fields.
 """
 
+TASK_RULES = """Use the user task description, input data, runtime notebook and CURRENT screen.
+The task description contains business intent and completion conditions, not a fixed UI route.
+Choose the next grounded action that advances the objective from the current evidence. Decide
+whether to fill visible inputs, use a visible lookup/selection control, navigate, save, or verify.
+Never assume a label, coordinate, menu, tab, screen order, or application-specific route that is
+not visible now. Use only supplied input keys and current marker IDs. The execution contract is
+the complete list of actions currently allowed by code. Return one screen-boundary action batch:
+direct fills only, login credentials plus login, same-intent navigation clicks, or consecutive
+select_option row/confirmation clicks. Do not mix fills with navigation or selection. A
+field-bound lookup navigation must map the current field input in evidence so its selected value
+can be checked on return. Complete only when CURRENT visible evidence supports an applicable
+user-authored completion condition. Map each supporting marker to its zero-based condition_index
+in completion_evidence; map visible business values separately in evidence. Follow all constraints
+and never transmit or approve.
+"""
+
 
 def verification_requirements(
     controls, screen: dict, required: list[dict], screen_kind: str, threshold: float
@@ -343,7 +378,11 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
     ignored_save_result = brain.phase != "save_result" and response.save_result is not None
     if ignored_save_result:
         response = response.model_copy(update={"save_result": None, "message_targets": []})
-    direct_needed = {s.target for s in response.steps} | {e.target for e in response.evidence}
+    direct_needed = (
+        {s.target for s in response.steps}
+        | {e.target for e in response.evidence}
+        | {e.target for e in response.completion_evidence}
+    )
     if response.save_result is not None:
         direct_needed.update(response.message_targets)
     direct_needed.update(i for i in (response.grid, response.row) if i is not None)
@@ -535,9 +574,11 @@ def retain_verification(
 def retain_action_targets(brain, response: ScreenMatch, screen: dict, page=None) -> ScreenMatch:
     """Add semantics for model-selected action and evidence targets."""
     controls = {control.id: control for control in response.controls}
-    required = {step.target for step in response.steps} | {
-        evidence.target for evidence in response.evidence
-    }
+    required = (
+        {step.target for step in response.steps}
+        | {evidence.target for evidence in response.evidence}
+        | {evidence.target for evidence in response.completion_evidence}
+    )
     missing = required - controls.keys()
     if not missing:
         return response
@@ -636,13 +677,20 @@ def require_deferred_field_evidence(
     """Require a stable pre-navigation anchor for a later external selection effect."""
     if response.operation != "act" or not any(item.intent == "navigate" for item in response.steps):
         return
-    downstream_selection_fields = {
-        field
-        for candidate in procedure_steps
-        if candidate.phase == step.phase and "select_option" in candidate.actions
-        for field in candidate.field_scope
-    }
-    required = set(step.field_scope) & active_fields & downstream_selection_fields
+    if step.id == "task-action":
+        # A generic task has no predeclared downstream route.  Only an input that
+        # the worker explicitly binds to this navigation is a field lookup; an
+        # ordinary menu/tab transition must not be forced to name every pending
+        # business field.
+        required = {item.field for item in response.evidence if item.field in active_fields}
+    else:
+        downstream_selection_fields = {
+            field
+            for candidate in procedure_steps
+            if candidate.phase == step.phase and "select_option" in candidate.actions
+            for field in candidate.field_scope
+        }
+        required = set(step.field_scope) & active_fields & downstream_selection_fields
     if not required:
         return
     evidence = {item.field: item.target for item in response.evidence}
@@ -689,6 +737,20 @@ def validate_match_plan(
         action.intent not in allowed_intents for action in response.steps
     ):
         raise ValueError("screen_match_action_outside_procedure")
+    if step.id == "task-action" and any(
+        evidence.field not in brain.values for evidence in response.evidence
+    ):
+        raise ValueError("screen_match_unknown_task_field")
+    if step.id == "task-action":
+        if response.operation == "complete" and not response.completion_evidence:
+            raise ValueError("screen_match_task_completion_evidence_required")
+        if response.operation != "complete" and response.completion_evidence:
+            raise ValueError("screen_match_completion_evidence_without_completion")
+        if any(
+            item.condition_index >= len(brain.task_instruction.completion_conditions)
+            for item in response.completion_evidence
+        ):
+            raise ValueError("screen_match_task_completion_condition_unknown")
     if len(response.steps) > 1:
         intents = {action.intent for action in response.steps}
         login_batch = response.steps[-1].intent == "login" and all(
@@ -704,7 +766,8 @@ def validate_match_plan(
         if not (login_batch or direct_fill_batch or selection_batch or same_boundary_batch):
             raise ValueError("screen_match_mixed_boundary_actions")
     response = bind_selection_effect(response, step, active_fields)
-    require_deferred_field_evidence(response, step, brain.procedure.steps, active_fields)
+    workflow_steps = brain.procedure.steps if brain.procedure is not None else candidates
+    require_deferred_field_evidence(response, step, workflow_steps, active_fields)
     scoped_sources = {
         action.source
         for action in response.steps
@@ -742,11 +805,36 @@ def exclude_current_navigation_step(brain, candidates: list[ProcedureStep]) -> l
     return [step for step in candidates if step.id != completed]
 
 
+def task_action_contract(brain, contract: dict, active_fields: set[str]) -> ProcedureStep:
+    """Expose runtime capabilities without encoding an application route."""
+    actions = set(contract["allowed_intents"])
+    actions.difference_update({"stop", "verify"})
+    if "credential" in actions:
+        actions.remove("credential")
+        actions.add("login")
+    if brain.phase == "duplicate_query" and contract["checkpoint"] == "duplicate_result_evidence":
+        actions.update({"duplicate_clear", "duplicate_found"})
+    if brain.phase == "final_query" and contract["checkpoint"] == "final_row_evidence":
+        actions.add("complete")
+    if brain.phase == "task":
+        actions.add("complete")
+    instruction = brain.task_instruction
+    return ProcedureStep(
+        id="task-action",
+        phase=brain.phase,
+        screen="any",
+        checkpoint="any",
+        view="current.observed.screen",
+        field_scope=sorted(active_fields),
+        actions=sorted(actions),
+        goal=instruction.objective[:500],
+        completion="; ".join(instruction.completion_conditions)[:500],
+    )
+
+
 def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     policy = brain._decision_policy()
     contract = execution_context(brain, policy, anticipate=True)
-    candidates = [s for s in brain.procedure.steps if s.phase == brain.phase]
-    candidates = [s for s in candidates if s.checkpoint in {"any", contract["checkpoint"]}]
     required = required_verification(brain)
     pending_verification_fields = sorted(
         {
@@ -765,13 +853,18 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     verified_fields = set(brain.verified)
     if contract["conditional"] and brain.phase == "enter":
         verified_fields |= set(brain.values) - set(remaining_fields)
-    candidates = [
-        step
-        for step in candidates
-        if set(step.requires_verified) <= verified_fields
-        and (not step.field_scope or bool(set(step.field_scope) & active_fields))
-    ]
-    candidates = exclude_current_navigation_step(brain, candidates)
+    if brain.task_instruction is not None:
+        candidates = [task_action_contract(brain, contract, active_fields)]
+    else:
+        candidates = [s for s in brain.procedure.steps if s.phase == brain.phase]
+        candidates = [s for s in candidates if s.checkpoint in {"any", contract["checkpoint"]}]
+        candidates = [
+            step
+            for step in candidates
+            if set(step.requires_verified) <= verified_fields
+            and (not step.field_scope or bool(set(step.field_scope) & active_fields))
+        ]
+        candidates = exclude_current_navigation_step(brain, candidates)
     if not candidates:
         raise ValueError("procedure_has_no_eligible_step")
     record = brain.values
@@ -798,7 +891,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         "required_verification": required,
         "available_credentials": sorted(k for k, value in brain.credentials.items() if value),
         "record": record
-        if brain.phase in {"enter", "save_result", "final_query"}
+        if brain.phase in {"task", "enter", "save_result", "final_query"}
         else {"hbl_no": brain.values["hbl_no"]},
     }
     state = {
@@ -807,6 +900,8 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         "screen": screen if brain.matching_model is not None else model_screen(screen),
         "execution": contract,
     }
+    if brain.task_instruction is not None:
+        state["task"] = brain.task_instruction.model_dump(mode="json")
     if contract["conditional"]:
         state["proposal_after_verification"] = {
             "condition": contract["condition"],
@@ -814,7 +909,9 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         }
     if "save_review" in contract:
         state["save_review"] = contract["save_review"]
-    prompt = RULES + json.dumps(state, ensure_ascii=False)
+    prompt = (TASK_RULES if brain.task_instruction is not None else RULES) + json.dumps(
+        state, ensure_ascii=False
+    )
     cache_hit = brain.visual_match_cache.lookup(state)
     if cache_hit is not None:
         _, cached = cache_hit
@@ -843,7 +940,8 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
             },
         }
         plan = brain._call(
-            PLAN_RULES + json.dumps(plan_state, ensure_ascii=False),
+            (TASK_PLAN_RULES if brain.task_instruction is not None else PLAN_RULES)
+            + json.dumps(plan_state, ensure_ascii=False),
             ScreenPlan,
             page=page,
         )
@@ -867,7 +965,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     if response.needs_image:
         image_state = {**state, "screen": model_screen(screen)}
         response = brain._call(
-            RULES
+            (TASK_RULES if brain.task_instruction is not None else RULES)
             + json.dumps(image_state, ensure_ascii=False)
             + "\nResolve the reported ambiguity with this image.",
             ScreenMatch,
@@ -913,7 +1011,8 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
             },
         }
         plan = brain._call(
-            PLAN_RULES + json.dumps(correction_state, ensure_ascii=False),
+            (TASK_PLAN_RULES if brain.task_instruction is not None else PLAN_RULES)
+            + json.dumps(correction_state, ensure_ascii=False),
             ScreenPlan,
             page=page,
         )
@@ -976,7 +1075,8 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         # A plan-only turn may select a real marker that the reusable scene
         # interpretation did not need previously.  Ground it first, then enforce
         # the evidence role before any action can reach the executor.
-        require_deferred_field_evidence(response, step, brain.procedure.steps, active_fields)
+        workflow_steps = brain.procedure.steps if brain.procedure is not None else candidates
+        require_deferred_field_evidence(response, step, workflow_steps, active_fields)
     brain.procedure_step = step.id
     brain.visual_match_candidate = (
         cache_hit[0] if cache_hit is not None else visual_match_key(state),
@@ -1026,6 +1126,12 @@ def compile_match(response: ScreenMatch, observation, schema):
                 row_ref=ref(response.row) if response.operation == "complete" else None,
                 evidence=[{"field": e.field, "ref": ref(e.target)} for e in response.evidence]
                 if response.operation in {"act", "complete"}
+                else [],
+                completion_evidence=[
+                    {"condition_index": e.condition_index, "ref": ref(e.target)}
+                    for e in response.completion_evidence
+                ]
+                if response.operation == "complete"
                 else [],
             ).model_dump(exclude_none=True, exclude_defaults=True)
         }

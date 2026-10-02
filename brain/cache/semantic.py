@@ -18,12 +18,12 @@ from uuid import UUID
 
 import portalocker
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, model_validator
-from sawon_interfaces import Observation, ShipmentRecord, UIElement
+from sawon_interfaces import Observation, UIElement
 
 from brain.graph.schemas import Choice, Decision, FieldName
 from brain.observe.evidence import is_record_input
 from brain.observe.summary import ancestors
-from brain.observe.values import field_matches, values_for
+from brain.observe.values import RecordInput, field_matches, values_for
 from brain.runtime.storage import atomic_write_json
 
 AUTH_TERMS = (
@@ -52,11 +52,11 @@ def normalized(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
 
 
-def record_values(record: ShipmentRecord) -> dict[FieldName, str]:
+def record_values(record: RecordInput) -> dict[FieldName, str]:
     return cast(dict[FieldName, str], values_for(record))
 
 
-def value_matches(field: FieldName, actual: str | None, record: ShipmentRecord) -> bool:
+def value_matches(field: FieldName, actual: str | None, record: RecordInput) -> bool:
     return field_matches(field, actual, values_for(record))
 
 
@@ -73,8 +73,8 @@ class TargetDescriptor(CacheModel):
 
 class SemanticEntry(CacheModel):
     schema_version: Literal["0.1"] = "0.1"
-    task_type: Literal["shipment_entry"] = "shipment_entry"
-    subgoal: Literal["enter"] = "enter"
+    task_type: str = Field(default="data_entry", min_length=1, max_length=160)
+    subgoal: Literal["task", "enter"] = "enter"
     field: FieldName
     target_descriptor: TargetDescriptor
     action_template: Literal["set_text", "type_text"] = "set_text"
@@ -186,7 +186,7 @@ def label_anchors(
     return unambiguous if len({entry.field for entry, _ in unambiguous}) >= minimum else []
 
 
-def _contains_record_values(descriptor: TargetDescriptor, record: ShipmentRecord) -> bool:
+def _contains_record_values(descriptor: TargetDescriptor, record: RecordInput) -> bool:
     text = " ".join([descriptor.label_semantics, *(part.label for part in descriptor.context)])
     # Deliberately conservative even for short values: a miss is preferable to
     # persisting business data disguised as a UI label.
@@ -305,10 +305,10 @@ class CacheSession:
         *,
         phase: str,
         allowed_sources: Iterable[FieldName],
-        record: ShipmentRecord | None = None,
+        record: RecordInput | None = None,
     ) -> CacheMatch | None:
         self.last_miss_reason = "no_matching_entry"
-        if not self.cache.enabled or self._closed or phase != "enter":
+        if not self.cache.enabled or self._closed or phase not in {"task", "enter"}:
             self.last_miss_reason = "disabled_or_ineligible"
             return None
         allowed = set(allowed_sources)
@@ -327,6 +327,7 @@ class CacheSession:
         for entry in entries:
             if (
                 entry.invalidated
+                or entry.subgoal != phase
                 or entry.field not in allowed
                 or entry.evidence_source != getattr(observation, "evidence_source", "uia")
             ):
@@ -374,7 +375,7 @@ class CacheSession:
             obs_id=observation.obs_id,
             match_mode=mode,
             decision=Decision(
-                screen_kind="editor",
+                screen_kind=getattr(observation, "screen_kind", "editor"),
                 operation="act",
                 intent="fill",
                 subgoal="enter",
@@ -388,8 +389,9 @@ class CacheSession:
         before: Observation,
         after: Observation,
         decision: Decision,
-        record: ShipmentRecord,
+        record: RecordInput,
         *,
+        phase: Literal["task", "enter"] = "enter",
         origin: Literal["successful_run", "demonstration"] = "successful_run",
     ) -> bool:
         if self._closed or not self.cache.enabled:
@@ -400,7 +402,7 @@ class CacheSession:
         if (
             decision.operation != "act"
             or decision.intent != "fill"
-            or decision.screen_kind != "editor"
+            or decision.screen_kind == "login"
             or action is None
             or action.type not in {"set_text", "type_text"}
         ):
@@ -425,6 +427,7 @@ class CacheSession:
         if value_matches(action.source, target.value, record):
             return False
         entry = SemanticEntry(
+            subgoal=phase,
             field=action.source,
             target_descriptor=descriptor,
             action_template=action.type,

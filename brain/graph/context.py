@@ -56,6 +56,13 @@ DUPLICATE_EVIDENCE_GUIDANCE = (
 
 def phase_instruction(policy: DecisionPolicy) -> str:
     step = policy.current_step
+    if step == "task":
+        return (
+            "Use the user task description as the workflow. Choose only grounded CURRENT-screen "
+            "actions and supplied input keys. No application route is predefined. Verify visible "
+            "input values after entry, observe each screen boundary, and return completion only "
+            "when current evidence supports an applicable user completion condition."
+        )
     if step == "save_result":
         return SAVE_REVIEW_GUIDANCE
     if step == "duplicate_result_evidence":
@@ -141,7 +148,7 @@ def execution_context(
         )
         last = decisions[-1]
         facts = actual.facts
-        if facts.phase == "enter":
+        if facts.phase in {"task", "enter"}:
             pending_fields = {
                 decision.action.source
                 for decision in decisions

@@ -17,6 +17,8 @@ from brain.graph.matching import (
     PLAN_RULES,
     RULES,
     TARGET_GROUNDING_RULES,
+    TASK_PLAN_RULES,
+    TASK_RULES,
     ScreenMatch,
     ScreenPlan,
     compile_match,
@@ -26,6 +28,7 @@ from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
 from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
+from brain.task_instruction import TaskInstruction
 from brain.visual.scene import SceneObservation, SemanticDetection
 
 PROCEDURE = Path(__file__).resolve().parents[1] / "examples/shipment-procedure.json"
@@ -66,7 +69,7 @@ def setup_brain(tmp_path, record, responses):
 
     def route(prompt):
         item = next(plans)
-        if prompt.startswith(PLAN_RULES):
+        if prompt.startswith((PLAN_RULES, TASK_PLAN_RULES)):
             return {key: value for key, value in item.items() if key in ScreenPlan.model_fields}
         if prompt.startswith(TARGET_GROUNDING_RULES):
             return {
@@ -139,6 +142,41 @@ def test_procedure_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path,
     assert brain.decision.action.source == "hbl_no"
     assert brain.decision.action.ref.startswith("e" + str(brain.observation.obs_id.int))
     assert "secret-user" not in model.prompts[0] and "secret-pw" not in model.prompts[0]
+
+
+def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(tmp_path, record):
+    meaning = fixture()[-1]
+    task_response = response(
+        meaning,
+        procedure_step="task-action",
+        steps=[],
+        operation="stop",
+    )
+    brain, model, *_ = setup_brain(tmp_path, record, [task_response])
+    brain.task_instruction = TaskInstruction.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    brain.procedure = None
+    brain.phase = "task"
+
+    assert brain._plan_node({}) == {"next": "observe"}
+    brain._observe()
+
+    assert len(model.prompts) == 1
+    assert model.prompts[0].startswith(TASK_RULES)
+    state = json.loads(model.prompts[0][len(TASK_RULES) :])
+    assert state["task"]["objective"] == brain.task_instruction.objective
+    assert state["notebook"]["record"] == brain.values
+    assert [step["id"] for step in state["procedure"]] == ["task-action"]
+    assert state["procedure"][0]["view"] == "current.observed.screen"
+    assert not {
+        "open-shipper-lookup",
+        "lookup-partner",
+        "open-additional-entry",
+        "fill-additional-entry",
+    } & {step["id"] for step in state["procedure"]}
 
 
 def test_promoted_exact_visual_match_reuse_precedes_model_call(tmp_path, record):

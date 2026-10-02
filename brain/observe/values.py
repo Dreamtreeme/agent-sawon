@@ -9,12 +9,18 @@ from decimal import Decimal, InvalidOperation
 
 from sawon_interfaces import ShipmentRecord
 
+from brain.task_instruction import TaskInputRecord
+
+RecordInput = ShipmentRecord | TaskInputRecord
+
 
 def normalize(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).split()).upper()
 
 
-def values_for(record: ShipmentRecord) -> dict[str, str]:
+def values_for(record: RecordInput) -> dict[str, str]:
+    if isinstance(record, TaskInputRecord):
+        return dict(record.inputs)
     values: dict[str, str] = {}
     for name, field in record.fields:
         if name == "packages":

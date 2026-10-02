@@ -49,6 +49,7 @@ class BrainSettings(BaseModel):
     visual_screen_fill: bool = False
     screen_matching: bool = False
     jev_request_max_bytes: int = Field(default=48_000, ge=8_000, le=48_000)
+    task_path: Path | None = None
     procedure_path: Path | None = None
     visual_detector: DetectorSettings = Field(default_factory=DetectorSettings)
     visual_merge: MergeSettings = Field(default_factory=MergeSettings)
@@ -60,6 +61,10 @@ class BrainSettings(BaseModel):
         if settings.procedure_path is not None and not settings.procedure_path.is_absolute():
             settings = settings.model_copy(
                 update={"procedure_path": (path.parent / settings.procedure_path).resolve()}
+            )
+        if settings.task_path is not None and not settings.task_path.is_absolute():
+            settings = settings.model_copy(
+                update={"task_path": (path.parent / settings.task_path).resolve()}
             )
         if not settings.visual_detector.weights.is_absolute():
             settings = settings.model_copy(
