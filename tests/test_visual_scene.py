@@ -119,8 +119,10 @@ def test_query_uncertainty_is_scoped_without_ignoring_model_warnings(inside):
 def test_empty_grid_uses_structured_evidence_not_header_notes(table_state):
     from brain.graph.engine import Brain, GuardStop
     from brain.graph.schemas import Decision
+    from brain.graph.state import create_worker_state
 
     brain = Brain.__new__(Brain)
+    brain._worker_state = create_worker_state()
     brain.observation = bind_scene(
         wire(),
         [],

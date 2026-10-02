@@ -1802,3 +1802,13 @@ ruff check/format 및 diff 검사 통과. 실제 저장 캡처의 OCR37블록/�
 - 거래처 검색 화면의 단일 검색어 `fill`을 편집 화면용 `ScreenFillPlan`으로 감싸면서 해당
   계약의 “직접 fill은 fields 배열에 넣는다” 검증에 걸린 것이 새 종료 원인이다. 배치 입력은
   실제 `editor` 장면에서만 사용하고 `partner`의 검색어 입력은 공통 단일 Decision으로 처리한다.
+
+### 2026-10-02 네 책임 작업자 상태 계약
+
+- 계획 준비는 그래프 진입 전에 수행하고 실제 LangGraph 노드를 `observation`, `decision`,
+  `execution`, `review` 네 책임으로 제한했다.
+- `brain/graph/state.py`의 `WorkerState`가 관찰, 현재 결정·ActionPlan, 실행 후 검증 대기 행동,
+  현재 근거 검토와 lifecycle route/phase/steps를 구역별로 보관한다. Brain의 해당 속성은 이
+  상태 계약을 직접 참조하며 노드 사이 별도 복사 상태를 만들지 않는다.
+- 실행 노드는 전달만 담당한다. pending 행동이 존재하면 Observation 노드가 새 화면을 읽고
+  효과를 검증하며, Review 노드는 중복·최종 행 근거와 완료 판정만 담당한다.

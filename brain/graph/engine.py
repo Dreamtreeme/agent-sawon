@@ -11,10 +11,9 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
-from typing import Literal, TypedDict
+from typing import Literal
 from uuid import uuid4
 
-from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sawon_interfaces import Action, Observation, ShipmentRecord, UIElement
 
@@ -62,6 +61,7 @@ from .screen_batch import (
     prepare_screen_fill,
     verify_screen_fields,
 )
+from .state import WorkerNode, WorkerState, copy_worker_state, create_worker_state
 from .transitions import (
     ActionTransition,
     ExpectedEffect,
@@ -70,6 +70,7 @@ from .transitions import (
     TransitionFact,
 )
 from .visual_points import VisualPointBindings
+from .workflow import build_worker_graph
 
 
 class Result(BaseModel):
@@ -79,10 +80,6 @@ class Result(BaseModel):
     reason: str
     steps: int
     elapsed_ms: float
-
-
-class GraphState(TypedDict):
-    next: str
 
 
 def element_value(element: UIElement) -> str:
@@ -138,6 +135,86 @@ repair feedback; do not repeat a navigation that had no observable effect.
 
 
 class Brain:
+    @property
+    def observation(self) -> Observation | None:
+        return self._worker_state["observation"]["current"]
+
+    @observation.setter
+    def observation(self, value: Observation | None) -> None:
+        self._worker_state["observation"]["current"] = value
+
+    @property
+    def observation_number(self) -> int:
+        return self._worker_state["observation"]["sequence"]
+
+    @observation_number.setter
+    def observation_number(self, value: int) -> None:
+        self._worker_state["observation"]["sequence"] = value
+
+    @property
+    def decision(self) -> Decision | None:
+        return self._worker_state["decision"]["current"]
+
+    @decision.setter
+    def decision(self, value: Decision | None) -> None:
+        self._worker_state["decision"]["current"] = value
+
+    @property
+    def action_plan(self) -> ActionPlan | None:
+        return self._worker_state["decision"]["action_plan"]
+
+    @action_plan.setter
+    def action_plan(self, value: ActionPlan | None) -> None:
+        self._worker_state["decision"]["action_plan"] = value
+
+    @property
+    def plan(self) -> list[str]:
+        return self._worker_state["decision"]["task_plan"]
+
+    @plan.setter
+    def plan(self, value: list[str]) -> None:
+        self._worker_state["decision"]["task_plan"] = value
+
+    @property
+    def pending(self) -> PendingAction | None:
+        return self._worker_state["execution"]["pending"]
+
+    @pending.setter
+    def pending(self, value: PendingAction | None) -> None:
+        self._worker_state["execution"]["pending"] = value
+
+    @property
+    def review(self) -> EvidenceReview | None:
+        return self._worker_state["review"]["current"]
+
+    @review.setter
+    def review(self, value: EvidenceReview | None) -> None:
+        self._worker_state["review"]["current"] = value
+
+    @property
+    def review_decision(self) -> bool:
+        return self._worker_state["review"]["decision_pending"]
+
+    @review_decision.setter
+    def review_decision(self, value: bool) -> None:
+        self._worker_state["review"]["decision_pending"] = value
+
+    @property
+    def phase(self) -> str:
+        return self._worker_state["lifecycle"]["phase"]
+
+    @phase.setter
+    def phase(self, value: str) -> None:
+        self._worker_state["lifecycle"]["phase"] = value
+
+    @property
+    def steps(self) -> int:
+        return self._worker_state["lifecycle"]["steps"]
+
+    @steps.setter
+    def steps(self, value: int) -> None:
+        self._worker_state["lifecycle"]["steps"] = value
+
     def __init__(
         self,
         *,
@@ -158,6 +235,7 @@ class Brain:
         matching_model: ModelClient | None = None,
         matching_budget: CallBudget | None = None,
     ) -> None:
+        self._worker_state = create_worker_state()
         self.record, self.goal, self.relay, self.model = record, goal, relay, model
         self.settings, self.case_dir, self.log = settings, Path(case_dir), run_log
         if matching_model is not None and not settings.screen_matching:
@@ -691,7 +769,7 @@ class Brain:
             remember(self)
         return observation
 
-    def _plan_node(self, state: GraphState) -> dict:
+    def _plan_node(self, state: dict) -> dict:
         try:
             if self.settings.screen_matching:
                 from .notebook import remember
@@ -726,7 +804,7 @@ class Brain:
         except Exception as exc:
             return self._finish("failed", "plan_error:" + type(exc).__name__)
 
-    def _observe_node(self, state: GraphState) -> dict:
+    def _observe_node(self, state: dict) -> dict:
         try:
             if self.steps >= self.settings.max_steps:
                 return self._finish("stopped", "max_steps")
@@ -781,7 +859,7 @@ class Brain:
             )
         return self.review
 
-    def _review_node(self, state: GraphState) -> dict:
+    def _review_node(self, state: dict) -> dict:
         """Own result proof, separately from selecting and dispatching an action."""
         try:
             if self.review_decision:
@@ -971,7 +1049,7 @@ class Brain:
                 prompt, schema, model=self.recovery_model, call_budget=self.recovery_budget
             ).to_decision()
 
-    def _select_node(self, state: GraphState) -> dict:
+    def _select_node(self, state: dict) -> dict:
         if self.steps >= self.settings.max_steps:
             return self._finish("stopped", "max_steps")
         self.steps += 1
@@ -1423,7 +1501,7 @@ class Brain:
             data["duration_ms"] = choice.duration_ms
         return Action.model_validate(data)
 
-    def _act_node(self, state: GraphState) -> dict:
+    def _act_node(self, state: dict) -> dict:
         assert self.decision is not None or self.action_plan is not None
         plan = self.action_plan or ActionPlan.single(self.decision)
         self.action_plan = None
@@ -1588,7 +1666,7 @@ class Brain:
             "confirm_save": ExpectedEffect.SAVE_ACKNOWLEDGEMENT,
         }.get(decision.intent, ExpectedEffect.OBSERVATION_ONLY)
 
-    def _verify_node(self, state: GraphState) -> dict:
+    def _verify_node(self, state: dict) -> dict:
         assert self.pending is not None
         pending = self.pending
         observation: Observation | None = None
@@ -1934,6 +2012,55 @@ class Brain:
         )
         return self._finish("success", "saved_and_verified_awaiting_approval")
 
+    @staticmethod
+    def _responsibility_route(legacy_route: str) -> WorkerNode:
+        try:
+            return {
+                "observe": "observation",
+                "verify": "observation",
+                "select": "decision",
+                "act": "execution",
+                "review": "review",
+                "finish": "finish",
+            }[legacy_route]
+        except KeyError as exc:
+            raise RuntimeError("unknown_worker_route:" + legacy_route) from exc
+
+    def _adopt_worker_state(self, state: WorkerState) -> None:
+        self._worker_state = copy_worker_state(state)
+
+    def _complete_responsibility(self, outcome: dict) -> WorkerState:
+        route = self._responsibility_route(str(outcome["next"]))
+        state = copy_worker_state(self._worker_state)
+        state["lifecycle"]["route"] = route
+        self._worker_state = state
+        return state
+
+    def observation_node(self, state: WorkerState) -> WorkerState:
+        """Capture a screen or observe and verify a delivered action's effect."""
+
+        self._adopt_worker_state(state)
+        outcome = self._verify_node({}) if self.pending is not None else self._observe_node({})
+        return self._complete_responsibility(outcome)
+
+    def decision_node(self, state: WorkerState) -> WorkerState:
+        """Select one policy-valid decision from the current observation."""
+
+        self._adopt_worker_state(state)
+        return self._complete_responsibility(self._select_node({}))
+
+    def execution_node(self, state: WorkerState) -> WorkerState:
+        """Dispatch the selected action plan without deciding its success."""
+
+        self._adopt_worker_state(state)
+        return self._complete_responsibility(self._act_node({}))
+
+    def review_node(self, state: WorkerState) -> WorkerState:
+        """Classify current evidence and accept only deterministic completion proof."""
+
+        self._adopt_worker_state(state)
+        return self._complete_responsibility(self._review_node({}))
+
     def run(self) -> Result:
         try:
             return self._run()
@@ -1964,32 +2091,15 @@ class Brain:
         self.state_store.transition(CaseStatus.ENTERING, expected=CaseStatus.READY)
         try:
             self.relay.health()
-            graph = StateGraph(GraphState)
-            nodes = {
-                "plan": self._plan_node,
-                "observe": self._observe_node,
-                "review": self._review_node,
-                "select": self._select_node,
-                "act": self._act_node,
-                "verify": self._verify_node,
-            }
-            for name, node in nodes.items():
-                graph.add_node(name, node)
-                graph.add_conditional_edges(
-                    name,
-                    lambda state: state["next"],
+            planned = self._plan_node({})
+            if planned["next"] != "finish":
+                self._worker_state["lifecycle"]["route"] = "observation"
+                build_worker_graph(self).invoke(
+                    copy_worker_state(self._worker_state),
                     {
-                        **{target: target for target in nodes},
-                        "finish": END,
+                        "recursion_limit": self.settings.max_steps * 8 + 20,
                     },
                 )
-            graph.add_edge(START, "plan")
-            graph.compile().invoke(
-                {"next": "plan"},
-                {
-                    "recursion_limit": self.settings.max_steps * 8 + 20,
-                },
-            )
         except Exception as exc:
             self._finish("failed", "runtime_error:" + type(exc).__name__)
         assert self.result is not None

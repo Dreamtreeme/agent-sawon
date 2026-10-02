@@ -67,7 +67,7 @@ import하지 않습니다. 두 저장소는 로컬 Git과 GitHub 비공개 저�
 
 - `models/`: ModelClient, Gemini, replay, 성공/실패 호출 측정, 토큰/추정 비용/지연 기록.
 - `brain/runtime/`: 덧붙이기 전용 실행 로그와 명시적 상태 전환, 원자적 상태 저장.
-- `brain/graph/`: LangGraph 계획→관찰→선택→실행→검증, 중복 조회와 저장 후 대조.
+- `brain/graph/`: `Observation → Decision → Execution → Review` 상태 계약, 중복 조회와 저장 후 대조.
 - `brain/observe/`: `flat_fields` / `label_grouped` 관찰 요약.
 - `brain/relay.py`, `brain/run.py`: 인증 HTTP 중계 클라이언트와 건별 실행 CLI.
 - `models/budget.py`: 호출 전 비용 예약, 비용 미상·예산 초과 시 중단.

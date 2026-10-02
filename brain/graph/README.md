@@ -1,10 +1,20 @@
 # Reasoning graph (M1 stage 2)
 
-`python -m brain.run` runs a new private case. The LangGraph nodes are plan,
-observe, select, act, and reread/verify. Phase gates enforce duplicate query before
-entry, verified field values before save, and an observed final query row before
-success. Success changes case status from `entering` to `awaiting_approval`;
-the brain never approves or transmits a record.
+`python -m brain.run` runs a new private case. Procedure loading or one initial plan
+call happens before the worker graph. The compiled graph has four responsibility
+nodes: `observation`, `decision`, `execution`, and `review`. Their authoritative
+handoff is `state.WorkerState`, split into matching sections plus lifecycle routing.
+Phase gates enforce duplicate query before entry, verified field values before save,
+and an observed final query row before success. Success changes case status from
+`entering` to `awaiting_approval`; the brain never approves or transmits a record.
+
+`observation` captures current evidence. When `execution.pending` exists, it also
+rereads the application and verifies the delivered action's observable effect.
+`decision` owns policy, cache/model selection and `ActionPlan` preparation.
+`execution` dispatches the selected plan but cannot claim success. `review` owns
+current result evidence and deterministic duplicate/completion proof. The legacy
+private helpers remain implementation details; only these four nodes are registered
+with LangGraph.
 
 All environment access uses authenticated relay HTTP. No benchmark implementation,
 database, exported layout, app label, AutomationId, or fixed coordinate is used.
@@ -50,9 +60,9 @@ and missing-field saves; they are not a semantic proof of arbitrary button inten
 The application's agent role remains the enforcement boundary for transmission.
 
 Current execution architecture: [2026-09-30 review](../../docs/architecture-review-20260930.md).
-Selection prepares an `ActionPlan`; single model/cache actions, login and field batches
-all use `execution.execute_plan` through the `act` node. The `verify` node owns the
-subsequent observation. Domain-specific verifiers share field comparison, semantic
+Decision prepares an `ActionPlan`; single model/cache actions, login and field batches
+all use `execution.execute_plan` through the `execution` node. The `observation` node
+owns the subsequent reread and effect verification. Domain-specific verifiers share field comparison, semantic
 rebinding and transition logging. A partial batch retains delivery records without
 claiming unobserved values. Group plans are not promoted as single-field cache entries.
 

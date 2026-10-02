@@ -25,10 +25,10 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    PLAN["Plan: 제공된 절차 로드 / 분리형 경로의 계획 호출"] --> O["Observe: relay 관찰·OCR/시각 분석 또는 UIA"]
-    O --> R["Review: 현재 행 식별·필수 필드 근거 검사"]
+    PLAN["그래프 전 준비: 제공 절차 로드 / 분리형 계획 호출"] --> O["Observation: 캡처·직전 행동 효과 검증"]
+    O --> R["Review: 현재 행·필수 필드·완료 근거 검사"]
     R -->|중복 결과 행·안전 제한| STOP["중단"]
-    R -->|계속| POLICY["Select: 상태 정책·허용 응답 구성"]
+    R -->|계속| POLICY["Decision: 상태 정책·허용 응답 구성"]
     POLICY --> CACHE{"현재 의미 입력 캐시 적중?"}
     CACHE -->|적중| G["공통 가드"]
     CACHE -->|미적중| RB{"rebind 설정 · 공통 필드 · 호출 여유?"}
@@ -41,13 +41,12 @@ flowchart TD
     POLICY -->|최종 근거 needs_more| HIGH
     HIGH --> G
     G -->|모델의 비입력 대상 선택 · 재선택 한도 내| O
-    G --> ACT["Act: ActionPlan 공통 실행·relay HTTP"]
-    ACT --> VERIFY["Verify: 새 관찰·값 재읽기·행동 효과 검사"]
-    VERIFY -->|시각 검증 장면 재사용| R
-    VERIFY -->|UIA 최신 상태 관찰| O
-    VERIFY -->|캐시 실패| RETRY["설정된 재시도 → 무효화 → 모델 복구"]
+    G --> ACT["Execution: ActionPlan 공통 실행·relay HTTP"]
+    ACT --> O
+    O -->|검증된 최신 장면| R
+    O -->|캐시 실패| RETRY["설정된 재시도 → 무효화 → 모델 복구"]
     RETRY --> O
-    VERIFY -->|일반 복구 가능 오류| BOUND["피드백·단계/실패/비용 한도"]
+    O -->|일반 복구 가능 오류| BOUND["피드백·단계/실패/비용 한도"]
     BOUND -->|한도 내| O
     BOUND -->|한도 도달| STOP
     POLICY -->|중복/완료 근거 응답| PROOF["Review: 현재 근거 제출 엄격 검증"]
@@ -56,9 +55,11 @@ flowchart TD
     PROOF -->|최종 전체 값 일치| DONE["성공 → 결재 대기 · 검증 후보 캐시 승격"]
 ```
 
-실제 LangGraph 노드는 `plan / observe / review / select / act / verify`다.
-정책·캐시·모델 선택은 `select`에서 ActionPlan을 준비한다.
-로그인·등록 묶음도 `act`의 공통 실행기를 거쳐 `verify`에서 한 번 재관찰한다.
+계획 준비는 그래프 진입 전에 끝난다. 실제 LangGraph 노드는 `observation`, `decision`,
+`execution`, `review` 네 개뿐이며 `state.WorkerState`의 동일 이름 구역과 lifecycle을 공유한다.
+정책·캐시·모델 선택은 `decision`에서 ActionPlan을 준비한다.
+로그인·등록 묶음도 `execution`의 공통 실행기를 거치며, pending 행동이 있는
+`observation`이 한 번 재관찰해 효과를 검증한다.
 [2026-09-30 공통화 점검](architecture-review-20260930.md)이 최신 구조와 미해결 항목을 설명한다.
 `review`는 현재 관찰의 완료 가능 여부와 제출된 업무 근거 검증을 담당하며 별도 LLM을 호출하지 않는다.
 허용 창 밖, 만료된 대상, 비용 불명 등 즉시 종료 조건은 모델 복구로 우회하지 않는다.
@@ -85,10 +86,10 @@ pipeline/workflow.py
       ├─ READY·자기 레코드·검증 보고서·기록 정체성 확인
       ├─ 선택적 건별 캐시 설치 (OCR 기록/비용 유지)
       └─ Brain.run()
-          ├─ _plan_node → 화면 매칭은 절차 로드 / 분리형 경로는 measured ModelClient
-          ├─ _observe_node → relay.observe → 민감정보 제거·스냅샷 저장
-          ├─ _review_node → review_final → 완료 가능 여부
-          ├─ _select_node
+          ├─ 그래프 전 _plan_node → 화면 매칭은 절차 로드 / 분리형 경로는 measured ModelClient
+          ├─ observation_node → relay.observe → 민감정보 제거·스냅샷·pending 효과 검증
+          ├─ review_node → review_final → 완료 가능 여부
+          ├─ decision_node
           │   ├─ DecisionPolicy → 현재 응답 스키마
           │   ├─ CacheSession.lookup (정확 일치 / 선택적 공통 라벨 재매칭)
           │   ├─ 미적중 시 선택적 build_rebind_request → 측정 호출 → install_rebind_proposal
@@ -96,8 +97,8 @@ pipeline/workflow.py
           │   ├─ save_result: 현재 근거·결과·다음 행동을 한 응답으로 판단
           │   │   └─ 거절→해당 필드 수정, 확인창→처리 후 재판정, 준비됨→최종 조회
           │   └─ 공통 _guard_action
-          ├─ _act_node → execute_plan → 전체 계획 선검사 → 순서대로 relay.act
-          ├─ _verify_node → 한 번 재관찰·단일/묶음 값·각 행동 전이 검사
+          ├─ execution_node → execute_plan → 전체 계획 선검사 → 순서대로 relay.act
+          ├─ state.WorkerState → 관찰·결정·실행·검토 구역의 명시적 인계
           └─ 성공 후 CacheSession.finish → 원자적 승격·결재 대기
 ```
 
@@ -122,7 +123,8 @@ pipeline/workflow.py
 업무 근거 검토, 조건부 경험 재사용, 모든 출처에 공통인 실행 가드, 명시적 상위 모델 복구,
 성공 후 경험 승격을 반영했다. L2C의 사이트별 경로·좌표·업무 DB 접근은 사용하지 않는다.
 Sawon은 정해진 선적 한 건을 처리하며 L2C의 상위 조사·답변 그래프는 없다.
-상태는 Brain 인스턴스에 보관하며 `verify`의 최신 시각 관찰을 다음 판단에서 재사용한다.
+상태는 `WorkerState`의 observation/decision/execution/review/lifecycle 구역에 보관하며
+Brain 속성은 이 계약을 참조한다. Observation의 최신 시각 관찰을 다음 판단에서 재사용한다.
 그래프 모양을 같게 만드는 것과 실제 성공률을 증명하는 것은 별개다.
 
 ## 목표·계획과 화면 행동 연결
