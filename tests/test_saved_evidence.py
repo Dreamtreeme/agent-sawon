@@ -92,7 +92,16 @@ def test_post_save_query_and_two_detail_tabs_complete(record):
 
 
 @pytest.mark.parametrize(
-    "mode", ["other_record", "other_window", "no_tab_transition", "conflict", "clipped", "empty"]
+    "mode",
+    [
+        "other_record",
+        "other_window",
+        "no_tab_transition",
+        "conflict",
+        "clipped",
+        "ascii_clipped",
+        "empty",
+    ],
 )
 def test_unlinked_or_incomplete_detail_never_completes(record, mode):
     values = values_for(record)
@@ -106,6 +115,8 @@ def test_unlinked_or_incomplete_detail_never_completes(record, mode):
         content["description"] = "Wrong cargo"
     if mode == "clipped":
         content["container_no"] = "TEST…"
+    if mode == "ascii_clipped":
+        content["container_no"] = "TEST.."
     if mode == "empty":
         content["container_no"] = ""
     last = detail(content, handle=3 if mode == "other_window" else 2)
@@ -160,6 +171,32 @@ def test_duplicate_rows_block_and_same_cell_cannot_prove_several_fields(record):
     last = detail({"container_no": values["container_no"]})
     mapping = {"container_no": ref("container_no"), "description": ref("container_no")}
     assert proof.observe(last, values, field_matches, mapping).status != "ready"
+
+
+def test_merged_query_cell_is_missing_evidence_not_a_field_conflict(record):
+    values = values_for(record)
+    proof = SavedEvidence()
+    proof.begin()
+    q = query(values, omit=("mbl_no", "shipper"))
+    merged = element(
+        "merged",
+        "cell",
+        parent="row",
+        value=values["mbl_no"] + values["shipper"],
+    )
+    q = q.model_copy(update={"elements": [*q.elements, merged]})
+
+    result = proof.observe(
+        q,
+        values,
+        field_matches,
+        {"mbl_no": merged.ref, "shipper": merged.ref},
+    )
+
+    assert result.status == "needs_more"
+    assert result.reason == "saved_record_evidence_missing"
+    assert {"mbl_no", "shipper"} <= set(result.missing_fields)
+    assert proof.conflict is None
 
 
 @pytest.mark.parametrize("rematched", [False, True])

@@ -12,12 +12,20 @@ from test_visual_markers import fixture
 from test_visual_scene import wire
 
 from brain.graph.engine import Brain
-from brain.graph.matching import PLAN_RULES, RULES, ScreenMatch, ScreenPlan, compile_match
+from brain.graph.matching import (
+    PLAN_RULES,
+    RULES,
+    TARGET_GROUNDING_RULES,
+    ScreenMatch,
+    ScreenPlan,
+    compile_match,
+    compile_screen_action_plan,
+)
 from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
 from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
-from brain.visual.scene import SceneObservation
+from brain.visual.scene import SceneObservation, SemanticDetection
 
 PROCEDURE = Path(__file__).resolve().parents[1] / "examples/shipment-procedure.json"
 
@@ -59,6 +67,10 @@ def setup_brain(tmp_path, record, responses):
         item = next(plans)
         if prompt.startswith(PLAN_RULES):
             return {key: value for key, value in item.items() if key in ScreenPlan.model_fields}
+        if prompt.startswith(TARGET_GROUNDING_RULES):
+            return {
+                key: value for key, value in item.items() if key in SemanticDetection.model_fields
+            }
         return item
 
     model = ScriptedModel(log, repeat(route))
@@ -212,7 +224,7 @@ def test_identical_rematch_reuses_grounded_interpretation(tmp_path, record):
     )
 
 
-def test_identical_catalog_rematches_when_new_step_targets_unclassified_marker(tmp_path, record):
+def test_identical_catalog_grounds_new_target_without_replacing_plan(tmp_path, record):
     meaning = fixture()[-1]
     empty = response(
         meaning,
@@ -251,10 +263,17 @@ def test_identical_catalog_rematches_when_new_step_targets_unclassified_marker(t
     assert brain._select_node({}) == {"next": "act"}
     assert len(model.prompts) == 3
     assert model.prompts[1].startswith(PLAN_RULES)
-    assert model.prompts[2].startswith(RULES)
+    assert model.prompts[2].startswith(TARGET_GROUNDING_RULES)
     assert ocr.calls == detector.calls == 1
     assert any(
-        event.payload.get("check") == "catalog_target_rematched" for event in brain.log.read_all()
+        event.payload.get("check") == "action_targets_grounded"
+        and event.payload.get("plan_preserved") is True
+        for event in brain.log.read_all()
+    )
+    assert any(
+        event.payload.get("check") == "catalog_targets_merged"
+        and event.payload.get("plan_preserved") is True
+        for event in brain.log.read_all()
     )
 
 
@@ -356,6 +375,67 @@ def test_combined_match_keeps_grounding_and_corrects_only_invalid_action(tmp_pat
     )
 
 
+def test_action_correction_grounds_real_target_without_replanning(tmp_path, record):
+    meaning = fixture()[-1]
+    wrong = response(meaning, procedure_step="save-entry", controls=[])
+    corrected = response(meaning, controls=[])
+    grounded = response(meaning)
+    brain, model, _, ocr, detector, _ = setup_brain(tmp_path, record, [wrong, corrected, grounded])
+
+    brain._observe()
+
+    assert brain._select_node({}) == {"next": "act"}
+    assert brain.decision.intent == "query_input"
+    assert len(model.prompts) == 3
+    assert model.prompts[-1].startswith(TARGET_GROUNDING_RULES)
+    assert ocr.calls == detector.calls == 1
+    assert any(
+        event.payload.get("check") == "action_targets_grounded"
+        and event.payload.get("plan_preserved") is True
+        for event in brain.log.read_all()
+    )
+
+
+def test_missing_action_semantics_preserves_original_single_click(tmp_path, record):
+    meaning = fixture()[-1]
+    plan = response(
+        meaning,
+        screen_kind="query",
+        procedure_step="open-entry",
+        controls=[],
+        steps=[
+            {
+                "target": meaning.controls[0].id,
+                "action": "click",
+                "intent": "navigate",
+                "point": [175, 30],
+            }
+        ],
+    )
+    target = response(
+        meaning,
+        screen_kind="query",
+        procedure_step="open-entry",
+        controls=[{**response(meaning)["controls"][0], "role": "button"}],
+        steps=[],
+        operation="stop",
+    )
+    brain, model, _, ocr, detector, _ = setup_brain(tmp_path, record, [plan, target])
+    brain.phase = "enter"
+    brain.duplicate_clear = True
+
+    brain._observe()
+    assert brain._select_node({}) == {"next": "act"}
+
+    assert len(model.prompts) == 2
+    assert model.prompts[1].startswith(TARGET_GROUNDING_RULES)
+    assert brain.action_plan is None
+    assert brain.decision.intent == "navigate"
+    assert brain.decision.action.ref.endswith(str(meaning.controls[0].id))
+    assert brain.visual_points.get(brain.observation, brain.decision).point == (175.0, 30.0)
+    assert ocr.calls == detector.calls == 1
+
+
 def test_login_and_record_arrays_compile_to_existing_batches():
     from test_brain import element
 
@@ -408,6 +488,43 @@ def test_login_and_record_arrays_compile_to_existing_batches():
         screen_kind="query", controls=[], procedure_step="check-duplicate", operation="stop"
     )
     assert compile_match(stop, scene, DecisionResponse).to_decision().operation == "stop"
+
+
+def test_same_screen_navigation_clicks_compile_to_one_action_plan():
+    from test_brain import element
+
+    observed = wire()
+    prefix = "e" + str(observed.obs_id.int) + "0"
+    scene = SceneObservation(
+        wire=observed,
+        screen_kind="query",
+        elements=[element(prefix + "31", "Row"), element(prefix + "44", "Button")],
+    )
+    response = ScreenMatch(
+        screen_kind="query",
+        controls=[],
+        procedure_step="verify-final",
+        steps=[
+            {
+                "target": 31,
+                "action": "click",
+                "intent": "navigate",
+                "point": [1, 1],
+            },
+            {
+                "target": 44,
+                "action": "click",
+                "intent": "navigate",
+                "point": [1, 1],
+            },
+        ],
+    )
+
+    plan = compile_screen_action_plan(response, scene)
+
+    assert plan is not None
+    assert [item.decision.action.ref for item in plan.actions] == [prefix + "31", prefix + "44"]
+    assert plan.audit == {"check": "same_screen_action_plan", "actions": 2, "intent": "navigate"}
 
 
 def test_save_result_and_proof_use_the_existing_contract():
@@ -938,6 +1055,52 @@ def test_pending_query_input_proposes_search_without_claiming_verification(tmp_p
     assert brain.query_value_verified is False
 
 
+def test_delivered_final_search_exposes_only_evidence_step(tmp_path, record):
+    from brain.graph.matching import RULES, match_screen
+    from brain.graph.schemas import Choice, Decision
+
+    brain, model, _, _, _, _ = setup_brain(
+        tmp_path,
+        record,
+        [
+            response(
+                fixture()[-1],
+                screen_kind="query",
+                procedure_step="verify-final",
+                steps=[],
+                operation="stop",
+            )
+        ],
+    )
+    brain.phase = "final_query"
+    brain.duplicate_clear = brain.save_issued = True
+    brain.query_value_verified = brain.query_submitted = True
+    brain.decision = Decision(
+        screen_kind="query",
+        operation="act",
+        intent="search",
+        subgoal="search-final",
+        reason="refresh result",
+        action=Choice(type="click", ref="e1"),
+    )
+    brain.pending = {"decision": brain.decision}
+
+    match_screen(
+        brain,
+        {
+            "ocr": [block.model_dump() for block in fixture()[0]],
+            "markers": [marker.model_dump() for marker in fixture()[2]],
+        },
+        None,
+    )
+
+    state = json.loads(model.prompts[-1][len(RULES) :])
+    candidate_ids = {step["id"] for step in state["procedure"]}
+    assert "verify-final" in candidate_ids
+    assert not {"enter-final-key", "search-final"} & candidate_ids
+    assert state["execution"]["checkpoint"] == "final_row_evidence"
+
+
 @pytest.mark.parametrize("pending", [False, True])
 def test_entry_prompt_contains_only_remaining_and_pending_record_fields(tmp_path, record, pending):
     from brain.graph.matching import RULES, match_screen
@@ -992,6 +1155,56 @@ def test_entry_prompt_contains_only_remaining_and_pending_record_fields(tmp_path
             "open-additional-entry",
             "fill-additional-entry",
         }
+
+
+def test_pending_fields_are_verification_context_not_repeat_action_candidates(tmp_path, record):
+    from brain.graph.matching import RULES, match_screen
+    from brain.graph.schemas import Choice, Decision
+
+    meaning = fixture()[-1]
+    brain, model, _, _, _, _ = setup_brain(
+        tmp_path,
+        record,
+        [
+            response(
+                meaning,
+                screen_kind="editor",
+                procedure_step="open-shipper-lookup",
+                steps=[],
+                operation="stop",
+            )
+        ],
+    )
+    brain.phase = "enter"
+    brain.duplicate_clear = True
+    brain.verified = {
+        field: f"prior-{field}" for field in brain.values if field not in {"hbl_no", "shipper"}
+    }
+    brain.decision = Decision(
+        screen_kind="editor",
+        operation="act",
+        intent="fill",
+        subgoal="fill-entry",
+        reason="fill pending field",
+        action=Choice(type="set_text", ref="e1", source="hbl_no"),
+    )
+    brain.pending = {"decision": brain.decision}
+
+    match_screen(
+        brain,
+        {
+            "ocr": [block.model_dump() for block in fixture()[0]],
+            "markers": [marker.model_dump() for marker in fixture()[2]],
+        },
+        None,
+    )
+
+    state = json.loads(model.prompts[-1][len(RULES) :])
+    candidate_ids = {step["id"] for step in state["procedure"]}
+    assert "open-shipper-lookup" in candidate_ids
+    assert "fill-entry" not in candidate_ids
+    assert state["notebook"]["pending_verification_fields"] == ["hbl_no"]
+    assert set(state["notebook"]["record"]) == {"hbl_no", "shipper"}
 
 
 def test_entry_step_rejects_a_field_outside_user_procedure_scope(tmp_path, record):

@@ -197,6 +197,15 @@ active field_scope key to its CURRENT edit/combobox before navigation, even when
 Return only the task plan fields in the schema. Never return control roles or relationships.
 """
 
+TARGET_GROUNDING_RULES = """Ground only the listed action target markers on the CURRENT image.
+The existing task plan is immutable: do not replace, reorder, or add actions.
+Return each required_target_id exactly once in controls, plus only a necessary visible parent.
+Use the supplied existing marker ID and geometry; never substitute an OCR caption marker for an
+enclosing detector marker. Classify its visible role, labels, contained literal text, enabled state,
+and focus state. All label_ids/text_ids use the printed visible text-marker IDs. Do not invent IDs,
+boxes, values, actions, or hidden controls. Report uncertainty when the role cannot be grounded.
+"""
+
 
 RULES = """Match this current OCR/control form to the supplied task procedure and notebook.
 Do not create a new workflow. Pick a procedure_step belonging to the current phase, screen,
@@ -507,6 +516,77 @@ def retain_verification(
     return response
 
 
+def retain_action_targets(brain, response: ScreenMatch, screen: dict, page=None) -> ScreenMatch:
+    """Add semantics for model-selected targets without replacing the task plan."""
+    controls = {control.id: control for control in response.controls}
+    required = {step.target for step in response.steps}
+    missing = required - controls.keys()
+    if not missing:
+        return response
+
+    marker_ids = {marker["id"] for marker in screen.get("markers", [])}
+    # Let the normal semantic-grounding retry repair an invalid interpretation.
+    # This helper handles only a sound interpretation that omitted a real target.
+    if not controls.keys() <= marker_ids:
+        return response
+    if not missing <= marker_ids:
+        return response
+
+    original_steps = response.steps
+    supplement = brain._call(
+        TARGET_GROUNDING_RULES
+        + json.dumps(
+            {
+                "required_target_ids": sorted(missing),
+                "existing_controls": model_controls(response.controls, screen),
+                "screen": model_screen(screen),
+            },
+            ensure_ascii=False,
+        ),
+        SemanticDetection,
+        page=page,
+    )
+    supplement = local_response(supplement, screen)
+    supplied = {control.id: control for control in supplement.controls}
+    if not missing <= supplied.keys():
+        raise GuardStop("action_target_semantics_missing")
+
+    # Preserve every prior meaning. Only the omitted targets and their explicit
+    # parent chain may be added by this repair call.
+    allowed = set(missing)
+    for target_id in tuple(missing):
+        current = supplied.get(target_id)
+        visited: set[int] = set()
+        while current is not None and current.parent_id is not None:
+            if current.parent_id in visited:
+                raise GuardStop("action_target_parent_cycle")
+            visited.add(current.parent_id)
+            allowed.add(current.parent_id)
+            current = supplied.get(current.parent_id)
+    controls.update({key: value for key, value in supplied.items() if key in allowed})
+    repaired = response.model_copy(
+        update={
+            "controls": list(controls.values()),
+            "uncertainties": [*response.uncertainties, *supplement.uncertainties],
+        }
+    )
+    if repaired.steps != original_steps:
+        raise AssertionError("action_target_grounding_changed_plan")
+    atomic_write_json(
+        brain.case_dir / "matching" / f"{uuid4().hex}-target-grounding.json", repaired
+    )
+    brain.log.append(
+        "verify",
+        payload={
+            "check": "action_targets_grounded",
+            "marker_ids": sorted(missing),
+            "procedure_step": response.procedure_step,
+            "plan_preserved": True,
+        },
+    )
+    return repaired
+
+
 def bind_selection_effect(
     response: ScreenMatch, step: ProcedureStep, active_fields: set[str]
 ) -> ScreenMatch:
@@ -599,8 +679,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     policy = brain._decision_policy()
     contract = execution_context(brain, policy, anticipate=True)
     candidates = [s for s in brain.procedure.steps if s.phase == brain.phase]
-    if brain.pending is None or contract["conditional"]:
-        candidates = [s for s in candidates if s.checkpoint in {"any", contract["checkpoint"]}]
+    candidates = [s for s in candidates if s.checkpoint in {"any", contract["checkpoint"]}]
     required = required_verification(brain)
     pending_verification_fields = sorted(
         {
@@ -610,7 +689,12 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         }
     )
     remaining_fields = contract["remaining_fields"]
-    active_fields = set(remaining_fields) | set(pending_verification_fields)
+    # Pending fields remain in the prompt so the current pixels can verify
+    # them, but the conditional next action assumes that verification passes.
+    # Re-adding them to action eligibility lets a fallback plan repeat work
+    # that the executor has already delivered.
+    active_fields = set(remaining_fields)
+    verification_fields = set(pending_verification_fields)
     verified_fields = set(brain.verified)
     if contract["conditional"] and brain.phase == "enter":
         verified_fields |= set(brain.values) - set(remaining_fields)
@@ -627,7 +711,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         procedure_fields = {
             field for step in candidates for field in step.field_scope if field in active_fields
         }
-        exposed_fields = procedure_fields or active_fields
+        exposed_fields = (procedure_fields or active_fields) | verification_fields
         record = {field: brain.values[field] for field in sorted(exposed_fields)}
     notebook = {
         "phase": brain.phase,
@@ -806,6 +890,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
                     "steps": len(completion.steps),
                 },
             )
+        response = retain_action_targets(brain, response, screen, page)
     brain.procedure_step = step.id
     brain.log.append(
         "select",
@@ -927,5 +1012,39 @@ def compile_selection_plan(response: ScreenMatch, observation):
         {
             "check": "selection_screen_plan",
             "actions": len(actions),
+        },
+    )
+
+
+def compile_screen_action_plan(response: ScreenMatch, observation):
+    """Compile same-screen preparation clicks before one navigation boundary."""
+    from .execution import ActionPlan, PlannedAction
+    from .schemas import DecisionResponse
+
+    if response.operation != "act" or len(response.steps) <= 1:
+        return None
+    if all(step.intent == "select_option" for step in response.steps):
+        return None
+    intents = {step.intent for step in response.steps}
+    if intents not in ({"navigate"}, {"select_tab"}) or any(
+        step.action not in {"click", "double_click", "key"} or step.source is not None
+        for step in response.steps
+    ):
+        return None
+    actions = tuple(
+        PlannedAction(
+            compile_match(
+                response.model_copy(update={"steps": [step]}), observation, DecisionResponse
+            ).to_decision()
+        )
+        for step in response.steps
+    )
+    return ActionPlan(
+        actions,
+        "single",
+        {
+            "check": "same_screen_action_plan",
+            "actions": len(actions),
+            "intent": next(iter(intents)),
         },
     )

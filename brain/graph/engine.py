@@ -346,13 +346,17 @@ class Brain:
 
     def _selection_call(self, prompt: str, schema: type[BaseModel]):
         if self.settings.screen_matching:
-            from .matching import compile_match, compile_selection_plan, match_screen
+            from .matching import (
+                compile_match,
+                compile_screen_action_plan,
+                compile_selection_plan,
+                match_screen,
+            )
 
             assert self.visual_perception is not None
-            used_catalog_plan = False
+
             response, self.visual_proposal = self.visual_proposal, None
             if response is None or self.visual_proposal_obs_id != self.observation.obs_id:
-                used_catalog_plan = True
                 request, interpretation = self.visual_perception.planning_context()
                 response = match_screen(
                     self,
@@ -370,41 +374,54 @@ class Brain:
                         "procedure_step": response.procedure_step,
                     },
                 )
-            self._bind_saved_evidence(response)
             assert isinstance(self.observation, SceneObservation)
-            try:
-                self.visual_points.bind(self.observation, response.steps)
-            except ValueError as error:
-                if not used_catalog_plan or str(error) != "visual_click_point_unknown_target":
-                    raise
-                # The exact-image catalog contains only meanings that were relevant
-                # when it was grounded. A later procedure step may need another marker
-                # on the unchanged image. Reuse OCR/detection, but run one fresh
-                # combined image match so the new target is locally grounded.
-                observation = self.visual_perception.rematch(self.observation.wire)
-                response, self.visual_proposal = self.visual_proposal, None
-                if response is None:
-                    raise ValueError("visual_catalog_rematch_missing_proposal") from error
-                self.observation = observation
-                self.visual_proposal_obs_id = observation.obs_id
+            prefix = "e" + str(self.observation.obs_id.int) + "0"
+            grounded_refs = {element.ref for element in self.observation.elements}
+            missing_targets = {
+                step.target
+                for step in response.steps
+                if prefix + str(step.target) not in grounded_refs
+            }
+            if missing_targets:
+                request, _ = self.visual_perception.planning_context()
+                catalog_marker_ids = {marker["id"] for marker in request.screen.get("markers", [])}
+                response_control_ids = {control.id for control in response.controls}
+                if not missing_targets <= catalog_marker_ids:
+                    raise ValueError("visual_proposal_unknown_marker")
+                if not missing_targets <= response_control_ids:
+                    raise ValueError("action_target_semantics_missing")
+                semantics = SemanticDetection.model_validate(
+                    {
+                        key: value
+                        for key, value in response.model_dump().items()
+                        if key in SemanticDetection.model_fields
+                    }
+                )
+                self.observation = self.visual_perception.merge_interpretation(
+                    self.observation.wire, semantics
+                )
+                self.visual_proposal_obs_id = self.observation.obs_id
                 atomic_write_json(
                     self.case_dir / f"observations/{self.observation_number:04d}.json",
-                    observation,
+                    self.observation,
                 )
                 self.log.append(
                     "verify",
                     payload={
-                        "check": "catalog_target_rematched",
-                        "obs_id": str(observation.obs_id),
-                        "reason": str(error),
-                        "procedure_step": response.procedure_step,
+                        "check": "catalog_targets_merged",
+                        "obs_id": str(self.observation.obs_id),
+                        "marker_ids": sorted(missing_targets),
+                        "plan_preserved": True,
                     },
                 )
-                self._bind_saved_evidence(response)
-                self.visual_points.bind(observation, response.steps)
+            self._bind_saved_evidence(response)
+            self.visual_points.bind(self.observation, response.steps)
             selection_plan = compile_selection_plan(response, self.observation)
-            if selection_plan is not None:
-                self.action_plan = selection_plan
+            screen_action_plan = selection_plan or compile_screen_action_plan(
+                response, self.observation
+            )
+            if screen_action_plan is not None:
+                self.action_plan = screen_action_plan
                 response = response.model_copy(update={"steps": response.steps[:1]})
             result = compile_match(response, self.observation, schema)
             self.log.append(

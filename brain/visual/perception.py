@@ -466,6 +466,52 @@ class VisualPerception:
         )
         return request, interpretation
 
+    def merge_interpretation(
+        self, wire: Observation, meanings: SemanticDetection
+    ) -> SceneObservation:
+        """Merge newly grounded target meanings into the current local catalog."""
+        catalog = self._catalog
+        if catalog is None or catalog.detection is None:
+            raise ValueError("visual_interpretation_unavailable")
+        if meanings.screen_kind != catalog.detection.screen_kind:
+            raise ValueError("visual_interpretation_screen_mismatch")
+
+        controls = {
+            control.id: control.model_dump(exclude={"bbox"})
+            for control in catalog.detection.controls
+        }
+        controls.update({control.id: control.model_dump() for control in meanings.controls})
+        merged = SemanticDetection.model_validate(
+            {
+                "screen_kind": catalog.detection.screen_kind,
+                "controls": list(controls.values()),
+                "uncertainties": list(
+                    dict.fromkeys([*catalog.detection.uncertainties, *meanings.uncertainties])
+                ),
+                "needs_refinement": False,
+            }
+        )
+        detection = ground_meanings(merged, catalog.markers, catalog.blocks)
+        scene = bind_scene(
+            wire,
+            catalog.blocks,
+            detection,
+            threshold=self.threshold,
+            secrets=self.secrets,
+        )
+        catalog.detection = detection
+        self._catalogs[catalog.key] = catalog
+        atomic_write_json(
+            catalog.page.image_path.parent / "perception.json",
+            {
+                "source": "ocr_visual",
+                "obs_id": str(wire.obs_id),
+                "ocr": [block.model_dump(mode="json") for block in catalog.blocks],
+                "detection": detection.model_dump(mode="json"),
+            },
+        )
+        return scene
+
     def _semantic_request(self, page, path, marked_path, markers, blocks) -> SemanticRequest:
         render_markers(path, marked_path, markers)
         return SemanticRequest(

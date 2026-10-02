@@ -101,7 +101,10 @@ class SavedEvidence:
             if explicit:
                 self.fields.pop(name, None)
             return
-        if "…" in value or "..." in value:
+        # Query grids use both a Unicode ellipsis and two/three trailing ASCII
+        # dots for clipped cells. A clipped preview is missing evidence, not a
+        # contradictory saved value; the detail view must supply the full text.
+        if value.rstrip().endswith(("…", "..")):
             return
         if not matches(name, value, values):
             if explicit:
@@ -158,14 +161,22 @@ class SavedEvidence:
                 for name, ref in assignment.items():
                     self._store(name, by_ref[ref], observation, values, matches, explicit=False)
                 self.query_identity = self.fields.get("hbl_no")
+                owners: dict[str, list[str]] = {}
                 for name, ref in bindings.items():
+                    if name in values:
+                        owners.setdefault(ref, []).append(name)
+                for ref, names in owners.items():
+                    if len(names) > 1 and set(names) != {"packages.count", "packages.unit"}:
+                        continue
                     if (
-                        name in values
-                        and ref in by_ref
+                        ref in by_ref
                         and by_ref[ref].role in {"cell", "text"}
                         and _within(by_ref[ref], row.row_ref, observation)
                     ):
-                        self._store(name, by_ref[ref], observation, values, matches, explicit=True)
+                        for name in names:
+                            self._store(
+                                name, by_ref[ref], observation, values, matches, explicit=True
+                            )
             else:
                 # A changed/empty/different result must never reuse a previous row proof.
                 self.fields.clear()
