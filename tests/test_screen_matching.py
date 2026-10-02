@@ -416,6 +416,70 @@ def test_combined_match_keeps_grounding_and_corrects_only_invalid_action(tmp_pat
     )
 
 
+def test_mixed_partner_work_is_corrected_to_current_selection_batch(tmp_path, record):
+    meaning = fixture()[-1]
+    mixed = response(
+        meaning,
+        screen_kind="partner",
+        procedure_step="lookup-partner",
+        steps=[
+            {
+                "target": meaning.controls[0].id,
+                "action": "fill",
+                "source": "shipper",
+                "intent": "fill",
+            },
+            {
+                "target": meaning.controls[0].id,
+                "action": "click",
+                "intent": "search",
+                "point": [175, 30],
+            },
+            {
+                "target": meaning.controls[0].id,
+                "action": "click",
+                "intent": "select_option",
+                "point": [175, 30],
+            },
+        ],
+    )
+    corrected = response(
+        meaning,
+        screen_kind="partner",
+        procedure_step="lookup-partner",
+        steps=[
+            {
+                "target": meaning.controls[0].id,
+                "action": "click",
+                "intent": "select_option",
+                "point": [175, 30],
+            },
+            {
+                "target": meaning.controls[0].id,
+                "action": "click",
+                "source": "shipper",
+                "intent": "select_option",
+                "point": [175, 30],
+            },
+        ],
+    )
+    brain, model, _, _, _, _ = setup_brain(tmp_path, record, [mixed, corrected])
+    brain.phase, brain.duplicate_clear = "enter", True
+    brain.verified.update(
+        {
+            field: "verified"
+            for field in ("hbl_no", "mbl_no", "packages.count", "packages.unit", "pol")
+        }
+    )
+
+    brain._observe()
+
+    assert len(model.prompts) == 2
+    correction = json.loads(model.prompts[1][len(PLAN_RULES) :])["correction"]
+    assert correction["error"] == "screen_match_mixed_boundary_actions"
+    assert brain.visual_proposal.steps == ScreenMatch.model_validate(corrected).steps
+
+
 def test_action_correction_grounds_real_target_without_replanning(tmp_path, record):
     meaning = fixture()[-1]
     wrong = response(meaning, procedure_step="save-entry", controls=[])

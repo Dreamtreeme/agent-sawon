@@ -195,6 +195,9 @@ The procedure view, field_scope, prerequisites, notebook and execution contract 
 Every click/double_click must include the exact original-image point inside its target marker.
 When field-bound navigation opens a downstream select_option step, evidence MUST map each
 active field_scope key to its CURRENT edit/combobox before navigation, even when it is empty.
+Return one screen-boundary action batch: direct fills only, login credentials plus login,
+same-intent navigation clicks, or consecutive select_option row/confirmation clicks. Never mix
+fill/search with select_option when the matching result row is already visible.
 Return only the task plan fields in the schema. Never return control roles or relationships.
 """
 
@@ -648,6 +651,7 @@ _REPLANNABLE_MATCH_ERRORS = {
     "field_bound_navigation_evidence_required",
     "field_bound_navigation_evidence_not_input",
     "screen_match_field_outside_procedure_scope",
+    "screen_match_mixed_boundary_actions",
 }
 
 
@@ -673,6 +677,20 @@ def validate_match_plan(
         action.intent not in allowed_intents for action in response.steps
     ):
         raise ValueError("screen_match_action_outside_procedure")
+    if len(response.steps) > 1:
+        intents = {action.intent for action in response.steps}
+        login_batch = response.steps[-1].intent == "login" and all(
+            action.intent == "credential" for action in response.steps[:-1]
+        )
+        direct_fill_batch = intents == {"fill"}
+        selection_batch = intents == {"select_option"} and all(
+            action.action == "click" for action in response.steps
+        )
+        same_boundary_batch = intents in ({"navigate"}, {"select_tab"}) and all(
+            action.source is None for action in response.steps
+        )
+        if not (login_batch or direct_fill_batch or selection_batch or same_boundary_batch):
+            raise ValueError("screen_match_mixed_boundary_actions")
     response = bind_selection_effect(response, step, active_fields)
     require_deferred_field_evidence(response, step, brain.procedure.steps, active_fields)
     scoped_sources = {
