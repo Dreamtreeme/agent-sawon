@@ -417,6 +417,8 @@ class Brain:
             feedback["required_response"] = DUPLICATE_EVIDENCE_GUIDANCE
         elif reason in {
             "selection_error:ValidationError",
+            "selection_error:field_bound_navigation_evidence_required",
+            "selection_error:field_bound_navigation_evidence_not_input",
             "action_not_allowed_by_state",
             "final_query_required",
             "save_result_required",

@@ -192,6 +192,8 @@ PLAN_RULES = """Use the supplied grounded screen interpretation as immutable evi
 Choose the current procedure step and actions, but do not reclassify controls or invent IDs.
 The procedure view, field_scope, prerequisites, notebook and execution contract are authoritative.
 Every click/double_click must include the exact original-image point inside its target marker.
+When field-bound navigation opens a downstream select_option step, evidence MUST map each
+active field_scope key to its CURRENT edit/combobox before navigation, even when it is empty.
 Return only the task plan fields in the schema. Never return control roles or relationships.
 """
 
@@ -527,6 +529,36 @@ def bind_selection_effect(
     return response.model_copy(update={"steps": steps})
 
 
+def require_deferred_field_evidence(
+    response: ScreenMatch,
+    step: ProcedureStep,
+    procedure_steps: list[ProcedureStep],
+    active_fields: set[str],
+) -> None:
+    """Require a stable pre-navigation anchor for a later external selection effect."""
+    if response.operation != "act" or not any(item.intent == "navigate" for item in response.steps):
+        return
+    downstream_selection_fields = {
+        field
+        for candidate in procedure_steps
+        if candidate.phase == step.phase and "select_option" in candidate.actions
+        for field in candidate.field_scope
+    }
+    required = set(step.field_scope) & active_fields & downstream_selection_fields
+    if not required:
+        return
+    evidence = {item.field: item.target for item in response.evidence}
+    if not required <= evidence.keys():
+        raise ValueError("field_bound_navigation_evidence_required")
+    controls = {item.id: item for item in response.controls}
+    if any(
+        evidence[field] not in controls
+        or controls[evidence[field]].role not in {"edit", "combobox"}
+        for field in required
+    ):
+        raise ValueError("field_bound_navigation_evidence_not_input")
+
+
 def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     policy = brain._decision_policy()
     contract = execution_context(brain, policy, anticipate=True)
@@ -648,6 +680,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     if brain.pending is None and step.checkpoint not in {"any", policy.current_step}:
         raise ValueError("screen_match_checkpoint_mismatch")
     response = bind_selection_effect(response, step, active_fields)
+    require_deferred_field_evidence(response, step, brain.procedure.steps, active_fields)
     scoped_sources = {
         action.source
         for action in response.steps

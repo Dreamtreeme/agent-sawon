@@ -650,6 +650,65 @@ def test_unique_procedure_field_binds_selection_effect_without_model_echo():
     assert all(item.source is None for item in unchanged.steps)
 
 
+def test_field_bound_lookup_navigation_requires_current_input_evidence():
+    from brain.graph.matching import ProcedureStep, require_deferred_field_evidence
+
+    opening = ProcedureStep.model_validate(
+        {
+            "id": "open-partner",
+            "phase": "enter",
+            "screen": "editor",
+            "field_scope": ["shipper"],
+            "goal": "Open the partner lookup",
+            "completion": "The lookup is visible",
+            "actions": ["navigate"],
+        }
+    )
+    selecting = ProcedureStep.model_validate(
+        {
+            "id": "select-partner",
+            "phase": "enter",
+            "screen": "partner",
+            "field_scope": ["shipper"],
+            "goal": "Select the partner",
+            "completion": "The editor value matches",
+            "actions": ["select_option"],
+        }
+    )
+    match = ScreenMatch.model_validate(
+        {
+            "screen_kind": "editor",
+            "controls": [
+                {"id": 12, "role": "edit", "confidence": 1},
+                {"id": 13, "role": "button", "confidence": 1},
+            ],
+            "procedure_step": "open-partner",
+            "steps": [
+                {
+                    "target": 13,
+                    "action": "click",
+                    "intent": "navigate",
+                    "point": [1051, 222],
+                }
+            ],
+        }
+    )
+    steps = [opening, selecting]
+    with pytest.raises(ValueError, match="field_bound_navigation_evidence_required"):
+        require_deferred_field_evidence(match, opening, steps, {"shipper"})
+
+    wrong = ScreenMatch.model_validate(
+        {**match.model_dump(), "evidence": [{"field": "shipper", "target": 13}]}
+    )
+    with pytest.raises(ValueError, match="field_bound_navigation_evidence_not_input"):
+        require_deferred_field_evidence(wrong, opening, steps, {"shipper"})
+
+    valid = ScreenMatch.model_validate(
+        {**match.model_dump(), "evidence": [{"field": "shipper", "target": 12}]}
+    )
+    require_deferred_field_evidence(valid, opening, steps, {"shipper"})
+
+
 def test_selected_record_value_is_verified_on_return_to_editor(tmp_path, record):
     from test_brain import element
 
