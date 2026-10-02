@@ -1264,10 +1264,16 @@ def test_entry_prompt_contains_only_remaining_and_pending_record_fields(tmp_path
     assert ("save" if pending else "fill_fields") in checkpoints
     assert checkpoints <= {"any", "save" if pending else "fill_fields"}
     if not pending:
-        assert {step["id"] for step in state["procedure"] if step["field_scope"]} == {
+        field_steps = {step["id"]: step for step in state["procedure"] if step["field_scope"]}
+        assert set(field_steps) == {
             "open-additional-entry",
             "fill-additional-entry",
         }
+        assert field_steps["open-additional-entry"]["completion"] == (
+            "추가정보 직접 입력 필드가 보임"
+        )
+        assert field_steps["fill-additional-entry"]["goal"].startswith("추가정보 화면에서")
+        assert "user-taught work memo" in RULES
 
 
 def test_pending_tab_navigation_offers_its_successor_not_the_same_step(tmp_path, record):

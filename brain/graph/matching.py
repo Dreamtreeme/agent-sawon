@@ -30,7 +30,10 @@ class ProcedureStep(BaseModel):
         default="any",
         min_length=1,
         max_length=120,
-        description="Procedure-defined semantic view; never an ERP label or coordinate.",
+        description=(
+            "User-taught semantic view hint; never an ERP label, coordinate, or proof that a "
+            "particular navigation control must exist."
+        ),
     )
     field_scope: list[FieldName] = Field(
         default_factory=list,
@@ -191,7 +194,11 @@ class ScreenPlan(BaseModel):
 
 PLAN_RULES = """Use the supplied grounded screen interpretation as immutable evidence.
 Choose the current procedure step and actions, but do not reclassify controls or invent IDs.
-The procedure view, field_scope, prerequisites, notebook and execution contract are authoritative.
+Follow the user-taught procedure memo in order. Its goal, completion, field_scope and prerequisites,
+together with the notebook, are authoritative. The view is a semantic hint, not an instruction to
+find a tab or menu. Compare visible controls with each eligible step's goal and completion. Select a
+later eligible step only when the current evidence satisfies the preceding completion condition and
+the later step can be grounded now; visible fields alone do not authorize an unrelated transition.
 Every click/double_click must include the exact original-image point inside its target marker.
 When field-bound navigation opens a downstream select_option step, evidence MUST map each
 active field_scope key to its CURRENT edit/combobox before navigation, even when it is empty.
@@ -212,8 +219,13 @@ boxes, values, actions, or hidden controls. Report uncertainty when the role can
 
 
 RULES = """Match this current OCR/control form to the supplied task procedure and notebook.
-Do not create a new workflow. Pick a procedure_step belonging to the current phase, screen,
-and procedure-defined view. field_scope is authoritative: map only those record fields, and
+Do not create a new workflow. Treat the procedure as the user-taught work memo: compare the
+eligible steps' ordered goal and completion conditions with the current OCR/control evidence and
+notebook progress. Pick a procedure_step belonging to the current phase and screen. The view is a
+semantic hint, not proof that a named tab, menu, or navigation control must exist. Select a later
+eligible step only when current evidence satisfies the preceding completion condition and that
+later step can be grounded now; visible fields alone do not authorize an unrelated transition.
+field_scope is authoritative: map only those record fields, and
 never use a different missing field as a reason to leave the current procedure view.
 Return only controls needed for actions, input verification, and current result evidence;
 include their actual parents (especially tables/rows), not an inventory of every decoration.
