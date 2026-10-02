@@ -954,6 +954,11 @@ def test_field_bound_lookup_navigation_requires_current_input_evidence():
     )
     require_deferred_field_evidence(valid, opening, steps, {"shipper"})
 
+    not_yet_grounded = ScreenMatch.model_validate(
+        {**match.model_dump(), "evidence": [{"field": "shipper", "target": 99}]}
+    )
+    require_deferred_field_evidence(not_yet_grounded, opening, steps, {"shipper"})
+
 
 def test_selected_record_value_is_verified_on_return_to_editor(tmp_path, record):
     from test_brain import element

@@ -518,9 +518,11 @@ def retain_verification(
 
 
 def retain_action_targets(brain, response: ScreenMatch, screen: dict, page=None) -> ScreenMatch:
-    """Add semantics for model-selected targets without replacing the task plan."""
+    """Add semantics for model-selected action and evidence targets."""
     controls = {control.id: control for control in response.controls}
-    required = {step.target for step in response.steps}
+    required = {step.target for step in response.steps} | {
+        evidence.target for evidence in response.evidence
+    }
     missing = required - controls.keys()
     if not missing:
         return response
@@ -633,8 +635,7 @@ def require_deferred_field_evidence(
         raise ValueError("field_bound_navigation_evidence_required")
     controls = {item.id: item for item in response.controls}
     if any(
-        evidence[field] not in controls
-        or controls[evidence[field]].role not in {"edit", "combobox"}
+        evidence[field] in controls and controls[evidence[field]].role not in {"edit", "combobox"}
         for field in required
     ):
         raise ValueError("field_bound_navigation_evidence_not_input")
@@ -942,6 +943,10 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
                 },
             )
         response = retain_action_targets(brain, response, screen, page)
+        # A plan-only turn may select a real marker that the reusable scene
+        # interpretation did not need previously.  Ground it first, then enforce
+        # the evidence role before any action can reach the executor.
+        require_deferred_field_evidence(response, step, brain.procedure.steps, active_fields)
     brain.procedure_step = step.id
     brain.visual_match_candidate = (
         cache_hit[0] if cache_hit is not None else visual_match_key(state),
