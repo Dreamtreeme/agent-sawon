@@ -12,18 +12,17 @@ from test_visual_markers import fixture
 from test_visual_scene import wire
 
 from brain.graph.engine import Brain
-from brain.graph.matching import PLAN_RULES, ScreenMatch, ScreenPlan, compile_match
+from brain.graph.matching import PLAN_RULES, RULES, ScreenMatch, ScreenPlan, compile_match
 from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
 from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
-from brain.visual.perception import DETECTION_RULES
-from brain.visual.scene import SceneObservation, SemanticDetection
+from brain.visual.scene import SceneObservation
 
 PROCEDURE = Path(__file__).resolve().parents[1] / "examples/shipment-procedure.json"
 
 
-def setup_brain(tmp_path, record, responses, *, semantic_responses=None):
+def setup_brain(tmp_path, record, responses):
     blocks, boxes, _, meaning = fixture()
 
     class Relay:
@@ -55,17 +54,8 @@ def setup_brain(tmp_path, record, responses, *, semantic_responses=None):
     relay, ocr, detector = Relay(), Ocr(), Detector()
     log = RunLog(tmp_path, case_id=record.case_id, agent_id="test")
     plans = iter(responses)
-    semantics = iter(semantic_responses) if semantic_responses is not None else None
-    default_semantic = meaning.model_dump()
-    if responses and "screen_kind" in responses[0]:
-        default_semantic["screen_kind"] = responses[0]["screen_kind"]
 
     def route(prompt):
-        if prompt.startswith(DETECTION_RULES):
-            item = next(semantics) if semantics is not None else default_semantic
-            return {
-                key: value for key, value in item.items() if key in SemanticDetection.model_fields
-            }
         item = next(plans)
         if prompt.startswith(PLAN_RULES):
             return {key: value for key, value in item.items() if key in ScreenPlan.model_fields}
@@ -113,7 +103,7 @@ def response(meaning, **kwargs):
     }
 
 
-def test_procedure_is_loaded_and_interpretation_precedes_plan(tmp_path, record):
+def test_procedure_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path, record):
     meaning = fixture()[-1]
     brain, model, _, _, _, _ = setup_brain(tmp_path, record, [response(meaning)])
     brain.credentials = {"credential.username": "secret-user", "credential.password": "secret-pw"}
@@ -122,9 +112,8 @@ def test_procedure_is_loaded_and_interpretation_precedes_plan(tmp_path, record):
     assert json.loads((tmp_path / "procedure.json").read_text())["steps"]
     brain._observe()
     assert brain._select_node({}) == {"next": "act"}
-    assert len(model.prompts) == 2
-    assert model.prompts[0].startswith(DETECTION_RULES)
-    assert model.prompts[1].startswith(PLAN_RULES)
+    assert len(model.prompts) == 1
+    assert model.prompts[0].startswith(RULES)
     assert brain.decision.action.source == "hbl_no"
     assert brain.decision.action.ref.startswith("e" + str(brain.observation.obs_id.int))
     assert "secret-user" not in model.prompts[0] and "secret-pw" not in model.prompts[0]
@@ -146,7 +135,9 @@ def test_identical_capture_reuses_ocr_but_rematches_new_procedure_step(tmp_path,
     )
     entry["controls"][0]["role"] = "button"
     entry["evidence"] = [{"field": "hbl_no", "target": meaning.controls[0].id}]
-    brain, model, relay, ocr, detector, _ = setup_brain(tmp_path, record, [entry, entry])
+    brain, model, relay, ocr, detector, _ = setup_brain(
+        tmp_path, record, [response(meaning), entry, entry]
+    )
     brain._observe()
     old_id = brain.observation.obs_id
     brain.phase, brain.duplicate_clear = "enter", True
@@ -171,7 +162,7 @@ def test_identical_capture_reuses_ocr_but_rematches_new_procedure_step(tmp_path,
     assert ocr.calls == detector.calls == 2
 
 
-def test_gemini_interpretation_and_plan_are_separate_image_calls(tmp_path, record):
+def test_gemini_interprets_and_plans_in_one_image_call(tmp_path, record):
     meaning = fixture()[-1]
     brain, model, _, _, _, _ = setup_brain(
         tmp_path,
@@ -188,27 +179,19 @@ def test_gemini_interpretation_and_plan_are_separate_image_calls(tmp_path, recor
     model._generate = generate
     brain._observe()
     assert brain._select_node({}) == {"next": "act"}
-    assert images_seen == [True, True]
-    assert model.prompts[0].startswith(DETECTION_RULES)
-    assert model.prompts[1].startswith(PLAN_RULES)
+    assert images_seen == [True]
+    assert model.prompts[0].startswith(RULES)
 
 
 def test_local_grounding_retry_receives_only_the_relevant_correction(tmp_path, record):
     meaning = fixture()[-1]
-    bad = meaning.model_dump()
-    bad["screen_kind"] = "query"
+    bad = response(meaning)
     bad["controls"][0]["id"] = 999
-    corrected = meaning.model_dump()
-    corrected["screen_kind"] = "query"
-    brain, model, _, _, _, _ = setup_brain(
-        tmp_path,
-        record,
-        [response(meaning)],
-        semantic_responses=[bad, corrected],
-    )
+    corrected = response(meaning)
+    brain, model, _, _, _, _ = setup_brain(tmp_path, record, [bad, corrected])
     brain._observe()
     assert brain._select_node({}) == {"next": "act"}
-    assert len(model.prompts) == 3
+    assert len(model.prompts) == 2
     assert '"error": "unknown_or_duplicate_marker_id"' in model.prompts[1]
     assert "rejected_response" not in model.prompts[1]
 
@@ -216,7 +199,7 @@ def test_local_grounding_retry_receives_only_the_relevant_correction(tmp_path, r
 def test_identical_rematch_reuses_grounded_interpretation(tmp_path, record):
     meaning = fixture()[-1]
     full = response(meaning)
-    brain, model, _, ocr, detector, _ = setup_brain(tmp_path, record, [full])
+    brain, model, _, ocr, detector, _ = setup_brain(tmp_path, record, [full, full])
     brain._observe()
     brain._observe()
     assert len(model.prompts) == 1
@@ -239,21 +222,26 @@ def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
         data["steps"][0]["target"] = 999
     else:
         data["steps"][0].update(action="click", intent="save", source=None, point=[175, 30])
-    brain, model, _, _, _, _ = setup_brain(tmp_path, record, [data])
+    responses = [data, data] if bad == "wrong-procedure" else [data]
+    brain, model, _, _, _, _ = setup_brain(tmp_path, record, responses)
+    if bad == "wrong-procedure":
+        with pytest.raises(ValueError, match="screen_match_procedure_mismatch"):
+            brain._observe()
+        assert len(model.prompts) == 2
+        assert model.prompts[-1].startswith(PLAN_RULES)
+        assert not any(e.kind == "act" for e in brain.log.read_all())
+        return
     brain._observe()
-    if bad != "wrong-procedure":
-        schema = brain._decision_policy().response_schema()
-        assert compile_match(
-            ScreenMatch.model_validate(response(meaning)), brain.observation, schema
-        )
-        if bad == "wrong-target":
-            with pytest.raises(ValueError, match="^visual_proposal_unknown_marker$"):
-                compile_match(ScreenMatch.model_validate(data), brain.observation, schema)
-        else:
-            from pydantic import ValidationError
+    schema = brain._decision_policy().response_schema()
+    assert compile_match(ScreenMatch.model_validate(response(meaning)), brain.observation, schema)
+    if bad == "wrong-target":
+        with pytest.raises(ValueError, match="^visual_proposal_unknown_marker$"):
+            compile_match(ScreenMatch.model_validate(data), brain.observation, schema)
+    else:
+        from pydantic import ValidationError
 
-            with pytest.raises(ValidationError):
-                compile_match(ScreenMatch.model_validate(data), brain.observation, schema)
+        with pytest.raises(ValidationError):
+            compile_match(ScreenMatch.model_validate(data), brain.observation, schema)
     assert brain._select_node({}) == {"next": "observe"}
     failures = [
         e.payload["reason"]
@@ -266,9 +254,28 @@ def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
         "wrong-phase": "ValidationError",
     }[bad]
     assert failures == ["selection_error:" + expected]
-    assert len(model.prompts) == 2
+    assert len(model.prompts) == 1
     assert brain.pending is None and brain.action_plan is None
     assert not any(e.kind == "act" for e in brain.log.read_all())
+
+
+def test_combined_match_keeps_grounding_and_corrects_only_invalid_action(tmp_path, record):
+    meaning = fixture()[-1]
+    wrong = response(meaning, procedure_step="save-entry")
+    corrected = response(meaning)
+    brain, model, _, _, _, _ = setup_brain(tmp_path, record, [wrong, corrected])
+
+    brain._observe()
+
+    assert brain._select_node({}) == {"next": "act"}
+    assert len(model.prompts) == 2
+    assert model.prompts[0].startswith(RULES)
+    assert model.prompts[1].startswith(PLAN_RULES)
+    correction = json.loads(model.prompts[1][len(PLAN_RULES) :])["correction"]
+    assert correction["error"] == "screen_match_procedure_mismatch"
+    assert any(
+        event.payload.get("check") == "combined_action_corrected" for event in brain.log.read_all()
+    )
 
 
 def test_login_and_record_arrays_compile_to_existing_batches():
@@ -481,7 +488,7 @@ def test_empty_action_is_completed_once_or_explicitly_stopped(tmp_path, record, 
     brain, model, _, _, _, _ = setup_brain(tmp_path, record, [initial, completion])
     brain._observe()
     result = brain._select_node({})
-    assert len(model.prompts) == 3
+    assert len(model.prompts) == 2
     if operation == "act":
         assert result == {"next": "act"}
         assert brain.decision.action.source == "hbl_no"
@@ -926,7 +933,7 @@ def test_entry_step_rejects_a_field_outside_user_procedure_scope(tmp_path, recor
             }
         ],
     )
-    brain, *_ = setup_brain(tmp_path, record, [bad])
+    brain, *_ = setup_brain(tmp_path, record, [bad, bad])
     brain.phase = "enter"
     brain.duplicate_clear = True
     with pytest.raises(ValueError, match="field_outside_procedure_scope"):

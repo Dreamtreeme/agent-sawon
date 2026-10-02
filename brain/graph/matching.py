@@ -559,6 +559,42 @@ def require_deferred_field_evidence(
         raise ValueError("field_bound_navigation_evidence_not_input")
 
 
+_REPLANNABLE_MATCH_ERRORS = {
+    "screen_match_procedure_mismatch",
+    "screen_match_checkpoint_mismatch",
+    "field_bound_navigation_evidence_required",
+    "field_bound_navigation_evidence_not_input",
+    "screen_match_field_outside_procedure_scope",
+}
+
+
+def validate_match_plan(
+    response: ScreenMatch,
+    candidates: list[ProcedureStep],
+    policy,
+    brain,
+    active_fields: set[str],
+) -> tuple[ScreenMatch, ProcedureStep]:
+    """Validate task actions separately from an already grounded screen interpretation."""
+    step = next((item for item in candidates if item.id == response.procedure_step), None)
+    if step is None or step.screen not in {"any", response.screen_kind}:
+        raise ValueError("screen_match_procedure_mismatch")
+    # Pending verification may advance the checkpoint, but the executor still
+    # checks the action against the actual, verified facts before any input.
+    if brain.pending is None and step.checkpoint not in {"any", policy.current_step}:
+        raise ValueError("screen_match_checkpoint_mismatch")
+    response = bind_selection_effect(response, step, active_fields)
+    require_deferred_field_evidence(response, step, brain.procedure.steps, active_fields)
+    scoped_sources = {
+        action.source
+        for action in response.steps
+        if action.source is not None and not action.source.startswith("credential.")
+    }
+    if step.field_scope and not scoped_sources <= set(step.field_scope):
+        raise ValueError("screen_match_field_outside_procedure_scope")
+    return response, step
+
+
 def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     policy = brain._decision_policy()
     contract = execution_context(brain, policy, anticipate=True)
@@ -576,6 +612,8 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     remaining_fields = contract["remaining_fields"]
     active_fields = set(remaining_fields) | set(pending_verification_fields)
     verified_fields = set(brain.verified)
+    if contract["conditional"] and brain.phase == "enter":
+        verified_fields |= set(brain.values) - set(remaining_fields)
     candidates = [
         step
         for step in candidates
@@ -595,6 +633,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         "phase": brain.phase,
         "checkpoint": policy.current_step,
         "verified_fields": sorted(brain.verified),
+        "anticipated_verified_fields": sorted(verified_fields) if contract["conditional"] else [],
         "remaining_fields": remaining_fields,
         "pending_verification_fields": pending_verification_fields,
         "duplicate_clear": brain.duplicate_clear,
@@ -672,22 +711,59 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         response = local_response(response, screen)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
-    step = next((s for s in candidates if s.id == response.procedure_step), None)
-    if step is None or step.screen not in {"any", response.screen_kind}:
-        raise ValueError("screen_match_procedure_mismatch")
-    # Pending verification may advance the checkpoint, but the executor still
-    # checks the action against the actual, verified facts before any input.
-    if brain.pending is None and step.checkpoint not in {"any", policy.current_step}:
-        raise ValueError("screen_match_checkpoint_mismatch")
-    response = bind_selection_effect(response, step, active_fields)
-    require_deferred_field_evidence(response, step, brain.procedure.steps, active_fields)
-    scoped_sources = {
-        action.source
-        for action in response.steps
-        if action.source is not None and not action.source.startswith("credential.")
-    }
-    if step.field_scope and not scoped_sources <= set(step.field_scope):
-        raise ValueError("screen_match_field_outside_procedure_scope")
+    try:
+        response, step = validate_match_plan(response, candidates, policy, brain, active_fields)
+    except ValueError as error:
+        # A novel combined response can have sound screen semantics but choose an
+        # ineligible task step. Preserve the grounded controls and correct only the
+        # action once; semantic/marker failures are handled by VisualPerception.
+        if (
+            brain.matching_model is not None
+            or grounded_interpretation is not None
+            or str(error) not in _REPLANNABLE_MATCH_ERRORS
+        ):
+            raise
+        interpretation = SemanticDetection.model_validate(
+            {
+                key: value
+                for key, value in response.model_dump().items()
+                if key in SemanticDetection.model_fields
+            }
+        )
+        correction_state = {
+            **state,
+            "screen": model_screen(screen),
+            "grounded_interpretation": {
+                "screen_kind": interpretation.screen_kind,
+                "controls": model_controls(interpretation.controls, screen),
+                "uncertainties": interpretation.uncertainties,
+            },
+            "correction": {
+                "error": str(error),
+                "instruction": (
+                    "Keep grounded_interpretation unchanged. Return a task plan that matches "
+                    "one supplied eligible procedure step and the execution contract."
+                ),
+            },
+        }
+        plan = brain._call(
+            PLAN_RULES + json.dumps(correction_state, ensure_ascii=False),
+            ScreenPlan,
+            page=page,
+        )
+        response = ScreenMatch.model_validate({**interpretation.model_dump(), **plan.model_dump()})
+        response, step = validate_match_plan(response, candidates, policy, brain, active_fields)
+        atomic_write_json(
+            brain.case_dir / "matching" / f"{uuid4().hex}-action-correction.json", response
+        )
+        brain.log.append(
+            "verify",
+            payload={
+                "check": "combined_action_corrected",
+                "error": str(error),
+                "procedure_step": step.id,
+            },
+        )
     if not response.needs_refinement:
         response = sanitize_unused_controls(brain, response, screen, required)
         response = retain_verification(

@@ -120,6 +120,91 @@ def test_pending_last_record_fill_proposes_save_without_mutating_verified_fields
     assert brain._decision_policy().current_step == "fill_fields"
 
 
+def test_pending_external_selection_anticipates_its_verified_field(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.phase = "enter"
+    brain.duplicate_clear = True
+    selected_field = "shipper"
+    brain.verified = {field: f"ref-{field}" for field in brain.values if field != selected_field}
+    brain.decision = Decision(
+        screen_kind="partner",
+        operation="act",
+        intent="select_option",
+        subgoal="select-shipper",
+        reason="select partner",
+        action=Choice(type="click", ref="e1"),
+    )
+    brain.pending = {"decision": brain.decision, "effect_source": selected_field}
+
+    actual = execution_context(brain)
+    proposed = execution_context(brain, anticipate=True)
+
+    assert actual["checkpoint"] == "fill_fields"
+    assert proposed["checkpoint"] == "save"
+    assert proposed["conditional"]
+    assert proposed["remaining_fields"] == []
+    assert selected_field not in brain.verified
+
+
+def test_pending_external_selection_exposes_only_post_verification_steps(tmp_path, record):
+    blocks, boxes, _, meanings = fixture()
+    target = meanings.controls[0].id
+    from brain.visual.marker_contract import model_controls
+
+    controls = model_controls(
+        meanings.controls, {"markers": [marker.model_dump() for marker in fixture()[2]]}
+    )
+    controls[0]["role"] = "button"
+    combined = response(
+        meanings,
+        screen_kind="editor",
+        procedure_step="open-additional-entry",
+        controls=[controls[0]],
+        steps=[
+            {
+                "target": target,
+                "action": "click",
+                "intent": "select_tab",
+                "point": [175, 30],
+            }
+        ],
+    )
+    brain, model, *_ = setup_brain(tmp_path, record, [combined])
+    brain.phase = "enter"
+    brain.duplicate_clear = True
+    basics = {"hbl_no", "mbl_no", "packages.count", "packages.unit", "pol"}
+    brain.verified = {field: f"ref-{field}" for field in basics}
+    brain.decision = Decision(
+        screen_kind="partner",
+        operation="act",
+        intent="select_option",
+        subgoal="select-shipper",
+        reason="select partner",
+        action=Choice(type="click", ref="e1"),
+    )
+    brain.pending = {"decision": brain.decision, "effect_source": "shipper"}
+    markers = build_markers(blocks, boxes, 400, 200)
+    matched = match_screen(
+        brain,
+        {
+            "image_size": [400, 200],
+            "ocr": [block.model_dump() for block in blocks],
+            "markers": [
+                {**marker.model_dump(), "contained_ocr_ids": list(marker.text_ids)}
+                for marker in markers
+            ],
+        },
+        None,
+    )
+
+    state = json.loads(model.prompts[-1][len(RULES) :])
+    step_ids = {step["id"] for step in state["procedure"]}
+    assert matched.procedure_step == "open-additional-entry"
+    assert "open-additional-entry" in step_ids
+    assert "open-shipper-lookup" not in step_ids
+    assert state["notebook"]["anticipated_verified_fields"] == sorted(basics | {"shipper"})
+
+
 def test_pending_login_proposes_post_authentication_work_without_resubmitting_credentials(
     tmp_path, record
 ):

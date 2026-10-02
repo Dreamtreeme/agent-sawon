@@ -139,6 +139,7 @@ def execution_context(
             if execution
             else [pending.get("decision", brain.decision)]
         )
+        last = decisions[-1]
         facts = actual.facts
         if facts.phase == "enter":
             pending_fields = {
@@ -149,13 +150,19 @@ def execution_context(
                 and decision.action is not None
                 and decision.action.source in facts.field_names
             }
+            effect_source = pending.get("effect_source")
+            if (
+                last is not None
+                and last.intent == "select_option"
+                and effect_source in facts.field_names
+            ):
+                pending_fields.add(effect_source)
             anticipated_fields = set(facts.verified_field_names) | pending_fields
             if anticipated_fields != set(facts.verified_field_names):
                 facts = replace(
                     facts,
                     verified_field_names=tuple(sorted(anticipated_fields)),
                 )
-        last = decisions[-1]
         if last is not None and last.intent == "login":
             # A pending login batch is evaluated against the freshly observed
             # post-action screen.  Its conditional next-step proposal must not

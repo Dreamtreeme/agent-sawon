@@ -213,6 +213,8 @@ class Brain:
         self.deferred_field_checks: dict[str, dict] = {}
         self.review: EvidenceReview | None = None
         self.review_decision = False
+        self.visual_proposal = None
+        self.visual_proposal_obs_id = None
         self.visual_perception = None
         self.procedure = None
         self.procedure_step = None
@@ -242,6 +244,26 @@ class Brain:
             )
 
     def _detect_visual(self, request: SemanticRequest) -> SemanticDetection:
+        if self.settings.screen_matching:
+            from .matching import match_screen
+
+            screen = dict(request.screen)
+            if request.correction is not None:
+                screen["correction"] = {
+                    key: request.correction[key]
+                    for key in ("error", "invalid_text_links", "invalid_links")
+                    if key in request.correction
+                }
+            response = match_screen(self, screen, request.page)
+            self.visual_proposal = response
+            atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
+            return SemanticDetection.model_validate(
+                {
+                    key: value
+                    for key, value in response.model_dump().items()
+                    if key in SemanticDetection.model_fields
+                }
+            )
         return self._call(request.prompt(), SemanticDetection, page=request.page)
 
     def _selection_call(self, prompt: str, schema: type[BaseModel]):
@@ -249,14 +271,25 @@ class Brain:
             from .matching import compile_match, compile_selection_plan, match_screen
 
             assert self.visual_perception is not None
-            request, interpretation = self.visual_perception.planning_context()
-            response = match_screen(
-                self,
-                request.screen,
-                request.page,
-                grounded_interpretation=interpretation,
-            )
-            atomic_write_json(request.page.image_path.parent / "screen-plan.json", response)
+            response, self.visual_proposal = self.visual_proposal, None
+            if response is None or self.visual_proposal_obs_id != self.observation.obs_id:
+                request, interpretation = self.visual_perception.planning_context()
+                response = match_screen(
+                    self,
+                    request.screen,
+                    request.page,
+                    grounded_interpretation=interpretation,
+                )
+                atomic_write_json(request.page.image_path.parent / "screen-plan.json", response)
+            else:
+                self.log.append(
+                    "verify",
+                    payload={
+                        "check": "combined_screen_match_reused",
+                        "obs_id": str(self.observation.obs_id),
+                        "procedure_step": response.procedure_step,
+                    },
+                )
             self._bind_saved_evidence(response)
             assert isinstance(self.observation, SceneObservation)
             self.visual_points.bind(self.observation, response.steps)
@@ -576,7 +609,9 @@ class Brain:
     def _observe(self) -> Observation:
         observation = redact(self.relay.observe(), self.secrets)
         if self.visual_perception is not None and not observation.blocked_reason:
+            self.visual_proposal = None
             observation = self.visual_perception.observe(observation)
+            self.visual_proposal_obs_id = observation.obs_id
         self.observation = observation
         self.review = None
         self.observation_number += 1

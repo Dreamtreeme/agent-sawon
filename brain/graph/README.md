@@ -75,3 +75,11 @@ number-only selector and `VisualTurn` model path have been removed; shared propo
 binding and adaptation remain. Translation-only capture renewal preserves
 image-relative coordinates while binding the new capture origin. Scale/content
 changes do not.
+
+For a novel screenshot, `ScreenMatch` combines grounded screen semantics and the
+conditional next action in one image-model call. The proposal is consumed only for
+that observation and only after the pending action is verified. Exact-image catalog
+reuse keeps only grounded semantics and requests a fresh `ScreenPlan` against the
+latest notebook. A valid interpretation paired with an invalid procedure action gets
+one bounded action-only correction; marker and semantic errors stay in the visual
+grounding correction path.
