@@ -19,3 +19,7 @@ python = "C:/Users/psg/Desktop/L2C/.venv-app/Scripts/python.exe"
 enabled = false
 path = "../cases/visual-cache.json"
 matching_mode = "rebind"
+
+[visual_match_cache]
+enabled = true
+path = "../cases/visual-match-cache.json"

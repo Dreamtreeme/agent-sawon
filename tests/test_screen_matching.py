@@ -11,6 +11,7 @@ from test_brain import record as record
 from test_visual_markers import fixture
 from test_visual_scene import wire
 
+from brain.cache import VisualMatchCache
 from brain.graph.engine import Brain
 from brain.graph.matching import (
     PLAN_RULES,
@@ -138,6 +139,32 @@ def test_procedure_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path,
     assert brain.decision.action.source == "hbl_no"
     assert brain.decision.action.ref.startswith("e" + str(brain.observation.obs_id.int))
     assert "secret-user" not in model.prompts[0] and "secret-pw" not in model.prompts[0]
+
+
+def test_promoted_exact_visual_match_reuse_precedes_model_call(tmp_path, record):
+    meaning = fixture()[-1]
+    cache_path = tmp_path / "visual-match.json"
+
+    first, first_model, *_ = setup_brain(tmp_path / "first", record, [response(meaning)])
+    first.visual_match_cache = VisualMatchCache(cache_path, enabled=True)
+    first._observe()
+    assert len(first_model.prompts) == 1
+    assert first.visual_match_candidate is not None
+    first.visual_match_cache.stage(*first.visual_match_candidate)
+    assert first.visual_match_cache.finish(success=True) == 1
+
+    second, second_model, *_ = setup_brain(tmp_path / "second", record, [])
+    second.visual_match_cache = VisualMatchCache(cache_path, enabled=True)
+    second._observe()
+    assert second_model.prompts == []
+    assert second._select_node({}) == {"next": "review"}
+    assert second_model.prompts == []
+    hits = [
+        event
+        for event in second.log.read_all()
+        if event.kind == "cache_hit" and event.payload.get("check") == "visual_match_cache"
+    ]
+    assert len(hits) == 1
 
 
 def test_identical_capture_reuses_ocr_but_rematches_new_procedure_step(tmp_path, record):

@@ -154,6 +154,7 @@ def ground_meanings(
         raise ValueError("duplicate_marker_id")
     used: set[int] = set()
     controls = []
+    uncertainties = list(meanings.uncertainties)
     for meaning in meanings.controls:
         if meaning.id not in by_id or meaning.id in used:
             raise ValueError("unknown_or_duplicate_marker_id")
@@ -191,10 +192,21 @@ def ground_meanings(
                     confidence=marker.confidence,
                 )
             )
+    grounded_controls = []
     for control in controls:
-        for block in blocks:
-            if block.id in control.text_ids and not contains(control.bbox, block.bbox):
-                raise ValueError("value_outside_local_marker")
+        valid_text_ids = [
+            block.id
+            for block in blocks
+            if block.id in control.text_ids and contains(control.bbox, block.bbox)
+        ]
+        if len(valid_text_ids) != len(control.text_ids):
+            # A value relationship is evidence, not geometry. Preserve the locally
+            # grounded control/action target and withhold only the unsupported value.
+            uncertainties.append(f"control:{control.id}:value_outside_local_marker")
+            control = control.model_copy(update={"text_ids": valid_text_ids})
+        grounded_controls.append(control)
     return Detection(
-        screen_kind=meanings.screen_kind, controls=controls, uncertainties=meanings.uncertainties
+        screen_kind=meanings.screen_kind,
+        controls=grounded_controls,
+        uncertainties=uncertainties,
     )

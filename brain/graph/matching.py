@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from brain.cache import visual_match_key
 from brain.runtime.storage import atomic_write_json
 from brain.visual.marker_contract import local_response, model_controls, model_screen
 from brain.visual.markers import marker_role_allowed
@@ -783,7 +784,20 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     if "save_review" in contract:
         state["save_review"] = contract["save_review"]
     prompt = RULES + json.dumps(state, ensure_ascii=False)
-    if brain.matching_model is not None:
+    cache_hit = brain.visual_match_cache.lookup(state)
+    if cache_hit is not None:
+        _, cached = cache_hit
+        response = ScreenMatch.model_validate(cached)
+        used_image = False
+        brain.log.append(
+            "cache_hit",
+            payload={
+                "check": "visual_match_cache",
+                "key": cache_hit[0],
+                "procedure_step": response.procedure_step,
+            },
+        )
+    elif brain.matching_model is not None:
         from .jev_matching import match_choices
 
         response = match_choices(brain, state)
@@ -817,7 +831,8 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         response = brain._call(prompt, ScreenMatch, page=page)
         atomic_write_json(brain.case_dir / "matching" / f"{uuid4().hex}-markers.json", response)
         response = local_response(response, screen)
-    used_image = brain.matching_model is None or response.needs_image
+    if cache_hit is None:
+        used_image = brain.matching_model is None or response.needs_image
     if response.needs_image:
         image_state = {**state, "screen": model_screen(screen)}
         response = brain._call(
@@ -928,6 +943,10 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
             )
         response = retain_action_targets(brain, response, screen, page)
     brain.procedure_step = step.id
+    brain.visual_match_candidate = (
+        cache_hit[0] if cache_hit is not None else visual_match_key(state),
+        response.model_dump(mode="json"),
+    )
     brain.log.append(
         "select",
         payload={

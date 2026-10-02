@@ -8,7 +8,7 @@ The graph's verify node owns the one subsequent semantic observation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict
 
 from sawon_interfaces import Observation
 
@@ -43,6 +43,7 @@ class PendingAction(TypedDict):
     login_plan_descriptors: NotRequired[list[dict]]
     point_refined: NotRequired[bool]
     effect_source: NotRequired[FieldName]
+    visual_match_candidate: NotRequired[tuple[str, dict[str, Any]]]
 
 
 @dataclass(frozen=True)

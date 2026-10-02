@@ -11,7 +11,7 @@ from brain.runtime.storage import RunLog
 from brain.visual.detector import DetectorSettings, OmniParserDetector
 from brain.visual.detector_worker import original_box, restore_region_box
 from brain.visual.markers import Marker, MergeSettings, build_markers, ground_meanings
-from brain.visual.perception import VisualGroundingError, VisualPerception
+from brain.visual.perception import VisualPerception
 from brain.visual.refinement import refinement_regions
 from brain.visual.scene import SemanticDetection, bind_scene
 from pipeline.schemas import OcrBlock, RenderedPage
@@ -199,26 +199,21 @@ def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_pat
             return meaning.model_copy(
                 update={"controls": [meaning.controls[0].model_copy(update={"text_ids": [8]})]}
             )
-        if len(calls) == 2:
-            assert '"error": "value_outside_local_marker"' in prompt
         return meaning
 
     log = RunLog(tmp_path, case_id="markers", agent_id="test")
     perception = VisualPerception(Relay(), Ocr(), tmp_path, log, interpret, detector=Detector())
-    if outcome in {"invalid", "provider_error"}:
-        with pytest.raises(VisualGroundingError if outcome == "invalid" else ValueError):
+    if outcome == "provider_error":
+        with pytest.raises(ValueError):
             perception.observe(wire())
-        assert len(calls) == (2 if outcome == "invalid" else 1)
+        assert len(calls) == 1
         assert not (calls[0].image_path.parent / "perception.json").exists()
         return
     scene = perception.observe(wire())
-    assert len(calls) == (2 if outcome == "corrected" else 1)
+    assert len(calls) == 1
     assert any(e.role == "edit" for e in scene.elements)
-    if outcome == "corrected":
-        rejected = [
-            e for e in log.read_all() if e.payload.get("stage") == "visual_semantic_rejection"
-        ]
-        assert len(rejected) == 1 and rejected[0].payload["retry"]
+    if outcome in {"invalid", "corrected"}:
+        assert "control:0:value_outside_local_marker" in scene.global_uncertainties
         assert (calls[0].image_path.parent / "meanings-attempt-0.json").is_file()
     folder = calls[0].image_path.parent
     with Image.open(folder / "capture.png") as image:
@@ -384,7 +379,7 @@ def test_same_screen_rematch_corrects_and_updates_cached_meaning_without_new_ocr
 
     def interpret(request):
         requests.append(request)
-        update = {"text_ids": [8]} if len(requests) == 2 else {"role": "combobox"}
+        update = {"role": "combobox", "text_ids": [8]}
         return (
             meaning
             if len(requests) == 1
@@ -410,10 +405,10 @@ def test_same_screen_rematch_corrects_and_updates_cached_meaning_without_new_ocr
     assert calls == before_rematch  # Rematching must not capture or run local models.
     assert corrected.obs_id == current.obs_id and corrected.elements[0].role == "combobox"
     assert requests[1].correction is None
-    assert requests[2].correction["error"] == "value_outside_local_marker"
+    assert "control:0:value_outside_local_marker" in corrected.global_uncertainties
     assert perception.observe(wire()).elements[0].role == "combobox"
     assert calls == {"capture": 3, "ocr": 1, "detector": 1}
-    assert len(requests) == 3
+    assert len(requests) == 2
 
 
 def test_input_value_comes_from_contained_ocr_when_model_omits_text_ids():

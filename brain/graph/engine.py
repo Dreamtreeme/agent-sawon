@@ -17,7 +17,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sawon_interfaces import Action, Observation, ShipmentRecord, UIElement
 
-from brain.cache import CacheIntegrityError, SemanticCache
+from brain.cache import CacheIntegrityError, SemanticCache, VisualMatchCache
 from brain.cache.rebind import RebindProposal, build_rebind_request, install_rebind_proposal
 from brain.observe import describe, redact, summarize
 from brain.observe.evidence import is_record_input, matching_delivered_input, matching_elements
@@ -302,6 +302,11 @@ class Brain:
             matching_mode=settings.cache.matching_mode,
             min_anchor_fields=settings.cache.min_anchor_fields,
         ).start_run()
+        self.visual_match_cache = VisualMatchCache(
+            settings.visual_match_cache.path,
+            enabled=settings.visual_match_cache.enabled,
+        )
+        self.visual_match_candidate: tuple[str, dict] | None = None
         self.cache_rebind_calls = 0
         self.input_target_retries = 0
         self.cache_entry_id: str | None = None
@@ -901,8 +906,11 @@ class Brain:
                 self.review_decision = False
                 assert self.decision is not None
                 if self.decision.operation in {"duplicate_clear", "duplicate_found"}:
-                    return self._check_duplicate(self.decision)
-                return self._check_complete(self.decision)
+                    outcome = self._check_duplicate(self.decision)
+                else:
+                    outcome = self._check_complete(self.decision)
+                self._stage_visual_match_candidate()
+                return outcome
             review = self._current_review()
             if review.status != "not_due":
                 if not self.saved_evidence.session_id and not self._current_query_matches():
@@ -928,6 +936,7 @@ class Brain:
                 self.review_execution = False
                 self.execution_authorized = False
                 self.action_plan = None
+                self._stage_visual_match_candidate()
                 return self._complete_saved_evidence()
             if review.status == "blocked":
                 self.review_execution = False
@@ -1571,8 +1580,12 @@ class Brain:
         self.execution_authorized = False
         plan = self.action_plan or ActionPlan.single(self.decision)
         self.action_plan = None
+        visual_candidate, self.visual_match_candidate = self.visual_match_candidate, None
         try:
-            return execute_plan(self, plan)
+            outcome = execute_plan(self, plan)
+            if visual_candidate is not None and self.pending is not None:
+                self.pending["visual_match_candidate"] = visual_candidate
+            return outcome
         except GuardStop as exc:
             if str(exc) == "record_input_scope_mismatch":
                 return self._fail(str(exc))
@@ -1742,7 +1755,10 @@ class Brain:
             observation = self._observe()
             execution = pending.get("execution")
             if execution is not None and execution.plan.verification == "fields":
-                return verify_screen_fields(self, execution, observation)
+                outcome = verify_screen_fields(self, execution, observation)
+                if len(execution.matched_fields) == len(execution.delivered) - 1:
+                    self._stage_visual_match_candidate(pending)
+                return outcome
             if pending.get("login_plan_descriptors") and all(
                 bool(matching_elements(observation, descriptor))
                 for descriptor in pending["login_plan_descriptors"]
@@ -1937,6 +1953,7 @@ class Brain:
                     self.record,
                 )
             self.cache_entry_id = None
+            self._stage_visual_match_candidate(pending)
             self.pending = None
             # Reuse an already interpreted visual scene for every visual action.
             # UIA keeps its cheap fresh-state read before the next selection.
@@ -1968,6 +1985,19 @@ class Brain:
                         log_transition(self.log, delivered)
                 log_transition(self.log, pending, observation, observed_effect, tuple(new_facts))
             self.pending = None
+
+    def _stage_visual_match_candidate(self, pending: PendingAction | None = None) -> None:
+        candidate = (
+            pending.get("visual_match_candidate")
+            if pending is not None
+            else self.visual_match_candidate
+        )
+        if candidate is None:
+            return
+        key, response = candidate
+        self.visual_match_cache.stage(key, response)
+        if pending is None:
+            self.visual_match_candidate = None
 
     def _apply_save_review(self, review: SaveReviewResponse) -> dict | None:
         assert self.observation is not None
@@ -2188,6 +2218,26 @@ class Brain:
                 "verify",
                 payload={
                     "check": "semantic_cache_promotion",
+                    "ok": False,
+                    "error_type": type(exc).__name__,
+                },
+            )
+        try:
+            promoted = self.visual_match_cache.finish(success=self.result.status == "success")
+            if self.settings.visual_match_cache.enabled:
+                self.log.append(
+                    "verify",
+                    payload={
+                        "check": "visual_match_cache_promotion",
+                        "promoted": promoted,
+                        "business_success": self.result.status == "success",
+                    },
+                )
+        except Exception as exc:
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "visual_match_cache_promotion",
                     "ok": False,
                     "error_type": type(exc).__name__,
                 },
