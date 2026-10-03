@@ -11,6 +11,7 @@ from test_visual_scene import wire
 from brain.graph.context import execution_context
 from brain.graph.matching import RULES, match_screen
 from brain.graph.schemas import Choice, Decision
+from brain.task_instruction import TaskInstruction
 from brain.visual.markers import build_markers, ground_meanings
 from brain.visual.scene import bind_scene
 
@@ -82,6 +83,24 @@ def test_pending_proposal_does_not_mutate_actual_facts_or_runtime_policy(tmp_pat
     assert proposed["query_input"]["pending"] and not proposed["query_input"]["required"]
     assert not brain.query_value_verified
     assert brain._decision_policy().current_step == "query_input"
+
+
+def test_generic_task_context_has_no_legacy_query_input_gate(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.phase = "task"
+    brain.procedure = None
+    brain.task_instruction = TaskInstruction(
+        name="Arbitrary business task",
+        objective="Use the supplied inputs to complete the user's work.",
+        requirements=["Interpret the current application from visible evidence."],
+        completion_conditions=["Visible evidence confirms the requested result."],
+    )
+
+    context = execution_context(brain)
+
+    assert context["checkpoint"] == "task"
+    assert "query_input" not in context
+    assert "No application route is predefined" in context["guidance"]
 
 
 def test_saved_review_context_excludes_run_local_provenance(tmp_path, record):

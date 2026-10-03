@@ -347,6 +347,18 @@ def test_pending_query_does_not_request_a_second_fill():
     assert "propose search" in instruction["instruction"]
 
 
+def test_generic_task_input_mapping_has_no_predefined_query_gate():
+    data = state()
+    data["notebook"]["phase"] = "task"
+    data["notebook"]["checkpoint"] = "task"
+    request = build_request(data)
+
+    instruction = request.questions["field:1"].instructions["query_input"]
+
+    assert "required" not in instruction
+    assert "No query field or screen is predefined" in instruction["instruction"]
+
+
 def test_question_packing_preserves_every_question_and_shared_state():
     request = build_request(state())
     parts = request.batches(8_000)

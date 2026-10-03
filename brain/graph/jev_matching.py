@@ -168,10 +168,22 @@ def build_request(state: dict) -> ChoiceRequest:
         }
     )
     sources["skip"] = "Do not write this marker: no matching source or no input needed."
-    query_contract = state.get("execution", {}).get("query_input") or query_input_requirement(
-        notebook["phase"],
-        notebook.get("checkpoint", "query_input"),
-        any(a.get("intent") == "query_input" for a in notebook.get("pending_actions", [])),
+    generic_task = notebook["phase"] == "task"
+    query_contract = (
+        {
+            "instruction": (
+                "No query field or screen is predefined. Match this visible input to a supplied "
+                "task source only when the user task, current labels, and current screen "
+                "support it."
+            )
+        }
+        if generic_task
+        else state.get("execution", {}).get("query_input")
+        or query_input_requirement(
+            notebook["phase"],
+            notebook.get("checkpoint", "query_input"),
+            any(a.get("intent") == "query_input" for a in notebook.get("pending_actions", [])),
+        )
     )
     for marker in markers:
         if not marker_role_allowed(marker["source"], "edit"):
@@ -202,10 +214,15 @@ def build_request(state: dict) -> ChoiceRequest:
                 "already matching record inputs, or if navigation is needed. "
                 "On a login screen choose only available credential sources; "
                 "the business checkpoint does not change the login task. "
-                "On an editor/partner screen choose remaining record sources only. "
-                "On a query screen choose the supplied procedure's query source only. "
-                "Follow query_input.instruction on a query screen. "
-                "Return a source key, never a literal value or coordinates.",
+                + (
+                    "On any non-login screen, choose a remaining task source only when the user "
+                    "instruction and visible input meaning match. "
+                    if generic_task
+                    else "On an editor/partner screen choose remaining record sources only. "
+                    "On a query screen choose the supplied procedure's query source only. "
+                    "Follow query_input.instruction on a query screen. "
+                )
+                + "Return a source key, never a literal value or coordinates.",
                 "marker": contexts[str(marker["id"])],
                 "query_input": query_contract,
             },

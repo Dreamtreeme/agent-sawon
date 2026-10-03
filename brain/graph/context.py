@@ -196,9 +196,6 @@ def execution_context(
         "allowed_intents": sorted({c["intent"] for c in proposal_prompt["allowed_next_choices"]}),
         "remaining_fields": proposal_prompt["remaining_fields"],
         "guidance": phase_instruction(proposal),
-        "query_input": query_input_requirement(
-            actual.facts.phase, actual.current_step, query_pending
-        ),
         "pending_actions": [
             {"intent": d.intent, "source": d.action.source if d.action else None}
             for d in decisions
@@ -207,6 +204,13 @@ def execution_context(
         "conditional": proposal is not actual,
         "final_required_fields": sorted(brain.values) if brain.phase == "final_query" else [],
     }
+    if actual.facts.phase != "task":
+        # This is a contract for the legacy duplicate/final-query workflow.
+        # A generic task decides whether a visible input is a query, editor,
+        # filter, or something else from the user instruction and screen.
+        contract["query_input"] = query_input_requirement(
+            actual.facts.phase, actual.current_step, query_pending
+        )
     saved = getattr(brain, "saved_evidence", None)
     if saved is not None and saved.session_id:
         proof = saved.snapshot(brain.values)
