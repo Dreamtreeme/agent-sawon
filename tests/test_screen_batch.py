@@ -333,6 +333,68 @@ def test_joint_verification_survives_corrected_visual_label(tmp_path, record, wr
     assert set(brain.verified) == set(brain.values) - ({"mbl_no"} if wrong_value else set())
 
 
+def test_model_only_screen_review_delegates_without_value_or_geometry_recheck(tmp_path, record):
+    from brain.graph.execution import ActionPlan, PlanExecution
+    from brain.graph.matching import ScreenMatch
+    from brain.graph.schemas import Choice, Decision
+    from brain.graph.screen_batch import verify_screen_fields
+
+    relay = ChangingPixelsRelay(record)
+    relay.mode = "editor"
+    brain, _, _ = make_brain(tmp_path, record, relay, [])
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    scene = brain._observe()
+    source = "hbl_no"
+    target = 19
+    prefix = "e" + str(scene.obs_id.int) + "0"
+    original = next(element for element in scene.elements if element.role.casefold() == "edit")
+    current = scene.model_copy(
+        update={
+            "elements": [
+                original.model_copy(update={"ref": prefix + str(target), "value": "WRONG"})
+                if element is original
+                else element
+                for element in scene.elements
+            ]
+        }
+    )
+    brain.visual_proposal = ScreenMatch(
+        screen_kind="editor",
+        procedure_step="task-action",
+        controls=[],
+        operation="act",
+        evidence=[{"field": source, "target": target}],
+    )
+    fill = Decision(
+        screen_kind="editor",
+        operation="act",
+        intent="fill",
+        subgoal="task-action",
+        reason="fill",
+        action=Choice(type="set_text", ref=original.ref, source=source),
+    )
+    boundary = fill.model_copy(
+        update={"intent": "navigate", "action": Choice(type="key", ref=original.ref, keys="tab")}
+    )
+    plan = ActionPlan.single(fill)
+    execution = PlanExecution(plan, scene)
+    execution.delivered = [
+        {"choice": fill.action, "descriptor": {}},
+        {"choice": boundary.action, "descriptor": {}},
+    ]
+
+    assert verify_screen_fields(brain, execution, current) == {"next": "review"}
+    assert source not in brain.verified
+    event = next(
+        event
+        for event in reversed(brain.log.read_all())
+        if event.payload.get("check") == "screen_fill_values"
+    )
+    assert event.payload["reviewer"] == "screen_model"
+    assert event.payload["delegated"] == [source]
+    assert event.payload["ok"] is True
+
+
 def test_save_policy_uses_current_verified_evidence(tmp_path, record):
     from test_brain import decision
 

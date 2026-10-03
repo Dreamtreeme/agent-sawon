@@ -111,12 +111,14 @@ class VisualPerception:
         detector: ControlDetector | None = None,
         merge_settings: MergeSettings | None = None,
         reuse_identical: bool = False,
+        model_led_semantics: bool = False,
     ):
         self.relay, self.ocr, self.case_dir, self.log = relay, ocr, case_dir, log
         self.detect, self.secrets, self.threshold = detect, secrets, threshold
         self.detector = detector or OmniParserDetector(DetectorSettings(), log)
         self.merge_settings = merge_settings or MergeSettings()
         self.reuse_identical = reuse_identical
+        self.model_led_semantics = model_led_semantics
         self._catalog: _SceneCatalog | None = None
         self._catalogs: dict[tuple, _SceneCatalog] = {}
 
@@ -344,7 +346,12 @@ class VisualPerception:
                 request = self._semantic_request(page, path, marked_path, markers, blocks)
                 continue
             try:
-                detection = ground_meanings(meanings, markers, blocks)
+                detection = ground_meanings(
+                    meanings,
+                    markers,
+                    blocks,
+                    allow_ocr_inputs=self.model_led_semantics,
+                )
                 scene = bind_scene(
                     wire, blocks, detection, threshold=self.threshold, secrets=self.secrets
                 )
@@ -501,7 +508,12 @@ class VisualPerception:
                 "needs_refinement": False,
             }
         )
-        detection = ground_meanings(merged, catalog.markers, catalog.blocks)
+        detection = ground_meanings(
+            merged,
+            catalog.markers,
+            catalog.blocks,
+            allow_ocr_inputs=self.model_led_semantics,
+        )
         scene = bind_scene(
             wire,
             catalog.blocks,

@@ -55,3 +55,11 @@ def test_visual_point_is_required_and_bound_to_target(point, reason):
             observation,
             [MatchAction(target=8, action="click", intent="select_tab", point=point)],
         )
+
+
+def test_nonpointer_model_hint_is_accepted_and_ignored():
+    observation = scene()
+    bindings = VisualPointBindings()
+    step = MatchAction(target=8, action="fill", intent="fill", source="hbl_no", point=(190, 50))
+    bindings.bind(observation, [step])
+    assert bindings.get(observation, decision(observation)) is None

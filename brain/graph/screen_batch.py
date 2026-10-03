@@ -201,11 +201,36 @@ def prepare_screen_fill(scene: Observation, plan: ScreenFillPlan) -> ActionPlan:
 
 def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Observation) -> dict:
     """Evaluate the one new scene using the same field-evidence writer as singles."""
+    if brain.settings.visual_model_only_review:
+        delegated = [delivered["choice"].source for delivered in execution.delivered[:-1]]
+        payload = {
+            "check": "screen_fill_values",
+            "ok": True,
+            "matched": [],
+            "mismatched": [],
+            "delegated": delegated,
+            "reviewer": "screen_model",
+        }
+        brain.log.append("verify", payload={**payload, "obs_id": str(observation.obs_id)})
+        brain.feedback.append(payload)
+        return {"next": "review"}
+
     matched, mismatched = [], []
+    explicit_evidence = {}
+    proposal = getattr(brain, "visual_proposal", None)
+    if proposal is not None and isinstance(observation, SceneObservation):
+        prefix = "e" + str(observation.obs_id.int) + "0"
+        explicit_evidence = {item.field: prefix + str(item.target) for item in proposal.evidence}
+    by_ref = {element.ref: element for element in observation.elements}
     for delivered in execution.delivered[:-1]:
         source = delivered["choice"].source
-        candidates = matching_delivered_input(
-            observation, execution.before, delivered["choice"].ref, delivered["descriptor"]
+        bound = by_ref.get(explicit_evidence.get(source))
+        candidates = (
+            [bound]
+            if bound is not None
+            else matching_delivered_input(
+                observation, execution.before, delivered["choice"].ref, delivered["descriptor"]
+            )
         )
         ok = (
             observation.active_window == execution.before.active_window
@@ -223,6 +248,7 @@ def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Ob
         "ok": not mismatched,
         "matched": matched,
         "mismatched": mismatched,
+        "reviewer": "runtime_value_check",
     }
     brain.log.append("verify", payload={**payload, "obs_id": str(observation.obs_id)})
     brain.feedback.append(payload)

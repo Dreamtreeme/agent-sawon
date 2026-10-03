@@ -119,7 +119,8 @@ class MatchAction(BaseModel):
         max_length=2,
         description=(
             "Original-image [x,y] click point inside target. Required for click and "
-            "double_click so merged visual targets retain the intended subregion."
+            "double_click so merged visual targets retain the intended subregion; ignored for "
+            "non-pointer actions."
         ),
     )
 
@@ -130,8 +131,6 @@ class MatchAction(BaseModel):
                 raise ValueError("visual_click_point_required")
             if any(value < 0 for value in self.point):
                 raise ValueError("visual_click_point_negative")
-        elif self.point is not None:
-            raise ValueError("visual_click_point_only_for_click")
         return self
 
 
@@ -227,8 +226,9 @@ CURRENT visible proof to the applicable zero-based user completion condition in 
 map visible business values separately in evidence. notebook.inputs is the canonical input map:
 every data-bound step.source and evidence.field MUST be one exact key from notebook.inputs, without
 record./inputs. prefixes and never a literal value. Use intent=fill for every business text input,
-including filters and lookups. Return only task-plan schema fields and never reclassify controls or
-invent IDs.
+including filters and lookups. Treat a visible status or result as current evidence: when it already
+shows a command's expected effect, do not repeat that command; advance the task from that result.
+Return only task-plan schema fields and never reclassify controls or invent IDs.
 """
 
 TARGET_GROUNDING_RULES = """Ground only the listed action target markers on the CURRENT image.
@@ -311,6 +311,8 @@ not visible now. notebook.inputs is the only business input map. Every data-boun
 evidence.field MUST be one exact key from notebook.inputs, without record./inputs. prefixes and
 never a literal value. Use intent=fill for every business text input, including filters and lookups.
 Use only supplied input keys and current marker IDs. remaining_inputs is the unfinished input list.
+In generic task mode those inputs remain reusable across screens: verified_inputs reports prior
+evidence but does not mean a value is already present in a different current form.
 The execution contract is the complete list of actions currently allowed by code. Return one
 screen-boundary action batch: direct fills only, login credentials plus login, same-intent
 navigation clicks, or consecutive select_option row/confirmation clicks. Do not mix fills with
@@ -319,7 +321,8 @@ field-bound lookup navigation must map the current field input in evidence so it
 can be checked on return. Complete only when CURRENT visible evidence supports an applicable
 user-authored completion condition. Map each supporting marker to its zero-based condition_index
 in completion_evidence; map visible business values separately in evidence. Follow all constraints
-and never transmit or approve.
+and never transmit or approve. Treat a visible status or result as current evidence: when it already
+shows a command's expected effect, do not repeat that command; advance the task from that result.
 """
 
 
@@ -367,7 +370,7 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
     markers = {m["id"]: m for m in screen.get("markers", [])}
     controls = {c.id: c for c in response.controls}
     omitted_evidence = []
-    if response.operation == "act":
+    if response.operation == "act" and brain.task_instruction is None:
         omitted_evidence = [
             evidence
             for evidence in response.evidence
@@ -420,7 +423,11 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
             if (
                 child_marker is None
                 or parent_marker is None
-                or not marker_role_allowed(parent_marker["source"], parent.role)
+                or not marker_role_allowed(
+                    parent_marker["source"],
+                    parent.role,
+                    allow_ocr_inputs=brain.settings.visual_model_led_semantics,
+                )
                 or not contains(tuple(parent_marker["bbox"]), tuple(child_marker["bbox"]))
             ):
                 break
@@ -429,7 +436,12 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
     invalid = {
         c.id
         for c in response.controls
-        if c.id in markers and not marker_role_allowed(markers[c.id]["source"], c.role)
+        if c.id in markers
+        and not marker_role_allowed(
+            markers[c.id]["source"],
+            c.role,
+            allow_ocr_inputs=brain.settings.visual_model_led_semantics,
+        )
     }
     # Children depend on a parent's classification; never leave dangling parents.
     removed = invalid - direct_needed
@@ -535,10 +547,43 @@ def required_verification(brain) -> list[dict]:
 def retain_verification(
     brain, response: ScreenMatch, screen: dict, required: list[dict], page=None
 ):
+    if brain.settings.visual_model_only_review:
+        brain.log.append(
+            "verify",
+            payload={
+                "check": "required_verification_delegated",
+                "reviewer": "screen_model",
+                "sources": sorted(item["source"] for item in required),
+            },
+        )
+        return response
+
     def missing(controls):
-        return verification_requirements(
+        absent, _ = verification_requirements(
             controls, screen, required, response.screen_kind, brain.settings.visual_min_confidence
-        )[0]
+        )
+        # In model-led mode the worker can bind a field directly to CURRENT
+        # visual evidence.  That binding is stronger than trying to recover the
+        # old, empty input extent by IoU after the value has changed the OCR box.
+        # The graph still rereads the bound element and compares its literal OCR
+        # value before any proposed next action is eligible.
+        if brain.settings.visual_model_led_semantics:
+            by_id = {control.id: control for control in controls}
+            explicit = {
+                evidence.field
+                for evidence in response.evidence
+                if (
+                    (control := by_id.get(evidence.target)) is not None
+                    and control.enabled
+                    and control.role in {"edit", "combobox"}
+                    and (
+                        control.confidence_policy != "threshold"
+                        or control.confidence >= brain.settings.visual_min_confidence
+                    )
+                )
+            }
+            absent = [item for item in absent if item["source"] not in explicit]
+        return absent
 
     absent = missing(response.controls)
     if not absent:
@@ -1108,6 +1153,9 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         )
     if not response.needs_refinement:
         response = sanitize_unused_controls(brain, response, screen, required)
+        # The model chooses current evidence with the next action. Ground every
+        # referenced target before the evidence reviewer asks whether it exists.
+        response = retain_action_targets(brain, response, screen, page)
         response = retain_verification(
             brain,
             response,
@@ -1154,7 +1202,6 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
                     "steps": len(completion.steps),
                 },
             )
-        response = retain_action_targets(brain, response, screen, page)
         # A plan-only turn may select a real marker that the reusable scene
         # interpretation did not need previously.  Ground it first, then enforce
         # the evidence role before any action can reach the executor.

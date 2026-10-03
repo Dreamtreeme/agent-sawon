@@ -1,6 +1,8 @@
 schema_version = "0.1"
 perception_mode = "visual_only"
 visual_screen_fill = true
+visual_model_led_semantics = true
+visual_model_only_review = true
 screen_matching = true
 task_path = "../examples/shipment-task.json"
 summary_strategy = "label_grouped"

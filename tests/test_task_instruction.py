@@ -143,3 +143,48 @@ def test_generic_search_does_not_require_or_mutate_legacy_query_state(tmp_path):
     assert not brain.query_value_verified
     assert not brain.query_submitted
     assert brain.query_descriptor is None
+
+
+def test_model_only_review_accepts_model_bound_completion_without_value_recheck(tmp_path):
+    record = TaskInputRecord(case_id="invoice-17", inputs={"invoice.number": "INV-17"})
+    relay = FakeRelay(record)
+    log = RunLog(tmp_path, case_id=record.case_id, agent_id="generic-task-test")
+    brain = Brain(
+        record=record,
+        goal="Save the supplied invoice.",
+        relay=relay,
+        model=ScriptedModel(log, []),
+        settings=BrainSettings(visual_model_only_review=True),
+        case_dir=tmp_path,
+        run_log=log,
+    )
+    brain.phase = "task"
+    brain.task_instruction = TaskInstruction(
+        name="Save invoice",
+        objective="Save the supplied invoice.",
+        completion_conditions=["A visible result confirms that the invoice was saved."],
+    )
+    brain.observation = relay.observe()
+    complete = DecisionResponse.model_validate(
+        {
+            "decision": {
+                "screen_kind": "query",
+                "operation": "complete",
+                "intent": "verify",
+                "subgoal": "Confirm completion",
+                "reason": "The screen model bound current visible evidence.",
+                "action": None,
+                "evidence": [{"field": "invoice.number", "ref": "e1"}],
+                "completion_evidence": [{"condition_index": 0, "ref": "e2"}],
+            }
+        }
+    ).to_decision()
+
+    assert brain._check_complete(complete) == {"next": "finish"}
+    assert brain.result.status == "success"
+    event = next(
+        event
+        for event in reversed(brain.log.read_all())
+        if event.payload.get("check") == "task_completion_fields"
+    )
+    assert event.payload["reviewer"] == "screen_model"

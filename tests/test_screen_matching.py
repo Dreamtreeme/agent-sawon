@@ -159,6 +159,7 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(t
     )
     brain.procedure = None
     brain.phase = "task"
+    brain.verified["hbl_no"] = "prior-screen-ref"
 
     assert brain._plan_node({}) == {"next": "observe"}
     brain._observe()
@@ -168,6 +169,7 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(t
     state = json.loads(model.prompts[0][len(TASK_RULES) :])
     assert state["task"]["objective"] == brain.task_instruction.objective
     assert state["notebook"]["inputs"] == brain.values
+    assert state["notebook"]["verified_inputs"] == ["hbl_no"]
     assert state["notebook"]["remaining_inputs"] == sorted(brain.values)
     assert "record" not in state["notebook"]
     assert "remaining_fields" not in state["notebook"]
@@ -877,6 +879,37 @@ def test_query_verification_omission_is_repaired_without_reusing_old_value(tmp_p
         assert repaired.evidence  # Retained as observations, not final completion proof.
         assert brain._check_duplicate(decision) == {"next": "observe"}
         assert brain.phase == "enter" and brain.duplicate_clear
+
+
+def test_model_only_review_delegates_required_verification_without_repair_call(tmp_path, record):
+    from brain.graph.matching import retain_verification
+
+    brain, model, *_ = setup_brain(tmp_path, record, [])
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    matched = ScreenMatch(
+        screen_kind="editor",
+        procedure_step="task-action",
+        operation="act",
+        controls=[],
+        steps=[],
+    )
+    required = [
+        {
+            "source": "hbl_no",
+            "screen": "editor",
+            "descriptor": {"role": "edit", "name": "HBL"},
+        }
+    ]
+
+    assert retain_verification(brain, matched, {"ocr": [], "markers": []}, required) == matched
+    assert not model.prompts
+    delegated = [
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "required_verification_delegated"
+    ]
+    assert delegated[-1].payload["reviewer"] == "screen_model"
+    assert delegated[-1].payload["sources"] == ["hbl_no"]
 
 
 @pytest.mark.parametrize("operation", ["act", "stop"])

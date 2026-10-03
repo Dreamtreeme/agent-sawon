@@ -96,6 +96,57 @@ def test_label_is_never_promoted_to_input():
         ground_meanings(meaning, markers, blocks)
 
 
+def test_model_led_semantics_accepts_ocr_input_evidence():
+    blocks, _, markers, _ = fixture()
+    value = next(marker for marker in markers if marker.source == "ocr")
+    meaning = SemanticDetection.model_validate(
+        {
+            "controls": [
+                {
+                    "id": value.id,
+                    "role": "edit",
+                    "confidence": 1,
+                    "text_ids": list(value.text_ids),
+                }
+            ]
+        }
+    )
+    scene = bind_scene(
+        wire(),
+        blocks,
+        ground_meanings(meaning, markers, blocks, allow_ocr_inputs=True),
+    )
+    control = next(element for element in scene.elements if element.role == "edit")
+    assert control.value == "Reference"
+    assert control.bbox == blocks[0].bbox
+
+
+def test_model_led_semantics_accepts_ocr_text_as_clickable_result_row():
+    blocks, _, markers, _ = fixture()
+    value = next(marker for marker in markers if marker.source == "ocr")
+    meaning = SemanticDetection.model_validate(
+        {
+            "controls": [
+                {
+                    "id": value.id,
+                    "role": "row",
+                    "confidence": 1,
+                    "text_ids": list(value.text_ids),
+                }
+            ]
+        }
+    )
+
+    scene = bind_scene(
+        wire(),
+        blocks,
+        ground_meanings(meaning, markers, blocks, allow_ocr_inputs=True),
+    )
+    control = next(element for element in scene.elements if element.role == "row")
+    assert control.value == "Reference"
+    assert control.bbox == blocks[0].bbox
+
+
 @pytest.mark.parametrize("text_ids", [[8], []])
 def test_ocr_caption_can_be_a_tab_target_without_detector_extent(text_ids):
     blocks, _, markers, _ = fixture()

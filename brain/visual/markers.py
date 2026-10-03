@@ -137,17 +137,24 @@ def render_markers(path: Path, output: Path, markers: list[Marker]) -> None:
     marked.save(output)
 
 
-def marker_role_allowed(source: str, role: str) -> bool:
+def marker_role_allowed(source: str, role: str, *, allow_ocr_inputs: bool = False) -> bool:
     """Shared geometry capabilities for semantic questions and grounding."""
     if source == "ocr_group":
         return role in {"row", "header", "group", "text"}
     if source == "ocr":
-        return role not in {"edit", "combobox", "table", "row", "group", "window"}
+        disallowed = {"table", "group", "window"}
+        if not allow_ocr_inputs:
+            disallowed.update({"edit", "combobox", "row"})
+        return role not in disallowed
     return True
 
 
 def ground_meanings(
-    meanings: SemanticDetection, markers: list[Marker], blocks: list[OcrBlock]
+    meanings: SemanticDetection,
+    markers: list[Marker],
+    blocks: list[OcrBlock],
+    *,
+    allow_ocr_inputs: bool = False,
 ) -> Detection:
     by_id = {m.id: m for m in markers}
     if len(by_id) != len(markers):
@@ -160,7 +167,7 @@ def ground_meanings(
             raise ValueError("unknown_or_duplicate_marker_id")
         used.add(meaning.id)
         marker = by_id[meaning.id]
-        if not marker_role_allowed(marker.source, meaning.role):
+        if not marker_role_allowed(marker.source, meaning.role, allow_ocr_inputs=allow_ocr_inputs):
             raise ValueError(
                 "ocr_group_is_not_input_or_table_extent"
                 if marker.source == "ocr_group"
