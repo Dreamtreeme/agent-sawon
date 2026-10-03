@@ -12,7 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from sawon_interfaces import Action, ActionResult, Observation
+from sawon_interfaces import Action, ActionBatch, ActionBatchResult, ActionResult, Observation
 
 
 class RelayError(RuntimeError):
@@ -23,6 +23,7 @@ class Relay(Protocol):
     def health(self) -> dict: ...
     def observe(self) -> Observation: ...
     def act(self, action: Action) -> ActionResult: ...
+    def act_batch(self, batch: ActionBatch) -> ActionBatchResult: ...
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -143,3 +144,8 @@ class HttpRelay:
 
     def act(self, action: Action) -> ActionResult:
         return ActionResult.model_validate(self._request("/act", action.model_dump(mode="json")))
+
+    def act_batch(self, batch: ActionBatch) -> ActionBatchResult:
+        return ActionBatchResult.model_validate(
+            self._request("/act-batch", batch.model_dump(mode="json"))
+        )

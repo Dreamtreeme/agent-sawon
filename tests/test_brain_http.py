@@ -8,7 +8,7 @@ from threading import Thread
 from uuid import uuid4
 
 import pytest
-from sawon_interfaces import Action
+from sawon_interfaces import Action, ActionBatch
 
 from brain.relay import HttpRelay, RelayError
 
@@ -51,6 +51,28 @@ def server():
             requests.append((self.path, self.headers.get("Authorization"), body))
             self.send_response(200)
             self.end_headers()
+            if self.path == "/act-batch":
+                post_obs_id = str(uuid4())
+                self.wfile.write(
+                    json.dumps(
+                        {
+                            "batch_id": body["batch_id"],
+                            "ok": True,
+                            "results": [
+                                {
+                                    "action_id": item["action_id"],
+                                    "ok": True,
+                                    "post_obs_id": post_obs_id,
+                                    "duration_ms": 0.0,
+                                }
+                                for item in body["actions"]
+                            ],
+                            "post_obs_id": post_obs_id,
+                            "duration_ms": 0.0,
+                        }
+                    ).encode()
+                )
+                return
             self.wfile.write(
                 json.dumps(
                     {
@@ -92,6 +114,40 @@ def test_authenticated_health_observe_and_act():
         assert all(item[1] == "Bearer fixture-token" for item in requests)
         assert requests[1][0] == "/observe?screenshot=false&max_depth=12"
         assert requests[2][2] == action.model_dump(mode="json")
+
+
+def test_authenticated_direct_fill_batch():
+    with server() as (url, requests):
+        relay = HttpRelay(url, "fixture-token")
+        obs_id, capture_id = uuid4(), uuid4()
+        actions = [
+            Action.model_validate(
+                {
+                    "schema_version": "0.2",
+                    "type": "set_text",
+                    "action_id": str(uuid4()),
+                    "obs_id": str(obs_id),
+                    "reason": "fill",
+                    "text": str(index),
+                    "target": {
+                        "image_point": [index * 10, 10],
+                        "capture_id": str(capture_id),
+                        "evidence": "fixture",
+                    },
+                }
+            )
+            for index in (1, 2)
+        ]
+        batch = ActionBatch(batch_id=uuid4(), actions=actions)
+        result = relay.act_batch(batch)
+        assert result.ok and result.batch_id == batch.batch_id
+        assert requests == [
+            (
+                "/act-batch",
+                "Bearer fixture-token",
+                batch.model_dump(mode="json"),
+            )
+        ]
 
 
 def test_http_error_never_exposes_body_or_authentication_token():

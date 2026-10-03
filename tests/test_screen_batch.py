@@ -4,6 +4,7 @@ import hashlib
 import json
 
 import pytest
+from sawon_interfaces import ActionBatchResult, ActionResult
 from test_brain import ScriptedModel, success_steps, values_for
 from test_brain import record as record
 from test_visual_workflow import SyntheticPerception, VisualFixture
@@ -19,6 +20,25 @@ class ChangingPixelsRelay(VisualFixture):
         digest = hashlib.sha1(json.dumps([self.mode, self.query, self.inputs, self.saved]).encode())
         self.current = wire.model_copy(update={"screen_hash": digest.hexdigest()})
         return self.current
+
+
+class BatchedChangingPixelsRelay(ChangingPixelsRelay):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.batches = []
+
+    def act_batch(self, batch):
+        self.batches.append(batch)
+        results = [self.act(action) for action in batch.actions]
+        post_obs_id = results[-1].post_obs_id
+        results = [result.model_copy(update={"post_obs_id": post_obs_id}) for result in results]
+        return ActionBatchResult(
+            batch_id=batch.batch_id,
+            ok=True,
+            results=results,
+            post_obs_id=post_obs_id,
+            duration_ms=sum(result.duration_ms for result in results),
+        )
 
 
 class CountPerception(SyntheticPerception):
@@ -61,7 +81,7 @@ def test_complete_workflow_fills_all_fields_before_one_reread(tmp_path, record):
     ordinary = success_steps(record)
     batch = screen_plan(record)
     responses = ordinary[:4] + [batch] + ordinary[4 + len(batch["fields"]) :]
-    relay = ChangingPixelsRelay(record)
+    relay = BatchedChangingPixelsRelay(record)
     brain, perception, model = make_brain(tmp_path, record, relay, responses)
     result = brain.run()
     assert result.status == "success", result
@@ -74,9 +94,21 @@ def test_complete_workflow_fills_all_fields_before_one_reread(tmp_path, record):
     checks = [e for e in events if e.payload.get("check") == "screen_fill_values"]
     assert len(checks) == 1 and len(checks[0].payload["matched"]) == 11
     assert not checks[0].payload["mismatched"]
-    renewals = [e for e in events if e.payload.get("check") == "visual_planned_capture_renewal"]
-    assert len(renewals) == 10  # Captures between the eleven input actions.
-    assert all(e.payload["screen_batch"] and not e.payload["same_content"] for e in renewals)
+    assert len(relay.batches) == 1 and len(relay.batches[0].actions) == 11
+    fill_requests = [
+        event
+        for event in events
+        if event.payload.get("stage") == "requested" and event.payload["action"]["reason"] == "fill"
+    ]
+    assert len(fill_requests) == 11
+    assert not [
+        event
+        for event in events
+        if fill_requests[0].seq < event.seq < fill_requests[-1].seq
+        and event.payload.get("check") == "visual_identical_capture_renewal"
+    ]
+    batch_results = [e for e in events if e.payload.get("stage") == "batch_returned"]
+    assert len(batch_results) == 1 and batch_results[0].payload["returned"] == 11
     transitions = [
         e.payload["transition"] for e in events if e.payload.get("check") == "action_transition"
     ]
@@ -84,6 +116,47 @@ def test_complete_workflow_fills_all_fields_before_one_reread(tmp_path, record):
     assert len(field_proofs) == 11
     assert all(t["observed_effect"] == "input_value_matches" for t in field_proofs)
     assert {f for t in field_proofs for f in t["new_facts"]} == set(brain.values)
+
+
+def test_direct_fill_batch_records_delivered_prefix_on_relay_failure(tmp_path, record):
+    class PartialBatch(BatchedChangingPixelsRelay):
+        def act_batch(self, batch):
+            self.batches.append(batch)
+            results = [self.act(action) for action in batch.actions[:3]]
+            rejected = batch.actions[3].root
+            results.append(
+                ActionResult(
+                    action_id=rejected.action_id,
+                    ok=False,
+                    error="focus_not_confirmed",
+                    duration_ms=1,
+                )
+            )
+            return ActionBatchResult(
+                batch_id=batch.batch_id,
+                ok=False,
+                error="focus_not_confirmed",
+                results=results,
+                duration_ms=2,
+            )
+
+    relay = PartialBatch(record)
+    relay.mode = "editor"
+    brain, _, _ = make_brain(tmp_path, record, relay, [screen_plan(record)])
+    brain.phase, brain.duplicate_clear = "enter", True
+    brain._observe()
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
+    assert brain._act_node({}) == {"next": "observe"}
+    assert len(relay.actions) == 3
+    assert brain.pending is None
+    transitions = [
+        event.payload["transition"]
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "action_transition"
+    ]
+    assert len(transitions) == 3
+    assert all(item["observed_effect"] == "unchecked" for item in transitions)
 
 
 def test_wrong_field_is_not_verified_and_only_that_field_is_replanned(tmp_path, record):

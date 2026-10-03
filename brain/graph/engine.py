@@ -15,7 +15,7 @@ from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, ValidationError
-from sawon_interfaces import Action, Observation, ShipmentRecord, UIElement
+from sawon_interfaces import Action, ActionResult, Observation, ShipmentRecord, UIElement
 
 from brain.cache import CacheIntegrityError, SemanticCache, VisualMatchCache
 from brain.cache.rebind import RebindProposal, build_rebind_request, install_rebind_proposal
@@ -1519,7 +1519,13 @@ class Brain:
             raise GuardStop("navigation_no_progress")
 
     def _wire_action(
-        self, choice: Choice, decision: Decision, *, screen_batch: bool = False
+        self,
+        choice: Choice,
+        decision: Decision,
+        *,
+        screen_batch: bool = False,
+        fresh_observation: Observation | None = None,
+        log_renewal: bool = True,
     ) -> Action:
         assert self.observation is not None
         data = {
@@ -1537,7 +1543,7 @@ class Brain:
                 # OCR/model latency can exceed the capture TTL. Renew only when
                 # task pixels, scale and foreground identity match. A translation alone
                 # changes only the fresh capture origin, not image-relative targets.
-                fresh = self.relay.observe()
+                fresh = fresh_observation or self.relay.observe()
                 previous = self.observation.wire
                 old_shot, new_shot = previous.screenshot, fresh.screenshot
                 same_content = (
@@ -1600,21 +1606,22 @@ class Brain:
                     + fresh.screen_hash,
                     "source": "visual",
                 }
-                self.log.append(
-                    "observe",
-                    payload={
-                        "check": "visual_planned_capture_renewal"
-                        if screen_batch
-                        else "visual_identical_capture_renewal",
-                        "ok": True,
-                        "perceived_obs_id": str(previous.obs_id),
-                        "action_obs_id": str(fresh.obs_id),
-                        "screen_hash": fresh.screen_hash,
-                        "screen_batch": screen_batch,
-                        "origin_changed": new_shot.geometry.origin != old_shot.geometry.origin,
-                        "same_content": same_content,
-                    },
-                )
+                if log_renewal:
+                    self.log.append(
+                        "observe",
+                        payload={
+                            "check": "visual_planned_capture_renewal"
+                            if screen_batch
+                            else "visual_identical_capture_renewal",
+                            "ok": True,
+                            "perceived_obs_id": str(previous.obs_id),
+                            "action_obs_id": str(fresh.obs_id),
+                            "screen_hash": fresh.screen_hash,
+                            "screen_batch": screen_batch,
+                            "origin_changed": new_shot.geometry.origin != old_shot.geometry.origin,
+                            "same_content": same_content,
+                        },
+                    )
         if choice.type in {"set_text", "type_text"}:
             data["text"] = self.credentials.get(choice.source) or self.values.get(choice.source, "")
         elif choice.type == "key":
@@ -1626,6 +1633,112 @@ class Brain:
         elif choice.type == "wait":
             data["duration_ms"] = choice.duration_ms
         return Action.model_validate(data)
+
+    def _log_action_requested(self, action: Action, choice: Choice) -> None:
+        logged = action.model_dump(mode="json")
+        if choice.source and choice.source.startswith("credential."):
+            logged["text"] = "[REDACTED]"
+        self.log.append("act", payload={"stage": "requested", "action": logged})
+
+    def _log_action_returned(self, action: Action, response: ActionResult) -> None:
+        self.log.append(
+            "act",
+            payload={
+                "stage": "returned",
+                "action_id": str(action.root.action_id),
+                "ok": response.ok,
+                "error": "relay_action_failed" if response.error else None,
+                "error_code": self._relay_error_code(response.error),
+                "post_obs_id": str(response.post_obs_id) if response.post_obs_id else None,
+            },
+            latency_ms=response.duration_ms,
+        )
+
+    @staticmethod
+    def _relay_error_code(error: str | None) -> str | None:
+        known_errors = {
+            "observation_expired",
+            "capture_expired",
+            "capture_unavailable",
+            "capture_geometry_changed",
+            "screen_changed",
+            "window_changed",
+            "foreground_not_allowed",
+            "focus_not_confirmed",
+            "point_outside_allowed_window",
+            "point_outside_capture",
+            "observation_stale",
+            "observation_blocked",
+            "action_failed",
+            "unsupported_key",
+        }
+        return error if error in known_errors else None
+
+    def _accept_dispatched_action(
+        self,
+        action: Action,
+        decision: Decision,
+        choice: Choice,
+        *,
+        progress_scope: str,
+        point_refined: bool,
+    ) -> PendingAction:
+        assert self.observation is not None and self.observation.active_window is not None
+        pending: PendingAction = {
+            "before_observation": self.observation,
+            "choice": choice,
+            "decision": decision,
+            "point_refined": point_refined,
+            "source_window_handle": self.observation.active_window.handle,
+            "source_navigation_state": navigation_state(self.observation),
+            "progress_scope": progress_scope,
+            "transition": ActionTransition(
+                action_id=str(action.root.action_id),
+                before_obs_id=str(self.observation.obs_id),
+                intent=decision.intent,
+                source=choice.source,
+                expected_effect=self._expected_effect(decision),
+            ),
+        }
+        if decision.intent == "navigate" and (
+            self.phase == "task" or decision.screen_kind == "editor"
+        ):
+            by_ref = {item.ref: item for item in self.observation.elements}
+            for evidence in decision.evidence:
+                target = by_ref.get(evidence.ref)
+                if (
+                    target is not None
+                    and target.role.casefold() in {"edit", "combobox"}
+                    and is_record_input(target, self.observation)
+                ):
+                    self.deferred_field_checks[evidence.field] = describe(
+                        target, self.observation.elements
+                    )
+        if decision.intent in {"navigate", "select_tab", "login"} and choice.ref is not None:
+            target = next(item for item in self.observation.elements if item.ref == choice.ref)
+            pending["navigation_target"] = navigation_target(target, self.observation)
+        if choice.type in {"click", "double_click"} and choice.ref is not None:
+            target = next(item for item in self.observation.elements if item.ref == choice.ref)
+            pending["click_target"] = navigation_target(target, self.observation)
+        if choice.type in {"set_text", "type_text"}:
+            target = next(item for item in self.observation.elements if item.ref == choice.ref)
+            pending["descriptor"] = describe(target, self.observation.elements)
+        if (
+            self.phase in {"duplicate_query", "final_query"}
+            and decision.intent == "search"
+            and decision.screen_kind == "query"
+        ):
+            self.query_submitted = True
+            if self.settings.screen_matching and self.phase == "final_query":
+                self.saved_evidence.begin(str(self.observation.obs_id))
+                self.review = None
+        if decision.intent == "save" and self.phase != "task":
+            self.save_issued = True
+            self.phase = "save_result"
+            self.query_submitted = self.query_value_verified = False
+            self.query_descriptor = None
+            self.query_window_handle = None
+        return pending
 
     def _act_node(self, state: dict) -> dict:
         assert self.decision is not None or self.action_plan is not None
@@ -1658,102 +1771,23 @@ class Brain:
             )
             point_refined = self.click_refinement.applies(self, decision)
             action = self._wire_action(choice, decision, screen_batch=screen_batch)
-            logged = action.model_dump(mode="json")
-            if choice.source and choice.source.startswith("credential."):
-                logged["text"] = "[REDACTED]"
-            self.log.append("act", payload={"stage": "requested", "action": logged})
+            self._log_action_requested(action, choice)
             if self.settings.screen_matching and isinstance(self.observation, SceneObservation):
                 self.saved_evidence.after_action(decision, self.observation)
                 self.review = None
             response = self.relay.act(action)
-            self.log.append(
-                "act",
-                payload={
-                    "stage": "returned",
-                    "action_id": str(action.root.action_id),
-                    "ok": response.ok,
-                    "error": "relay_action_failed" if response.error else None,
-                    "error_code": response.error
-                    if response.error
-                    in {
-                        "observation_expired",
-                        "capture_expired",
-                        "capture_unavailable",
-                        "capture_geometry_changed",
-                        "screen_changed",
-                        "window_changed",
-                        "foreground_not_allowed",
-                        "focus_not_confirmed",
-                        "point_outside_allowed_window",
-                        "point_outside_capture",
-                        "observation_stale",
-                        "observation_blocked",
-                        "action_failed",
-                        "unsupported_key",
-                    }
-                    else None,
-                    "post_obs_id": str(response.post_obs_id) if response.post_obs_id else None,
-                },
-                latency_ms=response.duration_ms,
-            )
+            self._log_action_returned(action, response)
             if response.action_id != action.root.action_id:
                 raise GuardStop("relay_action_identity_mismatch")
             if not response.ok:
                 return self._fail("relay_action_failed")
-            self.pending = {
-                "before_observation": self.observation,
-                "choice": choice,
-                "decision": decision,
-                "point_refined": point_refined,
-                "source_window_handle": self.observation.active_window.handle,
-                "source_navigation_state": navigation_state(self.observation),
-                "progress_scope": progress_scope,
-                "transition": ActionTransition(
-                    action_id=str(action.root.action_id),
-                    before_obs_id=str(self.observation.obs_id),
-                    intent=decision.intent,
-                    source=choice.source,
-                    expected_effect=self._expected_effect(decision),
-                ),
-            }
-            if decision.intent == "navigate" and (
-                self.phase == "task" or decision.screen_kind == "editor"
-            ):
-                by_ref = {item.ref: item for item in self.observation.elements}
-                for evidence in decision.evidence:
-                    target = by_ref.get(evidence.ref)
-                    if (
-                        target is not None
-                        and target.role.casefold() in {"edit", "combobox"}
-                        and is_record_input(target, self.observation)
-                    ):
-                        self.deferred_field_checks[evidence.field] = describe(
-                            target, self.observation.elements
-                        )
-            if decision.intent in {"navigate", "select_tab", "login"} and choice.ref is not None:
-                target = next(item for item in self.observation.elements if item.ref == choice.ref)
-                self.pending["navigation_target"] = navigation_target(target, self.observation)
-            if choice.type in {"click", "double_click"} and choice.ref is not None:
-                target = next(item for item in self.observation.elements if item.ref == choice.ref)
-                self.pending["click_target"] = navigation_target(target, self.observation)
-            if choice.type in {"set_text", "type_text"}:
-                target = next(item for item in self.observation.elements if item.ref == choice.ref)
-                self.pending["descriptor"] = describe(target, self.observation.elements)
-            if (
-                self.phase in {"duplicate_query", "final_query"}
-                and decision.intent == "search"
-                and decision.screen_kind == "query"
-            ):
-                self.query_submitted = True
-                if self.settings.screen_matching and self.phase == "final_query":
-                    self.saved_evidence.begin(str(self.observation.obs_id))
-                    self.review = None
-            if decision.intent == "save" and self.phase != "task":
-                self.save_issued = True
-                self.phase = "save_result"
-                self.query_submitted = self.query_value_verified = False
-                self.query_descriptor = None
-                self.query_window_handle = None
+            self.pending = self._accept_dispatched_action(
+                action,
+                decision,
+                choice,
+                progress_scope=progress_scope,
+                point_refined=point_refined,
+            )
             return {"next": "verify"}
         except GuardStop as exc:
             return self._finish("stopped", str(exc))
