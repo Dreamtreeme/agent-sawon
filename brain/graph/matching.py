@@ -743,13 +743,25 @@ def validate_match_plan(
                 source = None
             elif source is not None and not source.startswith("credential."):
                 if source not in brain.values:
-                    matching_keys = [
-                        key
-                        for key, value in brain.values.items()
-                        if normalize(value) == normalize(source)
-                    ]
-                    if len(matching_keys) == 1:
-                        source = matching_keys[0]
+                    container_key = next(
+                        (
+                            source.removeprefix(prefix)
+                            for prefix in ("record.", "inputs.")
+                            if source.startswith(prefix)
+                            and source.removeprefix(prefix) in brain.values
+                        ),
+                        None,
+                    )
+                    if container_key is not None:
+                        source = container_key
+                    else:
+                        matching_keys = [
+                            key
+                            for key, value in brain.values.items()
+                            if normalize(value) == normalize(source)
+                        ]
+                        if len(matching_keys) == 1:
+                            source = matching_keys[0]
             item = item.model_copy(update={"source": source})
             rebound_steps.append(
                 item.model_copy(update={"intent": "fill"})

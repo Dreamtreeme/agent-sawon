@@ -182,6 +182,27 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(t
     } & {step["id"] for step in state["procedure"]}
 
 
+@pytest.mark.parametrize("source", ["record.hbl_no", "inputs.hbl_no"])
+def test_generic_task_binds_prompt_container_path_to_input_key(tmp_path, record, source):
+    meaning = fixture()[-1]
+    task_response = response(meaning, procedure_step="Enter the visible task input")
+    task_response["steps"][0]["source"] = source
+    brain, *_ = setup_brain(tmp_path, record, [task_response])
+    brain.task_instruction = TaskInstruction.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    brain.procedure = None
+    brain.phase = "task"
+
+    brain._observe()
+
+    assert brain.visual_proposal.procedure_step == "task-action"
+    assert brain.visual_proposal.steps[0].intent == "fill"
+    assert brain.visual_proposal.steps[0].source == "hbl_no"
+
+
 def test_generic_task_discards_prose_source_from_non_binding_click(tmp_path, record):
     meaning = fixture()[-1]
     task_response = response(meaning, procedure_step="Open the relevant work area")
