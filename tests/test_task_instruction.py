@@ -2,10 +2,14 @@
 
 import pytest
 from pydantic import ValidationError
+from test_brain import FakeRelay, ScriptedModel, decision
 
+from brain.graph.engine import Brain
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
 from brain.graph.schemas import DecisionResponse
 from brain.observe.values import values_for
+from brain.runtime.storage import RunLog
+from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 
 
@@ -85,3 +89,42 @@ def test_task_instruction_contains_business_intent_without_ui_steps():
 
     assert not hasattr(instruction, "steps")
     assert not hasattr(instruction, "screens")
+
+
+def test_generic_search_does_not_require_or_mutate_legacy_query_state(tmp_path):
+    record = TaskInputRecord(case_id="invoice-17", inputs={"invoice.number": "INV-17"})
+    relay = FakeRelay(record)
+    log = RunLog(tmp_path, case_id=record.case_id, agent_id="generic-task-test")
+    brain = Brain(
+        record=record,
+        goal="Find the supplied invoice in the current business system.",
+        relay=relay,
+        model=ScriptedModel(log, []),
+        settings=BrainSettings(),
+        case_dir=tmp_path,
+        run_log=log,
+    )
+    brain.phase = "task"
+    brain.task_instruction = TaskInstruction(
+        name="Find invoice",
+        objective="Find the supplied invoice in the current business system.",
+        requirements=["Use the supplied invoice number."],
+        completion_conditions=["The matching invoice is visible."],
+    )
+    brain.observation = relay.observe()
+    search = DecisionResponse.model_validate(
+        {
+            "decision": decision(
+                intent="search",
+                action={"type": "click", "ref": "e2"},
+            )
+        }
+    ).to_decision()
+
+    brain._guard_action(search)
+    brain.decision = search
+    assert brain._dispatch_action() == {"next": "verify"}
+
+    assert not brain.query_value_verified
+    assert not brain.query_submitted
+    assert brain.query_descriptor is None

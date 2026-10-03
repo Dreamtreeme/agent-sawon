@@ -1492,7 +1492,7 @@ class Brain:
                 raise GuardStop("record_input_scope_mismatch")
         if isinstance(self.observation, SceneObservation) and choice.type == "select_option":
             raise GuardStop("visual_select_requires_click_or_keyboard")
-        if decision.intent == "search" and decision.screen_kind == "query":
+        if self.phase != "task" and decision.intent == "search" and decision.screen_kind == "query":
             if not self._current_query_matches():
                 raise GuardStop("query_value_changed")
         if (
@@ -1722,18 +1722,21 @@ class Brain:
             if choice.type in {"set_text", "type_text"}:
                 target = next(item for item in self.observation.elements if item.ref == choice.ref)
                 self.pending["descriptor"] = describe(target, self.observation.elements)
-            if decision.intent == "search" and decision.screen_kind == "query":
+            if (
+                self.phase in {"duplicate_query", "final_query"}
+                and decision.intent == "search"
+                and decision.screen_kind == "query"
+            ):
                 self.query_submitted = True
                 if self.settings.screen_matching and self.phase == "final_query":
                     self.saved_evidence.begin(str(self.observation.obs_id))
                     self.review = None
-            if decision.intent == "save":
+            if decision.intent == "save" and self.phase != "task":
                 self.save_issued = True
-                if self.phase != "task":
-                    self.phase = "save_result"
-                    self.query_submitted = self.query_value_verified = False
-                    self.query_descriptor = None
-                    self.query_window_handle = None
+                self.phase = "save_result"
+                self.query_submitted = self.query_value_verified = False
+                self.query_descriptor = None
+                self.query_window_handle = None
             return {"next": "verify"}
         except GuardStop as exc:
             return self._finish("stopped", str(exc))
@@ -1810,9 +1813,13 @@ class Brain:
             observed_state = navigation_state(observation)
             changed = observed_state != self.pending["source_navigation_state"]
             observed_effect = ObservedEffect.CHANGED if changed else ObservedEffect.NO_CHANGE
-            if decision.intent == "search" and decision.screen_kind == "query":
+            if (
+                self.phase in {"duplicate_query", "final_query"}
+                and decision.intent == "search"
+                and decision.screen_kind == "query"
+            ):
                 new_facts.append("query_submitted")
-            elif decision.intent == "save":
+            elif decision.intent == "save" and self.phase != "task":
                 new_facts.append("save_issued")
             navigation_change = None
             if decision.intent in {"navigate", "select_tab", "login"}:
