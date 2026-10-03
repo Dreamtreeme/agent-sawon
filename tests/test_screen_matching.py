@@ -182,6 +182,31 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(t
     } & {step["id"] for step in state["procedure"]}
 
 
+def test_generic_task_discards_prose_source_from_non_binding_click(tmp_path, record):
+    meaning = fixture()[-1]
+    task_response = response(meaning, procedure_step="Open the relevant work area")
+    task_response["steps"][0].update(
+        action="click",
+        intent="navigate",
+        source="House B/L work menu",
+        point=[175, 30],
+    )
+    brain, *_ = setup_brain(tmp_path, record, [task_response])
+    brain.task_instruction = TaskInstruction.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    brain.procedure = None
+    brain.phase = "task"
+
+    brain._observe()
+
+    assert brain.visual_proposal.procedure_step == "task-action"
+    assert brain.visual_proposal.steps[0].intent == "navigate"
+    assert brain.visual_proposal.steps[0].source is None
+
+
 def test_promoted_exact_visual_match_reuse_precedes_model_call(tmp_path, record):
     meaning = fixture()[-1]
     cache_path = tmp_path / "visual-match.json"

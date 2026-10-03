@@ -735,7 +735,13 @@ def validate_match_plan(
         rebound_steps = []
         for item in response.steps:
             source = item.source
-            if source is not None and not source.startswith("credential."):
+            source_intents = {"credential", "query_input", "fill", "select_option"}
+            if item.intent not in source_intents:
+                # Models sometimes use source as prose about a click.  The
+                # executor's source is a data binding, so it has no meaning for
+                # navigation, search, save, login, cancel, or tab clicks.
+                source = None
+            elif source is not None and not source.startswith("credential."):
                 if source not in brain.values:
                     matching_keys = [
                         key
@@ -744,7 +750,7 @@ def validate_match_plan(
                     ]
                     if len(matching_keys) == 1:
                         source = matching_keys[0]
-                item = item.model_copy(update={"source": source})
+            item = item.model_copy(update={"source": source})
             rebound_steps.append(
                 item.model_copy(update={"intent": "fill"})
                 if item.action == "fill"
