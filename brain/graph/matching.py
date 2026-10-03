@@ -158,7 +158,22 @@ class ActionCompletion(BaseModel):
         return self
 
 
-class ScreenMatch(SemanticDetection):
+class MethodBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    slot: str
+    source: str
+
+
+class MethodChoice(BaseModel):
+    """Business purpose and a reusable method selected by the screen worker."""
+
+    model_config = ConfigDict(extra="forbid")
+    purpose: str = Field(default="", max_length=160)
+    method_id: str | None = None
+    method_bindings: list[MethodBinding] = Field(default_factory=list, max_length=100)
+
+
+class ScreenMatch(SemanticDetection, MethodChoice):
     """Only relevant controls/verification anchors; no nested execution union."""
 
     procedure_step: str
@@ -182,7 +197,7 @@ class ScreenMatch(SemanticDetection):
     needs_image: bool = False
 
 
-class ScreenPlan(BaseModel):
+class ScreenPlan(MethodChoice):
     """Task decision over a previously grounded screen interpretation."""
 
     model_config = ConfigDict(extra="forbid")
@@ -217,7 +232,15 @@ fill/search with select_option when the matching result row is already visible.
 Return only the task plan fields in the schema. Never return control roles or relationships.
 """
 
-TASK_PLAN_RULES = """Use the supplied grounded screen interpretation as immutable evidence.
+TASK_INPUT_RULES = """
+Distinguish field captions and column headers from the editable areas they name.
+Match values to the data scope requested by the user (record or line item), not merely to a
+same-text label in another section. Ground an input in its actual visible editable area.
+"""
+
+
+TASK_PLAN_RULES = (
+    """Use the supplied grounded screen interpretation as immutable evidence.
 Use the user task description, input data and runtime notebook to choose the next action from the
 execution contract. The task description is business intent, not a UI route. Do not assume labels,
 menus, tabs, coordinates or screen order that are absent from the current interpretation. Return one
@@ -230,6 +253,8 @@ including filters and lookups. Treat a visible status or result as current evide
 shows a command's expected effect, do not repeat that command; advance the task from that result.
 Return only task-plan schema fields and never reclassify controls or invent IDs.
 """
+    + TASK_INPUT_RULES
+)
 
 TARGET_GROUNDING_RULES = """Ground only the listed action target markers on the CURRENT image.
 The existing task plan is immutable: do not replace, reorder, or add actions.
@@ -302,7 +327,8 @@ search, navigate, or fill for a record field absent from remaining_fields and
 pending_verification_fields.
 """
 
-TASK_RULES = """Use the user task description, input data, runtime notebook and CURRENT screen.
+TASK_RULES = (
+    """Use the user task description, input data, runtime notebook and CURRENT screen.
 The task description contains business intent and completion conditions, not a fixed UI route.
 Choose the next grounded action that advances the objective from the current evidence. Decide
 whether to fill visible inputs, use a visible lookup/selection control, navigate, save, or verify.
@@ -323,6 +349,23 @@ user-authored completion condition. Map each supporting marker to its zero-based
 in completion_evidence; map visible business values separately in evidence. Follow all constraints
 and never transmit or approve. Treat a visible status or result as current evidence: when it already
 shows a command's expected effect, do not repeat that command; advance the task from that result.
+"""
+    + TASK_INPUT_RULES
+)
+
+METHOD_RULES = """
+method_memory contains learned ways to achieve purposes, with parameter slots and observed
+screen branches. Use relevant methods as task know-how. Return purpose as the specific business
+subgoal of this batch, preserving it until achieved. When a method fits, return its method_id
+and method_bindings mapping its slots to exact current notebook.inputs keys. Keep these meanings
+across changed labels/layouts. If this screen needs a different way to perform that purpose,
+return the appropriate CURRENT steps and controls with the same method_id and bindings: the
+runtime will retain this observed variant for subsequent use. Choose steps from current evidence,
+not the historical marker numbers. Current execution/results in method_memory are this run's
+progress, not business completion proof. A null method_id means a new purpose or no suitable method.
+For navigation into the screen that will perform a learned method, select that method_id and its
+bindings NOW so the next observed screen can use it directly. Select only for the current or
+immediately next subgoal; after a delivered batch the next purpose is chosen from new evidence.
 """
 
 
@@ -1026,8 +1069,14 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         }
     if "save_review" in contract:
         state["save_review"] = contract["save_review"]
-    prompt = (TASK_RULES if brain.task_instruction is not None else RULES) + json.dumps(
-        state, ensure_ascii=False
+    methods = getattr(brain, "methods", None)
+    if methods is not None and methods.enabled:
+        state["method_memory"] = methods.context()
+    method_rules = METHOD_RULES if methods is not None and methods.enabled else ""
+    prompt = (
+        (TASK_RULES if brain.task_instruction is not None else RULES)
+        + method_rules
+        + json.dumps(state, ensure_ascii=False)
     )
     cache_hit = brain.visual_match_cache.lookup(state)
     if cache_hit is not None:
@@ -1058,6 +1107,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         }
         plan = brain._call(
             (TASK_PLAN_RULES if brain.task_instruction is not None else PLAN_RULES)
+            + method_rules
             + json.dumps(plan_state, ensure_ascii=False),
             ScreenPlan,
             page=page,
@@ -1083,6 +1133,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         image_state = {**state, "screen": model_screen(screen)}
         response = brain._call(
             (TASK_RULES if brain.task_instruction is not None else RULES)
+            + method_rules
             + json.dumps(image_state, ensure_ascii=False)
             + "\nResolve the reported ambiguity with this image.",
             ScreenMatch,
@@ -1096,7 +1147,12 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         # There is exactly one synthetic capability envelope in generic task
         # mode.  Its internal ID is compiler metadata, not a business decision
         # the model should have to echo instead of a human-readable subgoal.
-        response = response.model_copy(update={"procedure_step": candidates[0].id})
+        response = response.model_copy(
+            update={
+                "purpose": (response.purpose or response.procedure_step)[:160],
+                "procedure_step": candidates[0].id,
+            }
+        )
     try:
         response, step = validate_match_plan(response, candidates, policy, brain, active_fields)
     except ValueError as error:
@@ -1134,6 +1190,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         }
         plan = brain._call(
             (TASK_PLAN_RULES if brain.task_instruction is not None else PLAN_RULES)
+            + method_rules
             + json.dumps(correction_state, ensure_ascii=False),
             ScreenPlan,
             page=page,
@@ -1220,9 +1277,13 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
             "procedure_step": step.id,
             "steps": len(response.steps),
             "expected_result": response.expected_result,
+            "purpose": response.purpose,
+            "method_id": response.method_id,
             "prompt_chars": len(prompt),
         },
     )
+    if methods is not None and methods.enabled:
+        methods.remember(screen, response)
     return response
 
 
@@ -1240,7 +1301,7 @@ def compile_match(response: ScreenMatch, observation, schema):
                 else "stop"
                 if response.operation == "stop"
                 else "verify",
-                subgoal=response.procedure_step,
+                subgoal=response.purpose or response.procedure_step,
                 reason=response.expected_result or "Current form matched to procedure",
                 action=Choice(
                     type="set_text" if action.action == "fill" else action.action,
@@ -1286,6 +1347,7 @@ def compile_match(response: ScreenMatch, observation, schema):
             raise ValueError("screen_match_mixed_field_batch")
         data = {
             "fields": [{"source": s.source, "ref": ref(s.target)} for s in fills],
+            "purpose": response.purpose,
             "next_decision": None,
         }
     else:

@@ -33,3 +33,30 @@ def test_open_border_and_image_edge_are_not_complete_extents():
     draw.line([(50, 50), (300, 50), (300, 200), (50, 200)], fill="black")
     draw.rectangle((0, 230, 350, 390), outline="black")
     assert rectangular_candidates(image) == []
+
+
+@pytest.mark.parametrize("bottom", [131, 82])
+def test_pale_input_borders_survive_local_contrast_detection(bottom):
+    image = Image.new("RGB", (720, 320), (247, 247, 247))
+    draw = ImageDraw.Draw(image)
+    expected = [(43, 67, 651, 34), (46, 178, 512, 34)]
+    for x, y, width, height in expected:
+        draw.rectangle(
+            (x, y, x + width - 1, y + height - 1),
+            fill="white",
+            outline=(236, 236, 236),
+        )
+        draw.line((x + 1, y + height - 1, x + width - 2, y + height - 1), fill=(bottom,) * 3)
+    # A focused field's caret and an unrelated underline are not input extents.
+    draw.line((46, 70, 46, 96), fill="black")
+    draw.line((50, 245, 500, 245), fill=(236,) * 3)
+    boxes = rectangular_candidates(image)
+    for expected_box in expected:
+        assert any(
+            all(
+                abs(actual - desired) <= 2
+                for actual, desired in zip(box, expected_box, strict=True)
+            )
+            for box in boxes
+        )
+    assert all(y < 240 for _, y, _, _ in boxes)

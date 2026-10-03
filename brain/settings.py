@@ -26,6 +26,12 @@ class VisualMatchCacheSettings(BaseModel):
     path: Path = Path("cases/visual-match-cache.json")
 
 
+class MethodSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    enabled: bool = False
+    path: Path = Path("cases/methods.json")
+
+
 class BrainSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["0.1"] = "0.1"
@@ -41,6 +47,7 @@ class BrainSettings(BaseModel):
     navigation_history_size: int = Field(default=12, ge=4, le=64)
     cache: CacheSettings = Field(default_factory=CacheSettings)
     visual_match_cache: VisualMatchCacheSettings = Field(default_factory=VisualMatchCacheSettings)
+    methods: MethodSettings = Field(default_factory=MethodSettings)
     recovery_enabled: bool = False
     perception_mode: Literal["legacy_uia", "visual_only"] = "legacy_uia"
     visual_min_confidence: float = Field(default=0.8, ge=0, le=1, allow_inf_nan=False)
@@ -91,6 +98,14 @@ class BrainSettings(BaseModel):
                 update={
                     "visual_match_cache": settings.visual_match_cache.model_copy(
                         update={"path": (path.parent / settings.visual_match_cache.path).resolve()}
+                    )
+                }
+            )
+        if not settings.methods.path.is_absolute():
+            settings = settings.model_copy(
+                update={
+                    "methods": settings.methods.model_copy(
+                        update={"path": (path.parent / settings.methods.path).resolve()}
                     )
                 }
             )

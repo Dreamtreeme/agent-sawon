@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import replace
 from typing import TYPE_CHECKING, Literal
 
@@ -26,7 +27,8 @@ directly editable inputs. On screens without such inputs, return an empty fields
 and the appropriate next_decision instead.
 Plan ALL currently visible, directly editable remaining record fields in one fields
 list, ordered for execution. Each entry maps a CURRENT ref to a record source;
-never supply literal values or invented coordinates. Each ref/source occurs once.
+never supply literal values or invented coordinates. Each target ref occurs once;
+one source may supply several distinct fields when the task requires it.
 The runtime fills every planned field without OCR/model calls between inputs,
 then moves focus once and rereads the whole screen to verify the assignments.
 Only include fields whose input does not open a dialog, change tabs or navigate.
@@ -49,6 +51,7 @@ class ScreenField(StrictModel):
 
 
 class ScreenFillPlan(StrictModel):
+    purpose: str = Field(default="", max_length=160)
     fields: list[ScreenField] = Field(max_length=100)
     next_decision: DecisionResponse | None
 
@@ -56,10 +59,8 @@ class ScreenFillPlan(StrictModel):
     def one_path(self) -> ScreenFillPlan:
         if bool(self.fields) == (self.next_decision is not None):
             raise ValueError("choose screen fields or next decision")
-        for key in ("source", "ref"):
-            values = [getattr(item, key) for item in self.fields]
-            if len(set(values)) != len(values):
-                raise ValueError("duplicate screen assignment")
+        if len({item.ref for item in self.fields}) != len(self.fields):
+            raise ValueError("duplicate screen assignment")
         if self.next_decision is not None:
             decision = self.next_decision.to_decision()
             if decision.intent == "fill" and decision.action is not None:
@@ -170,7 +171,7 @@ def prepare_screen_fill(scene: Observation, plan: ScreenFillPlan) -> ActionPlan:
                 screen_kind=scene.screen_kind,
                 operation="act",
                 intent="fill",
-                subgoal="Fill visible screen",
+                subgoal=plan.purpose or "Fill visible screen",
                 reason="Execute the current screen field plan",
                 action=Choice(type="set_text", ref=f.ref, source=f.source),
             )
@@ -215,7 +216,8 @@ def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Ob
         brain.feedback.append(payload)
         return {"next": "review"}
 
-    matched, mismatched = [], []
+    matched, mismatched, mismatched_refs = [], [], []
+    source_counts = Counter(item["choice"].source for item in execution.delivered[:-1])
     explicit_evidence = {}
     proposal = getattr(brain, "visual_proposal", None)
     if proposal is not None and isinstance(observation, SceneObservation):
@@ -224,7 +226,7 @@ def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Ob
     by_ref = {element.ref: element for element in observation.elements}
     for delivered in execution.delivered[:-1]:
         source = delivered["choice"].source
-        bound = by_ref.get(explicit_evidence.get(source))
+        bound = by_ref.get(explicit_evidence.get(source)) if source_counts[source] == 1 else None
         candidates = (
             [bound]
             if bound is not None
@@ -238,11 +240,13 @@ def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Ob
             and brain._record_verified_field(source, candidates[0])
         )
         if ok:
-            execution.matched_fields.add(source)
+            execution.matched_refs.add(delivered["choice"].ref)
             matched.append(source)
         else:
-            brain.verified.pop(source, None)
             mismatched.append(source)
+            mismatched_refs.append(delivered["choice"].ref)
+    for source in mismatched:
+        brain.verified.pop(source, None)
     payload = {
         "check": "screen_fill_values",
         "ok": not mismatched,
@@ -254,7 +258,9 @@ def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Ob
     brain.feedback.append(payload)
     if mismatched:
         brain.decision = next(
-            a.decision for a in execution.plan.actions if a.decision.action.source == mismatched[0]
+            a.decision
+            for a in execution.plan.actions
+            if a.decision.action.ref == mismatched_refs[0]
         )
         outcome = brain._fail("screen_fill_value_mismatch")
         if outcome["next"] == "finish":

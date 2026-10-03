@@ -14,7 +14,12 @@ def rectangular_candidates(image, *, limit: int = 80) -> list[list[int]]:
 
     pixels = np.asarray(image.convert("L"))
     height, width = pixels.shape
-    binary = (pixels < 110).astype("uint8") * 255
+    # Desktop inputs often have a pale outline and only a dark bottom edge.
+    # Compare a line with its local background: an absolute darkness cutoff
+    # deletes the other three sides before the closed-boundary check can see them.
+    binary = cv2.adaptiveThreshold(
+        pixels, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 7, 3
+    )
     horizontal = cv2.morphologyEx(
         binary, cv2.MORPH_OPEN, np.ones((1, (max(24, width // 32) | 1)), np.uint8)
     )

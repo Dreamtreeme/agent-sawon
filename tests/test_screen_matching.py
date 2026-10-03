@@ -687,6 +687,13 @@ def test_login_and_record_arrays_compile_to_existing_batches():
         ],
     )
     assert len(compile_match(fields, scene, ScreenFillPlan).fields) == 2
+    # Input data is reusable: two distinct fields may need the same source.
+    repeated_value = fields.model_copy(
+        update={"steps": [fields.steps[0], fields.steps[0].model_copy(update={"target": 2})]}
+    )
+    repeated_plan = compile_match(repeated_value, scene, ScreenFillPlan)
+    assert [item.source for item in repeated_plan.fields] == ["hbl_no", "hbl_no"]
+    assert len({item.ref for item in repeated_plan.fields}) == 2
     with pytest.raises(ValueError, match="mixed_field_batch"):
         compile_match(
             fields.model_copy(update={"steps": [*fields.steps, login.steps[-1]]}),

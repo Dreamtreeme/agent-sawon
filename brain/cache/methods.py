@@ -1,0 +1,399 @@
+"""Learned action methods, parameterized inputs, and current-screen target binding."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from itertools import product
+from math import log
+from pathlib import Path
+from typing import Any, Literal
+
+import portalocker
+from pydantic import BaseModel, ConfigDict, Field
+
+from brain.observe.values import normalize
+from brain.runtime.storage import atomic_write_json
+from brain.visual.markers import marker_role_allowed
+from brain.visual.scene import ControlMeaning, contains
+
+
+class MethodSlot(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: str
+    description: str
+    source_key: str
+
+
+class MethodTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: str
+    role: str
+    anchor_texts: list[str] = Field(min_length=1)
+    relation: Literal["inside", "right", "left", "below", "above"]
+    marker_source: str | None = None
+    anchor_geometry: tuple[float, float, float, float] | None = None
+
+
+class MethodAction(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    target: str
+    action: Literal["fill", "click", "double_click", "key"]
+    intent: str
+    slot: str | None = None
+    keys: str | None = None
+    relative_point: tuple[float, float] | None = None
+
+
+class MethodActionGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: str
+    context_anchors: list[str] = Field(default_factory=list)
+    targets: list[MethodTarget] = Field(min_length=1)
+    actions: list[MethodAction] = Field(min_length=1)
+    expected_result: str = ""
+    screen_kind: str = "unknown"
+
+
+class LearnedMethod(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: str
+    purpose: str
+    task_objective: str = ""
+    slots: list[MethodSlot] = Field(default_factory=list)
+    action_groups: list[MethodActionGroup] = Field(min_length=1)
+    source_transitions: list[str] = Field(default_factory=list)
+    revision: int = Field(default=1, ge=1)
+
+
+class MethodDocument(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["0.1"] = "0.1"
+    methods: list[LearnedMethod] = Field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class BoundMethod:
+    method_id: str
+    group_id: str
+    response: dict[str, Any]
+
+
+def _relation(target: list | tuple, anchor: list | tuple) -> str:
+    if contains(target, anchor):
+        return "inside"
+    x, y, w, h = target
+    a, b, c, d = anchor
+    dx, dy = x + w / 2 - a - c / 2, y + h / 2 - b - d / 2
+    if abs(dx) / max(w, c) >= abs(dy) / max(h, d):
+        return "right" if dx >= 0 else "left"
+    return "below" if dy >= 0 else "above"
+
+
+def _anchor_box(anchors: list[dict]) -> tuple[float, float, float, float]:
+    left = min(item["bbox"][0] for item in anchors)
+    top = min(item["bbox"][1] for item in anchors)
+    right = max(item["bbox"][0] + item["bbox"][2] for item in anchors)
+    bottom = max(item["bbox"][1] + item["bbox"][3] for item in anchors)
+    return left, top, right - left, bottom - top
+
+
+def _anchor_geometry(box: list | tuple, anchors: list[dict]) -> tuple[float, ...]:
+    x, y, width, height = box
+    left, top, anchor_width, anchor_height = _anchor_box(anchors)
+    return (
+        (x - left) / anchor_width,
+        (y - top) / anchor_height,
+        width / anchor_width,
+        height / anchor_height,
+    )
+
+
+def method_from_match(
+    screen: dict,
+    response: dict,
+    *,
+    method_id: str,
+    purpose: str,
+    slots: list[MethodSlot] | None = None,
+    context_anchors: tuple[str, ...] | list[str] = (),
+    source_transitions: tuple[str, ...] | list[str] = (),
+    task_objective: str = "",
+) -> LearnedMethod | None:
+    """Retain a model's meaning; replace its observed handles with label relations.
+
+    The caller supplies model-extracted purpose and input roles. Geometry and source
+    bindings come from actual executed actions, not a second model reconstruction.
+    """
+    markers = {item["id"]: item for item in screen.get("markers", [])}
+    blocks = {item["id"]: item for item in screen.get("ocr", [])}
+    controls = {item["id"]: item for item in response.get("controls", [])}
+    steps = response.get("steps", [])
+    if not steps or response.get("operation", "act") != "act":
+        return None
+    if slots is None:
+        sources = dict.fromkeys(step["source"] for step in steps if step.get("source"))
+        slots = [MethodSlot(name=key, description=key, source_key=key) for key in sources]
+    by_source = {slot.source_key: slot.name for slot in slots}
+    targets: dict[int, MethodTarget] = {}
+    actions = []
+    for step in steps:
+        marker, control = markers.get(step["target"]), controls.get(step["target"])
+        if marker is None or control is None:
+            return None
+        source = step.get("source")
+        if source and source not in by_source:
+            return None
+        if marker["id"] not in targets:
+            anchor_ids = control.get("label_ids", [])
+            if not anchor_ids and control["role"] not in {"edit", "combobox"}:
+                anchor_ids = control.get("text_ids", []) or marker.get("text_ids", [])
+            anchors = [blocks[i] for i in anchor_ids if i in blocks and blocks[i]["text"].strip()]
+            if not anchors:
+                return None
+            relations = {_relation(marker["bbox"], item["bbox"]) for item in anchors}
+            if len(relations) != 1:
+                return None
+            targets[marker["id"]] = MethodTarget(
+                name=f"target_{len(targets) + 1}",
+                role=control["role"],
+                anchor_texts=[item["text"] for item in anchors],
+                relation=relations.pop(),
+                marker_source=marker["source"],
+                anchor_geometry=_anchor_geometry(marker["bbox"], anchors),
+            )
+        point = None
+        if step["action"] in {"click", "double_click"}:
+            if step.get("point") is None:
+                return None
+            x, y, w, h = marker["bbox"]
+            point = ((step["point"][0] - x) / w, (step["point"][1] - y) / h)
+            if not all(0 <= coordinate <= 1 for coordinate in point):
+                return None
+        actions.append(
+            MethodAction(
+                target=targets[marker["id"]].name,
+                action=step["action"],
+                intent=step["intent"],
+                slot=by_source.get(source),
+                keys=step.get("keys"),
+                relative_point=point,
+            )
+        )
+    group = MethodActionGroup(
+        id="pending",
+        context_anchors=list(context_anchors),
+        targets=list(targets.values()),
+        actions=actions,
+        expected_result=response.get("expected_result", "")[:240],
+        screen_kind=response.get("screen_kind", "unknown"),
+    )
+    encoded = json.dumps(group.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
+    group = group.model_copy(update={"id": hashlib.sha256(encoded.encode()).hexdigest()[:16]})
+    return LearnedMethod(
+        id=method_id,
+        purpose=purpose,
+        task_objective=task_objective,
+        slots=slots,
+        action_groups=[group],
+        source_transitions=list(source_transitions),
+    )
+
+
+def _candidate_score(box: list | tuple, anchors: list[dict], relation: str) -> float | None:
+    if any(_relation(box, anchor["bbox"]) != relation for anchor in anchors):
+        return None
+    x, y, w, h = box
+    if relation == "inside":
+        return float(w * h)
+    score = 0.0
+    for anchor in anchors:
+        a, b, c, d = anchor["bbox"]
+        if relation in {"left", "right"}:
+            if min(y + h, b + d) <= max(y, b):
+                return None
+            distance = max(0, x - a - c) if relation == "right" else max(0, a - x - w)
+            score += distance + abs(y + h / 2 - b - d / 2)
+        else:
+            if min(x + w, a + c) <= max(x, a):
+                return None
+            distance = max(0, y - b - d) if relation == "below" else max(0, b - y - h)
+            score += distance + abs(x + w / 2 - a - c / 2)
+    return score
+
+
+def _bind_target(target: MethodTarget, screen: dict) -> tuple[dict, list[int]] | None:
+    matches = []
+    for text in target.anchor_texts:
+        found = [b for b in screen["ocr"] if normalize(b["text"]) == normalize(text)]
+        if not found:
+            return None
+        matches.append(found)
+    candidates = []
+    for anchors in product(*matches):
+        for marker in screen["markers"]:
+            if not marker_role_allowed(marker["source"], target.role):
+                continue
+            if target.anchor_geometry is None:
+                score = _candidate_score(marker["bbox"], anchors, target.relation)
+            else:
+                geometry = _anchor_geometry(marker["bbox"], anchors)
+                learned = target.anchor_geometry
+                # Compare the learned label-to-control relationship rather than
+                # distance to a control's center (wide inputs have distant centers).
+                score = sum(
+                    abs(geometry[i] - learned[i]) / (1 + abs(learned[i])) for i in (0, 1)
+                ) + sum(abs(log(geometry[i] / learned[i])) for i in (2, 3))
+            if score is not None:
+                candidates.append((score, marker, [anchor["id"] for anchor in anchors]))
+    if not candidates:
+        return None
+    # Current labels locate the target; detector source only resolves equal geometry.
+    candidates.sort(key=lambda item: (item[0], item[1]["source"] != target.marker_source))
+    if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+        if (candidates[0][1]["source"] == target.marker_source) == (
+            candidates[1][1]["source"] == target.marker_source
+        ):
+            return None
+    return candidates[0][1], candidates[0][2]
+
+
+class MethodLibrary:
+    def __init__(self, path: Path, *, enabled: bool = False):
+        self.path = Path(path)
+        self.enabled = enabled
+
+    def methods(self) -> list[LearnedMethod]:
+        if not self.enabled or not self.path.exists():
+            return []
+        return MethodDocument.model_validate_json(self.path.read_bytes()).methods
+
+    def catalog(self, task: str | None = None) -> list[dict]:
+        return [
+            {
+                "id": method.id,
+                "purpose": method.purpose,
+                "task_objective": method.task_objective,
+                "slots": [slot.model_dump() for slot in method.slots],
+                "groups": [
+                    {"id": group.id, "context_anchors": group.context_anchors}
+                    for group in method.action_groups
+                ],
+            }
+            for method in self.methods()
+            if task is None or not method.task_objective or method.task_objective == task
+        ]
+
+    def upsert(self, method: LearnedMethod) -> LearnedMethod:
+        if not self.enabled:
+            return method
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with portalocker.Lock(self.path.with_suffix(self.path.suffix + ".lock"), mode="a"):
+            existing = {item.id: item for item in self.methods()}
+            previous = existing.get(method.id)
+            if previous is not None:
+                groups = {item.id: item for item in previous.action_groups}
+                groups.update({item.id: item for item in method.action_groups})
+                method = method.model_copy(
+                    update={
+                        "revision": previous.revision + 1,
+                        "action_groups": list(groups.values()),
+                        "slots": list(
+                            {slot.name: slot for slot in previous.slots + method.slots}.values()
+                        ),
+                        "source_transitions": list(
+                            dict.fromkeys(previous.source_transitions + method.source_transitions)
+                        ),
+                    }
+                )
+            existing[method.id] = method
+            atomic_write_json(self.path, MethodDocument(methods=list(existing.values())))
+        return method
+
+    def bind(
+        self,
+        method_id: str,
+        slot_map: dict[str, str],
+        screen: dict,
+        values: dict[str, str],
+        *,
+        group_id: str | None = None,
+    ) -> dict | None:
+        bound = self.bind_with_context(method_id, slot_map, screen, values, group_id=group_id)
+        return None if bound is None else bound.response
+
+    def bind_with_context(
+        self,
+        method_id: str,
+        slot_map: dict[str, str],
+        screen: dict,
+        values: dict[str, str],
+        *,
+        group_id: str | None = None,
+    ) -> BoundMethod | None:
+        method = next((item for item in self.methods() if item.id == method_id), None)
+        if method is None:
+            return None
+        sources = {slot.name: slot_map.get(slot.name, slot.source_key) for slot in method.slots}
+        visible_text = {normalize(block["text"]) for block in screen.get("ocr", [])}
+        for group in method.action_groups:
+            if group_id is not None and group.id != group_id:
+                continue
+            if any(
+                not any(normalize(anchor) in text for text in visible_text)
+                for anchor in group.context_anchors
+            ):
+                continue
+            bound = {target.name: _bind_target(target, screen) for target in group.targets}
+            if any(value is None for value in bound.values()):
+                continue
+            if len({value[0]["id"] for value in bound.values()}) != len(bound):
+                continue
+            steps, controls = [], {}
+            for target in group.targets:
+                marker, label_ids = bound[target.name]
+                controls[marker["id"]] = ControlMeaning(
+                    id=marker["id"],
+                    role=target.role,
+                    label_ids=label_ids,
+                    text_ids=(
+                        list(marker.get("text_ids", []))
+                        if marker["source"] == "ocr"
+                        else [b["id"] for b in screen["ocr"] if contains(marker["bbox"], b["bbox"])]
+                    ),
+                    confidence=1,
+                ).model_dump(mode="json")
+            for action in group.actions:
+                marker, _ = bound[action.target]
+                source = sources.get(action.slot) if action.slot else None
+                if action.slot and (source is None or source not in values):
+                    break
+                point = None
+                if action.relative_point is not None:
+                    x, y, w, h = marker["bbox"]
+                    point = [x + action.relative_point[0] * w, y + action.relative_point[1] * h]
+                steps.append(
+                    {
+                        "target": marker["id"],
+                        "action": action.action,
+                        "intent": action.intent,
+                        "source": source,
+                        "keys": action.keys,
+                        "point": point,
+                    }
+                )
+            else:
+                return BoundMethod(
+                    method.id,
+                    group.id,
+                    {
+                        "screen_kind": group.screen_kind,
+                        "controls": list(controls.values()),
+                        "procedure_step": method.purpose,
+                        "steps": steps,
+                        "operation": "act",
+                        "expected_result": group.expected_result,
+                    },
+                )
+        return None

@@ -1,5 +1,36 @@
 # Semantic input cache (M2, schema 0.1)
 
+## Purpose-based learned methods (2026-10-03)
+
+`methods.MethodLibrary` stores learned purposes, input slots and observed action groups,
+separately from the older semantic input cache below. Enable it explicitly in a brain profile:
+
+```toml
+[methods]
+enabled = true
+path = "../cases/methods/reviewed-methods.json"
+```
+
+Paths resolve relative to the configuration file. The source is copied into each case's
+`methods-working.json`; it is never changed in place. A preceding model decision selects a
+method and binds its slots to the task's current input keys. The next observation binds
+learned labels and label-relative geometry to current OCR/control candidates and generates
+ScreenMatch without a model call. Existing scene binding, ActionPlan and execution handle it.
+No absolute historical coordinates, input values or marker IDs are execution targets.
+
+When current targets do not bind, the normal screen model plans the current action. Delivered
+business fill batches become local method variants and appear in `method-progress.json`.
+Delivery is not proof of business completion. Inspect the run and its video before selecting
+that working file as the next run's source. Interrupted batches are not retained as variants.
+
+The first supported runtime family is a visible business-input batch. Navigation, lookup,
+login, save and final result decisions still use the model. This does not implement a general
+branching recipe or establish compatibility with every ERP workflow. Generated methods and
+their source traces belong in ignored private storage. See the learning CLI in
+[demo_learning](../demo_learning/README.md).
+
+## Earlier semantic input cache
+
 `SemanticCache(path, enabled=True, max_retries=1)` creates a locked, atomic JSON
 store. Keep its path under ignored private `cases/`; never publish cache contents.
 Each entry stores an observed input label, role, ancestor semantics, field source,

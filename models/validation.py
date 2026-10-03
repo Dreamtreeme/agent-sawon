@@ -52,6 +52,7 @@ _RULES = {
     "Evidence and stop decisions cannot include UI actions": "nonaction_has_action",
     "Non-action decision intent must match its operation": "nonaction_intent_mismatch",
     "Cached input cannot exceed all input tokens": "cached_input_out_of_range",
+    "duplicate screen assignment": "duplicate_screen_assignment",
 }
 
 

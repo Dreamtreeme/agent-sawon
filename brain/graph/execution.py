@@ -69,7 +69,7 @@ class PlanExecution:
     plan: ActionPlan
     before: Observation
     delivered: list[PendingAction] = field(default_factory=list)
-    matched_fields: set[str] = field(default_factory=set)
+    matched_refs: set[str] = field(default_factory=set)
 
 
 def log_transition(

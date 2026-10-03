@@ -35,6 +35,9 @@ def remember(brain: Brain) -> dict:
                 "remaining_inputs": sorted(brain.values),
             }
         )
+        methods = getattr(brain, "methods", None)
+        if methods is not None and methods.enabled:
+            memo["method_progress"] = methods.context()
     else:
         memo.update(
             {

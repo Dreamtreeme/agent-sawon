@@ -195,6 +195,8 @@ def test_unknown_custom_error_type_message_and_context_are_omitted():
 
 
 def test_fixed_validator_message_maps_to_rule_without_context():
+    from brain.graph.screen_batch import ScreenFillPlan
+
     class KnownRule(BaseModel):
         value: str
 
@@ -206,6 +208,20 @@ def test_fixed_validator_message_maps_to_rule_without_context():
         KnownRule.model_validate({"value": "PRIVATE_INPUT"})
     assert safe_validation_errors(raised.value, KnownRule) == [
         {"type": "value_error", "loc": [], "rule": "nonaction_intent_mismatch"}
+    ]
+    # The real screen compiler must tell the next model turn what to correct.
+    with pytest.raises(ValidationError) as raised:
+        ScreenFillPlan.model_validate(
+            {
+                "fields": [
+                    {"source": "description", "ref": "first"},
+                    {"source": "another_value", "ref": "first"},
+                ],
+                "next_decision": None,
+            }
+        )
+    assert safe_validation_errors(raised.value, ScreenFillPlan) == [
+        {"type": "value_error", "loc": [], "rule": "duplicate_screen_assignment"}
     ]
 
 

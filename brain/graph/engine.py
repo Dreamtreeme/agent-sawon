@@ -44,6 +44,7 @@ from .click_refinement import ClickRefinement
 from .context import DUPLICATE_EVIDENCE_GUIDANCE, execution_context
 from .execution import ActionPlan, PendingAction, execute_plan, log_transition
 from .execution import GuardStop as GuardStop
+from .method_runtime import MethodRuntime
 from .policy import DecisionPolicy, ExecutionFacts
 from .review import EvidenceReview, review_final
 from .save_review import SaveReviewResponse, validate_save_review
@@ -341,6 +342,7 @@ class Brain:
                     settings.procedure_path.read_text(encoding="utf-8")
                 )
                 atomic_write_json(self.case_dir / "procedure.json", self.procedure)
+        self.methods = MethodRuntime(self, settings.methods.path, enabled=settings.methods.enabled)
         if settings.perception_mode == "visual_only":
             if visual_ocr is None:
                 raise ValueError("visual_ocr_required")
@@ -358,10 +360,17 @@ class Brain:
                 model_led_semantics=settings.visual_model_led_semantics,
             )
 
+    def _match_visual(self, screen: dict, page, *, interpretation=None):
+        from .matching import match_screen
+
+        response = self.methods.apply(screen) if "correction" not in screen else None
+        if response is None:
+            return match_screen(self, screen, page, grounded_interpretation=interpretation)
+        self.visual_match_candidate = None
+        return response
+
     def _detect_visual(self, request: SemanticRequest) -> SemanticDetection:
         if self.settings.screen_matching:
-            from .matching import match_screen
-
             screen = dict(request.screen)
             if request.correction is not None:
                 screen["correction"] = {
@@ -369,7 +378,7 @@ class Brain:
                     for key in ("error", "invalid_text_links", "invalid_links")
                     if key in request.correction
                 }
-            response = match_screen(self, screen, request.page)
+            response = self._match_visual(screen, request.page)
             self.visual_proposal = response
             atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
             return SemanticDetection.model_validate(
@@ -387,7 +396,6 @@ class Brain:
                 compile_match,
                 compile_screen_action_plan,
                 compile_selection_plan,
-                match_screen,
             )
 
             assert self.visual_perception is not None
@@ -395,11 +403,10 @@ class Brain:
             response, self.visual_proposal = self.visual_proposal, None
             if response is None or self.visual_proposal_obs_id != self.observation.obs_id:
                 request, interpretation = self.visual_perception.planning_context()
-                response = match_screen(
-                    self,
+                response = self._match_visual(
                     request.screen,
                     request.page,
-                    grounded_interpretation=interpretation,
+                    interpretation=interpretation,
                 )
                 atomic_write_json(request.page.image_path.parent / "screen-plan.json", response)
             else:
@@ -1630,6 +1637,7 @@ class Brain:
         visual_candidate, self.visual_match_candidate = self.visual_match_candidate, None
         try:
             outcome = execute_plan(self, plan)
+            self.methods.delivered(outcome)
             if visual_candidate is not None and self.pending is not None:
                 self.pending["visual_match_candidate"] = visual_candidate
             return outcome
@@ -1809,7 +1817,7 @@ class Brain:
             execution = pending.get("execution")
             if execution is not None and execution.plan.verification == "fields":
                 outcome = verify_screen_fields(self, execution, observation)
-                if len(execution.matched_fields) == len(execution.delivered) - 1:
+                if len(execution.matched_refs) == len(execution.delivered) - 1:
                     self._stage_visual_match_candidate(pending)
                 return outcome
             if pending.get("login_plan_descriptors") and all(
@@ -2029,7 +2037,11 @@ class Brain:
             if execution is not None and execution.plan.verification == "fields":
                 for delivered in execution.delivered:
                     source = delivered["choice"].source
-                    if observation is not None and source in execution.matched_fields:
+                    if (
+                        observation is not None
+                        and source is not None
+                        and delivered["choice"].ref in execution.matched_refs
+                    ):
                         log_transition(
                             self.log,
                             delivered,
