@@ -159,7 +159,7 @@ def test_external_ocr_reuses_worker_and_closes_it(monkeypatch, page):
     class Worker:
         last_metrics = {"pid": 123, "model_initialized": False}
 
-        def __init__(self, command, *, directory):
+        def __init__(self, command, *, directory, shared_key=None):
             created.append(command)
 
         def request(self, payload, *, timeout):

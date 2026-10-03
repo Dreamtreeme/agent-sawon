@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import atexit
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, BinaryIO
 from uuid import uuid4
@@ -23,8 +26,13 @@ class WorkerError(RuntimeError):
 
 
 class PersistentWorker:
-    def __init__(self, command: list[str], *, directory: Path):
+    def __init__(self, command: list[str], *, directory: Path, shared_key: str | None = None):
         self.command, self.directory = command, directory.resolve()
+        self.shared_key = shared_key
+        self._shared_url = os.environ.get("SAWON_LOCAL_WORKER_URL") if shared_key else None
+        self._shared_token = os.environ.get("SAWON_LOCAL_WORKER_TOKEN") if shared_key else None
+        if self._shared_url and not self._shared_token:
+            raise WorkerError("shared_local_worker_token_missing")
         self.process: subprocess.Popen[str] | None = None
         self._owned: psutil.Process | None = None
         self._identity: float | None = None
@@ -60,6 +68,8 @@ class PersistentWorker:
     def request(self, payload: dict[str, Any], *, timeout: float) -> Any:
         with self._lock:
             self.last_metrics = {}
+            if self._shared_url is not None:
+                return self._shared_request(payload, timeout=timeout)
             started = time.perf_counter()
             try:
                 self._start()
@@ -109,6 +119,31 @@ class PersistentWorker:
             except BaseException:
                 self.close()
                 raise
+
+    def _shared_request(self, payload: dict[str, Any], *, timeout: float) -> Any:
+        started = time.perf_counter()
+        request = urllib.request.Request(
+            self._shared_url.rstrip("/") + "/request/" + self.shared_key,
+            data=json.dumps({"payload": payload, "timeout": timeout}).encode("utf-8"),
+            headers={
+                "Authorization": "Bearer " + self._shared_token,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout + 5) as reply:
+                response = json.loads(reply.read().decode("utf-8"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise WorkerError("shared_local_worker_request_failed") from exc
+        if not response.get("ok"):
+            raise WorkerError("shared_local_worker_request_failed")
+        self.last_metrics = {
+            **response.get("metrics", {}),
+            "shared": True,
+            "round_trip_ms": (time.perf_counter() - started) * 1000,
+        }
+        return response["result"]
 
     def close(self) -> None:
         with self._lock:

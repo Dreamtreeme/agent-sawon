@@ -69,6 +69,7 @@ class PaddleOcrEngine:
                     "--serve",
                 ],
                 directory=page.image_path.parent,
+                shared_key="ocr",
             )
         try:
             result = self._worker.request(

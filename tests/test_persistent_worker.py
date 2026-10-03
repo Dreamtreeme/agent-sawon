@@ -1,6 +1,7 @@
 """Real subprocess lifetime tests with fake inference and no desktop/API access."""
 
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ from PIL import Image
 from brain.visual.detector_worker import DetectorSession
 from pipeline.ocr_worker import OcrSession
 from pipeline.persistent_worker import PersistentWorker, WorkerError
+from pipeline.worker_broker import WorkerBroker
 
 
 @pytest.fixture
@@ -64,6 +66,43 @@ def test_failed_worker_is_not_reused_or_silently_retried(worker):
     assert worker.process is None and not psutil.pid_exists(pid)
     assert worker.request({"image": "next"}, timeout=10)["calls"] == 1
     assert worker.last_metrics["model_initialized"]
+
+
+def test_authenticated_broker_reuses_worker_across_client_lifetimes(tmp_path, monkeypatch):
+    class SharedWorker:
+        def __init__(self):
+            self.calls = 0
+            self.closed = False
+            self.last_metrics = {}
+
+        def request(self, payload, *, timeout):
+            self.calls += 1
+            self.last_metrics = {"pid": 42, "model_initialized": self.calls == 1}
+            return {"value": payload["value"], "calls": self.calls, "timeout": timeout}
+
+        def close(self):
+            self.closed = True
+
+    shared = SharedWorker()
+    server = WorkerBroker(("127.0.0.1", 0), "private-token", {"ocr": shared})
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("SAWON_LOCAL_WORKER_URL", f"http://127.0.0.1:{server.server_address[1]}")
+    monkeypatch.setenv("SAWON_LOCAL_WORKER_TOKEN", "private-token")
+    try:
+        first = PersistentWorker(["unused"], directory=tmp_path, shared_key="ocr")
+        assert first.request({"value": "a"}, timeout=3)["calls"] == 1
+        assert first.last_metrics["shared"]
+        first.close()
+        second = PersistentWorker(["unused"], directory=tmp_path, shared_key="ocr")
+        assert second.request({"value": "b"}, timeout=3)["calls"] == 2
+        assert not second.last_metrics["model_initialized"]
+        assert second.process is None
+    finally:
+        server.shutdown()
+        server.close()
+        thread.join(timeout=5)
+    assert shared.closed
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows response publication race")

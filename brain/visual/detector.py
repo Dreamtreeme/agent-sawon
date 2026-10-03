@@ -83,6 +83,7 @@ class OmniParserDetector(MeasuredModelClient):
                     str(images[0].parent / "yolo-runtime"),
                 ],
                 directory=images[0].parent,
+                shared_key="detector",
             )
         response = self._worker.request(
             {
