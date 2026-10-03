@@ -2,6 +2,7 @@ from brain.cache.methods import (
     MethodLibrary,
     MethodSlot,
     compile_method_candidate,
+    method_completion_from_match,
     method_from_match,
 )
 from brain.graph.matching import ScreenMatch
@@ -193,3 +194,106 @@ def test_candidate_compiler_removes_instance_anchors_and_repeated_retries():
     )
 
     assert compiled.action_groups == [group]
+
+
+def completion_scene(*, customer="New customer B", reference="ORDER-B", ids=0):
+    return {
+        "ocr": [
+            {"id": 1 + ids, "text": "Client name", "bbox": [10, 30, 80, 20]},
+            {"id": 2 + ids, "text": customer, "bbox": [110, 30, 120, 20]},
+            {"id": 3 + ids, "text": "Reference", "bbox": [10, 80, 80, 20]},
+            {"id": 4 + ids, "text": reference, "bbox": [110, 80, 120, 20]},
+        ],
+        "markers": [
+            {
+                "id": 10 + ids,
+                "source": "omniparser",
+                "bbox": [105, 25, 140, 30],
+                "text_ids": [2 + ids],
+            },
+            {
+                "id": 11 + ids,
+                "source": "omniparser",
+                "bbox": [105, 75, 140, 30],
+                "text_ids": [4 + ids],
+            },
+        ],
+    }
+
+
+def completion_response(*, ids=0):
+    return {
+        "screen_kind": "editor",
+        "procedure_step": "task-action",
+        "purpose": "Verify the saved business record",
+        "taught_step_id": "verify-record",
+        "controls": [
+            {
+                "id": 10 + ids,
+                "role": "text",
+                "label_ids": [1 + ids],
+                "text_ids": [2 + ids],
+                "confidence": 1,
+            },
+            {
+                "id": 11 + ids,
+                "role": "text",
+                "label_ids": [3 + ids],
+                "text_ids": [4 + ids],
+                "confidence": 1,
+            },
+        ],
+        "operation": "complete",
+        "evidence": [
+            {"field": "customer", "target": 10 + ids},
+            {"field": "reference", "target": 11 + ids},
+        ],
+        "completion_evidence": [
+            {"condition_index": 0, "target": 10 + ids},
+            {"condition_index": 0, "target": 11 + ids},
+        ],
+        "expected_result": "The current saved record matches the supplied values.",
+    }
+
+
+def test_completion_recipe_rebinds_labels_and_requires_current_values(tmp_path):
+    method = learned().model_copy(
+        update={
+            "slots": [
+                MethodSlot(name="customer", description="customer", source_key="customer"),
+                MethodSlot(name="reference", description="reference", source_key="reference"),
+            ]
+        }
+    )
+    method = method_completion_from_match(completion_scene(), completion_response(), method)
+    assert method is not None and method.completion is not None
+    compiled = compile_method_candidate(
+        method, {"customer": "New customer B", "reference": "ORDER-B"}
+    )
+    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
+    library.upsert(compiled)
+
+    current = completion_scene(customer="Later customer", reference="ORDER-C", ids=100)
+    bound = library.bind_completion_with_context(
+        method.id,
+        {},
+        current,
+        {"customer": "Later customer", "reference": "ORDER-C"},
+    )
+    assert bound is not None
+    response = ScreenMatch.model_validate(bound)
+    assert response.operation == "complete"
+    assert {item.field for item in response.evidence} == {"customer", "reference"}
+    assert {item.target for item in response.evidence} == {110, 111}
+    assert (
+        library.bind_completion_with_context(
+            method.id,
+            {},
+            current,
+            {"customer": "Wrong customer", "reference": "ORDER-C"},
+        )
+        is None
+    )
+    stored = library.path.read_text(encoding="utf-8")
+    assert "New customer B" not in stored
+    assert "ORDER-B" not in stored

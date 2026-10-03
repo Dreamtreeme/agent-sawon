@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from brain.cache.methods import (
+    MethodCompletion,
     MethodDocument,
     MethodLibrary,
     MethodSlot,
     compile_method_candidate,
+    method_completion_from_match,
     method_from_match,
 )
 from brain.runtime.storage import atomic_write_json
@@ -35,6 +37,7 @@ class MethodRuntime:
         self.history: list[dict] = []
         self.pending: dict | None = None
         self.staged: dict[str, MethodDocument] = {}
+        self.staged_completions: dict[str, MethodCompletion] = {}
 
     def procedure_context(self) -> dict:
         task = self.brain.task_instruction
@@ -69,6 +72,7 @@ class MethodRuntime:
         if not self.enabled or task is None:
             return None
         candidates = []
+        completion_candidates = []
         for method in self.library.methods():
             auto_replay = bool(task.procedure) and method.task_objective == task.objective
             if method.id != self.active_method_id and not auto_replay:
@@ -92,6 +96,36 @@ class MethodRuntime:
                 )
                 if bound is not None:
                     candidates.append((method, mapping, bound))
+            if not remaining and method.completion is not None:
+                completion = self.library.bind_completion_with_context(
+                    method.id, mapping, screen, self.brain.values
+                )
+                if completion is not None:
+                    completion_candidates.append((method, mapping, completion))
+        if not candidates and len(completion_candidates) == 1:
+            method, mapping, completion = completion_candidates[0]
+            response = ScreenMatch.model_validate(
+                {
+                    **completion,
+                    "method_id": method.id,
+                    "method_bindings": [
+                        {"slot": slot, "source": source} for slot, source in mapping.items()
+                    ],
+                }
+            )
+            self.purpose = response.purpose
+            self.bindings[method.id] = mapping
+            self.brain.log.append(
+                "cache_hit",
+                payload={
+                    "check": "method_completion_bound",
+                    "method_id": method.id,
+                    "purpose": self.purpose,
+                    "slot_map": mapping,
+                    "evidence_fields": [item.field for item in response.evidence],
+                },
+            )
+            return response
         if len(candidates) != 1:
             return None
         method, mapping, bound = candidates[0]
@@ -131,6 +165,26 @@ class MethodRuntime:
         self.purpose = response.purpose[:160]
         known = {method.id: method for method in self.library.methods()}
         previous = known.get(response.method_id)
+        if response.operation == "complete":
+            available = dict(known)
+            available.update(
+                (method_id, document.methods[0]) for method_id, document in self.staged.items()
+            )
+            if previous is None and task is not None:
+                matches = [
+                    method
+                    for method in available.values()
+                    if method.task_objective == task.objective
+                ]
+                previous = matches[0] if len(matches) == 1 else None
+            if previous is None:
+                return
+            learned = method_completion_from_match(
+                screen, response.model_dump(mode="json"), previous
+            )
+            if learned is not None and learned.completion is not None:
+                self.staged_completions[learned.id] = learned.completion
+            return
         self.active_method_id = None
         mapping = {item.slot: item.source for item in response.method_bindings}
         if previous is not None:
@@ -194,7 +248,11 @@ class MethodRuntime:
         slots = {item.name: item for item in previous.slots}
         slots.update({item.name: item for item in method.slots})
         merged = previous.model_copy(
-            update={"action_groups": list(groups.values()), "slots": list(slots.values())}
+            update={
+                "action_groups": list(groups.values()),
+                "slots": list(slots.values()),
+                "completion": method.completion or previous.completion,
+            }
         )
         self.staged[method.id] = MethodDocument(methods=[merged])
 
@@ -228,9 +286,14 @@ class MethodRuntime:
         atomic_write_json(self.brain.case_dir / "method-progress.json", self.context())
 
     def finish(self, *, success: bool) -> int:
+        candidates = {method_id: document.methods[0] for method_id, document in self.staged.items()}
+        known = {method.id: method for method in self.library.methods()}
+        for method_id, completion in self.staged_completions.items():
+            method = candidates.get(method_id) or known.get(method_id)
+            if method is not None:
+                candidates[method_id] = method.model_copy(update={"completion": completion})
         methods = [
-            compile_method_candidate(document.methods[0], self.brain.values)
-            for document in self.staged.values()
+            compile_method_candidate(method, self.brain.values) for method in candidates.values()
         ]
         promoted = 0
         promoted_methods = []
@@ -253,6 +316,7 @@ class MethodRuntime:
                 "business_success": success,
                 "method_count": len(methods),
                 "action_group_count": sum(len(item.action_groups) for item in promoted_methods),
+                "completion_count": sum(item.completion is not None for item in promoted_methods),
                 "promoted": promoted,
             },
         )

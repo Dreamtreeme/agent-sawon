@@ -7,6 +7,7 @@ import pytest
 from PIL import Image
 from sawon_interfaces import ActionResult
 from test_brain import ScriptedModel
+from test_methods import completion_response, completion_scene
 from test_visual_scene import wire
 
 from brain.cache.methods import MethodDocument, MethodLibrary, method_from_match
@@ -239,3 +240,34 @@ def test_model_adaptation_is_retained_only_after_whole_batch_delivery(tmp_path, 
         )
         assert bound is not None
         assert bound.group_id == groups[-1].id
+
+
+@pytest.mark.parametrize("business_success", [False, True])
+def test_final_model_proof_is_promoted_only_after_business_success(tmp_path, business_success):
+    brain, _, _ = setup(tmp_path)
+    final_screen = completion_scene()
+    brain.methods.remember(final_screen, ScreenMatch.model_validate(completion_response()))
+    assert brain.methods.library.methods()[0].completion is None
+
+    promoted = brain.methods.finish(success=business_success)
+    assert promoted == int(business_success)
+    method = brain.methods.library.methods()[0]
+    if not business_success:
+        assert method.completion is None
+        return
+
+    assert method.completion is not None
+    brain.methods.used.update((method.id, group.id) for group in method.action_groups)
+    response = brain.methods.apply(
+        completion_scene(customer="New customer B", reference="ORDER-B", ids=100)
+    )
+    assert response is not None
+    assert response.operation == "complete"
+    assert response.steps == []
+    assert {item.field for item in response.evidence} == {"customer", "reference"}
+    assert brain.methods.history == []
+    events = brain.log.read_all()
+    assert any(
+        event.kind == "cache_hit" and event.payload.get("check") == "method_completion_bound"
+        for event in events
+    )

@@ -13,7 +13,7 @@ from typing import Any, Literal
 import portalocker
 from pydantic import BaseModel, ConfigDict, Field
 
-from brain.observe.values import normalize
+from brain.observe.values import field_matches, normalize
 from brain.runtime.storage import atomic_write_json
 from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import ControlMeaning, contains
@@ -58,6 +58,22 @@ class MethodActionGroup(BaseModel):
     screen_kind: str = "unknown"
 
 
+class MethodCompletionTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    slot: str
+    target: MethodTarget
+    condition_indexes: list[int] = Field(min_length=1)
+
+
+class MethodCompletion(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    purpose: str = ""
+    taught_step_id: str | None = None
+    targets: list[MethodCompletionTarget] = Field(min_length=1)
+    expected_result: str = ""
+    screen_kind: str = "unknown"
+
+
 class LearnedMethod(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: str
@@ -65,6 +81,7 @@ class LearnedMethod(BaseModel):
     task_objective: str = ""
     slots: list[MethodSlot] = Field(default_factory=list)
     action_groups: list[MethodActionGroup] = Field(min_length=1)
+    completion: MethodCompletion | None = None
     source_transitions: list[str] = Field(default_factory=list)
     revision: int = Field(default=1, ge=1)
 
@@ -86,9 +103,13 @@ def compile_method_candidate(
         candidate = normalize(text.replace("..", ""))
         prefix = normalize(text.split("..", 1)[0])
         return any(
-            len(fragment) >= 4 and len(value) >= 4 and (fragment in value or value in fragment)
+            len(value) >= 4
+            and (
+                candidate == value
+                or value in candidate
+                or (".." in text and len(prefix) >= 4 and value.startswith(prefix))
+            )
             for value in values
-            for fragment in (candidate, prefix)
         )
 
     def redact(text: str) -> str:
@@ -150,10 +171,32 @@ def compile_method_candidate(
             groups.append(compiled)
     if not groups:
         raise ValueError("method_candidate_has_no_reusable_action_groups")
+    completion = method.completion
+    if completion is not None:
+        targets = []
+        for item in completion.targets:
+            anchors = [text for text in item.target.anchor_texts if not instance_text(text)]
+            if not anchors:
+                completion = None
+                break
+            targets.append(
+                item.model_copy(
+                    update={"target": item.target.model_copy(update={"anchor_texts": anchors})}
+                )
+            )
+        if completion is not None:
+            completion = completion.model_copy(
+                update={
+                    "targets": targets,
+                    "purpose": redact(completion.purpose),
+                    "expected_result": redact(completion.expected_result),
+                }
+            )
     return method.model_copy(
         update={
             "purpose": redact(method.purpose),
             "action_groups": groups,
+            "completion": completion,
         }
     )
 
@@ -195,6 +238,33 @@ def _anchor_geometry(box: list | tuple, anchors: list[dict]) -> tuple[float, ...
     )
 
 
+def _method_target(
+    *,
+    name: str,
+    marker: dict,
+    control: dict,
+    blocks: dict[int, dict],
+    allow_literal_anchor: bool,
+) -> MethodTarget | None:
+    anchor_ids = control.get("label_ids", [])
+    if not anchor_ids and allow_literal_anchor and control["role"] not in {"edit", "combobox"}:
+        anchor_ids = control.get("text_ids", []) or marker.get("text_ids", [])
+    anchors = [blocks[i] for i in anchor_ids if i in blocks and blocks[i]["text"].strip()]
+    if not anchors:
+        return None
+    relations = {_relation(marker["bbox"], item["bbox"]) for item in anchors}
+    if len(relations) != 1:
+        return None
+    return MethodTarget(
+        name=name,
+        role=control["role"],
+        anchor_texts=[item["text"] for item in anchors],
+        relation=relations.pop(),
+        marker_source=marker["source"],
+        anchor_geometry=_anchor_geometry(marker["bbox"], anchors),
+    )
+
+
 def method_from_match(
     screen: dict,
     response: dict,
@@ -231,23 +301,16 @@ def method_from_match(
         if source and source not in by_source:
             return None
         if marker["id"] not in targets:
-            anchor_ids = control.get("label_ids", [])
-            if not anchor_ids and control["role"] not in {"edit", "combobox"}:
-                anchor_ids = control.get("text_ids", []) or marker.get("text_ids", [])
-            anchors = [blocks[i] for i in anchor_ids if i in blocks and blocks[i]["text"].strip()]
-            if not anchors:
-                return None
-            relations = {_relation(marker["bbox"], item["bbox"]) for item in anchors}
-            if len(relations) != 1:
-                return None
-            targets[marker["id"]] = MethodTarget(
+            target = _method_target(
                 name=f"target_{len(targets) + 1}",
-                role=control["role"],
-                anchor_texts=[item["text"] for item in anchors],
-                relation=relations.pop(),
-                marker_source=marker["source"],
-                anchor_geometry=_anchor_geometry(marker["bbox"], anchors),
+                marker=marker,
+                control=control,
+                blocks=blocks,
+                allow_literal_anchor=True,
             )
+            if target is None:
+                return None
+            targets[marker["id"]] = target
         point = None
         if step["action"] in {"click", "double_click"}:
             if step.get("point") is None:
@@ -286,6 +349,63 @@ def method_from_match(
         action_groups=[group],
         source_transitions=list(source_transitions),
     )
+
+
+def method_completion_from_match(
+    screen: dict, response: dict, method: LearnedMethod
+) -> LearnedMethod | None:
+    """Compile model-approved final proof into current-value-bound method evidence."""
+
+    if response.get("operation") != "complete" or response.get("steps"):
+        return None
+    evidence = response.get("evidence", [])
+    completion_evidence = response.get("completion_evidence", [])
+    if not evidence or not completion_evidence:
+        return None
+    markers = {item["id"]: item for item in screen.get("markers", [])}
+    blocks = {item["id"]: item for item in screen.get("ocr", [])}
+    controls = {item["id"]: item for item in response.get("controls", [])}
+    slots = list(method.slots)
+    by_source = {slot.source_key: slot.name for slot in slots}
+    for field in dict.fromkeys(item["field"] for item in evidence):
+        if field not in by_source:
+            by_source[field] = field
+            slots.append(MethodSlot(name=field, description=field, source_key=field))
+    conditions: dict[int, list[int]] = {}
+    for item in completion_evidence:
+        conditions.setdefault(item["target"], []).append(item["condition_index"])
+    targets = []
+    for index, item in enumerate(evidence, start=1):
+        marker = markers.get(item["target"])
+        control = controls.get(item["target"])
+        condition_indexes = conditions.get(item["target"])
+        if marker is None or control is None or not condition_indexes:
+            return None
+        target = _method_target(
+            name=f"completion_{index}",
+            marker=marker,
+            control=control,
+            blocks=blocks,
+            # Literal values are instance data and can never locate later proof.
+            allow_literal_anchor=False,
+        )
+        if target is None:
+            return None
+        targets.append(
+            MethodCompletionTarget(
+                slot=by_source[item["field"]],
+                target=target,
+                condition_indexes=list(dict.fromkeys(condition_indexes)),
+            )
+        )
+    completion = MethodCompletion(
+        purpose=response.get("purpose", "")[:160],
+        taught_step_id=response.get("taught_step_id"),
+        targets=targets,
+        expected_result=response.get("expected_result", "")[:240],
+        screen_kind=response.get("screen_kind", "unknown"),
+    )
+    return method.model_copy(update={"slots": slots, "completion": completion})
 
 
 def _candidate_score(box: list | tuple, anchors: list[dict], relation: str) -> float | None:
@@ -346,6 +466,12 @@ def _bind_target(target: MethodTarget, screen: dict) -> tuple[dict, list[int]] |
     return candidates[0][1], candidates[0][2]
 
 
+def _marker_text_ids(marker: dict, screen: dict) -> list[int]:
+    if marker["source"] == "ocr":
+        return list(marker.get("text_ids", []))
+    return [block["id"] for block in screen["ocr"] if contains(marker["bbox"], block["bbox"])]
+
+
 class MethodLibrary:
     def __init__(self, path: Path, *, enabled: bool = False):
         self.path = Path(path)
@@ -397,6 +523,7 @@ class MethodLibrary:
                         "source_transitions": list(
                             dict.fromkeys(previous.source_transitions + method.source_transitions)
                         ),
+                        "completion": method.completion or previous.completion,
                     }
                 )
             existing[method.id] = method
@@ -491,3 +618,60 @@ class MethodLibrary:
                     },
                 )
         return None
+
+    def bind_completion_with_context(
+        self,
+        method_id: str,
+        slot_map: dict[str, str],
+        screen: dict,
+        values: dict[str, str],
+    ) -> dict | None:
+        """Bind learned final proof and verify every current visible business value."""
+
+        method = next((item for item in self.methods() if item.id == method_id), None)
+        if method is None or method.completion is None:
+            return None
+        sources = {slot.name: slot_map.get(slot.name, slot.source_key) for slot in method.slots}
+        blocks = {block["id"]: block for block in screen.get("ocr", [])}
+        controls: dict[int, dict] = {}
+        evidence = []
+        completion_evidence = []
+        for item in method.completion.targets:
+            source = sources.get(item.slot)
+            if source is None or source not in values:
+                return None
+            bound = _bind_target(item.target, screen)
+            if bound is None:
+                return None
+            marker, label_ids = bound
+            text_ids = _marker_text_ids(marker, screen)
+            visible = [blocks[text_id]["text"] for text_id in text_ids if text_id in blocks]
+            if visible:
+                visible.append(" ".join(visible))
+            if not any(field_matches(source, text, values) for text in visible):
+                return None
+            controls[marker["id"]] = ControlMeaning(
+                id=marker["id"],
+                role=item.target.role,
+                label_ids=label_ids,
+                text_ids=text_ids,
+                confidence=1,
+            ).model_dump(mode="json")
+            evidence.append({"field": source, "target": marker["id"]})
+            completion_evidence.extend(
+                {"condition_index": condition_index, "target": marker["id"]}
+                for condition_index in item.condition_indexes
+            )
+        completion = method.completion
+        return {
+            "screen_kind": completion.screen_kind,
+            "controls": list(controls.values()),
+            "procedure_step": "task-action",
+            "purpose": completion.purpose or method.purpose,
+            "taught_step_id": completion.taught_step_id,
+            "steps": [],
+            "operation": "complete",
+            "evidence": evidence,
+            "completion_evidence": completion_evidence,
+            "expected_result": completion.expected_result,
+        }
