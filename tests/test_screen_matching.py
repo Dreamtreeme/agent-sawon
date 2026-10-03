@@ -144,6 +144,36 @@ def test_procedure_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path,
     assert "secret-user" not in model.prompts[0] and "secret-pw" not in model.prompts[0]
 
 
+def test_act_omits_unbound_incidental_evidence_without_paid_grounding(tmp_path, record):
+    meaning = fixture()[-1]
+    data = response(meaning)
+    incidental_marker = next(
+        marker.id for marker in fixture()[2] if marker.id != meaning.controls[0].id
+    )
+    data["evidence"] = [
+        {"field": "mbl_no", "target": incidental_marker},
+        {"field": "shipper", "target": incidental_marker},
+    ]
+    brain, model, _, ocr, detector, _ = setup_brain(tmp_path, record, [data])
+
+    brain._observe()
+
+    assert len(model.prompts) == 1
+    assert not brain.visual_proposal.evidence
+    assert brain.visual_proposal.steps[0].target == meaning.controls[0].id
+    assert ocr.calls == detector.calls == 1
+    event = next(
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "unbound_action_evidence_omitted"
+    )
+    assert event.payload["fields"] == ["mbl_no", "shipper"]
+    assert event.payload["marker_ids"] == [incidental_marker]
+    assert not any(
+        event.payload.get("check") == "action_targets_grounded" for event in brain.log.read_all()
+    )
+
+
 def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(tmp_path, record):
     meaning = fixture()[-1]
     task_response = response(
@@ -1778,7 +1808,9 @@ def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, depend
 
 
 @pytest.mark.parametrize("verified", [False, True])
-def test_only_missing_evidence_for_already_verified_fields_is_omitted(tmp_path, record, verified):
+def test_unbound_act_evidence_is_omitted_regardless_of_prior_verification(
+    tmp_path, record, verified
+):
     from brain.graph.matching import sanitize_unused_controls
     from brain.visual.markers import Marker, ground_meanings
     from brain.visual.scene import SemanticDetection, bind_scene
@@ -1806,7 +1838,7 @@ def test_only_missing_evidence_for_already_verified_fields_is_omitted(tmp_path, 
         [],
     )
     assert response.save_result is None
-    assert bool(response.evidence) is not verified
+    assert not response.evidence
     meanings = SemanticDetection.model_validate(
         {
             key: value
@@ -1815,12 +1847,11 @@ def test_only_missing_evidence_for_already_verified_fields_is_omitted(tmp_path, 
         }
     )
     scene = bind_scene(wire(), [], ground_meanings(meanings, markers, []))
-    if verified:
-        decision = compile_match(response, scene, DecisionResponse).to_decision()
-        assert decision.intent == "save"
-    else:
-        with pytest.raises(ValueError, match="visual_proposal_unknown_marker"):
-            compile_match(response, scene, DecisionResponse)
+    decision = compile_match(response, scene, DecisionResponse).to_decision()
+    assert decision.intent == "save"
+    checks = {event.payload.get("check") for event in brain.log.read_all()}
+    assert "unbound_action_evidence_omitted" in checks
+    assert ("stale_verified_evidence_omitted" in checks) is verified
 
 
 @pytest.mark.parametrize(

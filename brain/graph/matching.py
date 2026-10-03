@@ -185,8 +185,9 @@ class ScreenMatch(SemanticDetection, MethodChoice):
     evidence: list[MatchEvidence] = Field(
         default_factory=list,
         max_length=100,
-        description="Current field observations. Completion maps these to final row proof; "
-        "duplicate checks verify the query input separately.",
+        description="Current field observations whose target is also defined in controls. Omit "
+        "past or incidental observations not needed by this action. Completion maps these to "
+        "final row proof; duplicate checks verify the query input separately.",
     )
     completion_evidence: list[MatchCompletionEvidence] = Field(default_factory=list, max_length=50)
     save_result: (
@@ -253,6 +254,8 @@ record./inputs. prefixes and never a literal value. Use intent=fill for every bu
 including filters and lookups. Treat a visible status or result as current evidence: when it already
 shows a command's expected effect, do not repeat that command; advance the task from that result.
 Return only task-plan schema fields and never reclassify controls or invent IDs.
+Every referenced marker must already exist in grounded_interpretation.controls. Omit incidental
+past-row evidence that is not needed for this CURRENT action or completion decision.
 """
     + TASK_INPUT_RULES
 )
@@ -278,6 +281,9 @@ field_scope is authoritative: map only those record fields, and
 never use a different missing field as a reason to leave the current procedure view.
 Return only controls needed for actions, input verification, and current result evidence;
 include their actual parents (especially tables/rows), not an inventory of every decoration.
+Every step, evidence, completion_evidence, grid, row and message target MUST also be defined in
+controls in this same response. During operation=act, omit past-row evidence unrelated to the
+current action; do not make code request semantics for incidental historical observations.
 All IDs use the numbers printed on the image. OCR text entries use those SAME marker IDs.
 label_ids selects nearby text markers naming a control; text_ids selects contained text markers.
 Never translate to another numbering system. contained_ocr_ids lists allowed text marker IDs.
@@ -338,6 +344,8 @@ not visible now. notebook.inputs is the only business input map. Every data-boun
 evidence.field MUST be one exact key from notebook.inputs, without record./inputs. prefixes and
 never a literal value. Use intent=fill for every business text input, including filters and lookups.
 Use only supplied input keys and current marker IDs. remaining_inputs is the unfinished input list.
+Every referenced marker MUST also be defined in controls in this same response. During
+operation=act, omit past-row evidence unrelated to the current action.
 In generic task mode those inputs remain reusable across screens: verified_inputs reports prior
 evidence but does not mean a value is already present in a different current form.
 The execution contract is the complete list of actions currently allowed by code. Return one
@@ -423,23 +431,35 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
     """Discard unrelated role mistakes and impossible parent links before grounding."""
     markers = {m["id"]: m for m in screen.get("markers", [])}
     controls = {c.id: c for c in response.controls}
-    omitted_evidence = []
+    stale_verified_evidence = []
     if response.operation == "act" and brain.task_instruction is None:
-        omitted_evidence = [
+        stale_verified_evidence = [
             evidence
             for evidence in response.evidence
             if evidence.target not in controls and evidence.field in brain.verified
         ]
-        if omitted_evidence:
-            response = response.model_copy(
-                update={
-                    "evidence": [
-                        evidence
-                        for evidence in response.evidence
-                        if evidence not in omitted_evidence
-                    ]
-                }
-            )
+    # An act turn may mention visible row values as helpful context while omitting
+    # their semantic control definitions. They are not executable or reviewable
+    # evidence. Drop them instead of issuing a second paid grounding call. Required
+    # pending-input verification is recovered independently by retain_verification.
+    unbound_action_evidence = (
+        [evidence for evidence in response.evidence if evidence.target not in controls]
+        if response.operation == "act"
+        else []
+    )
+    omitted_evidence = [
+        evidence
+        for evidence in response.evidence
+        if evidence in stale_verified_evidence or evidence in unbound_action_evidence
+    ]
+    if omitted_evidence:
+        response = response.model_copy(
+            update={
+                "evidence": [
+                    evidence for evidence in response.evidence if evidence not in omitted_evidence
+                ]
+            }
+        )
     ignored_save_result = brain.phase != "save_result" and response.save_result is not None
     if ignored_save_result:
         response = response.model_copy(update={"save_result": None, "message_targets": []})
@@ -528,12 +548,21 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
             "verify",
             payload={"check": "unused_invalid_roles_omitted", "marker_ids": sorted(removed)},
         )
-    if omitted_evidence:
+    if stale_verified_evidence:
         brain.log.append(
             "verify",
             payload={
                 "check": "stale_verified_evidence_omitted",
-                "fields": sorted(evidence.field for evidence in omitted_evidence),
+                "fields": sorted(evidence.field for evidence in stale_verified_evidence),
+            },
+        )
+    if unbound_action_evidence:
+        brain.log.append(
+            "verify",
+            payload={
+                "check": "unbound_action_evidence_omitted",
+                "fields": sorted({evidence.field for evidence in unbound_action_evidence}),
+                "marker_ids": sorted({evidence.target for evidence in unbound_action_evidence}),
             },
         )
     if ignored_save_result:
