@@ -9,6 +9,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from brain.cache import visual_match_key
+from brain.observe.values import normalize
 from brain.runtime.storage import atomic_write_json
 from brain.visual.marker_contract import local_response, model_controls, model_screen
 from brain.visual.markers import marker_role_allowed
@@ -97,7 +98,7 @@ class MatchAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
     target: int = Field(ge=0)
     action: Literal["fill", "click", "double_click", "key"]
-    source: FieldName | Literal["credential.username", "credential.password"] | None = None
+    source: str | None = Field(default=None, min_length=1, max_length=4000)
     intent: Literal[
         "credential",
         "login",
@@ -731,18 +732,27 @@ def validate_match_plan(
         # generic task: write a named task input, then reread it.  Keep login
         # credentials separate, but do not make ERP screen terminology part of
         # the common action contract.
-        response = response.model_copy(
-            update={
-                "steps": [
-                    item.model_copy(update={"intent": "fill"})
-                    if item.action == "fill"
-                    and item.source is not None
-                    and not item.source.startswith("credential.")
-                    else item
-                    for item in response.steps
-                ]
-            }
-        )
+        rebound_steps = []
+        for item in response.steps:
+            source = item.source
+            if source is not None and not source.startswith("credential."):
+                if source not in brain.values:
+                    matching_keys = [
+                        key
+                        for key, value in brain.values.items()
+                        if normalize(value) == normalize(source)
+                    ]
+                    if len(matching_keys) == 1:
+                        source = matching_keys[0]
+                item = item.model_copy(update={"source": source})
+            rebound_steps.append(
+                item.model_copy(update={"intent": "fill"})
+                if item.action == "fill"
+                and item.source is not None
+                and not item.source.startswith("credential.")
+                else item
+            )
+        response = response.model_copy(update={"steps": rebound_steps})
     # Pending verification may advance the checkpoint, but the executor still
     # checks the action against the actual, verified facts before any input.
     if brain.pending is None and step.checkpoint not in {"any", policy.current_step}:

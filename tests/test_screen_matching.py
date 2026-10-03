@@ -150,6 +150,7 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(t
         meaning,
         procedure_step="로그인",
     )
+    task_response["steps"][0]["source"] = record.fields.hbl_no.value
     brain, model, *_ = setup_brain(tmp_path, record, [task_response])
     brain.task_instruction = TaskInstruction.model_validate_json(
         (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_text(
