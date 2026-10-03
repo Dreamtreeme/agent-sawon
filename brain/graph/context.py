@@ -194,7 +194,6 @@ def execution_context(
     contract = {
         "checkpoint": proposal.current_step,
         "allowed_intents": sorted({c["intent"] for c in proposal_prompt["allowed_next_choices"]}),
-        "remaining_fields": proposal_prompt["remaining_fields"],
         "guidance": phase_instruction(proposal),
         "pending_actions": [
             {"intent": d.intent, "source": d.action.source if d.action else None}
@@ -204,6 +203,9 @@ def execution_context(
         "conditional": proposal is not actual,
         "final_required_fields": sorted(brain.values) if brain.phase == "final_query" else [],
     }
+    contract["remaining_inputs" if actual.facts.phase == "task" else "remaining_fields"] = (
+        proposal_prompt["remaining_fields"]
+    )
     if actual.facts.phase != "task":
         # This is a contract for the legacy duplicate/final-query workflow.
         # A generic task decides whether a visible input is a query, editor,

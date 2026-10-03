@@ -167,9 +167,20 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(t
     assert model.prompts[0].startswith(TASK_RULES)
     state = json.loads(model.prompts[0][len(TASK_RULES) :])
     assert state["task"]["objective"] == brain.task_instruction.objective
-    assert state["notebook"]["record"] == brain.values
-    assert [step["id"] for step in state["procedure"]] == ["task-action"]
-    assert state["procedure"][0]["view"] == "current.observed.screen"
+    assert state["notebook"]["inputs"] == brain.values
+    assert state["notebook"]["remaining_inputs"] == sorted(brain.values)
+    assert "record" not in state["notebook"]
+    assert "remaining_fields" not in state["notebook"]
+    persisted = json.loads((tmp_path / "task-notebook.json").read_text(encoding="utf-8"))
+    assert persisted["inputs_path"] == "record.json"
+    assert persisted["remaining_inputs"] == sorted(brain.values)
+    assert "record_path" not in persisted
+    assert "query_submitted" not in persisted
+    assert [step["capability_id"] for step in state["capabilities"]] == ["task-action"]
+    assert state["capabilities"][0]["view"] == "current.observed.screen"
+    assert state["capabilities"][0]["input_scope"] == sorted(brain.values)
+    assert "field_scope" not in state["capabilities"][0]
+    assert "procedure" not in state
     assert brain.visual_proposal.procedure_step == "task-action"
     assert brain.visual_proposal.steps[0].intent == "fill"
     assert brain._select_node({}) == {"next": "review"}
@@ -179,7 +190,7 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(t
         "lookup-partner",
         "open-additional-entry",
         "fill-additional-entry",
-    } & {step["id"] for step in state["procedure"]}
+    } & {step["capability_id"] for step in state["capabilities"]}
 
 
 @pytest.mark.parametrize("source", ["record.hbl_no", "inputs.hbl_no"])
@@ -187,6 +198,7 @@ def test_generic_task_binds_prompt_container_path_to_input_key(tmp_path, record,
     meaning = fixture()[-1]
     task_response = response(meaning, procedure_step="Enter the visible task input")
     task_response["steps"][0]["source"] = source
+    task_response["evidence"] = [{"field": source, "target": meaning.controls[0].id}]
     brain, *_ = setup_brain(tmp_path, record, [task_response])
     brain.task_instruction = TaskInstruction.model_validate_json(
         (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_text(
@@ -201,6 +213,7 @@ def test_generic_task_binds_prompt_container_path_to_input_key(tmp_path, record,
     assert brain.visual_proposal.procedure_step == "task-action"
     assert brain.visual_proposal.steps[0].intent == "fill"
     assert brain.visual_proposal.steps[0].source == "hbl_no"
+    assert brain.visual_proposal.evidence[0].field == "hbl_no"
 
 
 def test_generic_task_discards_prose_source_from_non_binding_click(tmp_path, record):

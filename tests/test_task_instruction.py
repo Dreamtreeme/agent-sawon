@@ -7,6 +7,7 @@ from test_brain import FakeRelay, ScriptedModel, decision
 from brain.graph.engine import Brain
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
 from brain.graph.schemas import DecisionResponse
+from brain.input_binding import normalize_action_source, resolve_input_key
 from brain.observe.values import values_for
 from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
@@ -25,6 +26,20 @@ def test_task_record_accepts_arbitrary_business_keys():
 def test_task_record_rejects_credential_namespace():
     with pytest.raises(ValidationError, match="task_input_key_invalid"):
         TaskInputRecord(case_id="unsafe", inputs={"credential.password": "secret"})
+
+
+def test_input_key_vocabulary_is_normalized_at_one_boundary():
+    inputs = {"invoice.number": "INV-17", "vendor_code": "V-9"}
+
+    assert resolve_input_key("invoice.number", inputs) == "invoice.number"
+    assert resolve_input_key("inputs.invoice.number", inputs) == "invoice.number"
+    assert resolve_input_key("record.invoice.number", inputs) == "invoice.number"
+    assert resolve_input_key("INV-17", inputs) == "invoice.number"
+    assert resolve_input_key("unknown", inputs) is None
+    assert (
+        normalize_action_source(intent="navigate", candidate="invoice.number", inputs=inputs)
+        is None
+    )
 
 
 def test_task_policy_derives_choices_from_runtime_keys():

@@ -100,6 +100,8 @@ def test_generic_task_context_has_no_legacy_query_input_gate(tmp_path, record):
 
     assert context["checkpoint"] == "task"
     assert "query_input" not in context
+    assert context["remaining_inputs"] == sorted(brain.values)
+    assert "remaining_fields" not in context
     assert "No application route is predefined" in context["guidance"]
 
 

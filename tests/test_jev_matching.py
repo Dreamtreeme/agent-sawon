@@ -351,12 +351,17 @@ def test_generic_task_input_mapping_has_no_predefined_query_gate():
     data = state()
     data["notebook"]["phase"] = "task"
     data["notebook"]["checkpoint"] = "task"
+    data["notebook"]["inputs"] = data["notebook"].pop("record")
+    data["capabilities"] = [
+        {"capability_id": item.pop("id"), **item} for item in data.pop("procedure")
+    ]
     request = build_request(data)
 
     instruction = request.questions["field:1"].instructions["query_input"]
 
     assert "required" not in instruction
     assert "No query field or screen is predefined" in instruction["instruction"]
+    assert "notebook.inputs is the only business input map" in request.state["rules"]
 
 
 def test_question_packing_preserves_every_question_and_shared_state():

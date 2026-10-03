@@ -30,8 +30,17 @@
 
 의미 캐시는 일반 업무의 `task` 단계와 동적 입력 키에서도 검증된 전후 화면만 승격·재사용합니다.
 합성 선적 설명은 예제일 뿐 공통 엔진의 분기 조건이 아닙니다. 무료 계약 테스트까지 완료했으며,
-이 개정 이후 실제 ERP 전체 완료와 다른 종류 ERP 업무의 실측은 아직 수행하지 않았습니다.
+seed17 제한 파일럿049–055에서 로그인·업무 화면 이동·조회 입력 판단까지 확인했지만 전체 완료에는
+도달하지 못했습니다. 이 과정에서 일반 업무에 남아 있던 레거시 조회 상태와 모델 입력 키 표기
+불일치를 분리했습니다. 다른 종류 ERP 업무의 실측은 아직 수행하지 않았습니다.
 [일반 업무 런타임 계약](docs/generic-task-runtime-20261003.md)에 구조와 검증 범위를 기록합니다.
+
+일반 업무의 표준 용어는 `inputs`, 정확한 `input key`, 행동의 `source`, 값 근거의 `field`,
+텍스트 입력의 `fill`, 현재 허용 행동의 `capabilities`, 진행 상태의 `remaining_inputs`와
+`verified_inputs`입니다. 모델의 `source`와 `evidence.field`는 `inputs`의 정확한 키여야 합니다.
+과거 응답의 `record.<key>`, `inputs.<key>`, 값 자체 표기는 단일 입력 매핑 경계에서만 변환하고
+이후 실행 상태에는 정확한 키만 전달합니다. `record`, `remaining_fields`, `query_input`,
+`procedure`는 과거 고정 선적 비교 경로에 한정합니다.
 
 ### 0.2 이전 화면 매칭 개정 이력 (2026-10-01)
 
@@ -1852,3 +1861,22 @@ ruff check/format 및 diff 검사 통과. 실제 저장 캡처의 OCR37블록/�
   이번 결과는 실행 순서와 중복 제거 검증으로만 사용한다.
 - 무료 검증은 Ruff check/format check와 코어 전체831개 통과다. M1/M2 완료나 일반화 성공률로
   확대하지 않으며 038 근거는 bench의 실행·녹화 폴더와 진행 기록에 보존한다.
+
+### 2026-10-03 일반 업무 파일럿049–055와 입력 용어 통합
+
+- 049는 모델이 사람용 하위 목표를 반환했지만 코드가 내부 `task-action` ID를 요구해 행동 전
+  종료했다. 일반 task의 capability ID는 컴파일러가 결합하도록 바꿨다. 050은 조회 텍스트 입력을
+  `query_input`으로 반환해 일반 `fill` 계약과 충돌했고, task의 모든 업무 텍스트 입력을 `fill`로
+  정규화했다. 051과 055는 각각 값 자체와 `record.hbl_no`를 source로 반환했다. 단일 입력 키
+  resolver가 정확한 키, 컨테이너 표기, 유일한 값 표기를 canonical key로 바인딩한다.
+- 052는 일반 search를 과거 HBL query 검증 가드가 차단했다. task에서는 legacy query 상태를 읽거나
+  변경하지 않도록 분리했다. 053은 이동/검색 클릭의 설명성 source를 입력 키로 오해해 보정 호출을
+  만들었고, source가 의미 있는 입력·선택 행동에서만 바인딩하도록 정규화했다. 054는 generic prompt에
+  남은 `query_input.required=false`가 빈 조회칸 입력을 금지해 검색을 반복시켰다. task execution
+  context와 Jev 질문에서 고정 query 계약을 제거했다.
+- 049–055의 추가 알려진 비용은 $0.056574210, 미확정0이며 알려진 누적 추정은 $8.319408785다.
+  어느 실행도 전체 저장·완료 성공으로 세지 않는다.
+- 일반 task의 모델 state와 notebook은 `inputs`, `input key`, `source`, `field`, `fill`,
+  `capabilities`, `remaining_inputs`, `verified_inputs`를 표준으로 사용한다. 레거시 `record`,
+  `remaining_fields`, `query_input`, `procedure`는 과거 비교 경로에만 남긴다. 행동 source와 evidence
+  field는 같은 `resolve_input_key` 경계에서 변환하며 이후에는 정확한 입력 키만 사용한다.

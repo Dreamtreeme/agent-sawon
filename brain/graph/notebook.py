@@ -17,22 +17,36 @@ def remember(brain: Brain) -> dict:
         "goal": brain.goal,
         "plan": brain.plan,
         "phase": brain.phase,
-        "record_path": "record.json",
         "task_path": (
             "task-instruction.json" if getattr(brain, "task_instruction", None) else None
         ),
         "procedure_path": "procedure.json" if getattr(brain, "procedure", None) else None,
-        "proposed_procedure_step": getattr(brain, "procedure_step", None),
-        "verified_fields": sorted(brain.verified),
-        "remaining_fields": sorted(set(brain.values) - set(brain.verified)),
-        "query_value_verified": brain.query_value_verified,
-        "query_submitted": brain.query_submitted,
-        "duplicate_clear": brain.duplicate_clear,
-        "save_issued": brain.save_issued,
         "recent_feedback": brain.feedback[-3:],
         "observation_id": str(scene.obs_id) if scene else None,
         "observation_path": f"observations/{brain.observation_number:04d}.json" if scene else None,
         "result": brain.result.model_dump(mode="json") if brain.result else None,
     }
+    if getattr(brain, "task_instruction", None) is not None:
+        memo.update(
+            {
+                "inputs_path": "record.json",
+                "proposed_capability": getattr(brain, "procedure_step", None),
+                "verified_inputs": sorted(brain.verified),
+                "remaining_inputs": sorted(set(brain.values) - set(brain.verified)),
+            }
+        )
+    else:
+        memo.update(
+            {
+                "record_path": "record.json",
+                "proposed_procedure_step": getattr(brain, "procedure_step", None),
+                "verified_fields": sorted(brain.verified),
+                "remaining_fields": sorted(set(brain.values) - set(brain.verified)),
+                "query_value_verified": brain.query_value_verified,
+                "query_submitted": brain.query_submitted,
+                "duplicate_clear": brain.duplicate_clear,
+                "save_issued": brain.save_issued,
+            }
+        )
     atomic_write_json(brain.case_dir / "task-notebook.json", memo)
     return memo

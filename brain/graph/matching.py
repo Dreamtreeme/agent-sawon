@@ -9,7 +9,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from brain.cache import visual_match_key
-from brain.observe.values import normalize
+from brain.input_binding import MODEL_INPUTS_NAME, normalize_action_source, resolve_input_key
 from brain.runtime.storage import atomic_write_json
 from brain.visual.marker_contract import local_response, model_controls, model_screen
 from brain.visual.markers import marker_role_allowed
@@ -224,8 +224,11 @@ execution contract. The task description is business intent, not a UI route. Do 
 menus, tabs, coordinates or screen order that are absent from the current interpretation. Return one
 screen-boundary batch and do not mix direct fills with navigation or selection. For complete, map
 CURRENT visible proof to the applicable zero-based user completion condition in completion_evidence;
-map visible business values separately in evidence. Return only task-plan schema fields and never
-reclassify controls or invent IDs.
+map visible business values separately in evidence. notebook.inputs is the canonical input map:
+every data-bound step.source and evidence.field MUST be one exact key from notebook.inputs, without
+record./inputs. prefixes and never a literal value. Use intent=fill for every business text input,
+including filters and lookups. Return only task-plan schema fields and never reclassify controls or
+invent IDs.
 """
 
 TARGET_GROUNDING_RULES = """Ground only the listed action target markers on the CURRENT image.
@@ -304,10 +307,14 @@ The task description contains business intent and completion conditions, not a f
 Choose the next grounded action that advances the objective from the current evidence. Decide
 whether to fill visible inputs, use a visible lookup/selection control, navigate, save, or verify.
 Never assume a label, coordinate, menu, tab, screen order, or application-specific route that is
-not visible now. Use only supplied input keys and current marker IDs. The execution contract is
-the complete list of actions currently allowed by code. Return one screen-boundary action batch:
-direct fills only, login credentials plus login, same-intent navigation clicks, or consecutive
-select_option row/confirmation clicks. Do not mix fills with navigation or selection. A
+not visible now. notebook.inputs is the only business input map. Every data-bound step.source and
+evidence.field MUST be one exact key from notebook.inputs, without record./inputs. prefixes and
+never a literal value. Use intent=fill for every business text input, including filters and lookups.
+Use only supplied input keys and current marker IDs. remaining_inputs is the unfinished input list.
+The execution contract is the complete list of actions currently allowed by code. Return one
+screen-boundary action batch: direct fills only, login credentials plus login, same-intent
+navigation clicks, or consecutive select_option row/confirmation clicks. Do not mix fills with
+navigation or selection. A
 field-bound lookup navigation must map the current field input in evidence so its selected value
 can be checked on return. Complete only when CURRENT visible evidence supports an applicable
 user-authored completion condition. Map each supporting marker to its zero-based condition_index
@@ -734,34 +741,11 @@ def validate_match_plan(
         # the common action contract.
         rebound_steps = []
         for item in response.steps:
-            source = item.source
-            source_intents = {"credential", "query_input", "fill", "select_option"}
-            if item.intent not in source_intents:
-                # Models sometimes use source as prose about a click.  The
-                # executor's source is a data binding, so it has no meaning for
-                # navigation, search, save, login, cancel, or tab clicks.
-                source = None
-            elif source is not None and not source.startswith("credential."):
-                if source not in brain.values:
-                    container_key = next(
-                        (
-                            source.removeprefix(prefix)
-                            for prefix in ("record.", "inputs.")
-                            if source.startswith(prefix)
-                            and source.removeprefix(prefix) in brain.values
-                        ),
-                        None,
-                    )
-                    if container_key is not None:
-                        source = container_key
-                    else:
-                        matching_keys = [
-                            key
-                            for key, value in brain.values.items()
-                            if normalize(value) == normalize(source)
-                        ]
-                        if len(matching_keys) == 1:
-                            source = matching_keys[0]
+            source = normalize_action_source(
+                intent=item.intent,
+                candidate=item.source,
+                inputs=brain.values,
+            )
             item = item.model_copy(update={"source": source})
             rebound_steps.append(
                 item.model_copy(update={"intent": "fill"})
@@ -771,6 +755,19 @@ def validate_match_plan(
                 else item
             )
         response = response.model_copy(update={"steps": rebound_steps})
+        response = response.model_copy(
+            update={
+                "evidence": [
+                    evidence.model_copy(
+                        update={
+                            "field": resolve_input_key(evidence.field, brain.values)
+                            or evidence.field
+                        }
+                    )
+                    for evidence in response.evidence
+                ]
+            }
+        )
     # Pending verification may advance the checkpoint, but the executor still
     # checks the action against the actual, verified facts before any input.
     if brain.pending is None and step.checkpoint not in {"any", policy.current_step}:
@@ -877,6 +874,15 @@ def task_action_contract(brain, contract: dict, active_fields: set[str]) -> Proc
     )
 
 
+def model_capability(step: ProcedureStep) -> dict:
+    """Expose the generic vocabulary without changing the legacy step model."""
+    payload = step.model_dump()
+    payload["capability_id"] = payload.pop("id")
+    payload["input_scope"] = payload.pop("field_scope")
+    payload["requires_verified_inputs"] = payload.pop("requires_verified")
+    return payload
+
+
 def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     policy = brain._decision_policy()
     contract = execution_context(brain, policy, anticipate=True)
@@ -888,16 +894,16 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
             if item["intent"] == "fill" and item["source"] in brain.values
         }
     )
-    remaining_fields = contract["remaining_fields"]
+    remaining_inputs = contract.get("remaining_inputs", contract.get("remaining_fields", []))
     # Pending fields remain in the prompt so the current pixels can verify
     # them, but the conditional next action assumes that verification passes.
     # Re-adding them to action eligibility lets a fallback plan repeat work
     # that the executor has already delivered.
-    active_fields = set(remaining_fields)
+    active_fields = set(remaining_inputs)
     verification_fields = set(pending_verification_fields)
     verified_fields = set(brain.verified)
     if contract["conditional"] and brain.phase == "enter":
-        verified_fields |= set(brain.values) - set(remaining_fields)
+        verified_fields |= set(brain.values) - set(remaining_inputs)
     if brain.task_instruction is not None:
         candidates = [task_action_contract(brain, contract, active_fields)]
     else:
@@ -922,31 +928,52 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     notebook = {
         "phase": brain.phase,
         "checkpoint": policy.current_step,
-        "verified_fields": sorted(brain.verified),
-        "anticipated_verified_fields": sorted(verified_fields) if contract["conditional"] else [],
-        "remaining_fields": remaining_fields,
-        "pending_verification_fields": pending_verification_fields,
-        "duplicate_clear": brain.duplicate_clear,
-        "query_value_verified": brain.query_value_verified,
-        "query_submitted": brain.query_submitted,
-        "save_issued": brain.save_issued,
         "pending_verification": brain.pending is not None,
         "pending_actions": contract["pending_actions"],
         "recent_feedback": brain.feedback[-3:],
         "required_verification": required,
         "available_credentials": sorted(k for k, value in brain.credentials.items() if value),
-        "record": record
-        if brain.phase in {"task", "enter", "save_result", "final_query"}
-        else {"hbl_no": brain.values["hbl_no"]},
     }
+    if brain.phase == "task":
+        notebook.update(
+            {
+                "verified_inputs": sorted(brain.verified),
+                "anticipated_verified_inputs": (
+                    sorted(verified_fields) if contract["conditional"] else []
+                ),
+                "remaining_inputs": remaining_inputs,
+                "pending_verification_inputs": pending_verification_fields,
+                MODEL_INPUTS_NAME: record,
+            }
+        )
+    else:
+        notebook.update(
+            {
+                "verified_fields": sorted(brain.verified),
+                "anticipated_verified_fields": (
+                    sorted(verified_fields) if contract["conditional"] else []
+                ),
+                "remaining_fields": remaining_inputs,
+                "pending_verification_fields": pending_verification_fields,
+                "duplicate_clear": brain.duplicate_clear,
+                "query_value_verified": brain.query_value_verified,
+                "query_submitted": brain.query_submitted,
+                "save_issued": brain.save_issued,
+                "record": record
+                if brain.phase in {"enter", "save_result", "final_query"}
+                else {"hbl_no": brain.values["hbl_no"]},
+            }
+        )
     state = {
-        "procedure": [s.model_dump() for s in candidates],
         "notebook": notebook,
         "screen": screen if brain.matching_model is not None else model_screen(screen),
         "execution": contract,
     }
     if brain.task_instruction is not None:
         state["task"] = brain.task_instruction.model_dump(mode="json")
+        state["capabilities"] = [model_capability(step) for step in candidates]
+    else:
+        state["procedure"] = [s.model_dump() for s in candidates]
     if contract["conditional"]:
         state["proposal_after_verification"] = {
             "condition": contract["condition"],
@@ -1056,7 +1083,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
                 "error": str(error),
                 "instruction": (
                     "Keep grounded_interpretation unchanged. Return a task plan that matches "
-                    "one supplied eligible procedure step and the execution contract."
+                    "one supplied eligible capability and the execution contract."
                 ),
             },
         }
@@ -1096,7 +1123,13 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
                 "If no valid action is available, return operation=stop and steps=[].\n"
                 + json.dumps(
                     {
-                        "procedure": step.model_dump(),
+                        (
+                            "capability" if brain.task_instruction is not None else "procedure_step"
+                        ): (
+                            model_capability(step)
+                            if brain.task_instruction is not None
+                            else step.model_dump()
+                        ),
                         "notebook": notebook,
                         "execution": contract,
                         "screen": model_screen(screen),
