@@ -1817,7 +1817,7 @@ class Brain:
             execution = pending.get("execution")
             if execution is not None and execution.plan.verification == "fields":
                 outcome = verify_screen_fields(self, execution, observation)
-                if len(execution.matched_refs) == len(execution.delivered) - 1:
+                if len(execution.matched_refs) == len(execution.delivered):
                     self._stage_visual_match_candidate(pending)
                 return outcome
             if pending.get("login_plan_descriptors") and all(
@@ -2329,6 +2329,26 @@ class Brain:
         except Exception as exc:
             self._finish("failed", "runtime_error:" + type(exc).__name__)
         assert self.result is not None
+        try:
+            promoted = self.methods.finish(success=self.result.status == "success")
+            if self.methods.enabled:
+                self.log.append(
+                    "verify",
+                    payload={
+                        "check": "method_candidate_promotion",
+                        "promoted": promoted,
+                        "business_success": self.result.status == "success",
+                    },
+                )
+        except Exception as exc:
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "method_candidate_promotion",
+                    "ok": False,
+                    "error_type": type(exc).__name__,
+                },
+            )
         try:
             promoted = self.cache_session.finish(success=self.result.status == "success")
             if self.settings.cache.enabled:

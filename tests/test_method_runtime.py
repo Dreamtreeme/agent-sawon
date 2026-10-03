@@ -9,7 +9,7 @@ from sawon_interfaces import ActionResult
 from test_brain import ScriptedModel
 from test_visual_scene import wire
 
-from brain.cache.methods import MethodLibrary, method_from_match
+from brain.cache.methods import MethodDocument, MethodLibrary, method_from_match
 from brain.graph.engine import Brain
 from brain.graph.matching import MethodBinding, ScreenMatch
 from brain.runtime.storage import RunLog, atomic_write_json
@@ -176,7 +176,7 @@ def test_learned_method_uses_current_scene_and_executor_without_model(tmp_path, 
         assert brain.observation.obs_id != first_id
     assert brain._select_node({}) == {"next": "review"}
     assert brain.action_plan is not None
-    assert len(brain.action_plan.actions) == 3  # Two entries and the common final blur.
+    assert len(brain.action_plan.actions) == 2
     assert brain.action_plan.actions[0].decision.subgoal == "Enter customer and reference"
     assert brain._review_node({}) == {"next": "act"}
     assert brain._act_node({}) == {"next": "verify"}
@@ -222,8 +222,17 @@ def test_model_adaptation_is_retained_only_after_whole_batch_delivery(tmp_path, 
         assert relay.entered == ["New customer B"]
     else:
         assert outcome == {"next": "verify"}
-        assert len(groups) == 2
+        # A delivered local variant remains quarantined until the whole
+        # business task succeeds.
+        assert len(groups) == 1
         assert brain.methods.history[-1]["origin"] == "adaptation"
+        assert brain.methods.finish(success=True) == 1
+        groups = brain.methods.library.methods()[0].action_groups
+        assert len(groups) == 2
+        candidate = MethodDocument.model_validate_json(
+            (brain.case_dir / "method-candidate.json").read_bytes()
+        )
+        assert candidate.methods[0].action_groups == groups
         current_screen = brain.visual_perception.planning_context()[0].screen
         bound = brain.methods.library.bind_with_context(
             "business-entry", {}, current_screen, brain.values

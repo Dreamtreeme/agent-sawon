@@ -706,7 +706,14 @@ def test_login_and_record_arrays_compile_to_existing_batches():
     assert compile_match(stop, scene, DecisionResponse).to_decision().operation == "stop"
 
 
-def test_same_screen_navigation_clicks_compile_to_one_action_plan():
+@pytest.mark.parametrize(
+    ("intents", "audit_intent"),
+    [
+        (("navigate", "navigate"), "navigate"),
+        (("select_option", "navigate"), "select_then_navigate"),
+    ],
+)
+def test_same_screen_navigation_clicks_compile_to_one_action_plan(intents, audit_intent):
     from test_brain import element
 
     observed = wire()
@@ -724,13 +731,13 @@ def test_same_screen_navigation_clicks_compile_to_one_action_plan():
             {
                 "target": 31,
                 "action": "click",
-                "intent": "navigate",
+                "intent": intents[0],
                 "point": [1, 1],
             },
             {
                 "target": 44,
                 "action": "click",
-                "intent": "navigate",
+                "intent": intents[1],
                 "point": [1, 1],
             },
         ],
@@ -740,7 +747,11 @@ def test_same_screen_navigation_clicks_compile_to_one_action_plan():
 
     assert plan is not None
     assert [item.decision.action.ref for item in plan.actions] == [prefix + "31", prefix + "44"]
-    assert plan.audit == {"check": "same_screen_action_plan", "actions": 2, "intent": "navigate"}
+    assert plan.audit == {
+        "check": "same_screen_action_plan",
+        "actions": 2,
+        "intent": audit_intent,
+    }
 
 
 def test_save_result_and_proof_use_the_existing_contract():
@@ -1761,15 +1772,9 @@ def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, depend
             if key in SemanticDetection.model_fields
         }
     )
-    if dependency == "direct_proof":
-        with pytest.raises(ValueError, match="invalid_visual_parent_bounds"):
-            bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
-    else:
-        scene = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
-        result_count = next(
-            element for element in scene.elements if element.value == "조회 결과 0건"
-        )
-        assert result_count.parent_ref is None
+    scene = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
+    result_count = next(element for element in scene.elements if element.value == "조회 결과 0건")
+    assert result_count.parent_ref is None
 
 
 @pytest.mark.parametrize("verified", [False, True])

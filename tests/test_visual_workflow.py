@@ -519,6 +519,7 @@ def test_screen_match_workflow_uses_actual_saved_snapshot(tmp_path, record, fail
     reviews = [e.payload for e in events if e.payload.get("check") == "current_evidence_review"]
     commands = [key for _, key, action in relay.actions if action.root.type == "click"]
     assert commands == ["login", "open-query", "search", "new", "save", "confirm-save", "search"]
+    assert not [action for _, _, action in relay.actions if action.root.type == "key"]
     if failure:
         assert result.status == "stopped", result
         assert relay.saved_snapshot != relay.inputs
@@ -542,7 +543,9 @@ def test_screen_match_workflow_uses_actual_saved_snapshot(tmp_path, record, fail
     # Real perception and measured ScreenMatch calls run at boundaries only.
     assert ocr.action_counts == detector.action_counts
     assert not any(0 < count < 3 for count in ocr.action_counts)
-    assert not any(7 < count < 19 for count in ocr.action_counts)
+    # The editor batch has eleven fills (action counts 8 through 18) and no
+    # trailing Tab. Perception resumes after the full batch at count 18.
+    assert not any(7 < count < 18 for count in ocr.action_counts)
     calls = [e for e in events if e.kind == "model_call"]
     assert calls and len(calls) == len(model.prompts)
     assert all(e.payload["status"] == "success" and e.cost.usd == 0 for e in calls)

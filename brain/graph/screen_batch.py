@@ -178,18 +178,6 @@ def prepare_screen_fill(scene: Observation, plan: ScreenFillPlan) -> ActionPlan:
         )
         for f in plan.fields
     ]
-    last = actions[-1].decision
-    actions.append(
-        PlannedAction(
-            last.model_copy(
-                update={
-                    "intent": "navigate",
-                    "action": Choice(type="key", ref=last.action.ref, keys="tab"),
-                    "reason": "Finish screen entry before joint value verification",
-                }
-            )
-        )
-    )
     return ActionPlan(
         tuple(actions),
         "fields",
@@ -202,8 +190,11 @@ def prepare_screen_fill(scene: Observation, plan: ScreenFillPlan) -> ActionPlan:
 
 def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Observation) -> dict:
     """Evaluate the one new scene using the same field-evidence writer as singles."""
+    delivered_fields = [
+        delivered for delivered in execution.delivered if delivered["choice"].source is not None
+    ]
     if brain.settings.visual_model_only_review:
-        delegated = [delivered["choice"].source for delivered in execution.delivered[:-1]]
+        delegated = [delivered["choice"].source for delivered in delivered_fields]
         payload = {
             "check": "screen_fill_values",
             "ok": True,
@@ -217,14 +208,14 @@ def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Ob
         return {"next": "review"}
 
     matched, mismatched, mismatched_refs = [], [], []
-    source_counts = Counter(item["choice"].source for item in execution.delivered[:-1])
+    source_counts = Counter(item["choice"].source for item in delivered_fields)
     explicit_evidence = {}
     proposal = getattr(brain, "visual_proposal", None)
     if proposal is not None and isinstance(observation, SceneObservation):
         prefix = "e" + str(observation.obs_id.int) + "0"
         explicit_evidence = {item.field: prefix + str(item.target) for item in proposal.evidence}
     by_ref = {element.ref: element for element in observation.elements}
-    for delivered in execution.delivered[:-1]:
+    for delivered in delivered_fields:
         source = delivered["choice"].source
         bound = by_ref.get(explicit_evidence.get(source)) if source_counts[source] == 1 else None
         candidates = (

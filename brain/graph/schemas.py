@@ -180,7 +180,19 @@ class TextChoice(WireModel):
 class KeyChoice(WireModel):
     type: Literal["key"]
     ref: NonemptyRef
-    keys: Literal["enter", "tab", "shift+tab", "esc", "down", "up", "space"]
+    keys: Literal[
+        "enter",
+        "tab",
+        "shift+tab",
+        "esc",
+        "down",
+        "up",
+        "space",
+        "pagedown",
+        "pageup",
+        "home",
+        "end",
+    ]
 
 
 class SourceOptionChoice(WireModel):

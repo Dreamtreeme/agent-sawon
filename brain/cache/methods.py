@@ -49,6 +49,8 @@ class MethodAction(BaseModel):
 class MethodActionGroup(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: str
+    purpose: str = ""
+    taught_step_id: str | None = None
     context_anchors: list[str] = Field(default_factory=list)
     targets: list[MethodTarget] = Field(min_length=1)
     actions: list[MethodAction] = Field(min_length=1)
@@ -71,6 +73,89 @@ class MethodDocument(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["0.1"] = "0.1"
     methods: list[LearnedMethod] = Field(default_factory=list)
+
+
+def compile_method_candidate(
+    method: LearnedMethod, instance_values: dict[str, str]
+) -> LearnedMethod:
+    """Remove run-instance text and repeated retries from a successful trace."""
+
+    values = [normalize(str(value)) for value in instance_values.values() if str(value)]
+
+    def instance_text(text: str) -> bool:
+        candidate = normalize(text.replace("..", ""))
+        prefix = normalize(text.split("..", 1)[0])
+        return any(
+            len(fragment) >= 4 and len(value) >= 4 and (fragment in value or value in fragment)
+            for value in values
+            for fragment in (candidate, prefix)
+        )
+
+    def redact(text: str) -> str:
+        result = text
+        for source, value in sorted(
+            instance_values.items(), key=lambda item: len(str(item[1])), reverse=True
+        ):
+            if str(value):
+                result = result.replace(str(value), "{" + source + "}")
+        return result
+
+    groups = []
+    signatures = set()
+    for group in method.action_groups:
+        targets = []
+        for target in group.targets:
+            anchors = [text for text in target.anchor_texts if not instance_text(text)]
+            if not anchors or not any(
+                len(normalize(text)) >= 2 or not normalize(text).isdigit() for text in anchors
+            ):
+                break
+            targets.append(target.model_copy(update={"anchor_texts": anchors}))
+        else:
+            compiled = group.model_copy(
+                update={
+                    "targets": targets,
+                    "purpose": redact(group.purpose),
+                    "expected_result": redact(group.expected_result),
+                }
+            )
+            signature = json.dumps(
+                {
+                    "step": compiled.taught_step_id,
+                    "targets": [
+                        {
+                            "role": target.role,
+                            "anchors": target.anchor_texts,
+                            "relation": target.relation,
+                        }
+                        for target in compiled.targets
+                    ],
+                    "actions": [
+                        {
+                            "target": action.target,
+                            "action": action.action,
+                            "intent": action.intent,
+                            "slot": action.slot,
+                            "keys": action.keys,
+                        }
+                        for action in compiled.actions
+                    ],
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+            if signature in signatures:
+                continue
+            signatures.add(signature)
+            groups.append(compiled)
+    if not groups:
+        raise ValueError("method_candidate_has_no_reusable_action_groups")
+    return method.model_copy(
+        update={
+            "purpose": redact(method.purpose),
+            "action_groups": groups,
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -183,6 +268,8 @@ def method_from_match(
         )
     group = MethodActionGroup(
         id="pending",
+        purpose=response.get("purpose", "")[:160],
+        taught_step_id=response.get("taught_step_id"),
         context_anchors=list(context_anchors),
         targets=list(targets.values()),
         actions=actions,
@@ -277,7 +364,12 @@ class MethodLibrary:
                 "task_objective": method.task_objective,
                 "slots": [slot.model_dump() for slot in method.slots],
                 "groups": [
-                    {"id": group.id, "context_anchors": group.context_anchors}
+                    {
+                        "id": group.id,
+                        "purpose": group.purpose,
+                        "taught_step_id": group.taught_step_id,
+                        "context_anchors": group.context_anchors,
+                    }
                     for group in method.action_groups
                 ],
             }
@@ -391,6 +483,8 @@ class MethodLibrary:
                         "screen_kind": group.screen_kind,
                         "controls": list(controls.values()),
                         "procedure_step": method.purpose,
+                        "purpose": group.purpose or method.purpose,
+                        "taught_step_id": group.taught_step_id,
                         "steps": steps,
                         "operation": "act",
                         "expected_result": group.expected_result,

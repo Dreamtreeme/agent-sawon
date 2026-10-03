@@ -66,16 +66,16 @@ def test_complete_workflow_fills_all_fields_before_one_reread(tmp_path, record):
     result = brain.run()
     assert result.status == "success", result
     assert relay.saved and set(brain.verified) == set(brain.values)
-    # Three pre-entry actions, then eleven fields and one final focus move.
-    assert not any(4 <= count <= 14 for count in perception.action_counts)
-    assert perception.action_counts.count(15) == 1
+    # Three pre-entry actions, then eleven fields and one joint reread.
+    assert not any(4 <= count <= 13 for count in perception.action_counts)
+    assert perception.action_counts.count(14) == 1
     assert len(model.prompts) == 10  # Previously 20 including the initial plan.
     events = brain.log.read_all()
     checks = [e for e in events if e.payload.get("check") == "screen_fill_values"]
     assert len(checks) == 1 and len(checks[0].payload["matched"]) == 11
     assert not checks[0].payload["mismatched"]
     renewals = [e for e in events if e.payload.get("check") == "visual_planned_capture_renewal"]
-    assert len(renewals) == 11  # Remaining ten inputs and the final focus move.
+    assert len(renewals) == 10  # Captures between the eleven input actions.
     assert all(e.payload["screen_batch"] and not e.payload["same_content"] for e in renewals)
     transitions = [
         e.payload["transition"] for e in events if e.payload.get("check") == "action_transition"
@@ -113,7 +113,7 @@ def test_wrong_field_is_not_verified_and_only_that_field_is_replanned(tmp_path, 
     assert brain._act_node({}) == {"next": "verify"}
     assert brain._verify_node({}) == {"next": "review"}
     assert set(brain.verified) == set(brain.values)
-    assert perception.action_counts == [0, 12, 14]
+    assert perception.action_counts == [0, 11, 12]
 
 
 def test_shared_source_verifies_and_repairs_each_delivered_target(tmp_path, record):
@@ -177,7 +177,7 @@ def test_shared_source_verifies_and_repairs_each_delivered_target(tmp_path, reco
         ]
         assert [item["observed_effect"] for item in transitions] == [
             "unchecked" if ref == wrong_ref else "input_value_matches" for ref in ("e20", "e21")
-        ] + ["unchecked"]
+        ]
 
 
 @pytest.mark.parametrize("failure", ["button", "duplicate_ref", "window_change", "move"])
@@ -230,7 +230,7 @@ def test_invalid_plan_and_mid_batch_geometry_change_stop_remaining_inputs(
     assert brain.pending is None
 
 
-@pytest.mark.parametrize("max_steps,delivered", [(11, 0), (12, 12)])
+@pytest.mark.parametrize("max_steps,delivered", [(10, 0), (11, 11)])
 def test_shared_executor_checks_whole_plan_step_budget_before_delivery(
     tmp_path, record, max_steps, delivered
 ):
@@ -249,7 +249,7 @@ def test_shared_executor_checks_whole_plan_step_budget_before_delivery(
         assert outcome == {"next": "verify"}
         assert not brain.verified
         assert brain._verify_node({}) == {"next": "review"}
-        assert perception.action_counts == [0, 12]
+        assert perception.action_counts == [0, 11]
     else:
         assert outcome == {"next": "finish"}
         assert brain.result.reason == "max_steps"

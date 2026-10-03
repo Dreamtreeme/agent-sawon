@@ -5,8 +5,18 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class TaughtProcedureStep(BaseModel):
+    """One user-taught program step, independent of transient coordinates."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_.-]+$")
+    instruction: str = Field(min_length=1, max_length=500)
+    completion: str = Field(min_length=1, max_length=500)
+
+
 class TaskInstruction(BaseModel):
-    """Describe desired work while leaving screen navigation to the worker."""
+    """Describe desired work and an optional user-taught program procedure."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -16,6 +26,7 @@ class TaskInstruction(BaseModel):
     requirements: list[str] = Field(default_factory=list, max_length=20)
     completion_conditions: list[str] = Field(min_length=1, max_length=20)
     constraints: list[str] = Field(default_factory=list, max_length=20)
+    procedure: list[TaughtProcedureStep] = Field(default_factory=list, max_length=40)
 
     @model_validator(mode="after")
     def unique_nonempty_items(self):
@@ -24,6 +35,9 @@ class TaskInstruction(BaseModel):
             normalized = [item.strip() for item in items]
             if any(not item for item in normalized) or len(set(normalized)) != len(normalized):
                 raise ValueError("task_instruction_items_must_be_unique_and_nonempty")
+        step_ids = [step.id for step in self.procedure]
+        if len(step_ids) != len(set(step_ids)):
+            raise ValueError("task_instruction_procedure_step_ids_must_be_unique")
         return self
 
 

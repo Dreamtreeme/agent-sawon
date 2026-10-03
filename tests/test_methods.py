@@ -1,4 +1,9 @@
-from brain.cache.methods import MethodLibrary, MethodSlot, method_from_match
+from brain.cache.methods import (
+    MethodLibrary,
+    MethodSlot,
+    compile_method_candidate,
+    method_from_match,
+)
 from brain.graph.matching import ScreenMatch
 
 
@@ -170,3 +175,21 @@ def test_learned_geometry_rebinds_wide_inputs_and_repeated_table_labels(tmp_path
         bound = library.bind("entry", {}, current, {"destination": "B", "mass": "2", "count": "3"})
         assert bound is not None
         assert [step["target"] for step in bound["steps"]] == [1024, 1011, 1032]
+
+
+def test_candidate_compiler_removes_instance_anchors_and_repeated_retries():
+    method = learned()
+    group = method.action_groups[0]
+    retry = group.model_copy(update={"id": "retry"})
+    instance_target = group.targets[0].model_copy(
+        update={"anchor_texts": ["CASE-HBL-705", "Synthetic proced.."]}
+    )
+    instance_group = group.model_copy(
+        update={"id": "instance", "targets": [instance_target, *group.targets[1:]]}
+    )
+    compiled = compile_method_candidate(
+        method.model_copy(update={"action_groups": [group, retry, instance_group]}),
+        {"hbl_no": "CASE-HBL-705", "description": "Synthetic procedure parts"},
+    )
+
+    assert compiled.action_groups == [group]

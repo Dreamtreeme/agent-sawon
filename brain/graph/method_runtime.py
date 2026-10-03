@@ -1,4 +1,4 @@
-"""Use learned methods before screen reasoning and retain delivered local adaptations."""
+"""Compile a successful taught run, then replay its screen-bound action groups."""
 
 from __future__ import annotations
 
@@ -6,7 +6,13 @@ import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from brain.cache.methods import MethodDocument, MethodLibrary, MethodSlot, method_from_match
+from brain.cache.methods import (
+    MethodDocument,
+    MethodLibrary,
+    MethodSlot,
+    compile_method_candidate,
+    method_from_match,
+)
 from brain.runtime.storage import atomic_write_json
 
 if TYPE_CHECKING:
@@ -28,6 +34,23 @@ class MethodRuntime:
         self.purpose = ""
         self.history: list[dict] = []
         self.pending: dict | None = None
+        self.staged: dict[str, MethodDocument] = {}
+
+    def procedure_context(self) -> dict:
+        task = self.brain.task_instruction
+        steps = [] if task is None else [item.model_dump(mode="json") for item in task.procedure]
+        return {
+            "steps": steps,
+            "delivered": [
+                {
+                    "taught_step_id": item.get("taught_step_id"),
+                    "purpose": item.get("purpose"),
+                    "status": item.get("status"),
+                }
+                for item in self.history
+                if item.get("taught_step_id")
+            ],
+        }
 
     def context(self) -> dict:
         return {
@@ -47,14 +70,21 @@ class MethodRuntime:
             return None
         candidates = []
         for method in self.library.methods():
-            if method.id != self.active_method_id:
+            auto_replay = bool(task.procedure) and method.task_objective == task.objective
+            if method.id != self.active_method_id and not auto_replay:
                 continue
             mapping = self.bindings.get(method.id)
             if mapping is None:
                 if method.task_objective != task.objective:
                     continue
                 mapping = {slot.name: slot.source_key for slot in method.slots}
-            for group in method.action_groups:
+            remaining = [
+                group for group in method.action_groups if (method.id, group.id) not in self.used
+            ]
+            # A compiled procedure is ordered. Never skip an unbindable step and
+            # accidentally execute a later screen's action.
+            groups = remaining[:1] if auto_replay else remaining
+            for group in groups:
                 if (method.id, group.id) in self.used:
                     continue
                 bound = self.library.bind_with_context(
@@ -69,8 +99,9 @@ class MethodRuntime:
             {
                 **bound.response,
                 "procedure_step": "task-action",
-                "purpose": method.purpose[:160],
+                "purpose": bound.response.get("purpose") or method.purpose[:160],
                 "method_id": method.id,
+                "taught_step_id": bound.response.get("taught_step_id"),
                 "method_bindings": [
                     {"slot": slot, "source": source} for slot, source in mapping.items()
                 ],
@@ -96,6 +127,7 @@ class MethodRuntime:
         self.pending = None
         if not self.enabled:
             return
+        task = self.brain.task_instruction
         self.purpose = response.purpose[:160]
         known = {method.id: method for method in self.library.methods()}
         previous = known.get(response.method_id)
@@ -111,19 +143,17 @@ class MethodRuntime:
                 return
             self.bindings[previous.id] = mapping
             self.active_method_id = previous.id
-        # The first executable method family is business data entry. A later model
-        # decision can still navigate/select freely using the existing executor.
-        if not response.steps or not all(
-            step.action == "fill" and step.source in self.brain.values for step in response.steps
+        if not response.steps or any(
+            (step.source or "").startswith("credential.") for step in response.steps
         ):
             return
         purpose = self.purpose or response.expected_result
         if previous is None:
-            identity = purpose + "\n" + "\n".join(sorted(s.source for s in response.steps))
+            identity = task.objective if task and task.procedure else purpose
             method_id = "method-" + hashlib.sha256(identity.encode()).hexdigest()[:16]
             slots = [
                 MethodSlot(name=source, description=source, source_key=source)
-                for source in dict.fromkeys(step.source for step in response.steps)
+                for source in dict.fromkeys(step.source for step in response.steps if step.source)
             ]
         else:
             method_id = previous.id
@@ -134,10 +164,9 @@ class MethodRuntime:
             covered = {slot.source_key for slot in slots}
             slots.extend(
                 MethodSlot(name=source, description=source, source_key=source)
-                for source in dict.fromkeys(step.source for step in response.steps)
+                for source in dict.fromkeys(step.source for step in response.steps if step.source)
                 if source not in covered
             )
-        task = self.brain.task_instruction
         method = method_from_match(
             screen,
             response.model_dump(mode="json"),
@@ -151,7 +180,23 @@ class MethodRuntime:
                 "method": method,
                 "group_id": method.action_groups[0].id,
                 "origin": "adaptation" if previous else "learned",
+                "taught_step_id": response.taught_step_id,
             }
+
+    def _stage(self, method) -> None:
+        document = self.staged.get(method.id)
+        if document is None:
+            self.staged[method.id] = MethodDocument(methods=[method])
+            return
+        previous = document.methods[0]
+        groups = {item.id: item for item in previous.action_groups}
+        groups.update({item.id: item for item in method.action_groups})
+        slots = {item.name: item for item in previous.slots}
+        slots.update({item.name: item for item in method.slots})
+        merged = previous.model_copy(
+            update={"action_groups": list(groups.values()), "slots": list(slots.values())}
+        )
+        self.staged[method.id] = MethodDocument(methods=[merged])
 
     def delivered(self, outcome: dict) -> None:
         pending, self.pending = self.pending, None
@@ -164,6 +209,11 @@ class MethodRuntime:
             "group_id": group_id,
             "purpose": method.purpose,
             "origin": pending["origin"],
+            "taught_step_id": pending.get("taught_step_id")
+            or next(
+                (group.taught_step_id for group in method.action_groups if group.id == group_id),
+                None,
+            ),
             "status": status,
             "observation_id": str(self.brain.observation.obs_id),
         }
@@ -172,7 +222,38 @@ class MethodRuntime:
             self.active_method_id = None
             if pending["origin"] != "reuse":
                 method = method.model_copy(update={"source_transitions": [event["observation_id"]]})
-                self.library.upsert(method)
+                self._stage(method)
         self.history.append(event)
         self.brain.log.append("verify", payload={"check": "method_execution", **event})
         atomic_write_json(self.brain.case_dir / "method-progress.json", self.context())
+
+    def finish(self, *, success: bool) -> int:
+        methods = [
+            compile_method_candidate(document.methods[0], self.brain.values)
+            for document in self.staged.values()
+        ]
+        promoted = 0
+        promoted_methods = []
+        if success:
+            for method in methods:
+                promoted_methods.append(self.library.upsert(method))
+                promoted += 1
+            if promoted_methods:
+                atomic_write_json(
+                    self.brain.case_dir / "method-candidate.json",
+                    # Export the full merged method. A warm run often learns only
+                    # the suffix that required model fallback; that suffix alone
+                    # is not a replayable business procedure.
+                    MethodDocument(methods=promoted_methods),
+                )
+        atomic_write_json(
+            self.brain.case_dir / "method-learning-result.json",
+            {
+                "status": "candidate" if success and methods else "incomplete",
+                "business_success": success,
+                "method_count": len(methods),
+                "action_group_count": sum(len(item.action_groups) for item in promoted_methods),
+                "promoted": promoted,
+            },
+        )
+        return promoted

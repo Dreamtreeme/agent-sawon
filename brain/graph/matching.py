@@ -169,6 +169,7 @@ class MethodChoice(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     purpose: str = Field(default="", max_length=160)
+    taught_step_id: str | None = Field(default=None, max_length=80)
     method_id: str | None = None
     method_bindings: list[MethodBinding] = Field(default_factory=list, max_length=100)
 
@@ -353,6 +354,16 @@ shows a command's expected effect, do not repeat that command; advance the task 
     + TASK_INPUT_RULES
 )
 
+TAUGHT_PROCEDURE_RULES = """
+The user-taught procedure is the authoritative program route. Select taught_step_id from that
+ordered procedure. Use the current screen to bind that step's target and verify its completion;
+do not replace the taught route with another workflow. Repeat a step when it requires several
+screen-boundary actions. Advance only when current evidence or the just-delivered action supports
+the preceding completion. If required content is below the current viewport, use grounded
+navigation such as pagedown rather than reporting a missing detector control. operation=complete
+is allowed only for the final taught step and its completion evidence.
+"""
+
 METHOD_RULES = """
 method_memory contains learned ways to achieve purposes, with parameter slots and observed
 screen branches. Use relevant methods as task know-how. Return purpose as the specific business
@@ -502,19 +513,12 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
         child = markers.get(control.id)
         parent = markers.get(control.parent_id) if control.parent_id is not None else None
         parent_removed = control.parent_id in removed
-        relation_is_direct_proof = (
-            control.id in direct_needed and control.parent_id in direct_needed
-        )
-        if (
-            control.parent_id is not None
-            and not relation_is_direct_proof
-            and (
-                parent_removed
-                or control.parent_id not in retained_control_ids
-                or parent is None
-                or child is None
-                or not contains(tuple(parent["bbox"]), tuple(child["bbox"]))
-            )
+        if control.parent_id is not None and (
+            parent_removed
+            or control.parent_id not in retained_control_ids
+            or parent is None
+            or child is None
+            or not contains(tuple(parent["bbox"]), tuple(child["bbox"]))
         ):
             invalid_parents.append({"marker_id": control.id, "parent_id": control.parent_id})
             control = control.model_copy(update={"parent_id": None})
@@ -774,19 +778,17 @@ def require_deferred_field_evidence(
     if response.operation != "act" or not any(item.intent == "navigate" for item in response.steps):
         return
     if step.id == "task-action":
-        # A generic task has no predeclared downstream route.  Only an input that
-        # the worker explicitly binds to this navigation is a field lookup; an
-        # ordinary menu/tab transition must not be forced to name every pending
-        # business field.
-        required = {item.field for item in response.evidence if item.field in active_fields}
-    else:
-        downstream_selection_fields = {
-            field
-            for candidate in procedure_steps
-            if candidate.phase == step.phase and "select_option" in candidate.actions
-            for field in candidate.field_scope
-        }
-        required = set(step.field_scope) & active_fields & downstream_selection_fields
+        # A generic task can navigate from an input to a lookup, from a result
+        # row to details, or between work areas. There is no compiled downstream
+        # field scope yet, so the new screen must establish the relationship.
+        return
+    downstream_selection_fields = {
+        field
+        for candidate in procedure_steps
+        if candidate.phase == step.phase and "select_option" in candidate.actions
+        for field in candidate.field_scope
+    }
+    required = set(step.field_scope) & active_fields & downstream_selection_fields
     if not required:
         return
     evidence = {item.field: item.target for item in response.evidence}
@@ -823,6 +825,13 @@ def validate_match_plan(
     if step is None or step.screen not in {"any", response.screen_kind}:
         raise ValueError("screen_match_procedure_mismatch")
     if step.id == "task-action":
+        taught = brain.task_instruction.procedure
+        if taught:
+            taught_ids = [item.id for item in taught]
+            if response.taught_step_id is not None and response.taught_step_id not in taught_ids:
+                raise ValueError("screen_match_taught_step_required")
+            if response.operation == "complete" and response.taught_step_id != taught_ids[-1]:
+                raise ValueError("screen_match_taught_final_step_required")
         # Query fields and record fields share the same runtime primitive in a
         # generic task: write a named task input, then reread it.  Keep login
         # credentials separate, but do not make ERP screen terminology part of
@@ -875,7 +884,17 @@ def validate_match_plan(
         if response.operation == "complete" and not response.completion_evidence:
             raise ValueError("screen_match_task_completion_evidence_required")
         if response.operation != "complete" and response.completion_evidence:
-            raise ValueError("screen_match_completion_evidence_without_completion")
+            # Completion annotations do not alter an otherwise grounded action.
+            # Keep the action and discard proof that belongs only to a later
+            # operation=complete turn.
+            brain.log.append(
+                "verify",
+                payload={
+                    "check": "premature_completion_evidence_omitted",
+                    "count": len(response.completion_evidence),
+                },
+            )
+            response = response.model_copy(update={"completion_evidence": []})
         if any(
             item.condition_index >= len(brain.task_instruction.completion_conditions)
             for item in response.completion_evidence
@@ -890,10 +909,24 @@ def validate_match_plan(
         selection_batch = intents == {"select_option"} and all(
             action.action == "click" for action in response.steps
         )
+        selection_then_navigation = (
+            response.steps[-1].intent == "navigate"
+            and all(action.intent == "select_option" for action in response.steps[:-1])
+            and all(
+                action.action in {"click", "double_click"} and action.source is None
+                for action in response.steps
+            )
+        )
         same_boundary_batch = intents in ({"navigate"}, {"select_tab"}) and all(
             action.source is None for action in response.steps
         )
-        if not (login_batch or direct_fill_batch or selection_batch or same_boundary_batch):
+        if not (
+            login_batch
+            or direct_fill_batch
+            or selection_batch
+            or selection_then_navigation
+            or same_boundary_batch
+        ):
             raise ValueError("screen_match_mixed_boundary_actions")
     response = bind_selection_effect(response, step, active_fields)
     workflow_steps = brain.procedure.steps if brain.procedure is not None else candidates
@@ -1059,6 +1092,9 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     }
     if brain.task_instruction is not None:
         state["task"] = brain.task_instruction.model_dump(mode="json")
+        state["taught_procedure_progress"] = brain.methods.procedure_context()
+        if brain.task_instruction.procedure:
+            state["taught_procedure_rules"] = TAUGHT_PROCEDURE_RULES.strip()
         state["capabilities"] = [model_capability(step) for step in candidates]
     else:
         state["procedure"] = [s.model_dump() for s in candidates]
@@ -1073,6 +1109,11 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     if methods is not None and methods.enabled:
         state["method_memory"] = methods.context()
     method_rules = METHOD_RULES if methods is not None and methods.enabled else ""
+    taught_rules = (
+        TAUGHT_PROCEDURE_RULES
+        if brain.task_instruction is not None and brain.task_instruction.procedure
+        else ""
+    )
     prompt = (
         (TASK_RULES if brain.task_instruction is not None else RULES)
         + method_rules
@@ -1107,6 +1148,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         }
         plan = brain._call(
             (TASK_PLAN_RULES if brain.task_instruction is not None else PLAN_RULES)
+            + taught_rules
             + method_rules
             + json.dumps(plan_state, ensure_ascii=False),
             ScreenPlan,
@@ -1133,6 +1175,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         image_state = {**state, "screen": model_screen(screen)}
         response = brain._call(
             (TASK_RULES if brain.task_instruction is not None else RULES)
+            + taught_rules
             + method_rules
             + json.dumps(image_state, ensure_ascii=False)
             + "\nResolve the reported ambiguity with this image.",
@@ -1190,6 +1233,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         }
         plan = brain._call(
             (TASK_PLAN_RULES if brain.task_instruction is not None else PLAN_RULES)
+            + taught_rules
             + method_rules
             + json.dumps(correction_state, ensure_ascii=False),
             ScreenPlan,
@@ -1220,6 +1264,10 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
             required,
             page if used_image or brain.matching_model is not None else None,
         )
+        # Repair calls can add a parent chain after the first cleanup pass.
+        # An invalid parent is optional structure; retain its controls and proof
+        # independently instead of rejecting the grounded action.
+        response = sanitize_unused_controls(brain, response, screen, required)
         if response.operation == "act" and not response.steps:
             completion = brain._call(
                 "The current form was matched but operation=act had no executable steps. "
@@ -1414,7 +1462,10 @@ def compile_screen_action_plan(response: ScreenMatch, observation):
     if all(step.intent == "select_option" for step in response.steps):
         return None
     intents = {step.intent for step in response.steps}
-    if intents not in ({"navigate"}, {"select_tab"}) or any(
+    selection_then_navigation = response.steps[-1].intent == "navigate" and all(
+        step.intent == "select_option" for step in response.steps[:-1]
+    )
+    if (intents not in ({"navigate"}, {"select_tab"}) and not selection_then_navigation) or any(
         step.action not in {"click", "double_click", "key"} or step.source is not None
         for step in response.steps
     ):
@@ -1433,6 +1484,6 @@ def compile_screen_action_plan(response: ScreenMatch, observation):
         {
             "check": "same_screen_action_plan",
             "actions": len(actions),
-            "intent": next(iter(intents)),
+            "intent": "select_then_navigate" if selection_then_navigation else next(iter(intents)),
         },
     )

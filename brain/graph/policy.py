@@ -46,7 +46,18 @@ CurrentStep = Literal[
 ]
 
 _SCREENS = ("login", "menu", "query", "editor", "partner", "dialog")
-_NAVIGATION_KEYS = ("tab", "shift+tab", "esc", "down", "up", "space")
+_NAVIGATION_KEYS = (
+    "tab",
+    "shift+tab",
+    "esc",
+    "down",
+    "up",
+    "space",
+    "pagedown",
+    "pageup",
+    "home",
+    "end",
+)
 
 
 @dataclass(frozen=True)
