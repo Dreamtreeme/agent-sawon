@@ -199,11 +199,8 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(t
     state = json.loads(model.prompts[0][len(TASK_RULES) :])
     assert state["task"]["objective"] == brain.task_instruction.objective
     assert "procedure" not in state["task"]
-    assert len(state["taught_procedure_progress"]["steps"]) == 2
-    assert [step["id"] for step in state["taught_procedure_progress"]["steps"]] == [
-        "login",
-        "open-query",
-    ]
+    assert state["taught_procedure_progress"]["steps"] == []
+    assert state["taught_procedure_progress"]["completed_step_ids"] == []
     assert state["notebook"]["inputs"] == brain.values
     assert state["notebook"]["verified_inputs"] == ["hbl_no"]
     assert state["notebook"]["remaining_inputs"] == sorted(brain.values)
