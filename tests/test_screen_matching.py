@@ -355,7 +355,14 @@ def test_current_model_evidence_can_unlock_save_in_the_same_task_turn(tmp_path):
 
     brain = SimpleNamespace(
         phase="task",
-        values={"description": "Synthetic procedure pump seals"},
+        values={
+            "description": "Synthetic procedure pump seals",
+            "hbl_no": "METHOD-HBL-707",
+            "shipper": "Synthetic shipper",
+        },
+        # Generic policy keeps all inputs reusable. The notebook ledger is the
+        # source of truth for which current task inputs still need evidence.
+        verified={"hbl_no": "prior-ref", "shipper": "prior-ref"},
         settings=SimpleNamespace(visual_model_only_review=True),
         task_instruction=TaskInstruction(
             name="Register shipment",
@@ -366,14 +373,16 @@ def test_current_model_evidence_can_unlock_save_in_the_same_task_turn(tmp_path):
         pending=None,
         log=RunLog(tmp_path, case_id="same-turn-save", agent_id="test"),
     )
-    policy = DecisionPolicy(ExecutionFacts("task", field_names=("description",)))
+    policy = DecisionPolicy(
+        ExecutionFacts("task", field_names=("description", "hbl_no", "shipper"))
+    )
     capability = ProcedureStep(
         id="task-action",
         phase="task",
         screen="any",
         checkpoint="any",
         view="current.observed.screen",
-        field_scope=["description"],
+        field_scope=["description", "hbl_no", "shipper"],
         actions=["fill", "navigate"],
         goal="Save the supplied shipment.",
         completion="A visible result confirms that the shipment was saved.",
@@ -398,7 +407,7 @@ def test_current_model_evidence_can_unlock_save_in_the_same_task_turn(tmp_path):
         }
     )
 
-    validated, _ = validate_match_plan(response, [capability], policy, brain, {"description"})
+    validated, _ = validate_match_plan(response, [capability], policy, brain, set(brain.values))
     assert validated.steps[0].intent == "save"
     assert any(
         event.payload.get("check") == "same_turn_evidence_unlocks_save"
@@ -411,7 +420,7 @@ def test_current_model_evidence_can_unlock_save_in_the_same_task_turn(tmp_path):
             [capability],
             policy,
             brain,
-            {"description"},
+            set(brain.values),
         )
 
 

@@ -891,7 +891,7 @@ _REPLANNABLE_MATCH_ERRORS = {
 }
 
 
-def _same_turn_evidence_unlocks_save(response: ScreenMatch, policy, brain) -> bool:
+def _same_turn_evidence_unlocks_save(response: ScreenMatch, brain) -> bool:
     """Allow model-reviewed current evidence to unlock its immediate save action.
 
     Generic tasks receive screen meaning, current evidence and the next action in
@@ -900,7 +900,10 @@ def _same_turn_evidence_unlocks_save(response: ScreenMatch, policy, brain) -> bo
     This only relaxes the preliminary procedure-envelope check; the evidence is
     still grounded and recorded before the executor recomputes its state policy.
     """
-    remaining = set(policy.facts.remaining_fields)
+    # Generic task policy deliberately keeps every input reusable across
+    # screens, so policy.facts.remaining_fields contains the full input set.
+    # Save coverage must use the model-owned evidence notebook instead.
+    remaining = set(brain.values) - set(brain.verified)
     if (
         not remaining
         or not brain.settings.visual_model_only_review
@@ -995,13 +998,13 @@ def validate_match_plan(
     allowed_intents = set(step.actions)
     if "login" in allowed_intents:
         allowed_intents.add("credential")
-    if step.id == "task-action" and _same_turn_evidence_unlocks_save(response, policy, brain):
+    if step.id == "task-action" and _same_turn_evidence_unlocks_save(response, brain):
         allowed_intents.add("save")
         brain.log.append(
             "verify",
             payload={
                 "check": "same_turn_evidence_unlocks_save",
-                "fields": sorted(policy.facts.remaining_fields),
+                "fields": sorted(set(brain.values) - set(brain.verified)),
             },
         )
     if brain.phase != "save_result" and any(
