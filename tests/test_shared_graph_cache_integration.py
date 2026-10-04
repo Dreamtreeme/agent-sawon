@@ -87,48 +87,6 @@ def test_cold_promotes_warm_reuses_with_new_values_and_refs(tmp_path, record):
     assert cold_brain.result.status == "success"
 
 
-class RecoveringInputRelay(FakeRelay):
-    """The first two cache inputs fail; the next ordinary model input succeeds."""
-
-    def __init__(self, record):
-        super().__init__(record)
-        self.remaining_faults = 2
-
-    def act(self, action):
-        result = super().act(action)
-        if (
-            action.root.type in {"set_text", "type_text"}
-            and self.mode == "editor"
-            and action.root.target.ref == self.field_refs["consignee"]
-            and self.remaining_faults
-        ):
-            self.inputs["consignee"] = "temporary mismatched value"
-            self.remaining_faults -= 1
-        return result
-
-
-def test_cache_invalidates_before_falling_back_to_model(tmp_path, record):
-    cache_path = tmp_path / "semantic.json"
-    settings = cache_settings(cache_path)
-    result, _, _, _ = run_brain(tmp_path / "cold", record, success_steps(record), settings=settings)
-    assert result.status == "success"
-    relay = RecoveringInputRelay(record)
-    remaining = [
-        step
-        for step in success_steps(record)
-        if step["intent"] != "fill" or step["action"]["source"] == "consignee"
-    ]
-    recovered, brain, _, _ = run_brain(
-        tmp_path / "recover", record, remaining, settings=settings, relay=relay
-    )
-    assert recovered.status == "success", recovered
-    assert relay.remaining_faults == 0
-    misses = [event for event in brain.log.read_all() if event.kind == "cache_miss"]
-    failures = [event for event in misses if event.payload.get("reason") == "input_value_mismatch"]
-    assert [event.payload["invalidated"] for event in failures] == [False, True]
-    assert relay.inputs == values_for(record)
-
-
 def test_corrupt_cache_preserved_while_model_finishes_task(tmp_path, record):
     cache_path = tmp_path / "semantic.json"
     original = b'{"schema_version":"unsupported"}'

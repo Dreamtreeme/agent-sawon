@@ -2,7 +2,6 @@
 
 import json
 
-import pytest
 from test_brain import FakeRelay, ScriptedModel, element, run_brain, success_steps, values_for
 from test_brain import record as record
 
@@ -64,42 +63,49 @@ def test_full_graph_rebinds_six_fields_with_one_measured_call(tmp_path, record):
     assert len(SemanticCache(path).entries()) == 22
 
 
-@pytest.mark.parametrize("malformed", [False, True, "schema"])
-def test_empty_or_invalid_proposal_falls_back_without_unmeasured_retry(tmp_path, record, malformed):
+def test_empty_or_invalid_proposals_fall_back_without_unmeasured_retry(tmp_path, record):
     path = tmp_path / "cache.json"
     cold, _, _, _ = run_brain(
         tmp_path / "cold", record, success_steps(record), settings=settings(path)
     )
     assert cold.status == "success"
-    relay = ChangedEditorRelay(record)
-    changed = set(list(relay.field_refs)[5:])
+    cold_cache = path.read_bytes()
 
-    def proposal(prompt):
-        data = json.loads(prompt.split("MAPPING_DATA=", 1)[1])
-        if malformed == "schema":
-            return {"unexpected": "invalid response"}
-        return {
-            "observation_id": data["observation_id"],
-            "bindings": [{"field": next(iter(changed)), "ref": "e9999"}] if malformed else [],
-        }
+    for variant in ("empty", "unknown-ref", "invalid-schema"):
+        path.write_bytes(cold_cache)
+        relay = ChangedEditorRelay(record)
+        changed = set(list(relay.field_refs)[5:])
 
-    steps = [
-        step
-        for step in success_steps(record)
-        if step["intent"] != "fill" or step["action"]["source"] in changed
-    ]
-    steps.insert(4, proposal)
-    result, brain, _, _ = run_brain(
-        tmp_path / "warm", record, steps, settings=settings(path), relay=relay
-    )
-    assert result.status == "success", result
-    assert brain.cache_rebind_calls == 1
-    assert relay.inputs == values_for(record)
-    assert all(
-        e.payload["match_mode"] == "label_anchor"
-        for e in brain.log.read_all()
-        if e.kind == "cache_hit"
-    )
+        def proposal(prompt, variant=variant, changed=changed):
+            data = json.loads(prompt.split("MAPPING_DATA=", 1)[1])
+            if variant == "invalid-schema":
+                return {"unexpected": "invalid response"}
+            return {
+                "observation_id": data["observation_id"],
+                "bindings": (
+                    [{"field": next(iter(changed)), "ref": "e9999"}]
+                    if variant == "unknown-ref"
+                    else []
+                ),
+            }
+
+        steps = [
+            step
+            for step in success_steps(record)
+            if step["intent"] != "fill" or step["action"]["source"] in changed
+        ]
+        steps.insert(4, proposal)
+        result, brain, _, _ = run_brain(
+            tmp_path / f"warm-{variant}", record, steps, settings=settings(path), relay=relay
+        )
+        assert result.status == "success", (variant, result)
+        assert brain.cache_rebind_calls == 1
+        assert relay.inputs == values_for(record)
+        assert all(
+            event.payload["match_mode"] == "label_anchor"
+            for event in brain.log.read_all()
+            if event.kind == "cache_hit"
+        )
 
 
 def test_unknown_cost_in_rebind_call_stops_before_changed_label_inputs(
