@@ -19,6 +19,7 @@ from brain.graph.matching import (
     TARGET_GROUNDING_RULES,
     TASK_PLAN_RULES,
     TASK_RULES,
+    ProcedureStep,
     ScreenMatch,
     ScreenPlan,
     compile_match,
@@ -26,7 +27,9 @@ from brain.graph.matching import (
     defer_unwritable_fill_targets,
     omit_nonblocking_image_request,
     omit_nonblocking_refinement,
+    validate_match_plan,
 )
+from brain.graph.policy import DecisionPolicy, ExecutionFacts
 from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
 from brain.runtime.storage import RunLog
@@ -345,6 +348,71 @@ def test_pending_fill_cannot_claim_its_own_pre_action_evidence(tmp_path, record)
         if event.payload.get("check") == "model_task_evidence_deferred_until_reread"
     )
     assert event.payload["fields"] == ["hbl_no"]
+
+
+def test_current_model_evidence_can_unlock_save_in_the_same_task_turn(tmp_path):
+    from types import SimpleNamespace
+
+    brain = SimpleNamespace(
+        phase="task",
+        values={"description": "Synthetic procedure pump seals"},
+        settings=SimpleNamespace(visual_model_only_review=True),
+        task_instruction=TaskInstruction(
+            name="Register shipment",
+            objective="Save the supplied shipment.",
+            completion_conditions=["A visible result confirms that the shipment was saved."],
+        ),
+        procedure=None,
+        pending=None,
+        log=RunLog(tmp_path, case_id="same-turn-save", agent_id="test"),
+    )
+    policy = DecisionPolicy(ExecutionFacts("task", field_names=("description",)))
+    capability = ProcedureStep(
+        id="task-action",
+        phase="task",
+        screen="any",
+        checkpoint="any",
+        view="current.observed.screen",
+        field_scope=["description"],
+        actions=["fill", "navigate"],
+        goal="Save the supplied shipment.",
+        completion="A visible result confirms that the shipment was saved.",
+    )
+    response = ScreenMatch.model_validate(
+        {
+            "screen_kind": "editor",
+            "procedure_step": "task-action",
+            "controls": [
+                {"id": 24, "role": "edit", "confidence": 1},
+                {"id": 43, "role": "button", "confidence": 1},
+            ],
+            "steps": [
+                {
+                    "target": 43,
+                    "action": "click",
+                    "intent": "save",
+                    "point": [700, 50],
+                }
+            ],
+            "evidence": [{"field": "description", "target": 24}],
+        }
+    )
+
+    validated, _ = validate_match_plan(response, [capability], policy, brain, {"description"})
+    assert validated.steps[0].intent == "save"
+    assert any(
+        event.payload.get("check") == "same_turn_evidence_unlocks_save"
+        for event in brain.log.read_all()
+    )
+
+    with pytest.raises(ValueError, match="screen_match_action_outside_procedure"):
+        validate_match_plan(
+            response.model_copy(update={"evidence": []}),
+            [capability],
+            policy,
+            brain,
+            {"description"},
+        )
 
 
 def test_grounded_current_action_does_not_refine_for_future_hidden_input(tmp_path, record):

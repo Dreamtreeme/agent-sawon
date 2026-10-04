@@ -882,6 +882,34 @@ _REPLANNABLE_MATCH_ERRORS = {
 }
 
 
+def _same_turn_evidence_unlocks_save(response: ScreenMatch, policy, brain) -> bool:
+    """Allow model-reviewed current evidence to unlock its immediate save action.
+
+    Generic tasks receive screen meaning, current evidence and the next action in
+    one response.  Requiring the evidence to be persisted before validating the
+    action forced a redundant second model turn and rejected a correct Save plan.
+    This only relaxes the preliminary procedure-envelope check; the evidence is
+    still grounded and recorded before the executor recomputes its state policy.
+    """
+    remaining = set(policy.facts.remaining_fields)
+    if (
+        not remaining
+        or not brain.settings.visual_model_only_review
+        or response.operation != "act"
+        or len(response.steps) != 1
+        or response.steps[0].intent != "save"
+    ):
+        return False
+    controls = {control.id: control for control in response.controls}
+    current_input_evidence = {
+        evidence.field
+        for evidence in response.evidence
+        if evidence.target in controls
+        and controls[evidence.target].role.casefold() in {"edit", "combobox"}
+    }
+    return remaining <= current_input_evidence
+
+
 def validate_match_plan(
     response: ScreenMatch,
     candidates: list[ProcedureStep],
@@ -958,6 +986,15 @@ def validate_match_plan(
     allowed_intents = set(step.actions)
     if "login" in allowed_intents:
         allowed_intents.add("credential")
+    if step.id == "task-action" and _same_turn_evidence_unlocks_save(response, policy, brain):
+        allowed_intents.add("save")
+        brain.log.append(
+            "verify",
+            payload={
+                "check": "same_turn_evidence_unlocks_save",
+                "fields": sorted(policy.facts.remaining_fields),
+            },
+        )
     if brain.phase != "save_result" and any(
         action.intent not in allowed_intents for action in response.steps
     ):
