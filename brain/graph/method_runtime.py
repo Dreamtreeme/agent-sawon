@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from brain.cache.methods import (
+    LearnedMethod,
     MethodCompletion,
     MethodDocument,
     MethodLibrary,
@@ -53,6 +54,37 @@ class MethodRuntime:
         self.staged: dict[str, MethodDocument] = {}
         self.staged_completions: dict[str, MethodCompletion] = {}
 
+    def _ordered_groups(self, method: LearnedMethod) -> list:
+        """Order a reusable method by the taught procedure and successful trace.
+
+        A screen discovered late can belong at the beginning of the business
+        procedure (login is the common example).  File insertion order therefore
+        cannot be the execution contract.
+        """
+
+        task = self.brain.task_instruction
+        procedure_order = (
+            {step.id: index for index, step in enumerate(task.procedure)} if task else {}
+        )
+        if not procedure_order:
+            return list(method.action_groups)
+        delivered_order = {
+            item["group_id"]: index
+            for index, item in enumerate(self.history)
+            if item.get("method_id") == method.id
+            and item.get("status") == "delivered"
+            and item.get("group_id")
+        }
+        original_order = {group.id: index for index, group in enumerate(method.action_groups)}
+        return sorted(
+            method.action_groups,
+            key=lambda group: (
+                procedure_order.get(group.taught_step_id, len(procedure_order)),
+                delivered_order.get(group.id, len(delivered_order)),
+                original_order[group.id],
+            ),
+        )
+
     def _binding_values(self) -> dict[str, str]:
         """Expose credential source availability without exposing credential values."""
         return {
@@ -97,7 +129,7 @@ class MethodRuntime:
                 continue
             remaining_ids.extend(
                 group.taught_step_id
-                for group in method.action_groups
+                for group in self._ordered_groups(method)
                 if (method.id, group.id) not in self.used and group.taught_step_id in order
             )
         delivered = {
@@ -144,7 +176,9 @@ class MethodRuntime:
             if objective is not None and method.task_objective not in {"", objective}:
                 continue
             remaining = [
-                group for group in method.action_groups if (method.id, group.id) not in self.used
+                group
+                for group in self._ordered_groups(method)
+                if (method.id, group.id) not in self.used
             ][:2]
             relevant_slots = {
                 action.slot for group in remaining for action in group.actions if action.slot
@@ -199,7 +233,9 @@ class MethodRuntime:
                     continue
                 mapping = {slot.name: slot.source_key for slot in method.slots}
             remaining = [
-                group for group in method.action_groups if (method.id, group.id) not in self.used
+                group
+                for group in self._ordered_groups(method)
+                if (method.id, group.id) not in self.used
             ]
             # A compiled procedure is ordered. Never skip an unbindable step and
             # accidentally execute a later screen's action.
@@ -382,7 +418,7 @@ class MethodRuntime:
         event = {
             "method_id": method.id,
             "group_id": group_id,
-            "purpose": method.purpose,
+            "purpose": self.purpose or method.purpose,
             "origin": pending["origin"],
             "taught_step_id": pending.get("taught_step_id")
             or next(
@@ -409,6 +445,23 @@ class MethodRuntime:
             method = candidates.get(method_id) or known.get(method_id)
             if method is not None:
                 candidates[method_id] = method.model_copy(update={"completion": completion})
+        for method_id, candidate in list(candidates.items()):
+            previous = known.get(method_id)
+            if previous is not None:
+                groups = {group.id: group for group in previous.action_groups}
+                groups.update({group.id: group for group in candidate.action_groups})
+                slots = {slot.name: slot for slot in previous.slots}
+                slots.update({slot.name: slot for slot in candidate.slots})
+                candidate = candidate.model_copy(
+                    update={
+                        "action_groups": list(groups.values()),
+                        "slots": list(slots.values()),
+                        "completion": candidate.completion or previous.completion,
+                    }
+                )
+            candidates[method_id] = candidate.model_copy(
+                update={"action_groups": self._ordered_groups(candidate)}
+            )
         methods = [
             compile_method_candidate(
                 method,

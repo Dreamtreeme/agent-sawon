@@ -398,9 +398,42 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
     assert "credential.username" in candidate_text
     assert "credential.password" in candidate_text
 
+    # Older live libraries appended newly learned login screens after the
+    # business groups.  Runtime order follows the taught procedure, so those
+    # libraries self-heal without another model call.
+    installed_methods = brain.methods.library.methods()
+    installed = next(
+        method
+        for method in installed_methods
+        if any(
+            action.slot == "credential.username"
+            for group in method.action_groups
+            for action in group.actions
+        )
+    )
+    login_group = next(
+        group
+        for group in installed.action_groups
+        if any(action.slot == "credential.username" for action in group.actions)
+    ).model_copy(update={"taught_step_id": "login"})
+    old_business_group = next(
+        group
+        for method in installed_methods
+        if method.id != installed.id
+        for group in method.action_groups
+    )
+    atomic_write_json(
+        brain.methods.library.path,
+        MethodDocument(
+            methods=[
+                installed.model_copy(update={"action_groups": [old_business_group, login_group]})
+            ]
+        ),
+    )
     brain.methods.used.clear()
     replay = brain.methods.apply(screen)
     assert replay is not None
+    assert brain.methods.pending["group_id"] == login_group.id
     assert [step.source for step in replay.steps] == [
         "credential.username",
         "credential.password",

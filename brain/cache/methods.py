@@ -511,8 +511,12 @@ class MethodLibrary:
             existing = {item.id: item for item in self.methods()}
             previous = existing.get(method.id)
             if previous is not None:
-                groups = {item.id: item for item in previous.action_groups}
-                groups.update({item.id: item for item in method.action_groups})
+                # The incoming method carries the runtime's successful procedure
+                # order.  Preserve that order, then retain any historical groups
+                # absent from the latest successful trace.
+                groups = {item.id: item for item in method.action_groups}
+                for item in previous.action_groups:
+                    groups.setdefault(item.id, item)
                 method = method.model_copy(
                     update={
                         "revision": previous.revision + 1,
