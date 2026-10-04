@@ -24,6 +24,8 @@ from brain.graph.matching import (
     compile_match,
     compile_screen_action_plan,
     defer_unwritable_fill_targets,
+    omit_nonblocking_image_request,
+    omit_nonblocking_refinement,
 )
 from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
@@ -400,6 +402,36 @@ def test_grounded_current_action_does_not_request_the_same_image_again(tmp_path,
         if event.payload.get("check") == "nonblocking_image_request_omitted"
     )
     assert event.payload["action_targets"] == [meaning.controls[0].id]
+
+
+def test_ocr_role_mismatch_keeps_requested_image_and_refinement(tmp_path, record):
+    class BrainStub:
+        log = RunLog(tmp_path, case_id="ocr-role-mismatch", agent_id="test")
+
+    response = ScreenMatch.model_validate(
+        {
+            "screen_kind": "editor",
+            "procedure_step": "task-action",
+            "controls": [{"id": 5, "role": "window", "confidence": 0.95}],
+            "steps": [
+                {
+                    "target": 5,
+                    "action": "key",
+                    "intent": "navigate",
+                    "keys": "pagedown",
+                }
+            ],
+            "needs_image": True,
+            "needs_refinement": True,
+        }
+    )
+    screen = {"markers": [{"id": 5, "source": "ocr"}]}
+
+    assert omit_nonblocking_image_request(BrainStub(), response, screen).needs_image
+    assert omit_nonblocking_refinement(BrainStub(), response, screen).needs_refinement
+    checks = {event.payload.get("check") for event in BrainStub.log.read_all()}
+    assert "nonblocking_image_request_omitted" not in checks
+    assert "nonblocking_refinement_omitted" not in checks
 
 
 def test_generic_task_discards_prose_source_from_non_binding_click(tmp_path, record):

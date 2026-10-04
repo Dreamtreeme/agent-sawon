@@ -1027,13 +1027,30 @@ def validate_match_plan(
     return response, step
 
 
-def omit_nonblocking_refinement(brain, response: ScreenMatch) -> ScreenMatch:
+def _action_targets_have_groundable_roles(response: ScreenMatch, screen: dict) -> bool:
+    """Return whether every immediate target can carry its proposed semantic role."""
+
+    markers = {marker["id"]: marker for marker in screen.get("markers", [])}
+    controls = {control.id: control for control in response.controls}
+    for step in response.steps:
+        marker = markers.get(step.target)
+        control = controls.get(step.target)
+        if marker is None or control is None:
+            return False
+        if not marker_role_allowed(marker.get("source", ""), control.role):
+            return False
+    return True
+
+
+def omit_nonblocking_refinement(brain, response: ScreenMatch, screen: dict) -> ScreenMatch:
     """Do not refine unrelated future work when the current action is grounded."""
     if not response.needs_refinement or response.operation != "act" or not response.steps:
         return response
     control_ids = {control.id for control in response.controls}
     action_targets = {step.target for step in response.steps}
-    if not action_targets <= control_ids:
+    if not action_targets <= control_ids or not _action_targets_have_groundable_roles(
+        response, screen
+    ):
         return response
     brain.log.append(
         "verify",
@@ -1046,13 +1063,15 @@ def omit_nonblocking_refinement(brain, response: ScreenMatch) -> ScreenMatch:
     return response.model_copy(update={"needs_refinement": False})
 
 
-def omit_nonblocking_image_request(brain, response: ScreenMatch) -> ScreenMatch:
+def omit_nonblocking_image_request(brain, response: ScreenMatch, screen: dict) -> ScreenMatch:
     """A grounded immediate action does not need another copy of the same image."""
     if not response.needs_image or response.operation != "act" or not response.steps:
         return response
     control_ids = {control.id for control in response.controls}
     action_targets = {step.target for step in response.steps}
-    if not action_targets <= control_ids:
+    if not action_targets <= control_ids or not _action_targets_have_groundable_roles(
+        response, screen
+    ):
         return response
     brain.log.append(
         "verify",
@@ -1361,7 +1380,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         response = brain._call(prompt, ScreenMatch, page=page)
         atomic_write_json(brain.case_dir / "matching" / f"{uuid4().hex}-markers.json", response)
         response = local_response(response, screen)
-    response = omit_nonblocking_image_request(brain, response)
+    response = omit_nonblocking_image_request(brain, response, screen)
     if cache_hit is None:
         used_image = brain.matching_model is None or response.needs_image
     if response.needs_image:
@@ -1377,7 +1396,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         )
         atomic_write_json(brain.case_dir / "matching" / f"{uuid4().hex}-image.json", response)
         response = local_response(response, screen)
-        response = omit_nonblocking_image_request(brain, response)
+        response = omit_nonblocking_image_request(brain, response, screen)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
     if brain.task_instruction is not None:
@@ -1447,7 +1466,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
                 "procedure_step": step.id,
             },
         )
-    response = omit_nonblocking_refinement(brain, response)
+    response = omit_nonblocking_refinement(brain, response, screen)
     if not response.needs_refinement:
         response = sanitize_unused_controls(brain, response, screen, required)
         # The model chooses current evidence with the next action. Ground every
