@@ -281,6 +281,34 @@ def test_model_only_generic_task_keeps_model_grounded_input_progress(tmp_path, r
     assert event.payload["fields"] == ["hbl_no"]
 
 
+def test_grounded_current_action_does_not_refine_for_future_hidden_input(tmp_path, record):
+    meaning = fixture()[-1]
+    task_response = response(
+        meaning,
+        procedure_step="Fill visible inputs",
+        needs_refinement=True,
+        uncertainties=["another task input is below the current viewport"],
+    )
+    brain, *_ = setup_brain(tmp_path, record, [task_response])
+    brain.task_instruction = TaskInstruction.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    brain.procedure = None
+    brain.phase = "task"
+
+    brain._observe()
+
+    assert brain.visual_proposal.needs_refinement is False
+    event = next(
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "nonblocking_refinement_omitted"
+    )
+    assert event.payload["action_targets"] == [meaning.controls[0].id]
+
+
 def test_generic_task_discards_prose_source_from_non_binding_click(tmp_path, record):
     meaning = fixture()[-1]
     task_response = response(meaning, procedure_step="Open the relevant work area")

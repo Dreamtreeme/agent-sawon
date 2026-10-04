@@ -326,7 +326,10 @@ Save result requires current message_targets and next command.
 expected_result describes an expectation only; it never proves that execution succeeded.
 If OCR/geometry cannot determine a needed relation or empty-table evidence, return
 needs_image=true without actions. Never guess empty solely from lack of OCR text.
-Report needs_refinement only when a required control extent is missing. Never transmit/approve.
+Report needs_refinement only when a control needed for the IMMEDIATE action has no usable extent.
+When operation=act already references defined controls for every returned step, set
+needs_refinement=false. A later input below the viewport is future navigation work, not a reason
+to refine the current action. Never transmit/approve.
 Include every required_verification control on its specified screen, even when the next
 action/proof uses a different control. Keep its current label_ids and contained text_ids.
 remaining_fields is the authoritative work list after pending verification. Never plan,
@@ -978,6 +981,25 @@ def validate_match_plan(
     return response, step
 
 
+def omit_nonblocking_refinement(brain, response: ScreenMatch) -> ScreenMatch:
+    """Do not refine unrelated future work when the current action is grounded."""
+    if not response.needs_refinement or response.operation != "act" or not response.steps:
+        return response
+    control_ids = {control.id for control in response.controls}
+    action_targets = {step.target for step in response.steps}
+    if not action_targets <= control_ids:
+        return response
+    brain.log.append(
+        "verify",
+        payload={
+            "check": "nonblocking_refinement_omitted",
+            "action_targets": sorted(action_targets),
+            "reason": "current_action_controls_already_defined",
+        },
+    )
+    return response.model_copy(update={"needs_refinement": False})
+
+
 def exclude_current_navigation_step(brain, candidates: list[ProcedureStep]) -> list[ProcedureStep]:
     """Offer the successor while current-screen navigation verification is pending."""
     completed = None
@@ -1304,6 +1326,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
                 "procedure_step": step.id,
             },
         )
+    response = omit_nonblocking_refinement(brain, response)
     if not response.needs_refinement:
         response = sanitize_unused_controls(brain, response, screen, required)
         # The model chooses current evidence with the next action. Ground every
