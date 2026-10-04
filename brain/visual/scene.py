@@ -157,6 +157,33 @@ def overlap(left, right) -> float:
     return area / max(1, w * h + c * d - area)
 
 
+def conflicting_writable_controls(controls: list[VisualControl]) -> set[int]:
+    """Find mutually exclusive meanings assigned to one physical input surface.
+
+    OCR text inside an input can be offered as a marker alongside the detector's
+    enclosing input rectangle.  Both markers are useful evidence, but they cannot
+    simultaneously be independent writable controls for the same label.  Keep the
+    ambiguity explicit so a later visual pass can resolve it; never let either
+    interpretation become an executable target in this observation.
+    """
+
+    writable = [control for control in controls if control.role in {"edit", "combobox"}]
+    conflicts: set[int] = set()
+    for index, left in enumerate(writable):
+        left_labels = set(left.label_ids)
+        if not left_labels:
+            continue
+        for right in writable[index + 1 :]:
+            if left_labels != set(right.label_ids):
+                continue
+            if tuple(left.bbox) == tuple(right.bbox):
+                # Exact duplicates already follow the existing uncertainty path.
+                continue
+            if contains(left.bbox, right.bbox) or contains(right.bbox, left.bbox):
+                conflicts.update((left.id, right.id))
+    return conflicts
+
+
 def bind_scene(
     wire: Observation,
     blocks: list[OcrBlock],
@@ -177,6 +204,9 @@ def bind_scene(
     elements = []
     uncertain_refs = []
     prefix = "e" + str(wire.obs_id.int) + "0"
+    writable_conflicts = conflicting_writable_controls(detection.controls)
+    if writable_conflicts:
+        raise ValueError("conflicting_writable_surface")
 
     def text(ids: list[int]) -> str:
         selected = sorted((by_id[i] for i in ids), key=lambda b: (b.bbox[1], b.bbox[0]))

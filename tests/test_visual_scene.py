@@ -179,6 +179,33 @@ def test_duplicate_targets_are_both_disabled():
     assert all(not item.enabled and item.value is None for item in result.elements)
 
 
+def test_contained_writable_markers_with_same_label_are_not_two_fields():
+    blocks = [
+        OcrBlock(id=0, text="Identifier", confidence=0.99, bbox=(10, 25, 65, 15)),
+        OcrBlock(id=1, text="CURRENT", confidence=0.99, bbox=(120, 25, 70, 15)),
+    ]
+    controls = [
+        VisualControl(
+            id=20,
+            role="edit",
+            bbox=(100, 20, 200, 30),
+            label_ids=[0],
+            confidence=0.99,
+        ),
+        VisualControl(
+            id=21,
+            role="edit",
+            bbox=(120, 25, 70, 15),
+            label_ids=[0],
+            text_ids=[1],
+            confidence=0.99,
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="conflicting_writable_surface"):
+        bind_scene(wire(), blocks, Detection(controls=controls))
+
+
 def test_scene_refs_change_with_capture_but_semantics_do_not():
     blocks, detection = scene()
     first = bind_scene(wire(), blocks, detection).elements[0]

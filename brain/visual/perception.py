@@ -496,6 +496,7 @@ class VisualPerception:
                     "unknown_ocr_reference",
                     "duplicate_ocr_reference",
                     "invalid_visual_parent_bounds",
+                    "conflicting_writable_surface",
                 }:
                     self.log.append(
                         "verify",
