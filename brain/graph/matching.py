@@ -1180,6 +1180,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         notebook.update(
             {
                 "verified_inputs": sorted(brain.verified),
+                "evidence_claims": brain.evidence_ledger.prompt_context(),
                 "anticipated_verified_inputs": (
                     sorted(verified_fields) if contract["conditional"] else []
                 ),

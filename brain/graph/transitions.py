@@ -6,6 +6,8 @@ or descriptions copied from controls. Navigation callers supply semantic hashes
 and a checkpoint token that changes only with the phase or new business facts.
 """
 
+import hashlib
+import json
 from collections import deque
 from enum import StrEnum
 from typing import Literal
@@ -26,6 +28,84 @@ TransitionFact = (
         "credential.password_submitted",
     ]
 )
+
+
+class EvidenceClaim(BaseModel):
+    """One model-grounded fact with an explicit lifecycle."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    field: str = Field(min_length=1)
+    surface_key: str = Field(min_length=64, max_length=64)
+    observation_id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+    status: Literal["active", "superseded"] = "active"
+    reason: str | None = None
+
+
+class EvidenceLedger:
+    """Keep model evidence durable without treating it as immutable truth."""
+
+    def __init__(self) -> None:
+        self._claims: list[EvidenceClaim] = []
+        self._active: dict[str, EvidenceClaim] = {}
+
+    @staticmethod
+    def surface_key(descriptor: dict) -> str:
+        canonical = json.dumps(
+            descriptor, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def record(self, field: str, descriptor: dict, observation_id: str) -> tuple[str, ...]:
+        """Activate a claim and supersede incompatible ownership of its surface."""
+
+        surface_key = self.surface_key(descriptor)
+        superseded = []
+        for other, claim in tuple(self._active.items()):
+            if other != field and claim.surface_key == surface_key:
+                self.invalidate(other, "surface_reassigned")
+                superseded.append(other)
+        self.invalidate(field, "newer_observation")
+        claim = EvidenceClaim(
+            field=field,
+            surface_key=surface_key,
+            observation_id=observation_id,
+            revision=len(self._claims) + 1,
+        )
+        self._claims.append(claim)
+        self._active[field] = claim
+        return tuple(sorted(superseded))
+
+    def invalidate(self, field: str, reason: str) -> bool:
+        claim = self._active.pop(field, None)
+        if claim is None:
+            return False
+        replacement = claim.model_copy(update={"status": "superseded", "reason": reason})
+        self._claims[claim.revision - 1] = replacement
+        return True
+
+    def invalidate_surface(self, descriptor: dict, reason: str) -> tuple[str, ...]:
+        surface_key = self.surface_key(descriptor)
+        invalidated = []
+        for field, claim in tuple(self._active.items()):
+            if claim.surface_key == surface_key and self.invalidate(field, reason):
+                invalidated.append(field)
+        return tuple(sorted(invalidated))
+
+    def prompt_context(self) -> list[dict]:
+        return [
+            {
+                "field": claim.field,
+                "observation_id": claim.observation_id,
+                "revision": claim.revision,
+            }
+            for claim in sorted(self._active.values(), key=lambda item: item.field)
+        ]
+
+    @property
+    def history(self) -> tuple[EvidenceClaim, ...]:
+        return tuple(self._claims)
 
 
 class ExpectedEffect(StrEnum):

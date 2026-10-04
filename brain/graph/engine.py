@@ -66,6 +66,7 @@ from .screen_batch import (
 from .state import WorkerNode, WorkerState, copy_worker_state, create_worker_state
 from .transitions import (
     ActionTransition,
+    EvidenceLedger,
     ExpectedEffect,
     NavigationHistory,
     ObservedEffect,
@@ -270,6 +271,7 @@ class Brain:
         self.decision: Decision | None = None
         self.plan: list[str] = []
         self.verified: dict[str, dict] = {}
+        self.evidence_ledger = EvidenceLedger()
         self.query_value_verified = False
         self.query_submitted = False
         self.query_descriptor: dict | None = None
@@ -1468,6 +1470,19 @@ class Brain:
                 )
             ):
                 del self.verified[field]
+                self.evidence_ledger.invalidate(field, "visible_evidence_changed")
+
+    def _record_model_evidence(self, field: str, element: UIElement) -> tuple[str, ...]:
+        """Record model evidence while preserving one owner per semantic surface."""
+
+        assert self.observation is not None
+        descriptor = describe(element, self.observation.elements)
+        superseded = self.evidence_ledger.record(field, descriptor, str(self.observation.obs_id))
+        for previous in superseded:
+            self.verified.pop(previous, None)
+        self.verified[field] = descriptor
+        self._record_progress("field:" + field)
+        return superseded
 
     def _record_verified_field(self, source: str, element: UIElement) -> bool:
         assert self.observation is not None
@@ -1488,8 +1503,7 @@ class Brain:
             item = by_ref.get(evidence.ref)
             if item is not None and item.role.casefold() in {"edit", "combobox"}:
                 if self.settings.visual_model_only_review:
-                    self.verified[evidence.field] = describe(item, self.observation.elements)
-                    self._record_progress("field:" + evidence.field)
+                    self._record_model_evidence(evidence.field, item)
                 else:
                     self._record_verified_field(evidence.field, item)
 
@@ -1508,12 +1522,12 @@ class Brain:
         prefix = "e" + str(self.observation.obs_id.int) + "0"
         by_ref = {item.ref: item for item in self.observation.elements}
         recorded = []
+        superseded = []
         for evidence in response.evidence:
             element = by_ref.get(prefix + str(evidence.target))
             if element is None or element.role.casefold() not in {"edit", "combobox"}:
                 continue
-            self.verified[evidence.field] = describe(element, self.observation.elements)
-            self._record_progress("field:" + evidence.field)
+            superseded.extend(self._record_model_evidence(evidence.field, element))
             recorded.append(evidence.field)
         if recorded:
             self.log.append(
@@ -1522,6 +1536,7 @@ class Brain:
                     "check": "model_task_evidence_recorded",
                     "reviewer": "screen_model",
                     "fields": sorted(set(recorded)),
+                    "superseded_fields": sorted(set(superseded)),
                     "obs_id": str(self.observation.obs_id),
                 },
             )
@@ -1811,6 +1826,26 @@ class Brain:
         if choice.type in {"set_text", "type_text"}:
             target = next(item for item in self.observation.elements if item.ref == choice.ref)
             pending["descriptor"] = describe(target, self.observation.elements)
+            if self.task_instruction is not None and self.settings.visual_model_only_review:
+                invalidated = set(
+                    self.evidence_ledger.invalidate_surface(
+                        pending["descriptor"], "input_delivered_to_surface"
+                    )
+                )
+                if choice.source is not None:
+                    self.evidence_ledger.invalidate(choice.source, "input_requires_reread")
+                    invalidated.add(choice.source)
+                for field in invalidated:
+                    self.verified.pop(field, None)
+                if invalidated:
+                    self.log.append(
+                        "verify",
+                        payload={
+                            "check": "model_task_evidence_superseded",
+                            "fields": sorted(invalidated),
+                            "reason": "input_delivered_to_surface",
+                        },
+                    )
             if choice.source in self.values:
                 # A successful relay return proves delivery, not business correctness.
                 # It still separates unrelated failures while semantic reread remains

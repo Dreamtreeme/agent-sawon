@@ -223,3 +223,25 @@ def test_model_owned_generic_evidence_is_not_invalidated_by_later_screens(tmp_pa
         }
     ).to_decision()
     brain._collect_editor_evidence(passive)
+
+
+def test_model_evidence_surface_has_one_active_field_owner(tmp_path):
+    from brain.graph.transitions import EvidenceLedger
+
+    ledger = EvidenceLedger()
+    descriptor = {
+        "role": "Edit",
+        "name": "Reference",
+        "label": "Reference",
+        "context": [{"role": "Group", "name": "Details"}],
+    }
+
+    assert ledger.record("first", descriptor, "obs-1") == ()
+    assert ledger.record("second", descriptor, "obs-2") == ("first",)
+    assert ledger.prompt_context() == [
+        {"field": "second", "observation_id": "obs-2", "revision": 2}
+    ]
+    assert [(claim.field, claim.status, claim.reason) for claim in ledger.history] == [
+        ("first", "superseded", "surface_reassigned"),
+        ("second", "active", None),
+    ]
