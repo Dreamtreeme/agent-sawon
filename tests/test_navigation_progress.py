@@ -9,6 +9,7 @@ from test_brain import FakeRelay, decision, element, run_brain, success_steps
 from test_brain import record as record
 
 from brain.graph.transitions import ExplorationAttempt, ExplorationLedger, exploration_action_key
+from brain.observe.progress import navigation_state
 
 
 class NavigationRelay(FakeRelay):
@@ -251,9 +252,20 @@ def test_alternating_navigation_intents_cannot_evade_the_phase_cap(tmp_path, rec
     ]
 
 
-@pytest.mark.parametrize("change", ["value", "name", "label", "enabled", "hierarchy", "content"])
-def test_semantic_change_in_same_window_accepts_navigation(tmp_path, record, change):
-    relay = NavigationRelay(record, changes=[change])
+def test_navigation_state_tracks_each_same_window_semantic_change(record):
+    relay = NavigationRelay(record)
+    relay.mode = "editor"
+    baseline = navigation_state(relay.observe())
+
+    for change in ("value", "name", "label", "enabled", "hierarchy", "content"):
+        relay.active_change = change
+        observation = relay.observe()
+        assert observation.active_window.handle == 1
+        assert navigation_state(observation) != baseline, change
+
+
+def test_semantic_change_in_same_window_accepts_navigation(tmp_path, record):
+    relay = NavigationRelay(record, changes=["content"])
     result, brain, _, _ = run_brain(
         tmp_path,
         record,

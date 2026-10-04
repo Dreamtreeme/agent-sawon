@@ -40,3 +40,30 @@
 ## 보류
 
 후보 전수 검토가 끝날 때 삭제 근거가 충분하지 않은 항목을 여기에 추가한다.
+
+## 단위 2: 화면 오류 기록과 탐색 진행
+
+### 하위 계층으로 이동
+
+- `tests/test_visual_workflow.py::test_relay_diagnostic_records_only_known_codes`
+  - 분류: E2E 계층에서 순수 allowlist 세부 규칙을 세 번 반복 검증.
+  - 조치: 전체 알려진 오류 코드 14개와 비신뢰 문자열 거부를 빠른 단위 테스트에서 검증한다.
+    전체 그래프에는 비신뢰 relay 오류가 원문을 로그에 남기지 않는 대표 경로 한 개를 유지한다.
+  - 남은 검증: `test_relay_error_code_allowlist_rejects_untrusted_text`와
+    `test_relay_diagnostic_redacts_untrusted_error_text`.
+- `tests/test_navigation_progress.py::test_semantic_change_in_same_window_accepts_navigation`
+  - 분류: `navigation_state`의 여섯 입력 변형을 전체 업무 그래프에서 반복 검증.
+  - 조치: 값, 이름, 라벨, enabled, 계층, 새 콘텐츠 여섯 변형은 `navigation_state` 단위에서
+    모두 검증하고, 새 콘텐츠 대표 변형 하나만 전체 그래프에서 진행으로 받아들이는지 확인한다.
+  - 남은 검증: `test_navigation_state_tracks_each_same_window_semantic_change`와 대표 E2E
+    `test_semantic_change_in_same_window_accepts_navigation`. 새 창 변화는 별도 E2E를 그대로 유지한다.
+
+### 검증과 효과
+
+- 관련 테스트: 변경 전 22개, 변경 후 17개. 검증하던 오류 코드와 의미 변경 종류는 줄지 않았다.
+- 관련 파일 평균: 기준선 24.695초, 변경 후 18.310초로 6.385초 감소했다.
+- 전체: 846 passed, JUnit 147.504초, pytest 149.75초.
+- 기준선 평균보다 40.69초, 단위 1 실행보다 30.66초 빠르다. 전체 시간에는 실행 간 변동이
+  있으므로 관련 파일의 직접 감소를 주 근거로 삼는다.
+- 기준선 대비 커버리지 하락 여부: 측정 불가. 모든 분기 입력은 단위 계층에 남고 각 경계의
+  대표 전체 그래프 경로도 유지된다.
