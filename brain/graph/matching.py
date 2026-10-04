@@ -913,13 +913,30 @@ def validate_match_plan(
                 inputs=brain.values,
             )
             item = item.model_copy(update={"source": source})
-            rebound_steps.append(
-                item.model_copy(update={"intent": "fill"})
-                if item.action == "fill"
+            if (
+                item.action == "fill"
                 and item.source is not None
                 and not item.source.startswith("credential.")
-                else item
-            )
+            ):
+                item = item.model_copy(update={"intent": "fill"})
+            elif item.action == "key" and item.intent == "fill" and item.source is None:
+                # A key press can expose or focus a field, but it cannot deliver a
+                # record value. Keep the model's grounded target and key while
+                # compiling the boundary as navigation. This also lets the screen
+                # fill contract carry the action as next_decision instead of
+                # rejecting it as a hidden single-field write.
+                item = item.model_copy(update={"intent": "navigate"})
+                brain.log.append(
+                    "verify",
+                    payload={
+                        "check": "nonwriting_fill_intent_normalized",
+                        "action": "key",
+                        "keys": item.keys,
+                        "target": item.target,
+                        "intent": "navigate",
+                    },
+                )
+            rebound_steps.append(item)
         response = response.model_copy(update={"steps": rebound_steps})
         response = response.model_copy(
             update={

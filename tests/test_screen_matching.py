@@ -427,6 +427,41 @@ def test_generic_task_discards_prose_source_from_non_binding_click(tmp_path, rec
     assert brain.visual_proposal.steps[0].source is None
 
 
+def test_generic_task_treats_key_to_expose_input_as_navigation(tmp_path, record):
+    meaning = fixture()[-1]
+    task_response = response(meaning, procedure_step="Expose the next task input")
+    task_response["steps"][0].update(
+        action="key",
+        intent="fill",
+        source=None,
+        keys="tab",
+        point=None,
+    )
+    task_response["evidence"] = [{"field": "hbl_no", "target": meaning.controls[0].id}]
+    brain, *_ = setup_brain(tmp_path, record, [task_response])
+    brain.task_instruction = TaskInstruction.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    brain.procedure = None
+    brain.phase = "task"
+
+    brain._observe()
+
+    assert brain.visual_proposal.steps[0].intent == "navigate"
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain.decision.intent == "navigate"
+    assert brain.decision.action.type == "key"
+    assert brain.decision.action.keys == "tab"
+    event = next(
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "nonwriting_fill_intent_normalized"
+    )
+    assert event.payload["intent"] == "navigate"
+
+
 def test_promoted_exact_visual_match_reuse_precedes_model_call(tmp_path, record):
     meaning = fixture()[-1]
     cache_path = tmp_path / "visual-match.json"
