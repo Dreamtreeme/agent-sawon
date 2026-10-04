@@ -96,6 +96,30 @@ def test_label_is_never_promoted_to_input():
         ground_meanings(meaning, markers, blocks)
 
 
+def test_unsupported_ocr_structure_is_kept_as_text_without_dropping_child_control():
+    blocks = [OcrBlock(id=8, text="Registration window", bbox=(10, 10, 120, 20), confidence=1)]
+    markers = [
+        Marker(id=1, bbox=blocks[0].bbox, source="ocr", text_ids=(8,), confidence=1),
+        Marker(id=2, bbox=(20, 50, 200, 30), source="pixel_rectangle", confidence=1),
+    ]
+    meaning = SemanticDetection.model_validate(
+        {
+            "controls": [
+                {"id": 1, "role": "window", "text_ids": [8], "confidence": 1},
+                {"id": 2, "role": "edit", "parent_id": 1, "confidence": 1},
+            ]
+        }
+    )
+
+    grounded = ground_meanings(meaning, markers, blocks)
+    scene = bind_scene(wire(), blocks, grounded)
+
+    assert [element.role for element in scene.elements] == ["edit", "text"]
+    assert scene.elements[0].parent_ref is None
+    assert "unsupported_structural_role_omitted:1:window" in scene.uncertainties
+    assert "decorative_parent_omitted:2:1" in scene.uncertainties
+
+
 def test_model_led_semantics_accepts_ocr_input_evidence():
     blocks, _, markers, _ = fixture()
     value = next(marker for marker in markers if marker.source == "ocr")

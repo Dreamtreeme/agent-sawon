@@ -179,20 +179,44 @@ def ground_meanings(
     by_id = {m.id: m for m in markers}
     if len(by_id) != len(markers):
         raise ValueError("duplicate_marker_id")
+    semantic_ids = {meaning.id for meaning in meanings.controls}
+    omitted_structures = {
+        meaning.id
+        for meaning in meanings.controls
+        if meaning.id in by_id
+        and meaning.role in {"table", "group", "window"}
+        and not marker_role_allowed(
+            by_id[meaning.id].source,
+            meaning.role,
+            allow_ocr_inputs=allow_ocr_inputs,
+        )
+    }
+    seen: set[int] = set()
     used: set[int] = set()
     controls = []
     uncertainties = list(meanings.uncertainties)
     for meaning in meanings.controls:
-        if meaning.id not in by_id or meaning.id in used:
+        if meaning.id not in by_id or meaning.id in seen:
             raise ValueError("unknown_or_duplicate_marker_id")
-        used.add(meaning.id)
+        seen.add(meaning.id)
         marker = by_id[meaning.id]
+        if meaning.id in omitted_structures:
+            uncertainties.append(f"unsupported_structural_role_omitted:{meaning.id}:{meaning.role}")
+            continue
+        used.add(meaning.id)
         if not marker_role_allowed(marker.source, meaning.role, allow_ocr_inputs=allow_ocr_inputs):
             raise ValueError(
                 "ocr_group_is_not_input_or_table_extent"
                 if marker.source == "ocr_group"
                 else "ocr_text_is_not_control_extent"
             )
+        if meaning.parent_id is not None and (
+            meaning.parent_id in omitted_structures or meaning.parent_id not in semantic_ids
+        ):
+            if meaning.role in {"row", "cell"}:
+                raise ValueError("invalid_visual_parent_bounds")
+            uncertainties.append(f"decorative_parent_omitted:{meaning.id}:{meaning.parent_id}")
+            meaning = meaning.model_copy(update={"parent_id": None})
         if meaning.role in {"edit", "combobox"} and nested_rectangle_count(marker, markers) >= 2:
             raise ValueError("nested_rectangle_container_is_not_input")
         # Literal value evidence is constrained to the measured box. OCR markers
