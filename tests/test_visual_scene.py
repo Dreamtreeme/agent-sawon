@@ -279,6 +279,15 @@ def test_table_rows_and_cells_preserve_ocr_grounded_hierarchy():
     result = bind_scene(wire(), blocks, uncertain)
     assert not result.elements[0].enabled and result.uncertainties
 
+    # A current table-level action can use row OCR directly without requiring
+    # the same row to be duplicated as a separately executable control.
+    text_grounded = detection.model_copy(
+        update={"controls": [detection.controls[0].model_copy(update={"text_ids": [0]})]}
+    )
+    result = bind_scene(wire(), blocks, text_grounded)
+    assert result.elements[0].enabled
+    assert result.elements[0].value == "AB12"
+
 
 def test_provider_schema_is_compact_but_local_limits_remain():
     import json

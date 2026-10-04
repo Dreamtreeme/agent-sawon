@@ -251,10 +251,15 @@ def bind_scene(
                 for other in detection.controls
                 if other.parent_id == control.id and other.role == "row"
             ]
+            # A table action does not require a separately executable row when
+            # the semantic result already binds current OCR row values to the
+            # table.  Requiring both representations disabled a confidently
+            # grounded result grid before a harmless keyboard navigation action.
+            has_row_evidence = bool(rows or control.text_ids)
             if (
                 control.table_state not in {"empty", "rows"}
                 or (control.table_state == "empty" and rows)
-                or (control.table_state == "rows" and not rows)
+                or (control.table_state == "rows" and not has_row_evidence)
             ):
                 uncertain = True
         if uncertain:
