@@ -2025,7 +2025,7 @@ class Brain:
             if self.settings.screen_matching and self.phase == "final_query":
                 self.saved_evidence.begin(str(self.observation.obs_id))
                 self.review = None
-        if decision.intent == "save" and self.phase != "task":
+        if decision.intent == "save":
             self.save_issued = True
             self.phase = "save_result"
             self.query_submitted = self.query_value_verified = False

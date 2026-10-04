@@ -182,6 +182,40 @@ def text_choice(field, ref):
     return {"type": "set_text", "ref": ref, "source": field}
 
 
+def test_generic_task_save_enters_shared_save_review(tmp_path, record):
+    relay = FakeRelay(record)
+    relay.mode = "editor"
+    log = RunLog(tmp_path, case_id=record.case_id, agent_id="brain-test")
+    model = ScriptedModel(log, [])
+    brain = Brain(
+        record=record,
+        goal="Register a shipment",
+        relay=relay,
+        model=model,
+        settings=BrainSettings(),
+        case_dir=tmp_path,
+        run_log=log,
+    )
+    brain.phase = "task"
+    brain.observation = relay.observe()
+    proposed = Decision.model_validate(
+        decision(intent="save", kind="editor", action={"type": "click", "ref": "e7"})
+    )
+    assert proposed.action is not None
+    wire_action = brain._wire_action(proposed.action, proposed)
+
+    brain._accept_dispatched_action(
+        wire_action,
+        proposed,
+        proposed.action,
+        progress_scope="task:task-action:0",
+        point_refined=False,
+    )
+
+    assert brain.save_issued
+    assert brain.phase == "save_result"
+
+
 class ScriptedModel(MeasuredModelClient):
     def __init__(self, log, decisions, *, price=Decimal("0"), unknown=False):
         super().__init__(provider="fake", model="fixture", run_log=log)
