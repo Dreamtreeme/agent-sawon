@@ -150,6 +150,15 @@ def contains(outer: tuple, inner: tuple, margin: int = 2) -> bool:
     )
 
 
+def mostly_contains(outer: tuple, inner: tuple, minimum: float = 0.95) -> bool:
+    """Allow small independent-detector edge jitter in a structural parent relation."""
+
+    x, y, w, h = outer
+    a, b, c, d = inner
+    intersection = max(0, min(x + w, a + c) - max(x, a)) * max(0, min(y + h, b + d) - max(y, b))
+    return intersection / max(1, c * d) >= minimum
+
+
 def overlap(left, right) -> float:
     x, y, w, h = left
     a, b, c, d = right
@@ -233,7 +242,7 @@ def bind_scene(
             raise ValueError("value_outside_visual_control")
         if control.parent_id is not None:
             parent = controls.get(control.parent_id)
-            if parent is None or not contains(parent.bbox, control.bbox):
+            if parent is None or not mostly_contains(parent.bbox, control.bbox):
                 raise ValueError("invalid_visual_parent_bounds")
         duplicate = (
             sum(

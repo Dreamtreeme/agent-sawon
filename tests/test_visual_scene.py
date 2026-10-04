@@ -172,6 +172,41 @@ def test_invalid_detector_evidence_fails_closed(update, reason):
         bind_scene(wire(), blocks, Detection(controls=[control]))
 
 
+def test_structural_parent_allows_small_independent_detector_edge_jitter():
+    detection = Detection(
+        controls=[
+            VisualControl(
+                id=0,
+                role="table",
+                bbox=[10, 10, 380, 100],
+                confidence=0.99,
+                table_state="rows",
+            ),
+            VisualControl(
+                id=1,
+                role="header",
+                bbox=[293, 20, 100, 20],
+                confidence=0.99,
+                parent_id=0,
+            ),
+        ]
+    )
+
+    result = bind_scene(wire(), [], detection)
+    assert result.elements[1].parent_ref == result.elements[0].ref
+
+    invalid = detection.model_copy(
+        update={
+            "controls": [
+                detection.controls[0],
+                detection.controls[1].model_copy(update={"bbox": [210, 20, 190, 20]}),
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="parent_bounds"):
+        bind_scene(wire(), [], invalid)
+
+
 def test_duplicate_targets_are_both_disabled():
     blocks, detection = scene()
     controls = [detection.controls[0], detection.controls[0].model_copy(update={"id": 1})]
