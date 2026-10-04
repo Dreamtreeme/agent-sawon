@@ -10,6 +10,10 @@
 | `test_*` 함수 | 531 | 532 | +1 |
 | pytest 3회 평균 | 190.44초 | 160.02초 | -30.42초 (-15.98%) |
 | JUnit 3회 평균 | 189.26초 | 159.16초 | -30.10초 (-15.90%) |
+| 전체 커버리지 | 87.63% | 87.63% | 0.00%p |
+| 문장 커버리지 | 90.24% | 90.24% | 0.00%p |
+| 분기 커버리지 | 80.14% | 80.14% | 0.00%p |
+| 변경 모듈 변이 점수 | 0% (0/20 탐지) | 65% (13/20 탐지) | +65%p |
 | 실패 | 0/3회 | 0/3회 | 변화 없음 |
 | flaky | 0 | 0 | 변화 없음 |
 
@@ -37,12 +41,17 @@
 - 정확히 같은 AST 본문, 실제 assertion 없는 테스트, flaky 테스트, 폐기 기능 테스트는 없었다.
 - 삭제 근거가 부족한 후보는 `review.md`의 보류 목록에 남겼다.
 
-## 측정 제한
+## 커버리지와 변이 검사
 
-- coverage와 pytest-cov가 로컬 환경에 없어 커버리지를 측정하지 못했다.
-- mutmut와 cosmic-ray가 로컬 환경에 없어 변이 점수를 측정하지 못했다.
-- 외부 네트워크 금지 규칙에 따라 도구를 설치하지 않았다.
-- 이 제한 때문에 coverage 또는 변이 점수로 판정해야만 하는 후보는 삭제하지 않았다.
+- 사용자의 설치 승인 후 프로젝트 가상환경에 `coverage` 7.16.2, `pytest-cov` 7.1.0,
+  `mutmut` 3.8.0, `cosmic-ray` 8.7.0을 로컬 설치했다.
+- 정리 전후 모두 8,741문장 중 7,888줄, 3,042개 분기 중 2,438개를 실행했다. 누락 문장
+  853줄과 누락 분기 604개도 동일했다.
+- 변이 검사는 검증 계층을 바꾼 `brain/observe/progress.py`와
+  `tests/test_navigation_progress.py` 조합으로 한정했다. 동일한 변이 20개를 정리 전후에
+  적용했고, 탐지 수는 0개에서 13개로 증가했다.
+- `mutmut` 3.8.0은 네이티브 Windows 실행을 거부하므로 실제 비교 실행에는 Cosmic Ray를
+  사용했다. 전체 저장소 변이 검사는 범위와 시간이 과도해 실행하지 않았다.
 
 ## 검증 명령
 
@@ -51,8 +60,10 @@ Python 3.13에 저장소 가상환경의 site-packages, bench `sawon_interfaces`
 
 ```powershell
 python -m pytest -q --junitxml=<temporary-path>
+python -m pytest -q --cov=brain --cov=models --cov=pipeline --cov-branch
+cosmic-ray baseline <config>
+cosmic-ray init <config> <session>
+cosmic-ray exec <config> <session>
 python -m ruff check .
 python -m ruff format --check .
 ```
-
-외부 네트워크 명령은 실행하지 않았다.
