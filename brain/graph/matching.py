@@ -243,7 +243,17 @@ class ScreenPlan(MethodChoice):
     expected_result: str = Field(default="", max_length=240)
 
 
-PLAN_RULES = """Use the supplied grounded screen interpretation as immutable evidence.
+SCREEN_BOUNDARY_BATCH_RULES = """
+Return exactly one CURRENT-screen action boundary. A login boundary is one atomic batch: fill
+every remaining credential source into its grounded input, then click the grounded login command
+as the final step. Credential fills without that final login click are incomplete. Other valid
+batches are direct business fills only, same-intent navigation only, or consecutive option-row and
+confirmation clicks. Do not mix unrelated boundaries.
+"""
+
+
+PLAN_RULES = (
+    """Use the supplied grounded screen interpretation as immutable evidence.
 Choose the current procedure step and actions, but do not reclassify controls or invent IDs.
 Follow the user-taught procedure memo in order. Its goal, completion, field_scope and prerequisites,
 together with the notebook, are authoritative. The view is a semantic hint, not an instruction to
@@ -253,11 +263,11 @@ the later step can be grounded now; visible fields alone do not authorize an unr
 Every click/double_click must include the exact original-image point inside its target marker.
 When field-bound navigation opens a downstream select_option step, evidence MUST map each
 active field_scope key to its CURRENT edit/combobox before navigation, even when it is empty.
-Return one screen-boundary action batch: direct fills only, login credentials plus login,
-same-intent navigation clicks, or consecutive select_option row/confirmation clicks. Never mix
-fill/search with select_option when the matching result row is already visible.
+Never mix fill/search with select_option when the matching result row is already visible.
 Return only the task plan fields in the schema. Never return control roles or relationships.
 """
+    + SCREEN_BOUNDARY_BATCH_RULES
+)
 
 TASK_INPUT_RULES = """
 Distinguish field captions and column headers from the editable areas they name.
@@ -291,6 +301,7 @@ Every referenced marker must already exist in grounded_interpretation.controls. 
 past-row evidence that is not needed for this CURRENT action or completion decision.
 """
     + TASK_INPUT_RULES
+    + SCREEN_BOUNDARY_BATCH_RULES
 )
 
 TARGET_GROUNDING_RULES = """Ground only the listed action target markers on the CURRENT image.
@@ -887,8 +898,25 @@ _REPLANNABLE_MATCH_ERRORS = {
     "field_bound_navigation_evidence_required",
     "field_bound_navigation_evidence_not_input",
     "screen_match_field_outside_procedure_scope",
+    "screen_match_login_batch_incomplete",
     "screen_match_mixed_boundary_actions",
 }
+
+
+def _is_login_batch(steps: list[MatchAction]) -> bool:
+    """Return whether steps form the single login boundary accepted by the executor."""
+
+    return (
+        len(steps) >= 2
+        and steps[-1].intent == "login"
+        and steps[-1].action == "click"
+        and all(
+            action.intent == "credential"
+            and action.action == "fill"
+            and (action.source or "").startswith("credential.")
+            for action in steps[:-1]
+        )
+    )
 
 
 def _same_turn_evidence_unlocks_save(response: ScreenMatch, brain) -> bool:
@@ -1039,11 +1067,20 @@ def validate_match_plan(
             for item in response.completion_evidence
         ):
             raise ValueError("screen_match_task_completion_condition_unknown")
+    if any(action.intent == "credential" for action in response.steps) and not _is_login_batch(
+        response.steps
+    ):
+        raise ValueError("screen_match_login_batch_incomplete")
+    if _is_login_batch(response.steps):
+        expected_credentials = set(policy.facts.remaining_credentials)
+        planned_credentials = {
+            action.source for action in response.steps[:-1] if action.source is not None
+        }
+        if expected_credentials and planned_credentials != expected_credentials:
+            raise ValueError("screen_match_login_batch_incomplete")
     if len(response.steps) > 1:
         intents = {action.intent for action in response.steps}
-        login_batch = response.steps[-1].intent == "login" and all(
-            action.intent == "credential" for action in response.steps[:-1]
-        )
+        login_batch = _is_login_batch(response.steps)
         direct_fill_batch = intents == {"fill"}
         selection_batch = intents == {"select_option"} and all(
             action.action == "click" for action in response.steps
@@ -1469,11 +1506,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         # A novel combined response can have sound screen semantics but choose an
         # ineligible task step. Preserve the grounded controls and correct only the
         # action once; semantic/marker failures are handled by VisualPerception.
-        if (
-            brain.matching_model is not None
-            or grounded_interpretation is not None
-            or str(error) not in _REPLANNABLE_MATCH_ERRORS
-        ):
+        if brain.matching_model is not None or str(error) not in _REPLANNABLE_MATCH_ERRORS:
             raise
         interpretation = SemanticDetection.model_validate(
             {
@@ -1652,14 +1685,12 @@ def compile_match(response: ScreenMatch, observation, schema):
     if response.operation != "act" and response.steps:
         raise ValueError("screen_match_proof_with_actions")
     if credentials:
-        commands = [s for s in response.steps if s.action != "fill"]
-        if len(credentials) != len(fills) or len(commands) != 1 or commands[0].intent != "login":
+        if len(credentials) != len(fills) or not _is_login_batch(response.steps):
             raise ValueError("screen_match_invalid_login_batch")
-        if response.steps[-1] != commands[0] or commands[0].action != "click":
-            raise ValueError("screen_match_invalid_login_order")
+        command = response.steps[-1]
         data = {
             "fields": [{"source": s.source, "ref": ref(s.target)} for s in fills],
-            "login_ref": ref(commands[0].target),
+            "login_ref": ref(command.target),
             "next_decision": None,
         }
     elif (

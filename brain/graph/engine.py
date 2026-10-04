@@ -392,6 +392,23 @@ class Brain:
         return response
 
     def _detect_visual(self, request: SemanticRequest) -> SemanticDetection:
+        if self.settings.screen_matching and self.settings.separate_observation_decision:
+            screen = dict(request.screen)
+            response = self.methods.apply(screen) if "correction" not in screen else None
+            if response is not None:
+                # Reusable methods already carry grounded CURRENT-scene meaning and
+                # an action batch. Preserve them for selection instead of paying for
+                # a semantic pass that the method would immediately supersede.
+                self.visual_match_candidate = None
+                self.visual_proposal = response
+                atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
+                return SemanticDetection.model_validate(
+                    {
+                        key: value
+                        for key, value in response.model_dump().items()
+                        if key in SemanticDetection.model_fields
+                    }
+                )
         if self.settings.screen_matching and not self.settings.separate_observation_decision:
             screen = dict(request.screen)
             if request.correction is not None:
@@ -2564,13 +2581,14 @@ class Brain:
             return self._finish("stopped", "save_result_unknown")
         if review.result == "ready_for_query":
             # Permission to verify persistence, never evidence that saving succeeded.
-            self.phase = "final_query"
-            # The save result can itself be the returned query screen. Reconcile
-            # those current pixels under the new phase before accepting the
-            # reviewer's conditionally proposed next action.
-            self._apply_observation_reconciliation(self.observation)
+            self.phase = "task" if self.task_instruction is not None else "final_query"
+            if self.phase == "final_query":
+                # The save result can itself be the returned query screen. Reconcile
+                # those current pixels under the new legacy phase before accepting
+                # the reviewer's conditionally proposed next action.
+                self._apply_observation_reconciliation(self.observation)
         elif review.result == "rejected":
-            self.phase = "enter"
+            self.phase = "task" if self.task_instruction is not None else "enter"
             self.save_issued = False
             self.query_submitted = self.query_value_verified = False
             self.query_descriptor = self.query_window_handle = None

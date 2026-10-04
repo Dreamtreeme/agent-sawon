@@ -212,6 +212,32 @@ def test_observation_semantics_are_reconciled_before_a_separate_task_plan(tmp_pa
     )
 
 
+def test_separate_planning_corrects_only_the_plan_from_the_same_observation(tmp_path, record):
+    meaning = fixture()[-1].model_copy(update={"screen_kind": "query"})
+    wrong = response(meaning, procedure_step="save-entry")
+    corrected = response(meaning)
+    brain, model, _, ocr, detector, _ = setup_brain(
+        tmp_path,
+        record,
+        [meaning.model_dump(), wrong, corrected],
+        separate_observation_decision=True,
+    )
+
+    brain._observe()
+    assert brain._select_node({}) == {"next": "review"}
+
+    assert len(model.prompts) == 3
+    assert model.prompts[0].startswith(DETECTION_RULES)
+    assert model.prompts[1].startswith(PLAN_RULES)
+    assert model.prompts[2].startswith(PLAN_RULES)
+    correction = json.loads(model.prompts[2][len(PLAN_RULES) :])["correction"]
+    assert correction["error"] == "screen_match_procedure_mismatch"
+    assert ocr.calls == detector.calls == 1
+    assert any(
+        event.payload.get("check") == "combined_action_corrected" for event in brain.log.read_all()
+    )
+
+
 def test_act_omits_unbound_incidental_evidence_without_paid_grounding(tmp_path, record):
     meaning = fixture()[-1]
     data = response(meaning)
@@ -1120,6 +1146,8 @@ def test_login_and_record_arrays_compile_to_existing_batches(tmp_path, record):
     )
     plan = compile_match(login, scene, LoginScreenPlan)
     assert len(plan.fields) == 2 and plan.login_ref == prefix + "3"
+    with pytest.raises(ValueError, match="invalid_login_batch"):
+        compile_match(login.model_copy(update={"steps": login.steps[:-1]}), scene, LoginScreenPlan)
     fields = ScreenMatch(
         screen_kind="editor",
         controls=[],

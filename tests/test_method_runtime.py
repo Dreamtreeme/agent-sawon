@@ -55,7 +55,14 @@ def catalog(label="Customer", shift=0):
     return blocks, boxes, screen, response
 
 
-def setup(tmp_path, *, changed_label=False, fail_second=False, promotion_path=None):
+def setup(
+    tmp_path,
+    *,
+    changed_label=False,
+    fail_second=False,
+    promotion_path=None,
+    separate_observation_decision=False,
+):
     task = TaskInstruction(
         name="Business entry",
         objective="Enter supplied business data",
@@ -135,9 +142,7 @@ def setup(tmp_path, *, changed_label=False, fail_second=False, promotion_path=No
             task_path=task_path,
             perception_mode="visual_only",
             screen_matching=True,
-            # These tests isolate the legacy combined method-binding adapter.
-            # Separate observation/decision behavior has its own graph test.
-            separate_observation_decision=False,
+            separate_observation_decision=separate_observation_decision,
             visual_screen_fill=True,
             visual_model_led_semantics=True,
             visual_model_only_review=True,
@@ -175,8 +180,13 @@ def setup(tmp_path, *, changed_label=False, fail_second=False, promotion_path=No
 
 
 @pytest.mark.parametrize("observe_again", [False, True])
-def test_learned_method_uses_current_scene_and_executor_without_model(tmp_path, observe_again):
-    brain, model, relay = setup(tmp_path)
+@pytest.mark.parametrize("separate_observation_decision", [False, True])
+def test_learned_method_uses_current_scene_and_executor_without_model(
+    tmp_path, observe_again, separate_observation_decision
+):
+    brain, model, relay = setup(
+        tmp_path, separate_observation_decision=separate_observation_decision
+    )
     brain._observe()
     first_id = brain.observation.obs_id
     if observe_again:

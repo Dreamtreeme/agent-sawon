@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from sawon_interfaces import ActionResult, Observation, ShipmentRecord, UIElement, WindowInfo
 
 from brain.graph.engine import Brain, GuardStop, field_matches, values_for
+from brain.graph.save_review import SaveReviewResponse
 from brain.graph.schemas import Decision, Plan
 from brain.observe import redact, summarize
 from brain.observe.rows import row_refs
@@ -214,6 +215,41 @@ def test_generic_task_save_enters_shared_save_review(tmp_path, record):
 
     assert brain.save_issued
     assert brain.phase == "save_result"
+
+
+@pytest.mark.parametrize(
+    ("generic_task", "expected_phase"), [(True, "task"), (False, "final_query")]
+)
+def test_save_review_returns_to_the_owning_workflow(tmp_path, record, generic_task, expected_phase):
+    relay = FakeRelay(record)
+    relay.mode = "editor"
+    log = RunLog(tmp_path, case_id=record.case_id, agent_id="brain-test")
+    brain = Brain(
+        record=record,
+        goal="Register a shipment",
+        relay=relay,
+        model=ScriptedModel(log, []),
+        settings=BrainSettings(),
+        case_dir=tmp_path,
+        run_log=log,
+    )
+    brain.phase = "save_result"
+    brain.task_instruction = object() if generic_task else None
+    brain.observation = relay.observe()
+    evidence_ref = next(item.ref for item in brain.observation.elements if item.name)
+    review = SaveReviewResponse.model_validate(
+        {
+            "result": "ready_for_query",
+            "evidence_refs": [evidence_ref],
+            "repair_fields": [],
+            "next_decision": {
+                "decision": decision(operation="stop", intent="stop", kind="editor", action=None)
+            },
+        }
+    )
+
+    assert brain._apply_save_review(review) is None
+    assert brain.phase == expected_phase
 
 
 class ScriptedModel(MeasuredModelClient):

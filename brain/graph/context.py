@@ -204,6 +204,15 @@ def execution_context(
         "conditional": proposal is not actual,
         "final_required_fields": sorted(brain.values) if brain.phase == "final_query" else [],
     }
+    if actual.facts.remaining_credentials:
+        contract["allowed_action_batches"] = [
+            {
+                "kind": "login",
+                "credential_sources": list(actual.facts.remaining_credentials),
+                "final_intent": "login",
+                "atomic_screen_boundary": True,
+            }
+        ]
     contract["remaining_inputs" if actual.facts.phase == "task" else "remaining_fields"] = (
         proposal_prompt["remaining_fields"]
     )
