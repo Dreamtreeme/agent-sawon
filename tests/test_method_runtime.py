@@ -503,3 +503,45 @@ def test_prompt_context_keeps_only_current_method_and_procedure_window(tmp_path)
         "group-third",
     ]
     assert len(memory["recent_executions"]) == 2
+
+
+def test_generic_success_trace_becomes_model_free_execution_graph(tmp_path):
+    brain, model, _ = setup(tmp_path)
+    atomic_write_json(brain.methods.library.path, MethodDocument())
+    _, _, screen, response = catalog(shift=20)
+    first = response.model_copy(
+        update={
+            "purpose": "Enter the visible customer",
+            "controls": [response.controls[0]],
+            "steps": [response.steps[0]],
+        }
+    )
+    second = response.model_copy(
+        update={
+            "purpose": "Enter the visible reference",
+            "controls": [response.controls[1]],
+            "steps": [response.steps[1]],
+        }
+    )
+    brain.observation = wire()
+    for item in (first, second):
+        brain.methods.remember(screen, item)
+        assert brain.methods.pending is not None
+        brain.methods.delivered({"next": "verify"})
+
+    assert len(brain.methods.staged) == 1
+    assert brain.methods.finish(success=True) == 1
+    method = brain.methods.library.methods()[0]
+    assert [group.trace_index for group in method.action_groups] == [0, 1]
+    assert method.action_groups[0].predecessor_group_ids == []
+    assert method.action_groups[1].predecessor_group_ids == [method.action_groups[0].id]
+
+    brain.methods.used.clear()
+    first_replay = brain.methods.apply(screen)
+    assert first_replay is not None
+    assert first_replay.purpose == "Enter the visible customer"
+    brain.methods.delivered({"next": "verify"})
+    second_replay = brain.methods.apply(screen)
+    assert second_replay is not None
+    assert second_replay.purpose == "Enter the visible reference"
+    assert model.prompts == []

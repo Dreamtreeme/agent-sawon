@@ -1,4 +1,8 @@
+import pytest
+from pydantic import ValidationError
+
 from brain.cache.methods import (
+    LearnedMethod,
     MethodLibrary,
     MethodSlot,
     compile_method_candidate,
@@ -83,6 +87,15 @@ def test_learned_method_rebinds_new_values_keys_and_current_geometry(tmp_path):
     assert "bbox" not in text
     assert restored.catalog("Prepare a delivery")[0]["id"] == "find-party"
     assert restored.catalog("Unrelated task") == []
+
+
+def test_trace_graph_rejects_unknown_predecessor():
+    payload = learned().model_dump(mode="json")
+    payload["action_groups"][0]["trace_index"] = 0
+    payload["action_groups"][0]["predecessor_group_ids"] = ["missing-group"]
+
+    with pytest.raises(ValidationError, match="method_predecessor_unknown"):
+        LearnedMethod.model_validate(payload)
 
 
 def test_local_variant_is_available_for_same_session_and_keeps_original(tmp_path):

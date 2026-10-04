@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import portalocker
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from brain.observe.values import field_matches, normalize
 from brain.runtime.storage import atomic_write_json
@@ -51,6 +51,8 @@ class MethodActionGroup(BaseModel):
     id: str
     purpose: str = ""
     taught_step_id: str | None = None
+    trace_index: int | None = Field(default=None, ge=0)
+    predecessor_group_ids: list[str] = Field(default_factory=list)
     context_anchors: list[str] = Field(default_factory=list)
     targets: list[MethodTarget] = Field(min_length=1)
     actions: list[MethodAction] = Field(min_length=1)
@@ -84,6 +86,25 @@ class LearnedMethod(BaseModel):
     completion: MethodCompletion | None = None
     source_transitions: list[str] = Field(default_factory=list)
     revision: int = Field(default=1, ge=1)
+
+    @model_validator(mode="after")
+    def valid_trace_graph(self):
+        group_ids = [group.id for group in self.action_groups]
+        if len(group_ids) != len(set(group_ids)):
+            raise ValueError("method_action_group_ids_must_be_unique")
+        indexes = [
+            group.trace_index for group in self.action_groups if group.trace_index is not None
+        ]
+        if len(indexes) != len(set(indexes)):
+            raise ValueError("method_trace_indexes_must_be_unique")
+        known = set(group_ids)
+        for group in self.action_groups:
+            predecessors = group.predecessor_group_ids
+            if len(predecessors) != len(set(predecessors)) or group.id in predecessors:
+                raise ValueError("method_predecessors_must_be_unique_and_not_self")
+            if not set(predecessors) <= known:
+                raise ValueError("method_predecessor_unknown")
+        return self
 
 
 class MethodDocument(BaseModel):
@@ -494,6 +515,8 @@ class MethodLibrary:
                         "id": group.id,
                         "purpose": group.purpose,
                         "taught_step_id": group.taught_step_id,
+                        "trace_index": group.trace_index,
+                        "predecessor_group_ids": group.predecessor_group_ids,
                         "context_anchors": group.context_anchors,
                     }
                     for group in method.action_groups

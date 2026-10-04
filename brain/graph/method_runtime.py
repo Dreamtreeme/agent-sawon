@@ -1,4 +1,4 @@
-"""Compile a successful taught run, then replay its screen-bound action groups."""
+"""Compile a successful run, then replay its current-screen-bound execution graph."""
 
 from __future__ import annotations
 
@@ -67,6 +67,8 @@ class MethodRuntime:
             {step.id: index for index, step in enumerate(task.procedure)} if task else {}
         )
         if not procedure_order:
+            if self._has_trace_graph(method):
+                return sorted(method.action_groups, key=lambda group: group.trace_index)
             return list(method.action_groups)
         delivered_order = {
             item["group_id"]: index
@@ -84,6 +86,46 @@ class MethodRuntime:
                 original_order[group.id],
             ),
         )
+
+    @staticmethod
+    def _has_trace_graph(method: LearnedMethod) -> bool:
+        return bool(method.action_groups) and all(
+            group.trace_index is not None for group in method.action_groups
+        )
+
+    def _compile_trace_graph(self, method: LearnedMethod) -> LearnedMethod:
+        """Turn the delivered successful path into a reusable execution graph."""
+
+        delivered = list(
+            dict.fromkeys(
+                item["group_id"]
+                for item in self.history
+                if item.get("method_id") == method.id
+                and item.get("status") == "delivered"
+                and item.get("group_id")
+            )
+        )
+        by_id = {group.id: group for group in method.action_groups}
+        order = [group_id for group_id in delivered if group_id in by_id]
+        # A graph represents one fully observed successful path. Historical
+        # variants that were not delivered in this run stay as variants; they
+        # must not be invented as later sequential steps.
+        if not order or set(order) != set(by_id):
+            return method
+        groups = []
+        previous = None
+        for index, group_id in enumerate(order):
+            group = by_id[group_id]
+            groups.append(
+                group.model_copy(
+                    update={
+                        "trace_index": index,
+                        "predecessor_group_ids": [] if previous is None else [previous],
+                    }
+                )
+            )
+            previous = group_id
+        return method.model_copy(update={"action_groups": groups})
 
     def _binding_values(self) -> dict[str, str]:
         """Expose credential source availability without exposing credential values."""
@@ -196,6 +238,8 @@ class MethodRuntime:
                             "id": group.id,
                             "purpose": group.purpose,
                             "taught_step_id": group.taught_step_id,
+                            "trace_index": group.trace_index,
+                            "predecessor_group_ids": group.predecessor_group_ids,
                             "context_anchors": group.context_anchors,
                         }
                         for group in remaining
@@ -224,7 +268,9 @@ class MethodRuntime:
         candidates = []
         completion_candidates = []
         for method in self.library.methods():
-            auto_replay = bool(task.procedure) and method.task_objective == task.objective
+            taught_replay = bool(task.procedure) and method.task_objective == task.objective
+            trace_replay = self._has_trace_graph(method) and method.task_objective == task.objective
+            auto_replay = taught_replay or trace_replay
             if method.id != self.active_method_id and not auto_replay:
                 continue
             mapping = self.bindings.get(method.id)
@@ -239,7 +285,19 @@ class MethodRuntime:
             ]
             # A compiled procedure is ordered. Never skip an unbindable step and
             # accidentally execute a later screen's action.
-            groups = remaining[:1] if auto_replay else remaining
+            if taught_replay:
+                groups = remaining[:1]
+            elif trace_replay:
+                groups = [
+                    group
+                    for group in remaining
+                    if all(
+                        (method.id, predecessor) in self.used
+                        for predecessor in group.predecessor_group_ids
+                    )
+                ]
+            else:
+                groups = remaining
             for group in groups:
                 if (method.id, group.id) in self.used:
                     continue
@@ -353,7 +411,7 @@ class MethodRuntime:
             return
         purpose = self.purpose or response.expected_result
         if previous is None:
-            identity = task.objective if task and task.procedure else purpose
+            identity = task.objective if task else purpose
             method_id = "method-" + hashlib.sha256(identity.encode()).hexdigest()[:16]
             slots = [
                 MethodSlot(name=source, description=source, source_key=source)
@@ -462,16 +520,18 @@ class MethodRuntime:
             candidates[method_id] = candidate.model_copy(
                 update={"action_groups": self._ordered_groups(candidate)}
             )
-        methods = [
-            compile_method_candidate(
+        methods = []
+        for method in candidates.values():
+            compiled = compile_method_candidate(
                 method,
                 {
                     **self.brain.values,
                     **{source: value for source, value in self.brain.credentials.items() if value},
                 },
             )
-            for method in candidates.values()
-        ]
+            if self.brain.task_instruction and not self.brain.task_instruction.procedure:
+                compiled = self._compile_trace_graph(compiled)
+            methods.append(compiled)
         promoted = 0
         promoted_methods = []
         installed_methods = []
