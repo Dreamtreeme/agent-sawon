@@ -309,6 +309,35 @@ def test_grounded_current_action_does_not_refine_for_future_hidden_input(tmp_pat
     assert event.payload["action_targets"] == [meaning.controls[0].id]
 
 
+def test_grounded_current_action_does_not_request_the_same_image_again(tmp_path, record):
+    meaning = fixture()[-1]
+    task_response = response(
+        meaning,
+        procedure_step="Scroll the current form to reveal later inputs",
+        needs_image=True,
+        uncertainties=["another task input is below the current viewport"],
+    )
+    brain, model, *_ = setup_brain(tmp_path, record, [task_response])
+    brain.task_instruction = TaskInstruction.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    brain.procedure = None
+    brain.phase = "task"
+
+    brain._observe()
+
+    assert brain.visual_proposal.needs_image is False
+    assert len(model.prompts) == 1
+    event = next(
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "nonblocking_image_request_omitted"
+    )
+    assert event.payload["action_targets"] == [meaning.controls[0].id]
+
+
 def test_generic_task_discards_prose_source_from_non_binding_click(tmp_path, record):
     meaning = fixture()[-1]
     task_response = response(meaning, procedure_step="Open the relevant work area")

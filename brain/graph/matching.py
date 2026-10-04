@@ -1004,6 +1004,25 @@ def omit_nonblocking_refinement(brain, response: ScreenMatch) -> ScreenMatch:
     return response.model_copy(update={"needs_refinement": False})
 
 
+def omit_nonblocking_image_request(brain, response: ScreenMatch) -> ScreenMatch:
+    """A grounded immediate action does not need another copy of the same image."""
+    if not response.needs_image or response.operation != "act" or not response.steps:
+        return response
+    control_ids = {control.id for control in response.controls}
+    action_targets = {step.target for step in response.steps}
+    if not action_targets <= control_ids:
+        return response
+    brain.log.append(
+        "verify",
+        payload={
+            "check": "nonblocking_image_request_omitted",
+            "action_targets": sorted(action_targets),
+            "reason": "current_action_controls_already_defined",
+        },
+    )
+    return response.model_copy(update={"needs_image": False})
+
+
 def exclude_current_navigation_step(brain, candidates: list[ProcedureStep]) -> list[ProcedureStep]:
     """Offer the successor while current-screen navigation verification is pending."""
     completed = None
@@ -1247,6 +1266,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         response = brain._call(prompt, ScreenMatch, page=page)
         atomic_write_json(brain.case_dir / "matching" / f"{uuid4().hex}-markers.json", response)
         response = local_response(response, screen)
+    response = omit_nonblocking_image_request(brain, response)
     if cache_hit is None:
         used_image = brain.matching_model is None or response.needs_image
     if response.needs_image:
@@ -1262,6 +1282,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         )
         atomic_write_json(brain.case_dir / "matching" / f"{uuid4().hex}-image.json", response)
         response = local_response(response, screen)
+        response = omit_nonblocking_image_request(brain, response)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
     if brain.task_instruction is not None:
