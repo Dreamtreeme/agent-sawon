@@ -1910,8 +1910,8 @@ class Brain:
                     )
                 )
                 if choice.source is not None:
-                    self.evidence_ledger.invalidate(choice.source, "input_requires_reread")
-                    invalidated.add(choice.source)
+                    if self.evidence_ledger.invalidate(choice.source, "input_requires_reread"):
+                        invalidated.add(choice.source)
                 for field in invalidated:
                     self.verified.pop(field, None)
                 if invalidated:

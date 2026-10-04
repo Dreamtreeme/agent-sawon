@@ -96,7 +96,7 @@ def test_label_is_never_promoted_to_input():
         ground_meanings(meaning, markers, blocks)
 
 
-def test_model_led_semantics_accepts_ocr_input_evidence():
+def test_model_led_semantics_accepts_only_focused_ocr_input_evidence():
     blocks, _, markers, _ = fixture()
     value = next(marker for marker in markers if marker.source == "ocr")
     meaning = SemanticDetection.model_validate(
@@ -107,6 +107,7 @@ def test_model_led_semantics_accepts_ocr_input_evidence():
                     "role": "edit",
                     "confidence": 1,
                     "text_ids": list(value.text_ids),
+                    "focused": True,
                 }
             ]
         }
@@ -119,6 +120,26 @@ def test_model_led_semantics_accepts_ocr_input_evidence():
     control = next(element for element in scene.elements if element.role == "edit")
     assert control.value == "Reference"
     assert control.bbox == blocks[0].bbox
+
+
+def test_model_led_semantics_rejects_unfocused_ocr_caption_as_input_extent():
+    blocks, _, markers, _ = fixture()
+    value = next(marker for marker in markers if marker.source == "ocr")
+    meaning = SemanticDetection.model_validate(
+        {
+            "controls": [
+                {
+                    "id": value.id,
+                    "role": "edit",
+                    "confidence": 1,
+                    "text_ids": list(value.text_ids),
+                    "focused": False,
+                }
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="ocr_text_is_not_control_extent"):
+        ground_meanings(meaning, markers, blocks, allow_ocr_inputs=True)
 
 
 def test_nested_rectangle_container_cannot_be_used_as_input_extent():
@@ -445,6 +466,69 @@ def test_perception_refines_only_after_basic_detection_reports_failure(
     assert event.payload["local_detector_ms"] == (
         (10000 if missing else 0) + (0 if on_rematch else 2000)
     )
+
+
+def test_failed_refinement_returns_navigation_semantics_to_decision_graph(tmp_path):
+    blocks, boxes, _, meaning = fixture()
+    blocks.append(OcrBlock(id=9, text="More", confidence=0.99, bbox=(10, 120, 60, 15)))
+    calls = []
+
+    class Detector(OmniParserDetector):
+        def read(self, page):
+            calls.append("full")
+            return boxes
+
+        def refine(self, page, regions):
+            calls.append("refine")
+            return []
+
+    class Relay:
+        def screenshot(self, observation, path):
+            path.parent.mkdir(parents=True)
+            Image.new("RGB", (400, 200), "white").save(path)
+            return path
+
+    class Ocr:
+        def read(self, page):
+            return blocks
+
+    requests = []
+
+    def interpret(request):
+        requests.append(request)
+        calls.append("meaning")
+        if len(requests) < 3:
+            return meaning.model_copy(
+                update={
+                    "controls": [],
+                    "uncertainties": ["required input extent missing"],
+                    "needs_refinement": True,
+                }
+            )
+        assert request.correction["error"] == "required_control_missing_after_refinement"
+        navigation = meaning.controls[0].model_copy(
+            update={"role": "group", "label_ids": [], "focused": False}
+        )
+        return meaning.model_copy(
+            update={
+                "controls": [navigation],
+                "uncertainties": ["required input extent missing"],
+                "needs_refinement": False,
+            }
+        )
+
+    perception = VisualPerception(
+        Relay(),
+        Ocr(),
+        tmp_path,
+        RunLog(tmp_path, case_id="refinement-recovery", agent_id="test"),
+        interpret,
+        detector=Detector(DetectorSettings(), RunLog(tmp_path, case_id="d", agent_id="test")),
+    )
+    scene = perception.observe(wire())
+    assert calls == ["full", "meaning", "refine", "meaning", "meaning"]
+    assert any(element.role == "group" for element in scene.elements)
+    assert "required input extent missing" in scene.uncertainties
 
 
 def test_same_screen_rematch_corrects_and_updates_cached_meaning_without_new_ocr(tmp_path):

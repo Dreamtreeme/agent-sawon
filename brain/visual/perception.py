@@ -418,7 +418,30 @@ class VisualPerception:
                 folder / f"meanings-attempt-{attempt}.json", meanings.model_dump(mode="json")
             )
             if meanings.needs_refinement:
-                if refinement_attempted or not isinstance(self.detector, OmniParserDetector):
+                if refinement_attempted:
+                    if attempt >= 2:
+                        raise VisualGroundingError("visual_required_control_missing")
+                    # A second request for the same missing extent means local
+                    # refinement found no executable surface.  Give semantics one
+                    # bounded chance to expose a CURRENT navigation/scroll
+                    # affordance so the decision graph can explore another view.
+                    # The perception layer still cannot invent or execute an action.
+                    request = replace(
+                        request,
+                        correction={
+                            "error": "required_control_missing_after_refinement",
+                            "instruction": (
+                                "Local refinement did not find the required control extent. "
+                                "Do not request the same refinement again and do not relabel OCR "
+                                "text as an input. Classify only grounded CURRENT controls, "
+                                "including a visible scroll or navigation affordance that could "
+                                "expose the missing control. Set needs_refinement=false; preserve "
+                                "the missing-control fact in uncertainties."
+                            ),
+                        },
+                    )
+                    continue
+                if not isinstance(self.detector, OmniParserDetector):
                     raise VisualGroundingError("visual_required_control_missing")
                 if not self.detector.settings.refinement_enabled:
                     raise VisualGroundingError("visual_required_control_missing")
