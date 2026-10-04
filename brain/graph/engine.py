@@ -1597,13 +1597,15 @@ class Brain:
                     self._record_verified_field(evidence.field, item)
 
     def _remember_model_task_evidence(self, response) -> None:
-        """Persist the screen model's direct-input evidence as task progress.
+        """Persist the screen model's current editor evidence as task progress.
 
         Model-only review intentionally avoids a second code value judge. The
         previous compiler also discarded evidence while creating screen batches,
-        so every task input stayed "remaining" forever. This ledger records only
-        model-grounded CURRENT direct inputs; it does not declare completion or
-        authorize an action.
+        so every task input stayed "remaining" forever. After entry, a detector
+        may retain the literal value only as OCR text even though its input border
+        is no longer classified. The model's field-to-marker mapping is still the
+        review decision; accepting that readable editor evidence does not make the
+        text writable, declare completion, or authorize an action.
         """
         if self.task_instruction is None or not self.settings.visual_model_only_review:
             return
@@ -1623,7 +1625,10 @@ class Brain:
                 deferred.append(evidence.field)
                 continue
             element = by_ref.get(prefix + str(evidence.target))
-            if element is None or element.role.casefold() not in {"edit", "combobox"}:
+            readable_roles = {"edit", "combobox"}
+            if response.screen_kind == "editor":
+                readable_roles.update({"text", "cell"})
+            if element is None or element.role.casefold() not in readable_roles:
                 continue
             superseded.extend(self._record_model_evidence(evidence.field, element))
             recorded.append(evidence.field)

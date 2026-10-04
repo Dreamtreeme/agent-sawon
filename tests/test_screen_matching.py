@@ -324,6 +324,49 @@ def test_model_only_generic_task_keeps_model_grounded_input_progress(tmp_path, r
     assert event.payload["fields"] == ["hbl_no"]
 
 
+def test_model_only_generic_task_keeps_model_mapped_editor_ocr_progress(tmp_path, record):
+    blocks, _, markers, _ = fixture()
+    literal = next(marker for marker in markers if marker.source == "ocr")
+    task_response = ScreenMatch.model_validate(
+        {
+            "screen_kind": "editor",
+            "procedure_step": "Observe the entered task value",
+            "controls": [
+                {
+                    "id": literal.id,
+                    "role": "text",
+                    "text_ids": [literal.id],
+                    "confidence": 1,
+                }
+            ],
+            "steps": [],
+            "operation": "stop",
+            "evidence": [{"field": "hbl_no", "target": literal.id}],
+        }
+    )
+    brain, *_ = setup_brain(tmp_path, record, [task_response.model_dump(mode="json")])
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    brain.task_instruction = TaskInstruction.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    brain.procedure = None
+    brain.phase = "task"
+
+    brain._observe()
+    assert brain._select_node({}) == {"next": "finish"}
+
+    assert "hbl_no" in brain.verified
+    assert brain.observation.elements[0].role == "text"
+    event = next(
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "model_task_evidence_recorded"
+    )
+    assert event.payload["fields"] == ["hbl_no"]
+
+
 def test_pending_fill_cannot_claim_its_own_pre_action_evidence(tmp_path, record):
     meaning = fixture()[-1]
     task_response = response(meaning, procedure_step="Enter the visible task input")
