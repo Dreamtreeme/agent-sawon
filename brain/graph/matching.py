@@ -6,7 +6,7 @@ import json
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from brain.cache import visual_match_key
 from brain.input_binding import MODEL_INPUTS_NAME, normalize_action_source, resolve_input_key
@@ -112,7 +112,22 @@ class MatchAction(BaseModel):
         "select_option",
         "cancel",
     ]
-    keys: str | None = None
+    keys: (
+        Literal[
+            "enter",
+            "tab",
+            "shift+tab",
+            "esc",
+            "down",
+            "up",
+            "space",
+            "pagedown",
+            "pageup",
+            "home",
+            "end",
+        ]
+        | None
+    ) = None
     point: list[float] | None = Field(
         default=None,
         min_length=2,
@@ -124,8 +139,18 @@ class MatchAction(BaseModel):
         ),
     )
 
+    @field_validator("keys", mode="before")
+    @classmethod
+    def normalize_keys(cls, value):
+        """Canonicalize provider casing before compiling to the wire action."""
+        if not isinstance(value, str):
+            return value
+        return value.strip().casefold().replace(" ", "").replace("_", "")
+
     @model_validator(mode="after")
     def explicit_visual_click_point(self):
+        if self.action == "key" and self.keys is None:
+            raise ValueError("key_action_requires_keys")
         if self.action in {"click", "double_click"}:
             if self.point is None:
                 raise ValueError("visual_click_point_required")

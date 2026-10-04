@@ -824,6 +824,23 @@ def test_login_and_record_arrays_compile_to_existing_batches():
         screen_kind="query", controls=[], procedure_step="check-duplicate", operation="stop"
     )
     assert compile_match(stop, scene, DecisionResponse).to_decision().operation == "stop"
+    # Provider key names are case-insensitive at the screen-matching boundary;
+    # the executor receives its canonical wire spelling.
+    scroll = ScreenMatch(
+        screen_kind="editor",
+        controls=[],
+        procedure_step="show-more-fields",
+        steps=[
+            {
+                "target": 3,
+                "action": "key",
+                "intent": "navigate",
+                "keys": "PAGEDOWN",
+            }
+        ],
+    )
+    scroll_decision = compile_match(scroll, scene, ScreenFillPlan).next_decision.to_decision()
+    assert scroll_decision.action.keys == "pagedown"
 
 
 @pytest.mark.parametrize(
