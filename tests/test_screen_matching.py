@@ -203,12 +203,14 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(t
     assert state["taught_procedure_progress"]["completed_step_ids"] == []
     assert state["notebook"]["inputs"] == brain.values
     assert state["notebook"]["verified_inputs"] == ["hbl_no"]
-    assert state["notebook"]["remaining_inputs"] == sorted(brain.values)
+    assert state["notebook"]["available_inputs"] == sorted(brain.values)
+    assert state["notebook"]["remaining_inputs"] == sorted(set(brain.values) - {"hbl_no"})
     assert "record" not in state["notebook"]
     assert "remaining_fields" not in state["notebook"]
     persisted = json.loads((tmp_path / "task-notebook.json").read_text(encoding="utf-8"))
     assert persisted["inputs_path"] == "record.json"
-    assert persisted["remaining_inputs"] == sorted(brain.values)
+    assert persisted["available_inputs"] == sorted(brain.values)
+    assert persisted["remaining_inputs"] == sorted(set(brain.values) - {"hbl_no"})
     assert "record_path" not in persisted
     assert "query_submitted" not in persisted
     assert [step["capability_id"] for step in state["capabilities"]] == ["task-action"]
@@ -249,6 +251,34 @@ def test_generic_task_binds_prompt_container_path_to_input_key(tmp_path, record,
     assert brain.visual_proposal.steps[0].intent == "fill"
     assert brain.visual_proposal.steps[0].source == "hbl_no"
     assert brain.visual_proposal.evidence[0].field == "hbl_no"
+
+
+def test_model_only_generic_task_keeps_model_grounded_input_progress(tmp_path, record):
+    meaning = fixture()[-1]
+    task_response = response(meaning, procedure_step="Enter the visible task input")
+    task_response["steps"] = []
+    task_response["operation"] = "stop"
+    task_response["evidence"] = [{"field": "hbl_no", "target": meaning.controls[0].id}]
+    brain, *_ = setup_brain(tmp_path, record, [task_response])
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    brain.task_instruction = TaskInstruction.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    brain.procedure = None
+    brain.phase = "task"
+
+    brain._observe()
+    assert brain._select_node({}) == {"next": "finish"}
+
+    assert "hbl_no" in brain.verified
+    event = next(
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "model_task_evidence_recorded"
+    )
+    assert event.payload["fields"] == ["hbl_no"]
 
 
 def test_generic_task_discards_prose_source_from_non_binding_click(tmp_path, record):

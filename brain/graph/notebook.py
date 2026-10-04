@@ -31,8 +31,9 @@ def remember(brain: Brain) -> dict:
             {
                 "inputs_path": "record.json",
                 "proposed_capability": getattr(brain, "procedure_step", None),
+                "available_inputs": sorted(brain.values),
                 "verified_inputs": sorted(brain.verified),
-                "remaining_inputs": sorted(brain.values),
+                "remaining_inputs": sorted(set(brain.values) - set(brain.verified)),
             }
         )
         methods = getattr(brain, "methods", None)

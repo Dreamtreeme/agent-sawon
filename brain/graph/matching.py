@@ -343,7 +343,11 @@ Never assume a label, coordinate, menu, tab, screen order, or application-specif
 not visible now. notebook.inputs is the only business input map. Every data-bound step.source and
 evidence.field MUST be one exact key from notebook.inputs, without record./inputs. prefixes and
 never a literal value. Use intent=fill for every business text input, including filters and lookups.
-Use only supplied input keys and current marker IDs. remaining_inputs is the unfinished input list.
+Use only supplied input keys and current marker IDs. available_inputs is the reusable source list.
+remaining_inputs contains values that have not yet been evidenced on any observed screen; it is
+progress context, not a command to overwrite a matching CURRENT value. Before planning actions,
+compare visible values with notebook.inputs. Put every matching direct input in evidence and do
+not fill it again, even when it was previously listed in remaining_inputs.
 Every referenced marker MUST also be defined in controls in this same response. During
 operation=act, omit past-row evidence unrelated to the current action.
 In generic task mode those inputs remain reusable across screens: verified_inputs reports prior
@@ -358,6 +362,10 @@ user-authored completion condition. Map each supporting marker to its zero-based
 in completion_evidence; map visible business values separately in evidence. Follow all constraints
 and never transmit or approve. Treat a visible status or result as current evidence: when it already
 shows a command's expected effect, do not repeat that command; advance the task from that result.
+If a required input label or partially visible input is at the edge of a scrollable form, navigate
+within that CURRENT form (for example with pagedown on a current enabled control) before leaving
+the view. Incomplete work alone is not a terminal reason to stop while grounded scrolling, tabs,
+or navigation can still expose the missing input or completion evidence.
 """
     + TASK_INPUT_RULES
 )
@@ -1045,11 +1053,25 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         }
     )
     remaining_inputs = contract.get("remaining_inputs", contract.get("remaining_fields", []))
+    if brain.task_instruction is not None:
+        # Generic input keys are reusable across screens. Keep action eligibility
+        # broad while exposing a separate, model-owned coverage ledger. Calling
+        # every source "remaining" forever made matching values look unfinished
+        # and obscured the few fields that had never been observed.
+        available_inputs = sorted(brain.values)
+        remaining_inputs = sorted(set(brain.values) - set(brain.verified))
+        contract = {
+            **contract,
+            "available_inputs": available_inputs,
+            "remaining_inputs": remaining_inputs,
+        }
+    else:
+        available_inputs = remaining_inputs
     # Pending fields remain in the prompt so the current pixels can verify
     # them, but the conditional next action assumes that verification passes.
     # Re-adding them to action eligibility lets a fallback plan repeat work
     # that the executor has already delivered.
-    active_fields = set(remaining_inputs)
+    active_fields = set(available_inputs)
     verification_fields = set(pending_verification_fields)
     verified_fields = set(brain.verified)
     if contract["conditional"] and brain.phase == "enter":
@@ -1092,6 +1114,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
                     sorted(verified_fields) if contract["conditional"] else []
                 ),
                 "remaining_inputs": remaining_inputs,
+                "available_inputs": available_inputs,
                 "pending_verification_inputs": pending_verification_fields,
                 MODEL_INPUTS_NAME: record,
             }

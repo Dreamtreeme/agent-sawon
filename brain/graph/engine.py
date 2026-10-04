@@ -464,6 +464,7 @@ class Brain:
                     },
                 )
             self._bind_saved_evidence(response)
+            self._remember_model_task_evidence(response)
             self.visual_points.bind(self.observation, response.steps)
             selection_plan = compile_selection_plan(response, self.observation)
             screen_action_plan = selection_plan or compile_screen_action_plan(
@@ -1488,6 +1489,39 @@ class Brain:
                     self._record_progress("field:" + evidence.field)
                 else:
                     self._record_verified_field(evidence.field, item)
+
+    def _remember_model_task_evidence(self, response) -> None:
+        """Persist the screen model's direct-input evidence as task progress.
+
+        Model-only review intentionally avoids a second code value judge. The
+        previous compiler also discarded evidence while creating screen batches,
+        so every task input stayed "remaining" forever. This ledger records only
+        model-grounded CURRENT direct inputs; it does not declare completion or
+        authorize an action.
+        """
+        if self.task_instruction is None or not self.settings.visual_model_only_review:
+            return
+        assert self.observation is not None
+        prefix = "e" + str(self.observation.obs_id.int) + "0"
+        by_ref = {item.ref: item for item in self.observation.elements}
+        recorded = []
+        for evidence in response.evidence:
+            element = by_ref.get(prefix + str(evidence.target))
+            if element is None or element.role.casefold() not in {"edit", "combobox"}:
+                continue
+            self.verified[evidence.field] = describe(element, self.observation.elements)
+            self._record_progress("field:" + evidence.field)
+            recorded.append(evidence.field)
+        if recorded:
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "model_task_evidence_recorded",
+                    "reviewer": "screen_model",
+                    "fields": sorted(set(recorded)),
+                    "obs_id": str(self.observation.obs_id),
+                },
+            )
 
     def _guard_action(self, decision: Decision, policy: DecisionPolicy | None = None) -> None:
         """Apply the model's exact choice policy, then ground it in this observation."""

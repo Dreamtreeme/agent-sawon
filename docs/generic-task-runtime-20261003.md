@@ -29,7 +29,8 @@
 - `fill`: 조회칸, 필터, 일반 입력칸을 포함한 모든 업무 텍스트 입력이다.
 - `capabilities`: 현재 화면에서 코드가 허용한 공통 행동 집합이다. 각 항목은
   `capability_id`, `input_scope`, `requires_verified_inputs`를 사용한다.
-- `remaining_inputs`, `verified_inputs`: 아직 처리되지 않은 입력과 현재 화면에서 검증된 입력이다.
+- `available_inputs`: 화면이 바뀌어도 다시 사용할 수 있는 전체 입력 키다.
+- `remaining_inputs`, `verified_inputs`: 모델이 아직 어떤 화면에서도 확인하지 못한 입력과 모델이 현재까지 직접 확인한 입력이다. 현재 화면에 이미 같은 값이 보이면 재입력하지 않고 증거로 누적한다.
 
 모델은 `source`와 `evidence.field`에 `inputs`의 정확한 키를 반환한다. `record.hbl_no`,
 `inputs.hbl_no`, 값 자체처럼 이전 프롬프트에서 생긴 표기는 화면 매칭 입구의 단일
