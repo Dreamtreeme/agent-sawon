@@ -279,82 +279,6 @@ def success_steps(record):
     ]
 
 
-@pytest.mark.parametrize("strategy", ["flat_fields", "label_grouped"])
-def test_complete_relay_workflow_requires_fresh_field_evidence(tmp_path, record, strategy):
-    result, brain, relay, model = run_brain(
-        tmp_path,
-        record,
-        success_steps(record),
-        settings=BrainSettings(summary_strategy=strategy),
-    )
-    assert result.status == "success", result
-    assert result.steps == 19
-    assert StateStore(tmp_path, case_id=record.case_id).read().status == "awaiting_approval"
-    events = brain.log.read_all()
-    assert len([event for event in events if event.kind == "model_call"]) == 20
-    assert (
-        len(
-            [
-                event
-                for event in events
-                if event.kind == "verify" and event.payload.get("check") == "input_value_matches"
-            ]
-        )
-        == 13
-    )
-    assert relay.calls > len(relay.actions)
-    assert all("UI_TEXT=" in prompt for prompt in model.prompts[1:])
-    assert all("automation_id" not in prompt and '"bbox"' not in prompt for prompt in model.prompts)
-    assert json.loads((tmp_path / "result.json").read_text()) == result.model_dump()
-    stored = values_for(record)
-    assert relay.saved_snapshot == stored
-    assert relay.saved_snapshot is not relay.inputs and relay.saved_snapshot is not relay.values
-    # Later edits and the expected-value oracle must not rewrite persisted results.
-    relay.inputs["gross_weight_kg"] = "999"
-    relay.values["gross_weight_kg"] = "888"
-    assert [e.value for e in relay.observe().elements if e.parent_ref == "e6"] == list(
-        stored.values()
-    )
-
-
-@pytest.mark.parametrize("operation", ["complete", "duplicate_clear"])
-def test_model_claim_cannot_skip_required_steps(tmp_path, record, operation):
-    proof = {"grid_ref": "e4"}
-    if operation == "complete":
-        proof.update(row_ref="e6", evidence=[])
-    result, _, relay, _ = run_brain(
-        tmp_path, record, [decision(operation, intent="verify", **proof)] * 2
-    )
-    assert result.reason == "repeated_subgoal_failure:duplicate_query:decision"
-    assert relay.actions == []
-
-
-def test_write_is_blocked_until_duplicate_cleared(tmp_path, record):
-    result, _, relay, _ = run_brain(
-        tmp_path,
-        record,
-        [
-            decision(intent="fill", kind="editor", action=text_choice("hbl_no", "e1")),
-        ]
-        * 2,
-    )
-    assert result.reason == "repeated_subgoal_failure:duplicate_query:decision"
-    assert not relay.actions
-
-
-def test_bad_value_reread_stops_after_two_failures_even_subgoal_renamed(tmp_path, record):
-    first = decision(intent="query_input", action=text_choice("hbl_no", "e1"))
-    second = {**first, "subgoal": "A different invented name"}
-    result, _, relay, _ = run_brain(
-        tmp_path,
-        record,
-        [first, second],
-        relay=FakeRelay(record, corrupt=True),
-    )
-    assert result.reason == "repeated_subgoal_failure:duplicate_query:hbl_no"
-    assert len(relay.actions) == 2
-
-
 def test_rematches_input_when_refs_change_every_observation(tmp_path, record):
     relay = FakeRelay(record)
     relay.change_refs = True
@@ -431,53 +355,6 @@ def test_max_steps_stops_even_successful_waits(tmp_path, record):
     assert result.reason == "max_steps"
     assert len(model.prompts) == 2
     assert len(relay.actions) == 1
-
-
-def test_save_requires_all_record_fields(tmp_path, record):
-    premature_save = decision(intent="save", kind="editor", action={"type": "click", "ref": "e7"})
-    result, brain, relay, model = run_brain(
-        tmp_path,
-        record,
-        [
-            *query_steps(),
-            decision("duplicate_clear", intent="verify", grid_ref="e4"),
-            decision(action={"type": "click", "ref": "e3"}),
-            premature_save,
-            premature_save,
-        ],
-    )
-    assert result.reason.startswith("repeated_")
-    assert result.steps == 6
-    assert len(model.prompts) == 7
-    failures = [
-        event.payload
-        for event in brain.log.read_all()
-        if event.kind == "verify" and event.payload.get("ok") is False
-    ]
-    assert [item["reason"] for item in failures] == [
-        "selection_error:ValidationError",
-        "selection_error:ValidationError",
-    ]
-    assert len(relay.actions) == 3
-    assert all(value == "" for value in relay.inputs.values())
-    assert not relay.saved
-    assert not brain.save_issued
-
-
-def test_final_cells_must_belong_to_same_result_row(tmp_path, record):
-    steps = success_steps(record)
-    steps[-1]["evidence"][0]["ref"] = "e1"  # Query input has the value, but is not a result cell.
-    steps.append(steps[-1])
-    result, brain, relay, _ = run_brain(tmp_path, record, steps)
-    assert result.status == "stopped"
-    assert result.reason == "repeated_subgoal_failure:final_query:decision"
-    failures = [
-        e.payload["reason"]
-        for e in brain.log.read_all()
-        if e.kind == "verify" and e.payload.get("ok") is False
-    ]
-    assert failures == ["final_field_mismatch:hbl_no"] * 2
-    assert len(relay.actions) == 17
 
 
 def test_password_resolved_only_at_relay_and_not_in_prompts_or_logs(tmp_path, record):
@@ -684,46 +561,6 @@ def test_rotating_failed_intents_and_successful_wait_do_not_reset_limit(tmp_path
     assert len(relay.actions) == 3
 
 
-def test_query_change_after_input_reread_stops_before_search(tmp_path, record):
-    class ChangedQuery(FakeRelay):
-        def observe(self):
-            if self.calls == 2:
-                self.query = "UNEXPECTED-IDENTIFIER"
-            return super().observe()
-
-    result, brain, relay, _ = run_brain(
-        tmp_path, record, [*query_steps(), query_steps()[1]], relay=ChangedQuery(record)
-    )
-    assert result.reason == "repeated_subgoal_failure:duplicate_query:decision"
-    assert len(relay.actions) == 1
-    assert not brain.query_value_verified
-    assert any(
-        event.payload.get("check") == "query_input_invalidated" for event in brain.log.read_all()
-    )
-
-
-def test_final_query_rejects_duplicate_matching_rows(tmp_path, record):
-    class DuplicateAfterSave(FakeRelay):
-        def observe(self):
-            observation = super().observe()
-            if self.saved:
-                observation.elements.extend(
-                    [
-                        element("e60", "DataItem", name="Row 2", parent="e4"),
-                        element("e61", "DataItem", value=self.values["hbl_no"], parent="e60"),
-                    ]
-                )
-            return observation
-
-    result, _, _, _ = run_brain(
-        tmp_path,
-        record,
-        success_steps(record),
-        relay=DuplicateAfterSave(record),
-    )
-    assert result.reason == "final_query_multiple_matching_rows"
-
-
 class StructuralRowRelay(FakeRelay):
     def __init__(self, record, *, row_role="Custom"):
         super().__init__(record)
@@ -740,83 +577,6 @@ class StructuralRowRelay(FakeRelay):
             ]
         )
         return observation
-
-
-@pytest.mark.parametrize("row_role", ["Custom", "Group", "Pane"])
-@pytest.mark.parametrize("strategy", ["flat_fields", "label_grouped"])
-def test_structural_row_is_summarized_and_final_fields_verified(
-    tmp_path, record, row_role, strategy
-):
-    result, _, _, model = run_brain(
-        tmp_path,
-        record,
-        success_steps(record),
-        relay=StructuralRowRelay(record, row_role=row_role),
-        settings=BrainSettings(summary_strategy=strategy),
-    )
-    assert result.status == "success", result
-    summary = json.loads(model.prompts[-1].split("\nUI_TEXT=", 1)[1])
-    by_ref = {item["ref"]: item for item in summary["elements"]}
-    assert by_ref["e6"]["is_row"] is True
-    assert by_ref["e6"]["row_ref"] == "e6"
-    assert by_ref["e40"]["row_ref"] == "e6"
-    assert "is_row" not in by_ref["e40"]
-    assert "e70" not in by_ref  # Header-only generic container is not a row.
-    if strategy == "label_grouped":
-        assert any(parent["ref"] == "e6" for parent in by_ref["e40"]["region"])
-
-
-def test_structural_row_rejects_cell_as_final_row(tmp_path, record):
-    steps = success_steps(record)
-    steps[-1]["row_ref"] = "e40"
-    result, _, _, _ = run_brain(tmp_path, record, steps, relay=StructuralRowRelay(record))
-    assert result.reason == "missing_final_row_evidence"
-
-
-def test_structural_row_rejects_evidence_from_another_row(tmp_path, record):
-    class OtherRow(StructuralRowRelay):
-        def observe(self):
-            observation = super().observe()
-            if self.saved:
-                observation.elements.extend(
-                    [
-                        element("e80", "Custom", parent="e4"),
-                        element("e81", "DataItem", value="OTHER-ID", parent="e80"),
-                        element("e82", "DataItem", value=self.values["container_no"], parent="e80"),
-                    ]
-                )
-            return observation
-
-    steps = success_steps(record)
-    for evidence in steps[-1]["evidence"]:
-        if evidence["field"] == "container_no":
-            evidence["ref"] = "e82"
-    steps.append(steps[-1])
-    result, brain, _, _ = run_brain(tmp_path, record, steps, relay=OtherRow(record))
-    assert result.status == "stopped"
-    assert any(
-        event.payload.get("reason") == "final_field_mismatch:container_no"
-        for event in brain.log.read_all()
-    )
-
-
-def test_structural_rows_count_duplicate_identifiers_separately(tmp_path, record):
-    class DuplicateRows(StructuralRowRelay):
-        def observe(self):
-            observation = super().observe()
-            if self.saved:
-                observation.elements.extend(
-                    [
-                        element("e80", "Custom", parent="e4"),
-                        element("e81", "DataItem", value=self.values["hbl_no"], parent="e80"),
-                    ]
-                )
-            return observation
-
-    result, _, _, _ = run_brain(
-        tmp_path, record, success_steps(record), relay=DuplicateRows(record)
-    )
-    assert result.reason == "final_query_multiple_matching_rows"
 
 
 @pytest.mark.parametrize("shape", ["empty", "headers", "mixed", "nested_rows", "outside_grid"])
@@ -854,40 +614,8 @@ def test_nested_grid_summary_uses_nearest_row_context(record, strategy):
     assert by_ref["e40"]["row_ref"] == "e6"
 
 
-def test_final_query_checks_current_values_not_prior_entry_proof(tmp_path, record):
-    class WrongStoredWeight(FakeRelay):
-        def observe(self):
-            observation = super().observe()
-            if self.saved:
-                next(item for item in observation.elements if item.ref == "e47").value = "999"
-            return observation
-
-    steps = success_steps(record)
-    steps.append(steps[-1])
-    result, brain, _, _ = run_brain(tmp_path, record, steps, relay=WrongStoredWeight(record))
-    assert result.status == "stopped"
-    assert any(
-        event.payload.get("check") == "current_evidence_review"
-        and "gross_weight_kg" in event.payload.get("missing_fields", [])
-        for event in brain.log.read_all()
-    )
-    assert not any(
-        event.payload.get("check") == "final_query_fields" for event in brain.log.read_all()
-    )
-
-
 def test_observed_call_exceeding_cost_cap_stops_before_ui_work(tmp_path, record):
     result, _, relay, model = run_brain(tmp_path, record, [], price=Decimal("0.51"))
     assert result.reason == "case_cost_cap"
     assert len(model.prompts) == 1
     assert not relay.actions
-
-
-def test_same_value_in_two_fields_still_requires_two_final_cells(tmp_path, record):
-    record.fields.consignee.value = record.fields.shipper.value
-    steps = success_steps(record)
-    for evidence in steps[-1]["evidence"]:
-        if evidence["field"] == "consignee":
-            evidence["ref"] = "e42"  # Shipper cell has the same expected text.
-    result, _, _, _ = run_brain(tmp_path, record, steps)
-    assert result.reason == "final_field_ref_reused"

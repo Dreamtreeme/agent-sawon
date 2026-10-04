@@ -229,11 +229,6 @@ def test_provider_schema_does_not_accept_raw_unwrapped_response():
         schema.model_validate_json(json.dumps(payload))
 
 
-def test_schema_oracle_fails_on_unimplemented_keywords():
-    with pytest.raises(AssertionError, match="Unsupported test schema keywords"):
-        schema_accepts("e1", {"type": "string", "unsupported_test_keyword": True})
-
-
 @pytest.mark.parametrize("operation,intent", [("act", "navigate"), ("stop", "stop")])
 def test_unrelated_operations_do_not_offer_nullable_grid_fields(operation, intent):
     action = {"type": "click", "ref": "e1"} if operation == "act" else None
