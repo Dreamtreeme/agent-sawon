@@ -1703,7 +1703,17 @@ class Brain:
         if choice.type in {"set_text", "type_text"}:
             data["text"] = self.credentials.get(choice.source) or self.values.get(choice.source, "")
         elif choice.type == "key":
-            data["keys"] = choice.keys
+            if isinstance(self.observation, SceneObservation) and choice.keys in {
+                "pagedown",
+                "pageup",
+            }:
+                # A visual marker is evidence for the scroll region, not a control
+                # to activate. Physical wheel input follows L2C's targeted scroll
+                # semantics and cannot accidentally click an edit/save control.
+                data["type"] = "scroll"
+                data["wheel_delta"] = -600 if choice.keys == "pagedown" else 600
+            else:
+                data["keys"] = choice.keys
         elif choice.type == "select_option":
             data["option"] = self.values.get(choice.source, choice.option)
         elif choice.type == "focus_window":

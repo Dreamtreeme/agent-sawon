@@ -765,7 +765,7 @@ def test_missing_action_semantics_preserves_original_single_click(tmp_path, reco
     assert ocr.calls == detector.calls == 1
 
 
-def test_login_and_record_arrays_compile_to_existing_batches():
+def test_login_and_record_arrays_compile_to_existing_batches(tmp_path, record):
     from test_brain import element
 
     observed = wire()
@@ -841,6 +841,17 @@ def test_login_and_record_arrays_compile_to_existing_batches():
     )
     scroll_decision = compile_match(scroll, scene, ScreenFillPlan).next_decision.to_decision()
     assert scroll_decision.action.keys == "pagedown"
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.observation = scene
+    action = brain._wire_action(
+        scroll_decision.action,
+        scroll_decision,
+        fresh_observation=observed,
+        log_renewal=False,
+    ).root
+    assert action.type == "scroll"
+    assert action.wheel_delta == -600
+    assert action.target.image_point
 
 
 @pytest.mark.parametrize(
