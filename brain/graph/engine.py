@@ -21,7 +21,7 @@ from brain.cache import CacheIntegrityError, SemanticCache, VisualMatchCache
 from brain.cache.rebind import RebindProposal, build_rebind_request, install_rebind_proposal
 from brain.observe import describe, redact, summarize
 from brain.observe.evidence import is_record_input, matching_delivered_input, matching_elements
-from brain.observe.progress import navigation_state, navigation_target
+from brain.observe.progress import navigation_state, navigation_target, semantic_target_key
 from brain.observe.rows import row_refs
 from brain.observe.summary import ancestors
 from brain.observe.values import field_matches as field_matches
@@ -68,9 +68,12 @@ from .transitions import (
     ActionTransition,
     EvidenceLedger,
     ExpectedEffect,
+    ExplorationAttempt,
+    ExplorationLedger,
     NavigationHistory,
     ObservedEffect,
     TransitionFact,
+    exploration_action_key,
 )
 from .visual_points import VisualPointBindings
 from .workflow import build_worker_graph
@@ -292,6 +295,8 @@ class Brain:
         self.business_revision = 0
         self.navigation_history = NavigationHistory(settings.navigation_history_size)
         self.unproductive_navigation: dict[str, list[dict]] = {}
+        self.exploration = ExplorationLedger()
+        self._last_exploration_failure_key: str | None = None
         self.feedback: list[dict] = []
         self.result: Result | None = None
         self.started = 0.0
@@ -604,8 +609,15 @@ class Brain:
             return {"next": "observe"}
         # Use a deterministic key, never an arbitrary model-generated subgoal name.
         decision = self.decision
+        exploration_failure = (
+            self.phase == "task"
+            and reason in {"navigation_no_progress", "navigation_cycle"}
+            and self._last_exploration_failure_key is not None
+        )
         key = (
-            self.phase
+            self.phase + ":explore:" + self._last_exploration_failure_key
+            if exploration_failure
+            else self.phase
             + ":"
             + (
                 (decision.action.source or decision.intent)
@@ -614,7 +626,10 @@ class Brain:
             )
         )
         self.failures[key] = self.failures.get(key, 0) + 1
-        self.phase_failures[self.phase] = self.phase_failures.get(self.phase, 0) + 1
+        if exploration_failure:
+            self.phase_failures.setdefault(self.phase, 0)
+        else:
+            self.phase_failures[self.phase] = self.phase_failures.get(self.phase, 0) + 1
         feedback = {
             "ok": False,
             "reason": reason,
@@ -695,7 +710,10 @@ class Brain:
         )
         if self.failures[key] >= self.settings.max_subgoal_failures:
             return self._finish("stopped", "repeated_subgoal_failure:" + key)
-        if self.phase_failures[self.phase] >= self.settings.max_subgoal_failures:
+        if (
+            not exploration_failure
+            and self.phase_failures[self.phase] >= self.settings.max_subgoal_failures
+        ):
             return self._finish("stopped", "repeated_phase_failure:" + self.phase)
         return {"next": "observe"}
 
@@ -1076,6 +1094,49 @@ class Brain:
             for element in self.observation.elements
             if element.enabled and navigation_target(element, self.observation) in failed
         ]
+
+    def _exploration_goal_key(self) -> str:
+        if self.task_instruction is None:
+            return f"{self.phase}:{self._decision_policy().current_step}"
+        remaining = sorted(set(self.values) - set(self.verified))
+        return "inputs:" + ",".join(remaining) if remaining else "completion"
+
+    def _exploration_action(self, decision: Decision) -> tuple[str, dict]:
+        assert self.observation is not None and decision.action is not None
+        choice = decision.action
+        target = None
+        if choice.ref is not None:
+            element = next(
+                (item for item in self.observation.elements if item.ref == choice.ref), None
+            )
+            if element is not None:
+                target = navigation_target(element, self.observation)
+        description = {
+            "type": choice.type,
+            **({"keys": choice.keys} if choice.keys else {}),
+            **({"source": choice.source} if choice.source else {}),
+            **({"target": target} if choice.type != "key" and target is not None else {}),
+        }
+        return (
+            exploration_action_key(
+                choice.type,
+                keys=choice.keys,
+                source=choice.source,
+                target_key=semantic_target_key(target) if target is not None else None,
+            ),
+            description,
+        )
+
+    def _failed_exploration_transitions(self) -> list[dict]:
+        # Combined visual perception plans before the newly captured scene is
+        # installed. Never attach failures from the previous screen while an
+        # action is awaiting observation; the following no-pending reread has
+        # the correct semantic state.
+        if self.observation is None or self.pending is not None:
+            return []
+        return self.exploration.prompt_context(
+            navigation_state(self.observation), self._exploration_goal_key()
+        )
 
     def _submitted_credentials(self) -> list[str]:
         observation = self.observation
@@ -1568,6 +1629,13 @@ class Brain:
         if self.phase != "task" and decision.intent == "search" and decision.screen_kind == "query":
             if not self._current_query_matches():
                 raise GuardStop("query_value_changed")
+        if self.phase == "task" and decision.intent in {"navigate", "select_tab", "login"}:
+            action_key, _ = self._exploration_action(decision)
+            if self.exploration.failed(
+                navigation_state(self.observation), self._exploration_goal_key(), action_key
+            ):
+                self._last_exploration_failure_key = action_key
+                raise GuardStop("navigation_no_progress")
         if (
             decision.intent in {"navigate", "select_tab", "login"}
             and choice.ref in {item["ref"] for item in self._unproductive_navigation_targets()}
@@ -1803,6 +1871,11 @@ class Brain:
                 expected_effect=self._expected_effect(decision),
             ),
         }
+        if self.phase == "task" and decision.intent in {"navigate", "select_tab", "login"}:
+            action_key, description = self._exploration_action(decision)
+            pending["exploration_action_key"] = action_key
+            pending["exploration_goal_key"] = self._exploration_goal_key()
+            pending["exploration_action"] = description
         if decision.intent == "navigate" and (
             self.phase == "task" or decision.screen_kind == "editor"
         ):
@@ -1817,7 +1890,11 @@ class Brain:
                     self.deferred_field_checks[evidence.field] = describe(
                         target, self.observation.elements
                     )
-        if decision.intent in {"navigate", "select_tab", "login"} and choice.ref is not None:
+        if (
+            decision.intent in {"navigate", "select_tab", "login"}
+            and choice.ref is not None
+            and choice.type != "key"
+        ):
             target = next(item for item in self.observation.elements if item.ref == choice.ref)
             pending["navigation_target"] = navigation_target(target, self.observation)
         if choice.type in {"click", "double_click"} and choice.ref is not None:
@@ -2004,15 +2081,25 @@ class Brain:
             if decision.intent in {"navigate", "select_tab", "login"}:
                 navigation_change = changed
                 if not navigation_change:
-                    target = self.pending.get("navigation_target")
-                    if target is not None:
-                        failed = self.unproductive_navigation.setdefault(observed_state, [])
-                        if target not in failed:
-                            failed.append(target)
                     self.pending = None
                     if self.click_refinement.prepare(self, pending, observation):
                         self.execution_authorized = True
                         return {"next": "act"}
+                    target = pending.get("navigation_target")
+                    if target is not None:
+                        failed = self.unproductive_navigation.setdefault(observed_state, [])
+                        if target not in failed:
+                            failed.append(target)
+                    if "exploration_action_key" in pending:
+                        attempt = ExplorationAttempt(
+                            state_key=pending["source_navigation_state"],
+                            goal_key=pending["exploration_goal_key"],
+                            action_key=pending["exploration_action_key"],
+                            action=pending["exploration_action"],
+                            outcome="no_change",
+                        )
+                        self.exploration.record(attempt)
+                        self._last_exploration_failure_key = attempt.action_key
                     return self._fail("navigation_no_progress")
                 if self.navigation_history.observe(
                     self.pending["source_navigation_state"],
@@ -2028,6 +2115,16 @@ class Brain:
                     ):
                         self.execution_authorized = True
                         return {"next": "act"}
+                    if "exploration_action_key" in pending:
+                        attempt = ExplorationAttempt(
+                            state_key=pending["source_navigation_state"],
+                            goal_key=pending["exploration_goal_key"],
+                            action_key=pending["exploration_action_key"],
+                            action=pending["exploration_action"],
+                            outcome="cycle",
+                        )
+                        self.exploration.record(attempt)
+                        self._last_exploration_failure_key = attempt.action_key
                     return self._fail("navigation_cycle")
                 # Distinct observed states count once per phase, never model prose.
                 self._record_progress("navigation_state:" + observed_state, business=False)

@@ -394,10 +394,10 @@ user-authored completion condition. Map each supporting marker to its zero-based
 in completion_evidence; map visible business values separately in evidence. Follow all constraints
 and never transmit or approve. Treat a visible status or result as current evidence: when it already
 shows a command's expected effect, do not repeat that command; advance the task from that result.
-If a required input label or partially visible input is at the edge of a scrollable form, navigate
-within that CURRENT form (for example with pagedown on a current enabled control) before leaving
-the view. Incomplete work alone is not a terminal reason to stop while grounded scrolling, tabs,
-or navigation can still expose the missing input or completion evidence.
+If a required input is not visible, choose an untried CURRENT affordance whose expected effect can
+expose it. failed_transitions lists actions that already produced no change or a cycle for this same
+screen state and goal gap; do not repeat them. Incomplete work alone is not a terminal reason to
+stop while another grounded transition can expose the missing input or completion evidence.
 """
     + TASK_INPUT_RULES
 )
@@ -1181,6 +1181,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
             {
                 "verified_inputs": sorted(brain.verified),
                 "evidence_claims": brain.evidence_ledger.prompt_context(),
+                "failed_transitions": brain._failed_exploration_transitions(),
                 "anticipated_verified_inputs": (
                     sorted(verified_fields) if contract["conditional"] else []
                 ),

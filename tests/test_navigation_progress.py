@@ -8,6 +8,8 @@ import pytest
 from test_brain import FakeRelay, decision, element, run_brain, success_steps
 from test_brain import record as record
 
+from brain.graph.transitions import ExplorationAttempt, ExplorationLedger, exploration_action_key
+
 
 class NavigationRelay(FakeRelay):
     """Expose synthetic tab actions with independent semantic and volatile changes."""
@@ -118,6 +120,37 @@ def no_progress_failures(brain):
 
 def task_state(prompt):
     return json.loads(prompt.split("\nTRUSTED_TASK=", 1)[1].split("\nUI_TEXT=", 1)[0])
+
+
+def test_exploration_memory_ignores_key_focus_anchor_and_keeps_other_routes():
+    ledger = ExplorationLedger()
+    page_down = exploration_action_key("key", keys="pagedown", target_key="first-anchor")
+    assert page_down == exploration_action_key(
+        "key", keys="pagedown", target_key="different-anchor"
+    )
+    ledger.record(
+        ExplorationAttempt(
+            state_key="screen-a",
+            goal_key="inputs:missing",
+            action_key=page_down,
+            action={"type": "key", "keys": "pagedown"},
+            outcome="no_change",
+        )
+    )
+
+    assert ledger.failed("screen-a", "inputs:missing", page_down)
+    assert not ledger.failed(
+        "screen-a",
+        "inputs:missing",
+        exploration_action_key("click", target_key="another-route"),
+    )
+    assert ledger.prompt_context("screen-a", "inputs:missing") == [
+        {
+            "action_key": "key:pagedown",
+            "action": {"type": "key", "keys": "pagedown"},
+            "outcome": "no_change",
+        }
+    ]
 
 
 def alternate_navigation(prompt):

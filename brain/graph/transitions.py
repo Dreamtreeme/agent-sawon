@@ -108,6 +108,62 @@ class EvidenceLedger:
         return tuple(self._claims)
 
 
+class ExplorationAttempt(BaseModel):
+    """A semantic state transition that produced no useful route."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    state_key: str = Field(min_length=1)
+    goal_key: str = Field(min_length=1)
+    action_key: str = Field(min_length=1)
+    action: dict
+    outcome: Literal["no_change", "cycle"]
+
+
+def exploration_action_key(
+    action_type: str,
+    *,
+    keys: str | None = None,
+    source: str | None = None,
+    target_key: str | None = None,
+) -> str:
+    """Identify the attempted transition, excluding incidental focus anchors."""
+
+    if action_type == "key":
+        return "key:" + (keys or "")
+    if action_type in {"set_text", "type_text"}:
+        return f"{action_type}:source:{source or ''}"
+    if action_type == "wait":
+        return "wait"
+    return f"{action_type}:target:{target_key or ''}"
+
+
+class ExplorationLedger:
+    """Bounded run-local memory of failed goal-directed transitions."""
+
+    def __init__(self, limit: int = 64) -> None:
+        self._attempts: deque[ExplorationAttempt] = deque(maxlen=limit)
+
+    def record(self, attempt: ExplorationAttempt) -> None:
+        if attempt not in self._attempts:
+            self._attempts.append(attempt)
+
+    def failed(self, state_key: str, goal_key: str, action_key: str) -> bool:
+        return any(
+            item.state_key == state_key
+            and item.goal_key == goal_key
+            and item.action_key == action_key
+            for item in self._attempts
+        )
+
+    def prompt_context(self, state_key: str, goal_key: str) -> list[dict]:
+        return [
+            {"action_key": item.action_key, "action": item.action, "outcome": item.outcome}
+            for item in self._attempts
+            if item.state_key == state_key and item.goal_key == goal_key
+        ]
+
+
 class ExpectedEffect(StrEnum):
     INPUT_VALUE_MATCHES = "input_value_matches"
     PROTECTED_INPUT_REREAD = "protected_input_reread"
