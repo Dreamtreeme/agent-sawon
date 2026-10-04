@@ -1658,8 +1658,12 @@ def compile_match(response: ScreenMatch, observation, schema):
             "login_ref": ref(commands[0].target),
             "next_decision": None,
         }
-    elif fills and (response.screen_kind == "editor" or response.procedure_step == "task-action"):
-        if len(fills) != len(response.steps) or any(s.intent != "fill" for s in fills):
+    elif (
+        fills
+        and all(s.intent == "fill" for s in fills)
+        and (response.screen_kind == "editor" or response.procedure_step == "task-action")
+    ):
+        if len(fills) != len(response.steps):
             raise ValueError("screen_match_mixed_field_batch")
         data = {
             "fields": [{"source": s.source, "ref": ref(s.target)} for s in fills],
@@ -1667,6 +1671,8 @@ def compile_match(response: ScreenMatch, observation, schema):
             "next_decision": None,
         }
     else:
+        if fills and len(response.steps) > 1:
+            raise ValueError("screen_match_mixed_field_batch")
         if len(response.steps) > 1 or (response.operation == "act" and not response.steps):
             raise ValueError("screen_match_requires_one_boundary_action")
         data = decision(response.steps[0] if response.steps else None)

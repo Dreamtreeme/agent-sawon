@@ -1065,6 +1065,23 @@ def test_login_and_record_arrays_compile_to_existing_batches(tmp_path, record):
     repeated_plan = compile_match(repeated_value, scene, ScreenFillPlan)
     assert [item.source for item in repeated_plan.fields] == ["hbl_no", "hbl_no"]
     assert len({item.ref for item in repeated_plan.fields}) == 2
+    query_input = ScreenMatch(
+        screen_kind="query",
+        controls=[],
+        procedure_step="task-action",
+        steps=[
+            {
+                "target": 1,
+                "action": "fill",
+                "source": "hbl_no",
+                "intent": "query_input",
+            }
+        ],
+    )
+    query_decision = compile_match(query_input, scene, DecisionResponse).to_decision()
+    assert query_decision.intent == "query_input"
+    assert query_decision.action is not None
+    assert query_decision.action.ref == prefix + "1"
     with pytest.raises(ValueError, match="mixed_field_batch"):
         compile_match(
             fields.model_copy(update={"steps": [*fields.steps, login.steps[-1]]}),
