@@ -297,6 +297,7 @@ class Brain:
         self.unproductive_navigation: dict[str, list[dict]] = {}
         self.exploration = ExplorationLedger()
         self._last_exploration_failure_key: str | None = None
+        self._last_surface_conflict: dict[str, str] | None = None
         self.feedback: list[dict] = []
         self.result: Result | None = None
         self.started = 0.0
@@ -429,6 +430,24 @@ class Brain:
                         "obs_id": str(self.observation.obs_id),
                         "procedure_step": response.procedure_step,
                     },
+                )
+            if response.needs_refinement:
+                self.log.append(
+                    "verify",
+                    payload={
+                        "check": "planning_refinement_reentered",
+                        "obs_id": str(self.observation.obs_id),
+                    },
+                )
+                self.visual_proposal = None
+                self.observation = self.visual_perception.rematch(self.observation.wire)
+                self.visual_proposal_obs_id = self.observation.obs_id
+                response, self.visual_proposal = self.visual_proposal, None
+                if response is None or response.needs_refinement:
+                    raise VisualGroundingError("visual_required_control_missing")
+                atomic_write_json(
+                    self.case_dir / f"observations/{self.observation_number:04d}.json",
+                    self.observation,
                 )
             assert isinstance(self.observation, SceneObservation)
             prefix = "e" + str(self.observation.obs_id.int) + "0"
@@ -674,6 +693,13 @@ class Brain:
                 "No record input was sent. The selected control belongs to a repeated "
                 "detail row/table, not the task's direct input form. Keep verified fields; "
                 "choose observed tabs/navigation to find the missing record field."
+            )
+        elif reason == "input_surface_claimed_by_other_field":
+            feedback.update(self._last_surface_conflict or {})
+            feedback["required_response"] = (
+                "No input was sent. The proposed surface is already current evidence for a "
+                "different task input. Keep that evidence and choose a different grounded "
+                "writable extent for requested_source, or navigate/scroll to expose it."
             )
         elif reason == "save_rejected":
             feedback["required_response"] = (
@@ -1430,6 +1456,7 @@ class Brain:
                 "action_not_allowed_by_state",
                 "navigation_no_progress",
                 "record_input_scope_mismatch",
+                "input_surface_claimed_by_other_field",
             }:
                 return self._fail(str(exc))
             if duplicate_checkpoint and str(exc) in {
@@ -1584,7 +1611,16 @@ class Brain:
         by_ref = {item.ref: item for item in self.observation.elements}
         recorded = []
         superseded = []
+        pending_fill_sources = {
+            step.source
+            for step in response.steps
+            if step.action == "fill" and step.source is not None
+        }
+        deferred = []
         for evidence in response.evidence:
+            if evidence.field in pending_fill_sources:
+                deferred.append(evidence.field)
+                continue
             element = by_ref.get(prefix + str(evidence.target))
             if element is None or element.role.casefold() not in {"edit", "combobox"}:
                 continue
@@ -1598,6 +1634,15 @@ class Brain:
                     "reviewer": "screen_model",
                     "fields": sorted(set(recorded)),
                     "superseded_fields": sorted(set(superseded)),
+                    "obs_id": str(self.observation.obs_id),
+                },
+            )
+        if deferred:
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "model_task_evidence_deferred_until_reread",
+                    "fields": sorted(set(deferred)),
                     "obs_id": str(self.observation.obs_id),
                 },
             )
@@ -1624,6 +1669,16 @@ class Brain:
         if decision.intent == "fill" and (self.phase == "task" or decision.screen_kind == "editor"):
             if not is_record_input(by_ref[choice.ref], self.observation):
                 raise GuardStop("record_input_scope_mismatch")
+            if self.phase == "task" and choice.source is not None:
+                descriptor = describe(by_ref[choice.ref], self.observation.elements)
+                owner = self.evidence_ledger.owner(descriptor)
+                if owner is not None and owner != choice.source:
+                    self._last_surface_conflict = {
+                        "surface_owner": owner,
+                        "requested_source": choice.source,
+                        "target_ref": choice.ref,
+                    }
+                    raise GuardStop("input_surface_claimed_by_other_field")
         if isinstance(self.observation, SceneObservation) and choice.type == "select_option":
             raise GuardStop("visual_select_requires_click_or_keyboard")
         if self.phase != "task" and decision.intent == "search" and decision.screen_kind == "query":

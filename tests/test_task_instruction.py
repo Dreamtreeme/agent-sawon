@@ -7,9 +7,11 @@ from pydantic import ValidationError
 from test_brain import FakeRelay, ScriptedModel, decision
 
 from brain.graph.engine import Brain
+from brain.graph.execution import GuardStop
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
 from brain.graph.schemas import DecisionResponse
 from brain.input_binding import normalize_action_source, resolve_input_key
+from brain.observe import describe
 from brain.observe.values import values_for
 from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
@@ -269,7 +271,9 @@ def test_model_evidence_surface_has_one_active_field_owner(tmp_path):
     }
 
     assert ledger.record("first", descriptor, "obs-1") == ()
+    assert ledger.owner(descriptor) == "first"
     assert ledger.record("second", descriptor, "obs-2") == ("first",)
+    assert ledger.owner(descriptor) == "second"
     assert ledger.prompt_context() == [
         {"field": "second", "observation_id": "obs-2", "revision": 2}
     ]
@@ -277,3 +281,52 @@ def test_model_evidence_surface_has_one_active_field_owner(tmp_path):
         ("first", "superseded", "surface_reassigned"),
         ("second", "active", None),
     ]
+
+
+def test_task_fill_cannot_overwrite_surface_owned_by_another_input(tmp_path):
+    record = TaskInputRecord(
+        case_id="invoice-17",
+        inputs={"invoice.number": "INV-17", "vendor_code": "V-9"},
+    )
+    relay = FakeRelay(record)
+    relay.mode = "editor"
+    log = RunLog(tmp_path, case_id=record.case_id, agent_id="surface-owner-test")
+    brain = Brain(
+        record=record,
+        goal="Save the supplied invoice.",
+        relay=relay,
+        model=ScriptedModel(log, []),
+        settings=BrainSettings(visual_model_only_review=True),
+        case_dir=tmp_path,
+        run_log=log,
+    )
+    brain.phase = "task"
+    brain.task_instruction = TaskInstruction(
+        name="Save invoice",
+        objective="Save the supplied invoice.",
+        completion_conditions=["The saved invoice is visible."],
+    )
+    brain.observation = relay.observe()
+    target = next(item for item in brain.observation.elements if item.role == "Edit")
+    brain.evidence_ledger.record(
+        "invoice.number",
+        describe(target, brain.observation.elements),
+        str(brain.observation.obs_id),
+    )
+    conflicting = DecisionResponse.model_validate(
+        {
+            "decision": decision(
+                intent="fill",
+                kind="editor",
+                action={"type": "set_text", "ref": target.ref, "source": "vendor_code"},
+            )
+        }
+    ).to_decision()
+
+    with pytest.raises(GuardStop, match="input_surface_claimed_by_other_field"):
+        brain._guard_action(conflicting)
+    assert brain._last_surface_conflict == {
+        "surface_owner": "invoice.number",
+        "requested_source": "vendor_code",
+        "target_ref": target.ref,
+    }

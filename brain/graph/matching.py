@@ -1491,6 +1491,10 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         # the evidence role before any action can reach the executor.
         workflow_steps = brain.procedure.steps if brain.procedure is not None else candidates
         require_deferred_field_evidence(response, step, workflow_steps, active_fields)
+    # Action completion and target repair are later model boundaries and can
+    # introduce a fill after the first check above. Enforce the write-surface
+    # contract on the final response as well.
+    response = defer_unwritable_fill_targets(brain, response, screen)
     brain.procedure_step = step.id
     brain.visual_match_candidate = (
         cache_hit[0] if cache_hit is not None else visual_match_key(state),

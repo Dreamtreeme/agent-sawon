@@ -319,6 +319,32 @@ def test_model_only_generic_task_keeps_model_grounded_input_progress(tmp_path, r
     assert event.payload["fields"] == ["hbl_no"]
 
 
+def test_pending_fill_cannot_claim_its_own_pre_action_evidence(tmp_path, record):
+    meaning = fixture()[-1]
+    task_response = response(meaning, procedure_step="Enter the visible task input")
+    task_response["evidence"] = [{"field": "hbl_no", "target": meaning.controls[0].id}]
+    brain, *_ = setup_brain(tmp_path, record, [task_response])
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    brain.task_instruction = TaskInstruction.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    brain.procedure = None
+    brain.phase = "task"
+
+    brain._observe()
+    assert brain._select_node({}) == {"next": "review"}
+
+    assert "hbl_no" not in brain.verified
+    event = next(
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "model_task_evidence_deferred_until_reread"
+    )
+    assert event.payload["fields"] == ["hbl_no"]
+
+
 def test_grounded_current_action_does_not_refine_for_future_hidden_input(tmp_path, record):
     meaning = fixture()[-1]
     task_response = response(

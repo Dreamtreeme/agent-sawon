@@ -93,6 +93,15 @@ class EvidenceLedger:
                 invalidated.append(field)
         return tuple(sorted(invalidated))
 
+    def owner(self, descriptor: dict) -> str | None:
+        """Return the active field that already owns this observed surface."""
+
+        surface_key = self.surface_key(descriptor)
+        return next(
+            (field for field, claim in self._active.items() if claim.surface_key == surface_key),
+            None,
+        )
+
     def prompt_context(self) -> list[dict]:
         return [
             {
