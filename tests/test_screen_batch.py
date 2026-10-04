@@ -12,6 +12,7 @@ from test_visual_workflow import SyntheticPerception, VisualFixture
 from brain.graph.engine import Brain
 from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
+from brain.visual.action_rebind import ActionTargetBinding
 
 
 class ChangingPixelsRelay(VisualFixture):
@@ -50,6 +51,26 @@ class CountPerception(SyntheticPerception):
         self.action_counts.append(len(self.relay.actions))
         scene = super().observe(wire)
         return scene.model_copy(update={"screen_kind": self.relay.mode})
+
+    def rebind_action(self, scene, target, fresh, *, planned_point=None, max_phash_distance=16):
+        """The synthetic relay exposes its current local detections directly."""
+        matches = [
+            item
+            for item in self.relay.items
+            if item.role.casefold() == target.role.casefold()
+            and item.name == target.name
+            and item.label_hint == target.label_hint
+        ]
+        if len(matches) != 1:
+            raise ValueError("visual_target_anchor_ambiguous")
+        current = matches[0]
+        x, y, width, height = current.bbox
+        return ActionTargetBinding(
+            point=(x + width / 2, y + height / 2),
+            bbox=tuple(map(int, current.bbox)),
+            method="synthetic_local_rebind",
+            phash_distance=0,
+        )
 
 
 def screen_plan(record):
@@ -253,19 +274,19 @@ def test_shared_source_verifies_and_repairs_each_delivered_target(tmp_path, reco
         ]
 
 
-@pytest.mark.parametrize("failure", ["button", "duplicate_ref", "window_change", "move"])
+@pytest.mark.parametrize("failure", ["button", "duplicate_ref", "process_change", "move"])
 def test_invalid_plan_and_mid_batch_geometry_change_stop_remaining_inputs(
     tmp_path, record, failure
 ):
     class DriftingRelay(ChangingPixelsRelay):
         def observe(self):
             wire = super().observe()
-            if self.actions and failure == "window_change":
+            if self.actions and failure == "process_change":
+                changed = wire.active_window.model_copy(update={"process": "other.exe"})
                 wire = wire.model_copy(
                     update={
-                        "active_window": wire.active_window.model_copy(
-                            update={"title": "Different dialog"}
-                        )
+                        "active_window": changed,
+                        "windows": [changed],
                     }
                 )
             if self.actions and failure == "move":
@@ -289,9 +310,16 @@ def test_invalid_plan_and_mid_batch_geometry_change_stop_remaining_inputs(
     selected = brain._select_node({})
     if selected["next"] == "review":
         selected = brain._review_node({})
+    outcome = selected
     if selected["next"] == "act":
-        brain._act_node({})
-    assert len(relay.actions) == (1 if failure in {"window_change", "move"} else 0)
+        outcome = brain._act_node({})
+    assert len(relay.actions) == (
+        1 if failure == "process_change" else 11 if failure == "move" else 0
+    )
+    if failure == "move":
+        assert outcome == {"next": "verify"}
+        assert brain.pending is not None
+        return
     assert not brain.verified and not relay.saved
     transitions = [
         e.payload["transition"]

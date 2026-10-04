@@ -56,6 +56,7 @@ class BrainSettings(BaseModel):
     visual_screen_fill: bool = False
     visual_model_led_semantics: bool = False
     visual_model_only_review: bool = False
+    visual_action_phash_distance: int = Field(default=16, ge=0, le=64)
     screen_matching: bool = False
     jev_request_max_bytes: int = Field(default=48_000, ge=8_000, le=48_000)
     task_path: Path | None = None

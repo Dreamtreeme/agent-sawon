@@ -9,13 +9,19 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from time import perf_counter
 
-from sawon_interfaces import Observation
+from sawon_interfaces import Observation, UIElement
 
 from brain.relay import HttpRelay
 from brain.runtime.storage import RunLog, atomic_write_json
 from pipeline.ocr import OcrEngine
 from pipeline.schemas import OcrBlock, RenderedPage
 
+from .action_rebind import (
+    ActionTargetBinding,
+    hash_distance,
+    perceptual_hash,
+    rebind_action_target,
+)
 from .detector import ControlDetector, DetectorSettings, OmniParserDetector
 from .marker_contract import MarkerReferenceError
 from .markers import Marker, MergeSettings, build_markers, ground_meanings, render_markers
@@ -121,6 +127,8 @@ class VisualPerception:
         self.model_led_semantics = model_led_semantics
         self._catalog: _SceneCatalog | None = None
         self._catalogs: dict[tuple, _SceneCatalog] = {}
+        self._action_captures: dict[str, Path] = {}
+        self._action_catalogs: dict[str, tuple[Path, list[OcrBlock], list[Marker]]] = {}
 
     def close(self) -> None:
         try:
@@ -251,6 +259,116 @@ class VisualPerception:
         """Reinterpret the current catalog without recapturing or rerunning OCR/detection."""
         assert self._catalog is not None
         return self._resolve(wire, self._catalog)
+
+    def rebind_action(
+        self,
+        scene: SceneObservation,
+        target: UIElement,
+        fresh: Observation,
+        *,
+        planned_point: tuple[float, float] | None = None,
+        max_phash_distance: int = 16,
+    ) -> ActionTargetBinding:
+        """Renew one action target from fresh local OCR/detection without a semantic model call."""
+        if fresh.blocked_reason or fresh.screenshot is None or fresh.screenshot.geometry is None:
+            raise ValueError("visual_fresh_capture_unusable")
+        key = str(fresh.obs_id)
+        old_path = self.case_dir / "visual" / str(scene.obs_id) / "capture.png"
+        if not old_path.is_file():
+            raise ValueError("visual_planned_capture_missing")
+        path = self._action_captures.get(key)
+        if path is None:
+            folder = self.case_dir / "action-renewal" / key
+            path = self.relay.screenshot(fresh, folder / "capture.png")
+            self._action_captures[key] = path
+        distance = hash_distance(perceptual_hash(old_path), perceptual_hash(path))
+        if distance > max_phash_distance:
+            raise ValueError("visual_scene_family_changed")
+        if (fresh.screenshot.width, fresh.screenshot.height) == (
+            scene.screenshot.width,
+            scene.screenshot.height,
+        ):
+            x, y, width, height = target.bbox
+            point = planned_point or (x + width / 2, y + height / 2)
+            self.log.append(
+                "verify",
+                payload={
+                    "stage": "local_action_rebind_route",
+                    "obs_id": key,
+                    "method": "phash_same_layout",
+                    "phash_distance": distance,
+                    "ocr_and_detection_skipped": True,
+                    "model_called": False,
+                },
+            )
+            return ActionTargetBinding(
+                point=point,
+                bbox=tuple(map(int, target.bbox)),
+                method="phash_same_layout",
+                phash_distance=distance,
+            )
+        cached = self._action_catalogs.get(key)
+        if cached is None:
+            started = perf_counter()
+            shot = fresh.screenshot
+            page = RenderedPage(
+                document="action-renewal",
+                kind="hbl",
+                page=1,
+                image_path=path,
+                width=shot.width,
+                height=shot.height,
+            )
+            blocks = self.ocr.read(page)
+            for secret in self.secrets:
+                if secret:
+                    blocks = [
+                        block.model_copy(update={"text": block.text.replace(secret, "[REDACTED]")})
+                        for block in blocks
+                    ]
+            boxes = self.detector.read(page)
+            if (
+                isinstance(self.detector, OmniParserDetector)
+                and self.detector.settings.pixel_rectangles_enabled
+            ):
+                from PIL import Image
+
+                with Image.open(path) as pixels:
+                    rectangles = rectangular_candidates(
+                        pixels, limit=self.detector.settings.pixel_rectangles_limit
+                    )
+                boxes += [
+                    Marker(id=i, bbox=box, source="pixel_rectangle", confidence=1)
+                    for i, box in enumerate(rectangles)
+                ]
+            markers = build_markers(
+                blocks, boxes, shot.width, shot.height, settings=self.merge_settings
+            )
+            cached = (path, blocks, markers)
+            self._action_catalogs[key] = cached
+            self.log.append(
+                "verify",
+                payload={
+                    "stage": "local_action_rebind_detection",
+                    "obs_id": key,
+                    "ocr_blocks": len(blocks),
+                    "markers": len(markers),
+                    "duration_ms": (perf_counter() - started) * 1000,
+                    "model_called": False,
+                },
+            )
+        path, blocks, markers = cached
+        return rebind_action_target(
+            scene,
+            target,
+            old_capture=old_path,
+            fresh_capture=path,
+            fresh_size=(fresh.screenshot.width, fresh.screenshot.height),
+            blocks=blocks,
+            markers=markers,
+            planned_point=planned_point,
+            max_phash_distance=max_phash_distance,
+        )
 
     def _resolve(
         self,

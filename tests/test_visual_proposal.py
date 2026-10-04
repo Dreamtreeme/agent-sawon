@@ -28,7 +28,7 @@ def test_current_policy_rejects_wrong_phase_action_and_unknown_marker():
 
 
 @pytest.mark.parametrize("change", ["origin", "dpi", "size", "content"])
-def test_translation_rebinds_capture_without_recognition_but_other_changes_do_not(
+def test_capture_renewal_keeps_exact_points_and_locally_rebinds_changed_content(
     tmp_path, record, change
 ):
     from test_screen_batch import ChangingPixelsRelay, make_brain
@@ -53,6 +53,7 @@ def test_translation_rebinds_capture_without_recognition_but_other_changes_do_no
         shot = shot.model_copy(update={"geometry": geometry})
         updated = {"screenshot": shot}
         if change == "content":
+            updated["screenshot"] = shot.model_copy(update={"content_hash": "c" * 40})
             updated["screen_hash"] = "c" * 40
         relay.current = observed.model_copy(update=updated)
         return relay.current
@@ -61,14 +62,14 @@ def test_translation_rebinds_capture_without_recognition_but_other_changes_do_no
     selected = Decision.model_validate(
         decision(intent="query_input", action=text_choice("hbl_no", "e1"))
     )
+    action = brain._wire_action(selected.action, selected)
+    assert action.root.obs_id != previous.obs_id
+    assert action.root.target.capture_id == relay.current.screenshot.geometry.capture_id
+    assert action.root.target.image_point == (14, 20)
     if change == "origin":
-        action = brain._wire_action(selected.action, selected)
-        assert action.root.obs_id != previous.obs_id
-        assert action.root.target.capture_id == relay.current.screenshot.geometry.capture_id
-        assert action.root.target.image_point == (14, 20)
-        assert relay.current.screenshot.desktop_point(action.root.target.image_point) == (214, 320)
-    else:
-        with pytest.raises(ValueError, match="visual_screen_changed_before_action"):
-            brain._wire_action(selected.action, selected)
+        assert relay.current.screenshot.desktop_point(action.root.target.image_point) == (
+            214,
+            320,
+        )
     assert len(perception.action_counts) == 1
-    assert not model.prompts  # No OCR, semantic model or action replanning on translation.
+    assert not model.prompts  # Geometry renewal never invokes the semantic model.

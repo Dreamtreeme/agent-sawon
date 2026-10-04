@@ -1540,9 +1540,17 @@ class Brain:
                 target = next(item for item in self.observation.elements if item.ref == choice.ref)
                 x, y, width, height = target.bbox
                 planned_point = self.visual_points.get(self.observation, decision)
-                # OCR/model latency can exceed the capture TTL. Renew only when
-                # task pixels, scale and foreground identity match. A translation alone
-                # changes only the fresh capture origin, not image-relative targets.
+                refined = self.click_refinement.applies(self, decision)
+                old_point = (
+                    self.click_refinement.bound.point
+                    if refined
+                    else planned_point.point
+                    if planned_point is not None
+                    else (x + width / 2, y + height / 2)
+                )
+                # OCR/model latency can exceed the capture TTL. Exact pixels keep the
+                # original image point. Otherwise renew the semantic target against a
+                # fresh local OCR/control catalog; old coordinates never survive reflow.
                 fresh = fresh_observation or self.relay.observe()
                 previous = self.observation.wire
                 old_shot, new_shot = previous.screenshot, fresh.screenshot
@@ -1554,24 +1562,21 @@ class Brain:
                     and new_shot.content_hash is not None
                     else fresh.screen_hash == previous.screen_hash
                 )
+                same_window = bool(
+                    fresh.active_window
+                    and previous.active_window
+                    and fresh.active_window.handle == previous.active_window.handle
+                    and fresh.active_window.process.casefold()
+                    == previous.active_window.process.casefold()
+                )
                 if (
                     fresh.blocked_reason
                     or fresh.observation_mode != "visual_only"
-                    or fresh.active_window != previous.active_window
-                    or (not screen_batch and not same_content)
+                    or not same_window
                     or new_shot is None
                     or new_shot.geometry is None
                     or old_shot is None
                     or old_shot.geometry is None
-                    or (new_shot.width, new_shot.height) != (old_shot.width, old_shot.height)
-                    or new_shot.geometry.model_dump(
-                        exclude={"capture_id", "captured_at"}
-                        | ({"origin"} if not screen_batch else set())
-                    )
-                    != old_shot.geometry.model_dump(
-                        exclude={"capture_id", "captured_at"}
-                        | ({"origin"} if not screen_batch else set())
-                    )
                 ):
                     self.log.append(
                         "verify",
@@ -1579,26 +1584,55 @@ class Brain:
                             "check": "visual_capture_renewal",
                             "ok": False,
                             "foreground_blocked": bool(fresh.blocked_reason),
-                            "same_window": fresh.active_window == previous.active_window,
+                            "same_window": same_window,
                             "same_pixels": fresh.screen_hash == previous.screen_hash,
                             "same_content": same_content,
+                            "reason": "capture_or_window_unusable",
                         },
                     )
                     raise ValueError("visual_screen_changed_before_action")
+                point = old_point
+                binding_method = "exact_capture"
+                phash_distance = 0
+                if not same_content:
+                    rebind = getattr(self.visual_perception, "rebind_action", None)
+                    if not callable(rebind):
+                        raise ValueError("visual_screen_changed_before_action")
+                    try:
+                        binding = rebind(
+                            self.observation,
+                            target,
+                            fresh,
+                            planned_point=old_point,
+                            max_phash_distance=self.settings.visual_action_phash_distance,
+                        )
+                    except ValueError as error:
+                        self.log.append(
+                            "verify",
+                            payload={
+                                "check": "visual_capture_renewal",
+                                "ok": False,
+                                "same_window": same_window,
+                                "same_content": False,
+                                "reason": str(error),
+                            },
+                        )
+                        raise ValueError("visual_screen_changed_before_action") from error
+                    point = binding.point
+                    binding_method = binding.method
+                    phash_distance = binding.phash_distance
                 data["obs_id"] = str(fresh.obs_id)
                 data["schema_version"] = "0.2"
                 data["target"] = {
-                    "image_point": list(self.click_refinement.bound.point)
-                    if self.click_refinement.applies(self, decision)
-                    else list(planned_point.point)
-                    if planned_point is not None
-                    else [x + width / 2, y + height / 2],
+                    "image_point": list(point),
                     "capture_id": str(new_shot.geometry.capture_id),
                     "evidence": (
                         "image_refined:"
-                        if self.click_refinement.applies(self, decision)
+                        if refined
                         else "image_planned:"
                         if planned_point is not None
+                        else "ocr_rebound:"
+                        if not same_content
                         else "ocr_visual:"
                     )
                     + target.ref
@@ -1620,6 +1654,8 @@ class Brain:
                             "screen_batch": screen_batch,
                             "origin_changed": new_shot.geometry.origin != old_shot.geometry.origin,
                             "same_content": same_content,
+                            "binding_method": binding_method,
+                            "phash_distance": phash_distance,
                         },
                     )
         if choice.type in {"set_text", "type_text"}:
