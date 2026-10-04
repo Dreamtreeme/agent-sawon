@@ -387,7 +387,7 @@ class Brain:
             if request.correction is not None:
                 screen["correction"] = {
                     key: request.correction[key]
-                    for key in ("error", "invalid_text_links", "invalid_links")
+                    for key in ("error", "invalid_text_links", "invalid_links", "instruction")
                     if key in request.correction
                 }
             response = self._match_visual(screen, request.page)
@@ -2075,7 +2075,11 @@ class Brain:
                 and decision.screen_kind == "query"
             ):
                 new_facts.append("query_submitted")
-            elif decision.intent == "save" and self.phase != "task":
+            elif decision.intent == "save":
+                if self.phase == "task":
+                    if not changed:
+                        return self._fail("save_no_progress")
+                    self.save_issued = True
                 new_facts.append("save_issued")
             navigation_change = None
             if decision.intent in {"navigate", "select_tab", "login"}:

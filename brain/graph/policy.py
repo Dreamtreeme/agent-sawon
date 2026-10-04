@@ -197,12 +197,12 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
                     ),
                 ]
             )
-        rules.extend(
-            [
-                _ActionRule("save", work_screens, click_types=("click",), keys=("enter",)),
-                _ActionRule("confirm_save", ("dialog",), click_types=("click",), keys=("enter",)),
-            ]
-        )
+        if not facts.remaining_fields and not facts.save_issued:
+            rules.append(_ActionRule("save", work_screens, click_types=("click",), keys=("enter",)))
+        if facts.save_issued:
+            rules.append(
+                _ActionRule("confirm_save", ("dialog",), click_types=("click",), keys=("enter",))
+            )
         return tuple(rules)
     if facts.phase == "duplicate_query" and facts.query_submitted:
         return ()  # The result must be examined before another action changes it.

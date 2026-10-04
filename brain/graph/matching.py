@@ -1048,6 +1048,57 @@ def omit_nonblocking_image_request(brain, response: ScreenMatch) -> ScreenMatch:
     return response.model_copy(update={"needs_image": False})
 
 
+def defer_unwritable_fill_targets(brain, response: ScreenMatch, screen: dict) -> ScreenMatch:
+    """Keep OCR-only input evidence readable but never use it as a write surface."""
+
+    markers = {marker["id"]: marker for marker in screen.get("markers", [])}
+    invalid = [
+        step
+        for step in response.steps
+        if step.action == "fill"
+        and markers.get(step.target, {}).get("source") in {"ocr", "ocr_group"}
+    ]
+    if not invalid:
+        return response
+    # A login or other boundary batch is atomic. Direct record fills may retain
+    # safe siblings and defer only targets whose writable extent is still absent.
+    has_boundary_action = any(step.action != "fill" for step in response.steps)
+    retained = (
+        [] if has_boundary_action else [step for step in response.steps if step not in invalid]
+    )
+    invalid_targets = {step.target for step in invalid}
+    still_referenced = (
+        {step.target for step in retained}
+        | {item.target for item in response.evidence}
+        | {item.target for item in response.completion_evidence}
+    )
+    controls = [
+        control
+        for control in response.controls
+        if control.id not in invalid_targets or control.id in still_referenced
+    ]
+    brain.log.append(
+        "verify",
+        payload={
+            "check": "unwritable_fill_target_deferred",
+            "marker_ids": sorted(invalid_targets),
+            "safe_steps_retained": len(retained),
+            "refinement_required": not retained,
+        },
+    )
+    return response.model_copy(
+        update={
+            "controls": controls,
+            "steps": retained,
+            "needs_refinement": not retained,
+            "uncertainties": [
+                *response.uncertainties,
+                "A requested writable control has only OCR text geometry.",
+            ],
+        }
+    )
+
+
 def exclude_current_navigation_step(brain, candidates: list[ProcedureStep]) -> list[ProcedureStep]:
     """Offer the successor while current-screen navigation verification is pending."""
     completed = None
@@ -1322,6 +1373,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
                 "procedure_step": candidates[0].id,
             }
         )
+    response = defer_unwritable_fill_targets(brain, response, screen)
     try:
         response, step = validate_match_plan(response, candidates, policy, brain, active_fields)
     except ValueError as error:

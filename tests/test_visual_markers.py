@@ -96,7 +96,7 @@ def test_label_is_never_promoted_to_input():
         ground_meanings(meaning, markers, blocks)
 
 
-def test_model_led_semantics_accepts_only_focused_ocr_input_evidence():
+def test_model_led_semantics_accepts_ocr_input_evidence():
     blocks, _, markers, _ = fixture()
     value = next(marker for marker in markers if marker.source == "ocr")
     meaning = SemanticDetection.model_validate(
@@ -107,7 +107,6 @@ def test_model_led_semantics_accepts_only_focused_ocr_input_evidence():
                     "role": "edit",
                     "confidence": 1,
                     "text_ids": list(value.text_ids),
-                    "focused": True,
                 }
             ]
         }
@@ -120,26 +119,6 @@ def test_model_led_semantics_accepts_only_focused_ocr_input_evidence():
     control = next(element for element in scene.elements if element.role == "edit")
     assert control.value == "Reference"
     assert control.bbox == blocks[0].bbox
-
-
-def test_model_led_semantics_rejects_unfocused_ocr_caption_as_input_extent():
-    blocks, _, markers, _ = fixture()
-    value = next(marker for marker in markers if marker.source == "ocr")
-    meaning = SemanticDetection.model_validate(
-        {
-            "controls": [
-                {
-                    "id": value.id,
-                    "role": "edit",
-                    "confidence": 1,
-                    "text_ids": list(value.text_ids),
-                    "focused": False,
-                }
-            ]
-        }
-    )
-    with pytest.raises(ValueError, match="ocr_text_is_not_control_extent"):
-        ground_meanings(meaning, markers, blocks, allow_ocr_inputs=True)
 
 
 def test_nested_rectangle_container_cannot_be_used_as_input_extent():

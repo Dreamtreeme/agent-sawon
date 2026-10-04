@@ -23,6 +23,7 @@ from brain.graph.matching import (
     ScreenPlan,
     compile_match,
     compile_screen_action_plan,
+    defer_unwritable_fill_targets,
 )
 from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
@@ -32,6 +33,43 @@ from brain.task_instruction import TaskInstruction
 from brain.visual.scene import SceneObservation, SemanticDetection
 
 PROCEDURE = Path(__file__).resolve().parents[1] / "examples/shipment-procedure.json"
+
+
+def test_ocr_fill_target_is_deferred_without_discarding_safe_sibling(tmp_path):
+    class BrainStub:
+        log = RunLog(tmp_path, case_id="defer-ocr-fill", agent_id="test")
+
+    response = ScreenMatch.model_validate(
+        {
+            "screen_kind": "editor",
+            "procedure_step": "task-action",
+            "controls": [
+                {"id": 1, "role": "edit", "confidence": 1},
+                {"id": 2, "role": "edit", "text_ids": [8], "confidence": 1},
+            ],
+            "steps": [
+                {"target": 1, "action": "fill", "intent": "fill", "source": "safe"},
+                {"target": 2, "action": "fill", "intent": "fill", "source": "missing"},
+            ],
+        }
+    )
+    screen = {
+        "markers": [
+            {"id": 1, "source": "pixel_rectangle"},
+            {"id": 2, "source": "ocr"},
+        ]
+    }
+
+    partial = defer_unwritable_fill_targets(BrainStub(), response, screen)
+    assert [step.source for step in partial.steps] == ["safe"]
+    assert not partial.needs_refinement
+    assert {control.id for control in partial.controls} == {1}
+
+    missing_only = defer_unwritable_fill_targets(
+        BrainStub(), response.model_copy(update={"steps": response.steps[1:]}), screen
+    )
+    assert not missing_only.steps
+    assert missing_only.needs_refinement
 
 
 def setup_brain(tmp_path, record, responses):

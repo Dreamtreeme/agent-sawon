@@ -193,17 +193,6 @@ def ground_meanings(
                 if marker.source == "ocr_group"
                 else "ocr_text_is_not_control_extent"
             )
-        # OCR geometry may stand in for the literal value of an input only while
-        # that value is visibly focused.  Otherwise it is just text evidence:
-        # treating a nearby caption as a writable surface sends input to the
-        # caption's centre instead of to an observed control extent.
-        if (
-            marker.source == "ocr"
-            and meaning.role in {"edit", "combobox"}
-            and allow_ocr_inputs
-            and not meaning.focused
-        ):
-            raise ValueError("ocr_text_is_not_control_extent")
         if meaning.role in {"edit", "combobox"} and nested_rectangle_count(marker, markers) >= 2:
             raise ValueError("nested_rectangle_container_is_not_input")
         # Literal value evidence is constrained to the measured box. OCR markers
