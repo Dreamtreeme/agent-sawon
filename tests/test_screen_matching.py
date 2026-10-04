@@ -296,6 +296,53 @@ def test_generic_task_binds_prompt_container_path_to_input_key(tmp_path, record,
     assert brain.visual_proposal.evidence[0].field == "hbl_no"
 
 
+def test_generic_query_input_keeps_its_boundary_intent(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.task_instruction = TaskInstruction.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    brain.procedure = None
+    brain.phase = "final_query"
+    brain.save_issued = True
+    brain.duplicate_clear = True
+    brain.verified = {field: "current-evidence" for field in brain.values}
+    proposal = ScreenMatch.model_validate(
+        {
+            "screen_kind": "query",
+            "procedure_step": "task-action",
+            "controls": [{"id": 10, "role": "edit", "confidence": 1}],
+            "steps": [
+                {
+                    "target": 10,
+                    "action": "fill",
+                    "source": "hbl_no",
+                    "intent": "query_input",
+                }
+            ],
+        }
+    )
+    capability = ProcedureStep(
+        id="task-action",
+        phase="final_query",
+        screen="any",
+        actions=["query_input"],
+        goal="Query the saved record",
+        completion="The saved record is visible",
+    )
+
+    validated, _ = validate_match_plan(
+        proposal,
+        [capability],
+        brain._decision_policy(),
+        brain,
+        set(brain.values),
+    )
+
+    assert validated.steps[0].intent == "query_input"
+
+
 def test_model_only_generic_task_keeps_model_grounded_input_progress(tmp_path, record):
     meaning = fixture()[-1]
     task_response = response(meaning, procedure_step="Enter the visible task input")

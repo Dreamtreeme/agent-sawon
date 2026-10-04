@@ -954,10 +954,14 @@ def validate_match_plan(
             )
             item = item.model_copy(update={"source": source})
             if (
-                item.action == "fill"
+                brain.phase == "task"
+                and item.action == "fill"
                 and item.source is not None
                 and not item.source.startswith("credential.")
             ):
+                # The free-form task phase treats named business inputs as ordinary
+                # record writes. Workflow phases retain their explicit boundary
+                # meaning (notably final_query/query_input).
                 item = item.model_copy(update={"intent": "fill"})
             elif item.action == "key" and item.intent == "fill" and item.source is None:
                 # A key press can expose or focus a field, but it cannot deliver a
