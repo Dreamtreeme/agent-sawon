@@ -53,6 +53,22 @@ class MethodRuntime:
         self.staged: dict[str, MethodDocument] = {}
         self.staged_completions: dict[str, MethodCompletion] = {}
 
+    def _binding_values(self) -> dict[str, str]:
+        """Expose credential source availability without exposing credential values."""
+        return {
+            **self.brain.values,
+            **{source: "[CREDENTIAL]" for source, value in self.brain.credentials.items() if value},
+        }
+
+    def _redact_credentials(self, text: str) -> str:
+        result = text
+        for source, value in sorted(
+            self.brain.credentials.items(), key=lambda item: len(item[1] or ""), reverse=True
+        ):
+            if value:
+                result = result.replace(value, "{" + source + "}")
+        return result
+
     def procedure_context(self) -> dict:
         task = self.brain.task_instruction
         steps = [] if task is None else [item.model_dump(mode="json") for item in task.procedure]
@@ -192,7 +208,7 @@ class MethodRuntime:
                 if (method.id, group.id) in self.used:
                     continue
                 bound = self.library.bind_with_context(
-                    method.id, mapping, screen, self.brain.values, group_id=group.id
+                    method.id, mapping, screen, self._binding_values(), group_id=group.id
                 )
                 if bound is not None:
                     candidates.append((method, mapping, bound))
@@ -262,7 +278,7 @@ class MethodRuntime:
         if not self.enabled:
             return
         task = self.brain.task_instruction
-        self.purpose = response.purpose[:160]
+        self.purpose = self._redact_credentials(response.purpose[:160])
         known = {method.id: method for method in self.library.methods()}
         previous = known.get(response.method_id)
         if response.operation == "complete":
@@ -293,13 +309,11 @@ class MethodRuntime:
                 or self.bindings.get(previous.id)
                 or {slot.name: slot.source_key for slot in previous.slots}
             )
-            if any(source not in self.brain.values for source in mapping.values()):
+            if any(source not in self._binding_values() for source in mapping.values()):
                 return
             self.bindings[previous.id] = mapping
             self.active_method_id = previous.id
-        if not response.steps or any(
-            (step.source or "").startswith("credential.") for step in response.steps
-        ):
+        if not response.steps:
             return
         purpose = self.purpose or response.expected_result
         if previous is None:
@@ -321,9 +335,12 @@ class MethodRuntime:
                 for source in dict.fromkeys(step.source for step in response.steps if step.source)
                 if source not in covered
             )
+        sanitized = response.model_dump(mode="json")
+        sanitized["purpose"] = self._redact_credentials(sanitized["purpose"])
+        sanitized["expected_result"] = self._redact_credentials(sanitized["expected_result"])
         method = method_from_match(
             screen,
-            response.model_dump(mode="json"),
+            sanitized,
             method_id=method_id,
             purpose=previous.purpose if previous else purpose,
             slots=slots,
@@ -393,7 +410,14 @@ class MethodRuntime:
             if method is not None:
                 candidates[method_id] = method.model_copy(update={"completion": completion})
         methods = [
-            compile_method_candidate(method, self.brain.values) for method in candidates.values()
+            compile_method_candidate(
+                method,
+                {
+                    **self.brain.values,
+                    **{source: value for source, value in self.brain.credentials.items() if value},
+                },
+            )
+            for method in candidates.values()
         ]
         promoted = 0
         promoted_methods = []

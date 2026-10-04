@@ -316,6 +316,99 @@ def test_successful_candidate_installs_versioned_live_library(tmp_path, business
     assert runtime.library.methods() == [installed]
 
 
+def test_login_structure_replays_credentials_by_source_without_storing_values(tmp_path):
+    brain, model, _ = setup(tmp_path)
+    brain.credentials = {
+        "credential.username": "private-user-47",
+        "credential.password": "private-password-83",
+    }
+    brain.task_instruction = TaskInstruction.model_validate(
+        {
+            **brain.task_instruction.model_dump(),
+            "procedure": [
+                {
+                    "id": "login",
+                    "instruction": "Authenticate to the business application.",
+                    "completion": "The business menu is visible.",
+                }
+            ],
+        }
+    )
+    blocks = [
+        OcrBlock(id=10, text="Account", bbox=(10, 25, 70, 15), confidence=1),
+        OcrBlock(id=11, text="Password", bbox=(10, 75, 70, 15), confidence=1),
+        OcrBlock(id=12, text="Sign in", bbox=(120, 127, 60, 15), confidence=1),
+    ]
+    boxes = [
+        Marker(id=0, bbox=(100, 20, 150, 30), source="omniparser", confidence=1),
+        Marker(id=1, bbox=(100, 70, 150, 30), source="omniparser", confidence=1),
+        Marker(id=2, bbox=(100, 120, 100, 30), source="omniparser", confidence=1),
+    ]
+    markers = build_markers(blocks, boxes, 400, 200)
+    controls_by_box = {tuple(box.bbox): box for box in markers if box.source == "omniparser"}
+    username = controls_by_box[(100, 20, 150, 30)]
+    password = controls_by_box[(100, 70, 150, 30)]
+    submit = controls_by_box[(100, 120, 100, 30)]
+    screen = {
+        "image_size": [400, 200],
+        "ocr": [block.model_dump(mode="json") for block in blocks],
+        "markers": [marker.model_dump(mode="json") for marker in markers],
+    }
+    learned = ScreenMatch(
+        screen_kind="login",
+        procedure_step="task-action",
+        taught_step_id="login",
+        purpose="Authenticate private-user-47",
+        expected_result="private-password-83 is accepted and the business menu is visible.",
+        controls=[
+            ControlMeaning(id=username.id, role="edit", label_ids=[10], confidence=1),
+            ControlMeaning(id=password.id, role="edit", label_ids=[11], confidence=1),
+            ControlMeaning(id=submit.id, role="button", text_ids=[12], confidence=1),
+        ],
+        steps=[
+            {
+                "target": username.id,
+                "action": "fill",
+                "source": "credential.username",
+                "intent": "credential",
+            },
+            {
+                "target": password.id,
+                "action": "fill",
+                "source": "credential.password",
+                "intent": "credential",
+            },
+            {
+                "target": submit.id,
+                "action": "click",
+                "intent": "login",
+                "point": [150, 135],
+            },
+        ],
+    )
+    brain._observe()
+    brain.methods.remember(screen, learned)
+    assert brain.methods.pending is not None
+    brain.methods.delivered({"next": "verify"})
+    assert brain.methods.finish(success=True) == 1
+
+    candidate_text = (brain.case_dir / "method-candidate.json").read_text(encoding="utf-8")
+    assert "private-user-47" not in candidate_text
+    assert "private-password-83" not in candidate_text
+    assert "credential.username" in candidate_text
+    assert "credential.password" in candidate_text
+
+    brain.methods.used.clear()
+    replay = brain.methods.apply(screen)
+    assert replay is not None
+    assert [step.source for step in replay.steps] == [
+        "credential.username",
+        "credential.password",
+        None,
+    ]
+    assert model.prompts == []
+
+
 def test_prompt_context_keeps_only_current_method_and_procedure_window(tmp_path):
     brain, _, _ = setup(tmp_path)
     method = brain.methods.library.methods()[0]

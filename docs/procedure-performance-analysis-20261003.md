@@ -186,3 +186,21 @@ worker-cold, 089 r2는 worker-warm이므로 전체31.184초 차이를 프롬프�
 `learned-procedure-live.json`을 승격 대상으로 둔다. 실패 미설치, 성공 revision2 설치, 다음 task의
 live 우선 로드를 포함한 코어 전체 **888개 테스트**와 ruff check/format이 통과했다. 신규 유료
 호출은 없고 실제 ERP 실행은 아직 하지 않았다.
+
+## 로그인 구조 재사용 우선순위 3단계
+
+기존 학습기는 action source가 `credential.*`이면 로그인 계획 전체를 버렸다. 그래서 업무 본문과
+완료 증거를 전부 재생하는 웜 실행도 로그인 화면에서는 Luna에 필드와 버튼을 다시 물었다. 이제
+로그인 그룹도 다른 화면과 같은 방법 계약으로 컴파일한다. 저장되는 것은 사용자명 입력·비밀번호
+입력·로그인 버튼의 역할, 화면에 보이는 라벨 관계, 버튼 내부 상대점, 기대 결과와
+`credential.username`·`credential.password` 소스 키다.
+
+결합 단계에는 자격증명 값 대신 `[CREDENTIAL]` 존재 표지만 넘긴다. 실제 값은 기존처럼 실행 직전
+`Brain.credentials`에서만 가져와 relay action에 넣고 로그에서는 가린다. 방법의 목적·기대 결과나
+잘못된 anchor에 자격증명 문자열이 섞여도 성공 후보 컴파일 때 `{credential.*}`로 치환하거나 instance
+anchor에서 제거한다. 실패한 전체 업무의 로그인 그룹은 live 라이브러리로 승격되지 않는다.
+
+실제 자격증명 문자열을 일부러 목적·기대 결과에 포함한 테스트에서 후보 파일에 원문이 없고, 다음
+화면 결합이 두 credential source와 로그인 click을 모델 호출 없이 복원함을 확인했다. 코어 전체
+**889개 테스트**와 ruff check/format이 통과했다. 실제 ERP 웜 로그인 시간과 Luna0회 여부는 다음
+파일럿에서 측정한다.
