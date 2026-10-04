@@ -1651,7 +1651,34 @@ class Brain:
     def _guard_action(self, decision: Decision, policy: DecisionPolicy | None = None) -> None:
         """Apply the model's exact choice policy, then ground it in this observation."""
         assert self.observation is not None
-        if not (policy or self._decision_policy()).allows(decision):
+        policy = policy or self._decision_policy()
+        allowed = policy.allows(decision)
+        if (
+            not allowed
+            and self.phase == "task"
+            and decision.intent == "save"
+            and not (set(self.values) - set(self.verified))
+        ):
+            # Generic task policy leaves all inputs reusable so a later screen
+            # can use the same source again. Save readiness is different: it is
+            # based on the model-reviewed evidence notebook accumulated for the
+            # current task. Re-evaluate only this save action with that ledger.
+            ready_policy = DecisionPolicy(
+                replace(
+                    policy.facts,
+                    verified_field_names=tuple(sorted(self.values)),
+                )
+            )
+            allowed = ready_policy.allows(decision)
+            if allowed:
+                self.log.append(
+                    "verify",
+                    payload={
+                        "check": "task_evidence_ledger_authorizes_save",
+                        "fields": sorted(self.verified),
+                    },
+                )
+        if not allowed:
             raise GuardStop("action_not_allowed_by_state")
         choice = decision.action
         if choice is None:

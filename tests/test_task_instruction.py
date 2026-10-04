@@ -105,6 +105,51 @@ def test_task_save_requires_all_inputs_evidenced_and_is_issued_once():
     assert not issued.allows(save)
 
 
+def test_generic_task_guard_uses_evidence_ledger_to_authorize_save(tmp_path):
+    record = TaskInputRecord(
+        case_id="invoice-save",
+        inputs={"invoice.number": "INV-17", "vendor_code": "V-9"},
+    )
+    relay = FakeRelay(record)
+    relay.mode = "editor"
+    log = RunLog(tmp_path, case_id=record.case_id, agent_id="generic-task-test")
+    brain = Brain(
+        record=record,
+        goal="Save the supplied invoice.",
+        relay=relay,
+        model=ScriptedModel(log, []),
+        settings=BrainSettings(visual_model_only_review=True),
+        case_dir=tmp_path,
+        run_log=log,
+    )
+    brain.phase = "task"
+    brain.task_instruction = TaskInstruction(
+        name="Save invoice",
+        objective="Save the supplied invoice.",
+        completion_conditions=["The saved invoice is visible."],
+    )
+    brain.observation = relay.observe()
+    save = DecisionResponse.model_validate(
+        {
+            "decision": decision(
+                intent="save",
+                kind="editor",
+                action={"type": "click", "ref": "e7"},
+            )
+        }
+    ).to_decision()
+
+    with pytest.raises(GuardStop, match="action_not_allowed_by_state"):
+        brain._guard_action(save)
+
+    brain.verified = {field: "current-model-evidence" for field in brain.values}
+    brain._guard_action(save)
+    assert any(
+        event.payload.get("check") == "task_evidence_ledger_authorizes_save"
+        for event in brain.log.read_all()
+    )
+
+
 def test_task_completion_is_tied_to_user_condition_not_all_input_fields():
     policy = DecisionPolicy(
         ExecutionFacts(phase="task", field_names=("invoice.number", "vendor_code"))
