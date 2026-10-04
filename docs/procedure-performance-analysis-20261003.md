@@ -169,3 +169,20 @@ worker-cold, 089 r2는 worker-warm이므로 전체31.184초 차이를 프롬프�
 반응형 resize 입력 재결합, 텍스트 버튼 상대점 이동, 큰 장면 변화, 중복 라벨, 프로세스 교체,
 창 이동과 연속 입력 회귀를 포함한 코어 전체 **885개 테스트**와 ruff check/format이 통과했다.
 실제 ERP 파일럿과 시간 측정은 다음 단계에 남겨 두며 이 구현에는 신규 유료 호출이 없다.
+
+## 성공 방법의 live 승격 우선순위 2단계
+
+기존 `MethodRuntime`은 전체 업무 성공 뒤 후보를 case의 `methods-working.json`과
+`method-candidate.json`에만 합쳤다. 다음 실행은 설정의 원본 파일을 다시 복사하므로, 082·084에서
+완성한 후반 그룹과 완료 증거가 있어도 stage5 설정이 계속 불완전한081을 읽었다.
+
+방법 설정에 선택적 `promotion_path`를 추가했다. 시작할 때 live 파일이 있으면 불변 seed보다 live를
+우선하고, 없으면 seed로 시작한다. 전체 업무가 성공한 경우에만 case 작업 사본을 먼저 컴파일한 뒤
+파일 잠금·원자 교체를 사용하는 `MethodLibrary.upsert`로 live revision을 올린다. 실패 실행은 live
+파일을 만들거나 수정하지 않는다. case 후보도 실제 설치된 revision을 기록한다. 이 방식은 081·084
+같은 과거 증거 파일을 덮어쓰지 않으면서 다음 실행이 최신 성공 방법을 자동 사용하게 한다.
+
+다음 실제 실행용 stage6 설정은 완료 증거가 있는084를 seed로 사용하고 별도
+`learned-procedure-live.json`을 승격 대상으로 둔다. 실패 미설치, 성공 revision2 설치, 다음 task의
+live 우선 로드를 포함한 코어 전체 **888개 테스트**와 ruff check/format이 통과했다. 신규 유료
+호출은 없고 실제 ERP 실행은 아직 하지 않았다.

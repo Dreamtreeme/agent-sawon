@@ -23,12 +23,26 @@ if TYPE_CHECKING:
 
 
 class MethodRuntime:
-    def __init__(self, brain: Brain, path: Path, *, enabled: bool):
+    def __init__(
+        self,
+        brain: Brain,
+        path: Path,
+        *,
+        enabled: bool,
+        promotion_path: Path | None = None,
+    ):
         self.brain = brain
         self.enabled = enabled
+        self.seed_path = Path(path)
+        self.promotion_path = Path(promotion_path) if promotion_path is not None else None
         self.library = MethodLibrary(brain.case_dir / "methods-working.json", enabled=enabled)
         if enabled:
-            source = MethodLibrary(path, enabled=True)
+            selected = (
+                self.promotion_path
+                if self.promotion_path is not None and self.promotion_path.exists()
+                else self.seed_path
+            )
+            source = MethodLibrary(selected, enabled=True)
             atomic_write_json(self.library.path, MethodDocument(methods=source.methods()))
         self.bindings: dict[str, dict[str, str]] = {}
         self.active_method_id: str | None = None
@@ -383,17 +397,22 @@ class MethodRuntime:
         ]
         promoted = 0
         promoted_methods = []
+        installed_methods = []
         if success:
             for method in methods:
                 promoted_methods.append(self.library.upsert(method))
                 promoted += 1
             if promoted_methods:
+                installed_methods = promoted_methods
+                if self.promotion_path is not None:
+                    destination = MethodLibrary(self.promotion_path, enabled=True)
+                    installed_methods = [destination.upsert(method) for method in promoted_methods]
                 atomic_write_json(
                     self.brain.case_dir / "method-candidate.json",
                     # Export the full merged method. A warm run often learns only
                     # the suffix that required model fallback; that suffix alone
                     # is not a replayable business procedure.
-                    MethodDocument(methods=promoted_methods),
+                    MethodDocument(methods=installed_methods),
                 )
         atomic_write_json(
             self.brain.case_dir / "method-learning-result.json",
@@ -404,6 +423,10 @@ class MethodRuntime:
                 "action_group_count": sum(len(item.action_groups) for item in promoted_methods),
                 "completion_count": sum(item.completion is not None for item in promoted_methods),
                 "promoted": promoted,
+                "installed": len(installed_methods) if self.promotion_path is not None else 0,
+                "installed_revisions": {method.id: method.revision for method in installed_methods}
+                if self.promotion_path is not None
+                else {},
             },
         )
         return promoted

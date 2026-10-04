@@ -280,6 +280,19 @@ def test_settings_resolve_local_weights_relative_to_config(tmp_path):
     assert BrainSettings.load(config).visual_detector.weights == tmp_path / "weights/model.pt"
 
 
+def test_settings_resolve_method_promotion_path_relative_to_config(tmp_path):
+    from brain.settings import BrainSettings
+
+    config = tmp_path / "brain.toml"
+    config.write_text(
+        '[methods]\nenabled=true\npath="seed.json"\npromotion_path="live/methods.json"',
+        encoding="utf-8",
+    )
+    settings = BrainSettings.load(config)
+    assert settings.methods.path == tmp_path / "seed.json"
+    assert settings.methods.promotion_path == tmp_path / "live/methods.json"
+
+
 def test_ocr_tolerance_removes_tall_glyphs_but_preserves_larger_button():
     block = OcrBlock(id=0, text="Example", confidence=0.99, bbox=(20, 30, 100, 22))
     glyph = Marker(id=0, bbox=(40, 27, 24, 29), source="omniparser", confidence=0.7)

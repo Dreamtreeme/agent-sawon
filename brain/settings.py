@@ -30,6 +30,7 @@ class MethodSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     enabled: bool = False
     path: Path = Path("cases/methods.json")
+    promotion_path: Path | None = None
 
 
 class BrainSettings(BaseModel):
@@ -106,7 +107,30 @@ class BrainSettings(BaseModel):
             settings = settings.model_copy(
                 update={
                     "methods": settings.methods.model_copy(
-                        update={"path": (path.parent / settings.methods.path).resolve()}
+                        update={
+                            "path": (path.parent / settings.methods.path).resolve(),
+                            "promotion_path": (
+                                (path.parent / settings.methods.promotion_path).resolve()
+                                if settings.methods.promotion_path is not None
+                                and not settings.methods.promotion_path.is_absolute()
+                                else settings.methods.promotion_path
+                            ),
+                        }
+                    )
+                }
+            )
+        elif (
+            settings.methods.promotion_path is not None
+            and not settings.methods.promotion_path.is_absolute()
+        ):
+            settings = settings.model_copy(
+                update={
+                    "methods": settings.methods.model_copy(
+                        update={
+                            "promotion_path": (
+                                path.parent / settings.methods.promotion_path
+                            ).resolve()
+                        }
                     )
                 }
             )

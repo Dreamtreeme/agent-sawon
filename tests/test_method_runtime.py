@@ -55,7 +55,7 @@ def catalog(label="Customer", shift=0):
     return blocks, boxes, screen, response
 
 
-def setup(tmp_path, *, changed_label=False, fail_second=False):
+def setup(tmp_path, *, changed_label=False, fail_second=False, promotion_path=None):
     task = TaskInstruction(
         name="Business entry",
         objective="Enter supplied business data",
@@ -138,7 +138,11 @@ def setup(tmp_path, *, changed_label=False, fail_second=False):
             visual_screen_fill=True,
             visual_model_led_semantics=True,
             visual_model_only_review=True,
-            methods={"enabled": True, "path": source.path},
+            methods={
+                "enabled": True,
+                "path": source.path,
+                "promotion_path": promotion_path,
+            },
         ),
         case_dir=tmp_path / "case",
         run_log=log,
@@ -271,6 +275,45 @@ def test_final_model_proof_is_promoted_only_after_business_success(tmp_path, bus
         event.kind == "cache_hit" and event.payload.get("check") == "method_completion_bound"
         for event in events
     )
+
+
+@pytest.mark.parametrize("business_success", [False, True])
+def test_successful_candidate_installs_versioned_live_library(tmp_path, business_success):
+    from types import SimpleNamespace
+
+    from brain.graph.method_runtime import MethodRuntime
+
+    live = tmp_path / "live" / "methods.json"
+    brain, _, _ = setup(
+        tmp_path,
+        changed_label=True,
+        promotion_path=live,
+    )
+    brain._observe()
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
+    assert brain._act_node({}) == {"next": "verify"}
+    assert brain.methods.finish(success=business_success) == int(business_success)
+    if not business_success:
+        assert not live.exists()
+        return
+
+    installed = MethodDocument.model_validate_json(live.read_bytes()).methods[0]
+    assert installed.revision == 2
+    assert len(installed.action_groups) == 2
+    assert MethodDocument.model_validate_json(
+        (brain.case_dir / "method-candidate.json").read_bytes()
+    ).methods == [installed]
+
+    # The next task prefers the successful live revision over the immutable seed.
+    next_brain = SimpleNamespace(case_dir=tmp_path / "next-case")
+    runtime = MethodRuntime(
+        next_brain,
+        brain.methods.seed_path,
+        enabled=True,
+        promotion_path=live,
+    )
+    assert runtime.library.methods() == [installed]
 
 
 def test_prompt_context_keeps_only_current_method_and_procedure_window(tmp_path):

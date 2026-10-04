@@ -342,7 +342,12 @@ class Brain:
                     settings.procedure_path.read_text(encoding="utf-8")
                 )
                 atomic_write_json(self.case_dir / "procedure.json", self.procedure)
-        self.methods = MethodRuntime(self, settings.methods.path, enabled=settings.methods.enabled)
+        self.methods = MethodRuntime(
+            self,
+            settings.methods.path,
+            enabled=settings.methods.enabled,
+            promotion_path=settings.methods.promotion_path,
+        )
         if settings.perception_mode == "visual_only":
             if visual_ocr is None:
                 raise ValueError("visual_ocr_required")
