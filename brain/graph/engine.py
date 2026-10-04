@@ -699,7 +699,8 @@ class Brain:
             feedback["required_response"] = (
                 "No input was sent. The proposed surface is already current evidence for a "
                 "different task input. Keep that evidence and choose a different grounded "
-                "writable extent for requested_source, or navigate/scroll to expose it."
+                "writable extent for requested_source, or use grounded key/navigation/scroll "
+                "to expose or focus the missing input before rereading the screen."
             )
         elif reason == "save_rejected":
             feedback["required_response"] = (
@@ -2015,7 +2016,10 @@ class Brain:
                 self.pending["visual_match_candidate"] = visual_candidate
             return outcome
         except GuardStop as exc:
-            if str(exc) == "record_input_scope_mismatch":
+            if str(exc) in {
+                "record_input_scope_mismatch",
+                "input_surface_claimed_by_other_field",
+            }:
                 return self._fail(str(exc))
             return self._finish("stopped", str(exc))
         except Exception as exc:

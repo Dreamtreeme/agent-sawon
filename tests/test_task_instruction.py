@@ -330,3 +330,50 @@ def test_task_fill_cannot_overwrite_surface_owned_by_another_input(tmp_path):
         "requested_source": "vendor_code",
         "target_ref": target.ref,
     }
+
+
+def test_surface_conflict_during_plan_preflight_reobserves_for_recovery(tmp_path):
+    record = TaskInputRecord(
+        case_id="invoice-18",
+        inputs={"invoice.number": "INV-18", "vendor_code": "V-10"},
+    )
+    relay = FakeRelay(record)
+    relay.mode = "editor"
+    log = RunLog(tmp_path, case_id=record.case_id, agent_id="surface-recovery-test")
+    brain = Brain(
+        record=record,
+        goal="Save the supplied invoice.",
+        relay=relay,
+        model=ScriptedModel(log, []),
+        settings=BrainSettings(visual_model_only_review=True),
+        case_dir=tmp_path,
+        run_log=log,
+    )
+    brain.phase = "task"
+    brain.task_instruction = TaskInstruction(
+        name="Save invoice",
+        objective="Save the supplied invoice.",
+        completion_conditions=["The saved invoice is visible."],
+    )
+    brain.observation = relay.observe()
+    target = next(item for item in brain.observation.elements if item.role == "Edit")
+    brain.evidence_ledger.record(
+        "invoice.number",
+        describe(target, brain.observation.elements),
+        str(brain.observation.obs_id),
+    )
+    brain.decision = DecisionResponse.model_validate(
+        {
+            "decision": decision(
+                intent="fill",
+                kind="editor",
+                action={"type": "set_text", "ref": target.ref, "source": "vendor_code"},
+            )
+        }
+    ).to_decision()
+    brain.execution_authorized = True
+
+    assert brain._act_node({}) == {"next": "observe"}
+    assert brain.result is None
+    assert brain.feedback[-1]["reason"] == "input_surface_claimed_by_other_field"
+    assert "key/navigation/scroll" in brain.feedback[-1]["required_response"]
