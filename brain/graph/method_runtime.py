@@ -55,6 +55,47 @@ class MethodRuntime:
             ],
         }
 
+    def procedure_prompt_context(self) -> dict:
+        """Return the current taught step window instead of the whole procedure."""
+        task = self.brain.task_instruction
+        if task is None or not task.procedure:
+            return {"steps": [], "completed_step_ids": [], "recent_results": []}
+        order = {step.id: index for index, step in enumerate(task.procedure)}
+        remaining_ids = []
+        for method in self.library.methods():
+            if method.task_objective and method.task_objective != task.objective:
+                continue
+            remaining_ids.extend(
+                group.taught_step_id
+                for group in method.action_groups
+                if (method.id, group.id) not in self.used and group.taught_step_id in order
+            )
+        delivered = {
+            item.get("taught_step_id")
+            for item in self.history
+            if item.get("status") == "delivered" and item.get("taught_step_id") in order
+        }
+        if remaining_ids:
+            current_index = min(order[step_id] for step_id in remaining_ids)
+        elif delivered:
+            current_index = min(max(order[step_id] for step_id in delivered) + 1, len(order) - 1)
+        else:
+            current_index = 0
+        focused = task.procedure[current_index : current_index + 2]
+        return {
+            "steps": [item.model_dump(mode="json") for item in focused],
+            "completed_step_ids": [step.id for step in task.procedure[:current_index]],
+            "recent_results": [
+                {
+                    "taught_step_id": item.get("taught_step_id"),
+                    "purpose": item.get("purpose"),
+                    "status": item.get("status"),
+                }
+                for item in self.history[-2:]
+                if item.get("taught_step_id")
+            ],
+        }
+
     def context(self) -> dict:
         return {
             "methods": self.library.catalog(),
@@ -62,6 +103,51 @@ class MethodRuntime:
             "active_method_id": self.active_method_id,
             "slot_bindings": self.bindings,
             "recent_executions": self.history[-6:],
+        }
+
+    def prompt_context(self) -> dict:
+        """Expose only reusable groups that can affect the next decisions."""
+        task = self.brain.task_instruction
+        objective = None if task is None else task.objective
+        methods = []
+        for method in self.library.methods():
+            if objective is not None and method.task_objective not in {"", objective}:
+                continue
+            remaining = [
+                group for group in method.action_groups if (method.id, group.id) not in self.used
+            ][:2]
+            relevant_slots = {
+                action.slot for group in remaining for action in group.actions if action.slot
+            }
+            methods.append(
+                {
+                    "id": method.id,
+                    "purpose": method.purpose,
+                    "task_objective": method.task_objective,
+                    "slots": [
+                        slot.model_dump() for slot in method.slots if slot.name in relevant_slots
+                    ],
+                    "groups": [
+                        {
+                            "id": group.id,
+                            "purpose": group.purpose,
+                            "taught_step_id": group.taught_step_id,
+                            "context_anchors": group.context_anchors,
+                        }
+                        for group in remaining
+                    ],
+                }
+            )
+        return {
+            "methods": methods,
+            "current_purpose": self.purpose,
+            "active_method_id": self.active_method_id,
+            "slot_bindings": {
+                method_id: bindings
+                for method_id, bindings in self.bindings.items()
+                if any(method["id"] == method_id and method["groups"] for method in methods)
+            },
+            "recent_executions": self.history[-2:],
         }
 
     def apply(self, screen: dict) -> ScreenMatch | None:

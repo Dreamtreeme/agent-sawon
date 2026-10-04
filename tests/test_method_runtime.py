@@ -271,3 +271,66 @@ def test_final_model_proof_is_promoted_only_after_business_success(tmp_path, bus
         event.kind == "cache_hit" and event.payload.get("check") == "method_completion_bound"
         for event in events
     )
+
+
+def test_prompt_context_keeps_only_current_method_and_procedure_window(tmp_path):
+    brain, _, _ = setup(tmp_path)
+    method = brain.methods.library.methods()[0]
+    first = method.action_groups[0].model_copy(
+        update={"id": "group-first", "taught_step_id": "step-1"}
+    )
+    second = method.action_groups[0].model_copy(
+        update={"id": "group-second", "taught_step_id": "step-2"}
+    )
+    third = method.action_groups[0].model_copy(
+        update={"id": "group-third", "taught_step_id": "step-3"}
+    )
+    atomic_write_json(
+        brain.methods.library.path,
+        MethodDocument(
+            methods=[method.model_copy(update={"action_groups": [first, second, third]})]
+        ),
+    )
+    brain.task_instruction = TaskInstruction.model_validate(
+        {
+            "name": "Three steps",
+            "objective": brain.task_instruction.objective,
+            "completion_conditions": ["Done"],
+            "procedure": [
+                {"id": f"step-{index}", "instruction": f"Do {index}", "completion": "Done"}
+                for index in range(1, 5)
+            ],
+        }
+    )
+    brain.methods.used.add((method.id, first.id))
+    brain.methods.history.extend(
+        [
+            {
+                "taught_step_id": "step-1",
+                "purpose": "first",
+                "status": "delivered",
+            },
+            {
+                "taught_step_id": "step-2",
+                "purpose": "retry",
+                "status": "interrupted",
+            },
+            {
+                "taught_step_id": "step-2",
+                "purpose": "second",
+                "status": "delivered",
+            },
+        ]
+    )
+
+    procedure = brain.methods.procedure_prompt_context()
+    memory = brain.methods.prompt_context()
+
+    assert [step["id"] for step in procedure["steps"]] == ["step-2", "step-3"]
+    assert procedure["completed_step_ids"] == ["step-1"]
+    assert [item["purpose"] for item in procedure["recent_results"]] == ["retry", "second"]
+    assert [group["id"] for group in memory["methods"][0]["groups"]] == [
+        "group-second",
+        "group-third",
+    ]
+    assert len(memory["recent_executions"]) == 2

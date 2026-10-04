@@ -1120,8 +1120,8 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         "execution": contract,
     }
     if brain.task_instruction is not None:
-        state["task"] = brain.task_instruction.model_dump(mode="json")
-        state["taught_procedure_progress"] = brain.methods.procedure_context()
+        state["task"] = brain.task_instruction.model_dump(mode="json", exclude={"procedure"})
+        state["taught_procedure_progress"] = brain.methods.procedure_prompt_context()
         if brain.task_instruction.procedure:
             state["taught_procedure_rules"] = TAUGHT_PROCEDURE_RULES.strip()
         state["capabilities"] = [model_capability(step) for step in candidates]
@@ -1136,7 +1136,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         state["save_review"] = contract["save_review"]
     methods = getattr(brain, "methods", None)
     if methods is not None and methods.enabled:
-        state["method_memory"] = methods.context()
+        state["method_memory"] = methods.prompt_context()
     method_rules = METHOD_RULES if methods is not None and methods.enabled else ""
     taught_rules = (
         TAUGHT_PROCEDURE_RULES
