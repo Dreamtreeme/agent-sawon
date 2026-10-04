@@ -282,6 +282,10 @@ every data-bound step.source and evidence.field MUST be one exact key from noteb
 record./inputs. prefixes and never a literal value. Use intent=fill for every business text input,
 including filters and lookups. Treat a visible status or result as current evidence: when it already
 shows a command's expected effect, do not repeat that command; advance the task from that result.
+When a remaining input caption is visible but its writable boundary is clipped or absent at a
+scrolling viewport edge, expose that boundary with grounded scrolling before stopping. Do not
+reselect a current tab to expose a caption that is already visible. A merged OCR marker containing
+multiple tab captions does not identify an inactive tab; visible panel content is stronger proof.
 Return only task-plan schema fields and never reclassify controls or invent IDs.
 Every referenced marker must already exist in grounded_interpretation.controls. Omit incidental
 past-row evidence that is not needed for this CURRENT action or completion decision.
@@ -380,6 +384,11 @@ remaining_inputs contains values that have not yet been evidenced on any observe
 progress context, not a command to overwrite a matching CURRENT value. Before planning actions,
 compare visible values with notebook.inputs. Put every matching direct input in evidence and do
 not fill it again, even when it was previously listed in remaining_inputs.
+When a remaining input caption is visible but its writable boundary is clipped or absent at a
+scrolling viewport edge, ground a current control in that viewport and use scrolling to expose the
+whole input before stopping. Do not reselect a current tab to expose a caption already visible.
+A merged OCR marker containing multiple tab captions does not identify an inactive tab; use the
+visible panel content as stronger evidence of the current view.
 Every referenced marker MUST also be defined in controls in this same response. During
 operation=act, omit past-row evidence unrelated to the current action.
 In generic task mode those inputs remain reusable across screens: verified_inputs reports prior
