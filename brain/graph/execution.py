@@ -97,8 +97,17 @@ def log_transition(
 
 def execute_plan(brain: Brain, plan: ActionPlan) -> dict:
     assert brain.observation is not None
+    plan = brain._reconcile_action_plan(plan)
     if not plan.actions:
-        raise GuardStop("empty_action_plan")
+        brain.log.append(
+            "select",
+            payload={
+                "check": "action_plan_already_satisfied",
+                "obs_id": str(brain.observation.obs_id),
+                **plan.audit,
+            },
+        )
+        return {"next": "review"}
     # The selection step already counted the first action (also for a cache hit).
     if brain.steps + len(plan.actions) - 1 > brain.settings.max_steps:
         raise GuardStop("max_steps")

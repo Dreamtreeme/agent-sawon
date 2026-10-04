@@ -135,6 +135,9 @@ def setup(tmp_path, *, changed_label=False, fail_second=False, promotion_path=No
             task_path=task_path,
             perception_mode="visual_only",
             screen_matching=True,
+            # These tests isolate the legacy combined method-binding adapter.
+            # Separate observation/decision behavior has its own graph test.
+            separate_observation_decision=False,
             visual_screen_fill=True,
             visual_model_led_semantics=True,
             visual_model_only_review=True,

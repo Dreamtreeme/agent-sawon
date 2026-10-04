@@ -22,8 +22,9 @@ FINAL_QUERY_INPUT_GUIDANCE = (
     "management menus are not evidence of a business search route; consider observed "
     "back/close controls when leaving a completed document window. "
     "Set its observed query input from hbl_no with operation=act, "
-    "intent=query_input and action.type=set_text, even if the value already matches. "
-    "The runtime will reread the value. Do not submit final evidence at this step."
+    "intent=query_input and action.type=set_text only when execution_policy reports "
+    "that the CURRENT observed value is not already verified. Do not submit final "
+    "evidence at this step."
 )
 FINAL_QUERY_SEARCH_GUIDANCE = (
     "CURRENT STEP ONLY: The query value has already been entered and verified, "
@@ -127,8 +128,8 @@ def phase_instruction(policy: DecisionPolicy) -> str:
         "CURRENT STEP: Check for an existing record before entry. Log in if needed "
         "using opaque credential sources, and reach a query screen by observed "
         "navigation. Set its query input from hbl_no with operation=act, "
-        "intent=query_input, action.type=set_text. The runtime must reread it before "
-        "search; even an already matching displayed value must be set and verified."
+        "intent=query_input, action.type=set_text only when the CURRENT observed value "
+        "is not already verified. The runtime must observe the matching value before search."
     )
 
 

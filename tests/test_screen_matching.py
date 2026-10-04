@@ -35,6 +35,7 @@ from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
 from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInstruction
+from brain.visual.perception import DETECTION_RULES
 from brain.visual.scene import SceneObservation, SemanticDetection
 
 PROCEDURE = Path(__file__).resolve().parents[1] / "examples/shipment-procedure.json"
@@ -77,7 +78,7 @@ def test_ocr_fill_target_is_deferred_without_discarding_safe_sibling(tmp_path):
     assert missing_only.needs_refinement
 
 
-def setup_brain(tmp_path, record, responses):
+def setup_brain(tmp_path, record, responses, *, separate_observation_decision=False):
     blocks, boxes, _, meaning = fixture()
 
     class Relay:
@@ -129,6 +130,7 @@ def setup_brain(tmp_path, record, responses):
         settings=BrainSettings(
             perception_mode="visual_only",
             screen_matching=True,
+            separate_observation_decision=separate_observation_decision,
             visual_screen_fill=True,
             procedure_path=PROCEDURE,
         ),
@@ -185,6 +187,29 @@ def test_procedure_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path,
     assert brain.decision.action.source == "hbl_no"
     assert brain.decision.action.ref.startswith("e" + str(brain.observation.obs_id.int))
     assert "secret-user" not in model.prompts[0] and "secret-pw" not in model.prompts[0]
+
+
+def test_observation_semantics_are_reconciled_before_a_separate_task_plan(tmp_path, record):
+    meaning = fixture()[-1].model_copy(update={"screen_kind": "query"})
+    brain, model, _, _, _, _ = setup_brain(
+        tmp_path,
+        record,
+        [meaning.model_dump(), response(meaning)],
+        separate_observation_decision=True,
+    )
+
+    brain._observe()
+    assert len(model.prompts) == 1
+    assert model.prompts[0].startswith(DETECTION_RULES)
+    assert brain.visual_proposal is None
+
+    assert brain._select_node({}) == {"next": "review"}
+    assert len(model.prompts) == 2
+    assert model.prompts[1].startswith(PLAN_RULES)
+    assert any(
+        event.payload.get("check") == "grounded_interpretation_planned"
+        for event in brain.log.read_all()
+    )
 
 
 def test_act_omits_unbound_incidental_evidence_without_paid_grounding(tmp_path, record):

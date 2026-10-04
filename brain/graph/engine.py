@@ -46,6 +46,7 @@ from .execution import ActionPlan, PendingAction, execute_plan, log_transition
 from .execution import GuardStop as GuardStop
 from .method_runtime import MethodRuntime
 from .policy import DecisionPolicy, ExecutionFacts
+from .reconciliation import ReconciledObservation, reconcile_observation
 from .review import EvidenceReview, review_final
 from .save_review import SaveReviewResponse, validate_save_review
 from .saved_evidence import SavedEvidence
@@ -156,6 +157,14 @@ class Brain:
     @observation_number.setter
     def observation_number(self, value: int) -> None:
         self._worker_state["observation"]["sequence"] = value
+
+    @property
+    def reconciled_observation(self) -> ReconciledObservation | None:
+        return self._worker_state["observation"]["reconciled"]
+
+    @reconciled_observation.setter
+    def reconciled_observation(self, value: ReconciledObservation | None) -> None:
+        self._worker_state["observation"]["reconciled"] = value
 
     @property
     def decision(self) -> Decision | None:
@@ -383,7 +392,7 @@ class Brain:
         return response
 
     def _detect_visual(self, request: SemanticRequest) -> SemanticDetection:
-        if self.settings.screen_matching:
+        if self.settings.screen_matching and not self.settings.separate_observation_decision:
             screen = dict(request.screen)
             if request.correction is not None:
                 screen["correction"] = {
@@ -401,6 +410,8 @@ class Brain:
                     if key in SemanticDetection.model_fields
                 }
             )
+        # Observation classifies the current pixels only.  Task planning happens
+        # later in _selection_call against this immutable interpretation.
         return self._call(request.prompt(), SemanticDetection, page=request.page)
 
     def _selection_call(self, prompt: str, schema: type[BaseModel]):
@@ -819,6 +830,54 @@ class Brain:
     def _duplicate_checkpoint_pending(self) -> bool:
         return self.phase == "duplicate_query" and self.query_submitted
 
+    def _apply_observation_reconciliation(self, observation: Observation) -> None:
+        """Promote current visible facts before policy or planning runs."""
+
+        reconciled = reconcile_observation(observation, self.values)
+        self.reconciled_observation = reconciled
+        if not isinstance(observation, SceneObservation):
+            # Legacy UIA observations have no trusted screen-kind contract here;
+            # keep their existing action-verification path during migration.
+            return
+        query = reconciled.query_input
+        if self.phase not in {"duplicate_query", "final_query"}:
+            return
+        if query is not None:
+            element = next(item for item in observation.elements if item.ref == query.ref)
+            newly_observed = not self.query_value_verified
+            self.query_value_verified = True
+            self.query_descriptor = describe(element, observation.elements)
+            self.query_input_anchor = (observation, element.ref)
+            self.query_window_handle = observation.active_window.handle
+            if newly_observed:
+                self._record_progress("query_input")
+                self.log.append(
+                    "verify",
+                    payload={
+                        "ok": True,
+                        "check": "observed_state_reconciled",
+                        "fact": "query_input_matches",
+                        "source": query.source,
+                        "ref": query.ref,
+                        "obs_id": query.obs_id,
+                        "provenance": "current_observation",
+                    },
+                )
+            return
+        if self.query_value_verified and not self.query_submitted:
+            self.query_value_verified = False
+            self.query_descriptor = None
+            self.query_input_anchor = None
+            self.query_window_handle = None
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "query_input_invalidated",
+                    "obs_id": str(observation.obs_id),
+                    "reason": "current_observation_does_not_have_unique_matching_input",
+                },
+            )
+
     def _bind_saved_evidence(self, response) -> None:
         self.saved_bindings = (
             str(self.observation.obs_id),
@@ -864,21 +923,7 @@ class Brain:
             self.task_instruction is not None and self.settings.visual_model_only_review
         ):
             self._invalidate_editor_evidence()
-        if (
-            self.query_value_verified
-            and not self.query_submitted
-            and not self._current_query_matches()
-        ):
-            self.query_value_verified = False
-            self.query_descriptor = None
-            self.query_window_handle = None
-            self.log.append(
-                "verify",
-                payload={
-                    "check": "query_input_invalidated",
-                    "obs_id": str(observation.obs_id),
-                },
-            )
+        self._apply_observation_reconciliation(observation)
         if self.settings.screen_matching:
             from .notebook import remember
 
@@ -1396,8 +1441,20 @@ class Brain:
                     outcome = self._apply_save_review(review)
                     if outcome is not None:
                         return outcome
-                    self.decision = review.next_decision.to_decision()
                     policy = self._decision_policy()
+                    proposed = review.next_decision.to_decision()
+                    if not policy.allows(proposed):
+                        self.log.append(
+                            "verify",
+                            payload={
+                                "check": "save_review_next_decision_reconciled",
+                                "discarded_intent": proposed.intent,
+                                "current_step": policy.current_step,
+                                "obs_id": str(self.observation.obs_id),
+                            },
+                        )
+                        return {"next": "select"}
+                    self.decision = proposed
                 elif login_batch:
                     schema = LoginScreenPlan
                     plan = self._selection_call(prompt + LOGIN_GUIDANCE, schema)
@@ -1730,6 +1787,71 @@ class Brain:
             and not self.click_refinement.applies(self, decision)
         ):
             raise GuardStop("navigation_no_progress")
+
+    def _reconcile_action_plan(self, plan: ActionPlan) -> ActionPlan:
+        """Drop writes whose model-grounded current target already has the goal value."""
+
+        assert self.observation is not None
+        by_ref = {item.ref: item for item in self.observation.elements}
+        remaining = []
+        satisfied = []
+        for planned in plan.actions:
+            decision = planned.decision
+            choice = decision.action
+            if (
+                choice is None
+                or choice.type not in {"set_text", "type_text"}
+                or choice.source not in self.values
+            ):
+                remaining.append(planned)
+                continue
+            target = by_ref.get(choice.ref)
+            if (
+                target is None
+                or not target.enabled
+                or not field_matches(choice.source, target.value, self.values)
+            ):
+                remaining.append(planned)
+                continue
+            accepted = False
+            if decision.intent == "query_input":
+                fact = self.reconciled_observation
+                accepted = bool(
+                    fact is not None
+                    and fact.query_input is not None
+                    and fact.query_input.ref == target.ref
+                )
+            elif decision.intent == "fill":
+                accepted = self._record_verified_field(choice.source, target)
+            if not accepted:
+                remaining.append(planned)
+                continue
+            satisfied.append(
+                {"intent": decision.intent, "source": choice.source, "ref": target.ref}
+            )
+
+        if not satisfied:
+            return plan
+        self.log.append(
+            "verify",
+            payload={
+                "ok": True,
+                "check": "observed_actions_already_satisfied",
+                "obs_id": str(self.observation.obs_id),
+                "actions": satisfied,
+                "dispatched": False,
+            },
+        )
+        self.feedback.append(
+            {
+                "ok": True,
+                "phase": self.phase,
+                "check": "observed_actions_already_satisfied",
+                "sources": [item["source"] for item in satisfied],
+            }
+        )
+        audit = {**plan.audit, "already_satisfied": satisfied}
+        return replace(plan, actions=tuple(remaining), audit=audit)
 
     def _wire_action(
         self,
@@ -2443,6 +2565,10 @@ class Brain:
         if review.result == "ready_for_query":
             # Permission to verify persistence, never evidence that saving succeeded.
             self.phase = "final_query"
+            # The save result can itself be the returned query screen. Reconcile
+            # those current pixels under the new phase before accepting the
+            # reviewer's conditionally proposed next action.
+            self._apply_observation_reconciliation(self.observation)
         elif review.result == "rejected":
             self.phase = "enter"
             self.save_issued = False

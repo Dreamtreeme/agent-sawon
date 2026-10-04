@@ -7,6 +7,7 @@ from typing import Literal, TypedDict
 from sawon_interfaces import Observation
 
 from .execution import ActionPlan, PendingAction
+from .reconciliation import ReconciledObservation
 from .review import EvidenceReview
 from .schemas import Decision
 
@@ -18,6 +19,7 @@ class ObservationState(TypedDict):
 
     current: Observation | None
     sequence: int
+    reconciled: ReconciledObservation | None
 
 
 class DecisionState(TypedDict):
@@ -63,7 +65,7 @@ class WorkerState(TypedDict):
 
 def create_worker_state() -> WorkerState:
     return {
-        "observation": {"current": None, "sequence": 0},
+        "observation": {"current": None, "sequence": 0, "reconciled": None},
         "decision": {"current": None, "action_plan": None, "task_plan": []},
         "execution": {"pending": None, "authorized": False},
         "review": {

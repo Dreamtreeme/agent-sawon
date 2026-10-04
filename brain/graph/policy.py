@@ -106,7 +106,7 @@ class ExecutionFacts:
 
     @property
     def final_query_workflow_ready(self) -> bool:
-        """Prior actions permit result inspection; this does not prove its values."""
+        """Observed input plus a fresh search permit result inspection."""
         return (
             self.phase == "final_query"
             and self.duplicate_clear
