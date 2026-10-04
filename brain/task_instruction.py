@@ -5,6 +5,27 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class TaughtProcedureAction(BaseModel):
+    """A user's semantic UI instruction without transient geometry."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    verb: Literal["activate", "fill", "navigate", "verify"]
+    target: str = Field(min_length=1, max_length=200)
+    input_key: str | None = Field(default=None, min_length=1, max_length=120)
+    surface: Literal["direct_input", "table_cell", "any"] | None = None
+
+    @model_validator(mode="after")
+    def input_binding_matches_verb(self):
+        if self.verb == "fill" and self.input_key is None:
+            raise ValueError("taught_fill_requires_input_key")
+        if self.input_key is not None:
+            allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+            if any(character not in allowed for character in self.input_key):
+                raise ValueError("taught_action_input_key_invalid")
+        return self
+
+
 class TaughtProcedureStep(BaseModel):
     """One user-taught program step, independent of transient coordinates."""
 
@@ -13,6 +34,7 @@ class TaughtProcedureStep(BaseModel):
     id: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_.-]+$")
     instruction: str = Field(min_length=1, max_length=500)
     completion: str = Field(min_length=1, max_length=500)
+    actions: list[TaughtProcedureAction] = Field(default_factory=list, max_length=30)
 
 
 class TaskInstruction(BaseModel):

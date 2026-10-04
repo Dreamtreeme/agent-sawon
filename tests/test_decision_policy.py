@@ -363,3 +363,18 @@ def test_prompt_lists_the_same_reduced_choices_without_inferring_login_screen():
     intents = {choice["intent"] for choice in prompt["allowed_next_choices"]}
     assert "fill" in intents and "save" not in intents and "login" not in intents
     assert prompt["verified_facts"]["credential_inputs_submitted"] == ["credential.username"]
+
+
+def test_task_verified_inputs_remain_available_while_save_becomes_allowed():
+    facts = ExecutionFacts(
+        "task",
+        field_names=("invoice.number", "vendor_code"),
+        verified_field_names=("invoice.number", "vendor_code"),
+    )
+    prompt = DecisionPolicy(facts).as_prompt()
+    choices = prompt["allowed_next_choices"]
+    fill = next(choice for choice in choices if choice["intent"] == "fill")
+
+    assert prompt["remaining_fields"] == []
+    assert fill["action"][0]["source"] == ["invoice.number", "vendor_code"]
+    assert any(choice["intent"] == "save" for choice in choices)

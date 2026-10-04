@@ -54,6 +54,15 @@ class MethodRuntime:
         self.staged: dict[str, MethodDocument] = {}
         self.staged_completions: dict[str, MethodCompletion] = {}
 
+    def _matches_current_task(self, method: LearnedMethod) -> bool:
+        """Keep learned execution inside one exact user-education contract."""
+
+        task = self.brain.task_instruction
+        if task is None or method.task_objective != task.objective:
+            return False
+        digest = self.brain.task_instruction_sha256
+        return digest is not None and method.task_contract_sha256 == digest
+
     def _ordered_groups(self, method: LearnedMethod) -> list:
         """Order a reusable method by the taught procedure and successful trace.
 
@@ -167,7 +176,7 @@ class MethodRuntime:
         order = {step.id: index for index, step in enumerate(task.procedure)}
         remaining_ids = []
         for method in self.library.methods():
-            if method.task_objective and method.task_objective != task.objective:
+            if not self._matches_current_task(method):
                 continue
             remaining_ids.extend(
                 group.taught_step_id
@@ -182,7 +191,14 @@ class MethodRuntime:
         if remaining_ids:
             current_index = min(order[step_id] for step_id in remaining_ids)
         elif delivered:
-            current_index = min(max(order[step_id] for step_id in delivered) + 1, len(order) - 1)
+            # Delivery proves that one action batch reached the application.  A
+            # taught step may contain several batches separated by new screens
+            # (for example close a save dialog, return to query, fill, search,
+            # then inspect the row).  Keep the most recently reached step current
+            # and let current-screen evidence justify selecting the next step.
+            # Advancing here used to equate "one click delivered" with "the whole
+            # business step completed" and skipped the rest of re-query flows.
+            current_index = max(order[step_id] for step_id in delivered)
         else:
             current_index = 0
         focused = task.procedure[current_index : current_index + 2]
@@ -215,7 +231,7 @@ class MethodRuntime:
         objective = None if task is None else task.objective
         methods = []
         for method in self.library.methods():
-            if objective is not None and method.task_objective not in {"", objective}:
+            if objective is not None and not self._matches_current_task(method):
                 continue
             remaining = [
                 group
@@ -268,14 +284,14 @@ class MethodRuntime:
         candidates = []
         completion_candidates = []
         for method in self.library.methods():
-            taught_replay = bool(task.procedure) and method.task_objective == task.objective
-            trace_replay = self._has_trace_graph(method) and method.task_objective == task.objective
+            taught_replay = bool(task.procedure) and self._matches_current_task(method)
+            trace_replay = self._has_trace_graph(method) and self._matches_current_task(method)
             auto_replay = taught_replay or trace_replay
             if method.id != self.active_method_id and not auto_replay:
                 continue
             mapping = self.bindings.get(method.id)
             if mapping is None:
-                if method.task_objective != task.objective:
+                if not self._matches_current_task(method):
                     continue
                 mapping = {slot.name: slot.source_key for slot in method.slots}
             remaining = [
@@ -375,6 +391,8 @@ class MethodRuntime:
         self.purpose = self._redact_credentials(response.purpose[:160])
         known = {method.id: method for method in self.library.methods()}
         previous = known.get(response.method_id)
+        if previous is not None and task is not None and not self._matches_current_task(previous):
+            previous = None
         if response.operation == "complete":
             available = dict(known)
             available.update(
@@ -382,9 +400,7 @@ class MethodRuntime:
             )
             if previous is None and task is not None:
                 matches = [
-                    method
-                    for method in available.values()
-                    if method.task_objective == task.objective
+                    method for method in available.values() if self._matches_current_task(method)
                 ]
                 previous = matches[0] if len(matches) == 1 else None
             if previous is None:
@@ -411,7 +427,11 @@ class MethodRuntime:
             return
         purpose = self.purpose or response.expected_result
         if previous is None:
-            identity = task.objective if task else purpose
+            identity = (
+                task.objective + ":" + (self.brain.task_instruction_sha256 or "")
+                if task
+                else purpose
+            )
             method_id = "method-" + hashlib.sha256(identity.encode()).hexdigest()[:16]
             slots = [
                 MethodSlot(name=source, description=source, source_key=source)
@@ -439,6 +459,7 @@ class MethodRuntime:
             purpose=previous.purpose if previous else purpose,
             slots=slots,
             task_objective=task.objective if task else "",
+            task_contract_sha256=(self.brain.task_instruction_sha256 or "") if task else "",
         )
         if method is not None:
             self.pending = {

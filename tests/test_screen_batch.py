@@ -514,16 +514,23 @@ def test_joint_verification_survives_corrected_visual_label(tmp_path, record, wr
     assert set(brain.verified) == set(brain.values) - ({"mbl_no"} if wrong_value else set())
 
 
-def test_model_only_screen_review_delegates_without_value_or_geometry_recheck(tmp_path, record):
+def test_model_only_screen_review_records_model_evidence_before_next_decision(tmp_path, record):
     from brain.graph.execution import ActionPlan, PlanExecution
     from brain.graph.matching import ScreenMatch
     from brain.graph.schemas import Choice, Decision
     from brain.graph.screen_batch import verify_screen_fields
+    from brain.task_instruction import TaskInstruction
 
     relay = ChangingPixelsRelay(record)
     relay.mode = "editor"
     brain, _, _ = make_brain(tmp_path, record, relay, [])
     brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    brain.task_instruction = TaskInstruction(
+        name="Enter shipment",
+        objective="Enter the supplied shipment.",
+        completion_conditions=["The shipment is saved."],
+    )
+    brain.phase = "task"
     scene = brain._observe()
     source = "hbl_no"
     target = 19
@@ -563,9 +570,10 @@ def test_model_only_screen_review_delegates_without_value_or_geometry_recheck(tm
         {"choice": fill.action, "descriptor": {}},
         {"choice": boundary.action, "descriptor": {}},
     ]
+    brain.observation = current
 
     assert verify_screen_fields(brain, execution, current) == {"next": "review"}
-    assert source not in brain.verified
+    assert source in brain.verified
     event = next(
         event
         for event in reversed(brain.log.read_all())
@@ -573,7 +581,9 @@ def test_model_only_screen_review_delegates_without_value_or_geometry_recheck(tm
     )
     assert event.payload["reviewer"] == "screen_model"
     assert event.payload["delegated"] == [source]
+    assert event.payload["matched"] == [source]
     assert event.payload["ok"] is True
+    assert brain.visual_proposal is None
 
 
 def test_save_policy_uses_current_verified_evidence(tmp_path, record):

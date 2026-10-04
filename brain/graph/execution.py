@@ -44,6 +44,7 @@ class PendingAction(TypedDict):
     execution: NotRequired[PlanExecution]
     login_plan_descriptors: NotRequired[list[dict]]
     point_refined: NotRequired[bool]
+    delivered_point: NotRequired[tuple[float, float]]
     effect_source: NotRequired[FieldName]
     visual_match_candidate: NotRequired[tuple[str, dict[str, Any]]]
     exploration_action_key: NotRequired[str]

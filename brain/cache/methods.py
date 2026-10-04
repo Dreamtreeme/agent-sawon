@@ -81,6 +81,7 @@ class LearnedMethod(BaseModel):
     id: str
     purpose: str
     task_objective: str = ""
+    task_contract_sha256: str = Field(default="", pattern=r"^$|^[0-9a-f]{64}$")
     slots: list[MethodSlot] = Field(default_factory=list)
     action_groups: list[MethodActionGroup] = Field(min_length=1)
     completion: MethodCompletion | None = None
@@ -296,6 +297,7 @@ def method_from_match(
     context_anchors: tuple[str, ...] | list[str] = (),
     source_transitions: tuple[str, ...] | list[str] = (),
     task_objective: str = "",
+    task_contract_sha256: str = "",
 ) -> LearnedMethod | None:
     """Retain a model's meaning; replace its observed handles with label relations.
 
@@ -366,6 +368,7 @@ def method_from_match(
         id=method_id,
         purpose=purpose,
         task_objective=task_objective,
+        task_contract_sha256=task_contract_sha256,
         slots=slots,
         action_groups=[group],
         source_transitions=list(source_transitions),

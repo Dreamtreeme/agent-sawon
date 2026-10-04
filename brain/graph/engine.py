@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from decimal import Decimal
+from hashlib import sha256
 from pathlib import Path
 from time import perf_counter
 from typing import Literal
@@ -293,6 +294,7 @@ class Brain:
         self.save_issued = False
         self.saved_evidence = SavedEvidence()
         self.saved_bindings: tuple[str, dict[str, str]] | None = None
+        self.saved_row_binding: tuple[str, str] | None = None
         self.pending: PendingAction | None = None
         self.execution_authorized = False
         self.click_refinement = ClickRefinement()
@@ -337,6 +339,7 @@ class Brain:
         self.visual_proposal_obs_id = None
         self.visual_perception = None
         self.task_instruction = None
+        self.task_instruction_sha256: str | None = None
         self.procedure = None
         self.procedure_step = None
         if settings.screen_matching:
@@ -349,10 +352,19 @@ class Brain:
             ):
                 raise ValueError("screen_matching_requires_visual_procedure")
             if settings.task_path is not None:
-                self.task_instruction = TaskInstruction.model_validate_json(
-                    settings.task_path.read_text(encoding="utf-8")
-                )
+                task_bytes = settings.task_path.read_bytes()
+                self.task_instruction = TaskInstruction.model_validate_json(task_bytes)
+                self.task_instruction_sha256 = sha256(task_bytes).hexdigest()
                 atomic_write_json(self.case_dir / "task-instruction.json", self.task_instruction)
+                self.log.append(
+                    "verify",
+                    payload={
+                        "check": "user_education_loaded",
+                        "name": self.task_instruction.name,
+                        "sha256": self.task_instruction_sha256,
+                        "procedure_step_ids": [step.id for step in self.task_instruction.procedure],
+                    },
+                )
                 self.phase = "task"
             else:
                 self.procedure = Procedure.model_validate_json(
@@ -442,7 +454,10 @@ class Brain:
             assert self.visual_perception is not None
 
             response, self.visual_proposal = self.visual_proposal, None
-            if response is None or self.visual_proposal_obs_id != self.observation.obs_id:
+            proposal_reused = (
+                response is not None and self.visual_proposal_obs_id == self.observation.obs_id
+            )
+            if not proposal_reused:
                 request, interpretation = self.visual_perception.planning_context()
                 response = self._match_visual(
                     request.screen,
@@ -460,6 +475,7 @@ class Brain:
                     },
                 )
             if response.needs_refinement:
+                proposal_reused = False
                 self.log.append(
                     "verify",
                     payload={
@@ -517,8 +533,9 @@ class Brain:
                         "plan_preserved": True,
                     },
                 )
-            self._bind_saved_evidence(response)
-            self._remember_model_task_evidence(response)
+            if not proposal_reused:
+                self._bind_saved_evidence(response)
+                self._remember_model_task_evidence(response)
             self.visual_points.bind(self.observation, response.steps)
             selection_plan = compile_selection_plan(response, self.observation)
             screen_action_plan = selection_plan or compile_screen_action_plan(
@@ -896,12 +913,37 @@ class Brain:
             )
 
     def _bind_saved_evidence(self, response) -> None:
+        prefix = "e" + str(self.observation.obs_id.int) + "0"
         self.saved_bindings = (
             str(self.observation.obs_id),
-            {
-                e.field: "e" + str(self.observation.obs_id.int) + "0" + str(e.target)
-                for e in response.evidence
-            },
+            {e.field: prefix + str(e.target) for e in response.evidence},
+        )
+        controls = {control.id: control for control in response.controls}
+        row_roles = {"row", "dataitem", "listitem"}
+
+        def containing_row(target_id: int) -> int | None:
+            seen = set()
+            current = controls.get(target_id)
+            while current is not None and current.id not in seen:
+                seen.add(current.id)
+                if current.role.casefold() in row_roles:
+                    return current.id
+                current = controls.get(current.parent_id)
+            return None
+
+        selected_row = next(
+            (
+                row_id
+                for step in response.steps
+                if step.action in {"click", "double_click"}
+                and (row_id := containing_row(step.target)) is not None
+            ),
+            None,
+        )
+        self.saved_row_binding = (
+            (str(self.observation.obs_id), prefix + str(selected_row))
+            if selected_row is not None
+            else None
         )
         self.review = None
 
@@ -913,6 +955,14 @@ class Brain:
             self.visual_proposal_obs_id = observation.obs_id
         self.observation = observation
         self.review = None
+        # In combined visual mode the model grounds the current screen while it is
+        # being observed.  Publish that observation evidence before the Review
+        # node runs.  Previously the bindings were delayed until Selection, so the
+        # saved-record reviewer always saw an empty current screen and the worker
+        # could plan another action from evidence the reviewer had never received.
+        if self.visual_proposal is not None and self.visual_proposal_obs_id == observation.obs_id:
+            self._bind_saved_evidence(self.visual_proposal)
+            self._remember_model_task_evidence(self.visual_proposal)
         self.observation_number += 1
         relative = f"observations/{self.observation_number:04d}.json"
         atomic_write_json(self.case_dir / relative, observation)
@@ -1011,6 +1061,14 @@ class Brain:
         except GuardStop as exc:
             return self._finish("stopped", str(exc))
         except Exception as exc:
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "observation_exception",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:160],
+                },
+            )
             return self._finish("failed", "observation_error:" + type(exc).__name__)
 
     def _final_query_step(self) -> str | None:
@@ -1026,32 +1084,47 @@ class Brain:
         assert self.observation is not None
         if self.review is not None and self.review.obs_id == str(self.observation.obs_id):
             return self.review
-        if self.phase == "task":
+        task_saved_review = (
+            self.phase == "task"
+            and self.saved_evidence.session_id
+            and isinstance(self.observation, SceneObservation)
+        )
+        legacy_saved_review = (
+            self._workflow_facts().final_query_workflow_ready
+            and self.settings.screen_matching
+            and self.saved_evidence.session_id
+            and isinstance(self.observation, SceneObservation)
+        )
+        if task_saved_review or legacy_saved_review:
+            bindings = (
+                self.saved_bindings[1]
+                if self.saved_bindings and self.saved_bindings[0] == str(self.observation.obs_id)
+                else {}
+            )
+            selected_row_ref = (
+                self.saved_row_binding[1]
+                if self.saved_row_binding
+                and self.saved_row_binding[0] == str(self.observation.obs_id)
+                else None
+            )
+            self.review = self.saved_evidence.observe(
+                self.observation,
+                self.values,
+                field_matches,
+                bindings,
+                selected_row_ref=selected_row_ref,
+            )
+            atomic_write_json(
+                self.case_dir / "saved-evidence.json", self.saved_evidence.snapshot(self.values)
+            )
+        elif self.phase == "task":
             self.review = EvidenceReview(
                 obs_id=str(self.observation.obs_id),
                 status="not_due",
                 reason="task_completion_requires_current_model_evidence",
             )
         elif self._workflow_facts().final_query_workflow_ready:
-            if (
-                self.settings.screen_matching
-                and self.saved_evidence.session_id
-                and isinstance(self.observation, SceneObservation)
-            ):
-                bindings = (
-                    self.saved_bindings[1]
-                    if self.saved_bindings
-                    and self.saved_bindings[0] == str(self.observation.obs_id)
-                    else {}
-                )
-                self.review = self.saved_evidence.observe(
-                    self.observation, self.values, field_matches, bindings
-                )
-                atomic_write_json(
-                    self.case_dir / "saved-evidence.json", self.saved_evidence.snapshot(self.values)
-                )
-            else:
-                self.review = review_final(self.observation, self.values, field_matches)
+            self.review = review_final(self.observation, self.values, field_matches)
         else:
             self.review = EvidenceReview(
                 obs_id=str(self.observation.obs_id),
@@ -1142,11 +1215,10 @@ class Brain:
             replace(
                 self._workflow_facts(),
                 field_names=tuple(sorted(self.values)),
-                # Generic task inputs may be reused on multiple screens. Prior
-                # evidence is notebook context, not a global completion flag.
-                verified_field_names=(
-                    () if self.task_instruction is not None else tuple(sorted(self.verified))
-                ),
+                # Completion evidence and source availability are independent:
+                # policy keeps all field_names reusable while verified names
+                # determine whether the task is ready to save.
+                verified_field_names=tuple(sorted(self.verified)),
                 available_credential_sources=tuple(
                     sorted(source for source, value in self.credentials.items() if value)
                 ),
@@ -1732,31 +1804,6 @@ class Brain:
         assert self.observation is not None
         policy = policy or self._decision_policy()
         allowed = policy.allows(decision)
-        if (
-            not allowed
-            and self.phase == "task"
-            and decision.intent == "save"
-            and not (set(self.values) - set(self.verified))
-        ):
-            # Generic task policy leaves all inputs reusable so a later screen
-            # can use the same source again. Save readiness is different: it is
-            # based on the model-reviewed evidence notebook accumulated for the
-            # current task. Re-evaluate only this save action with that ledger.
-            ready_policy = DecisionPolicy(
-                replace(
-                    policy.facts,
-                    verified_field_names=tuple(sorted(self.values)),
-                )
-            )
-            allowed = ready_policy.allows(decision)
-            if allowed:
-                self.log.append(
-                    "verify",
-                    payload={
-                        "check": "task_evidence_ledger_authorizes_save",
-                        "fields": sorted(self.verified),
-                    },
-                )
         if not allowed:
             raise GuardStop("action_not_allowed_by_state")
         choice = decision.action
@@ -1765,7 +1812,17 @@ class Brain:
         by_ref = {item.ref: item for item in self.observation.elements}
         if choice.type not in {"wait", "focus_window"}:
             target = by_ref.get(choice.ref)
-            if target is None or not target.enabled:
+            # Page navigation uses the target only as a current-screen scroll
+            # anchor.  A visual table/panel may be semantically uncertain (and
+            # therefore non-activatable) while its locally detected geometry is
+            # still valid for wheel input.  Keep activation actions strict, but
+            # do not reject a present scroll anchor for lacking click semantics.
+            point_only_scroll = (
+                isinstance(self.observation, SceneObservation)
+                and choice.type == "key"
+                and choice.keys in {"pagedown", "pageup"}
+            )
+            if target is None or (not target.enabled and not point_only_scroll):
                 raise GuardStop("target_not_current_or_enabled")
         if choice.type == "focus_window":
             if choice.handle not in {window.handle for window in self.observation.windows}:
@@ -2098,6 +2155,9 @@ class Brain:
                 expected_effect=self._expected_effect(decision),
             ),
         }
+        delivered_point = getattr(getattr(action.root, "target", None), "image_point", None)
+        if delivered_point is not None:
+            pending["delivered_point"] = tuple(delivered_point)
         if self.phase == "task" and decision.intent in {"navigate", "select_tab", "login"}:
             action_key, description = self._exploration_action(decision)
             pending["exploration_action_key"] = action_key
@@ -2486,6 +2546,16 @@ class Brain:
                         "descriptor": descriptor,
                     }
                     new_facts.append(source + "_submitted")
+            if self.phase == "task" and self.save_issued and decision.intent == "search":
+                # A query input/search invalidates earlier saved evidence before
+                # dispatch. The observed result starts a fresh post-save proof
+                # session, anchored to the pre-search frame.
+                self.saved_evidence.begin(str(pending["before_observation"].obs_id))
+                if isinstance(pending["before_observation"], SceneObservation):
+                    self.saved_evidence.remember_submitted_query(
+                        pending["before_observation"], self.values["hbl_no"]
+                    )
+                self.review = None
             self.feedback.append(
                 {
                     "ok": True,
@@ -2524,6 +2594,14 @@ class Brain:
         except GuardStop as exc:
             return self._finish("stopped", str(exc))
         except Exception as exc:
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "verification_exception",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:160],
+                },
+            )
             return self._fail("verification_error:" + type(exc).__name__)
         finally:
             execution = pending.get("execution")
@@ -2582,6 +2660,9 @@ class Brain:
         if review.result == "ready_for_query":
             # Permission to verify persistence, never evidence that saving succeeded.
             self.phase = "task" if self.task_instruction is not None else "final_query"
+            if self.phase == "task" and self.settings.screen_matching:
+                self.saved_evidence.begin(str(self.observation.obs_id))
+                self.review = None
             if self.phase == "final_query":
                 # The save result can itself be the returned query screen. Reconcile
                 # those current pixels under the new legacy phase before accepting
@@ -2603,8 +2684,9 @@ class Brain:
 
     def _complete_saved_evidence(self) -> dict:
         review = self._current_review()
+        task_review_ready = self.phase == "task" and self.task_instruction is not None
         if not (
-            self._workflow_facts().final_query_workflow_ready
+            (task_review_ready or self._workflow_facts().final_query_workflow_ready)
             and self.saved_evidence.session_id
             and review.status == "ready"
         ):

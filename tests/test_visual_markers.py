@@ -10,7 +10,13 @@ from test_visual_scene import wire
 from brain.runtime.storage import RunLog
 from brain.visual.detector import DetectorSettings, OmniParserDetector
 from brain.visual.detector_worker import original_box, restore_region_box
-from brain.visual.markers import Marker, MergeSettings, build_markers, ground_meanings
+from brain.visual.markers import (
+    Marker,
+    MergeSettings,
+    build_markers,
+    grid_cell_marker_ids,
+    ground_meanings,
+)
 from brain.visual.perception import VisualPerception
 from brain.visual.refinement import refinement_regions
 from brain.visual.scene import SemanticDetection, bind_scene
@@ -35,6 +41,19 @@ def fixture():
         }
     )
     return blocks, boxes, markers, meaning
+
+
+def test_grid_cells_require_both_row_and_column_geometry():
+    markers = [
+        Marker(id=0, bbox=(10, 10, 80, 30), source="pixel_rectangle", confidence=1),
+        Marker(id=1, bbox=(90, 10, 80, 30), source="pixel_rectangle", confidence=1),
+        Marker(id=2, bbox=(10, 40, 80, 30), source="pixel_rectangle", confidence=1),
+        Marker(id=3, bbox=(90, 40, 80, 30), source="pixel_rectangle", confidence=1),
+        Marker(id=4, bbox=(10, 100, 80, 30), source="pixel_rectangle", confidence=1),
+        Marker(id=5, bbox=(120, 100, 80, 30), source="pixel_rectangle", confidence=1),
+    ]
+
+    assert grid_cell_marker_ids(markers) == {0, 1, 2, 3}
 
 
 def test_only_local_geometry_becomes_click_target():

@@ -20,6 +20,8 @@ class SavedEvidence:
     origin_obs_id: str | None = None
     query_row_seen: bool = False
     query_identity: dict | None = None
+    submitted_query_identity: dict | None = None
+    query_row_ref: str | None = None
     fields: dict[str, dict] = field(default_factory=dict)
     conflict: str | None = None
     detail_window: int | None = None
@@ -39,6 +41,37 @@ class SavedEvidence:
         self.reset()
         self.session_id = str(uuid4())
         self.origin_obs_id = origin_obs_id
+
+    def remember_submitted_query(self, observation: SceneObservation, record_id: str) -> bool:
+        """Retain the exact observed filter value that produced the next result."""
+
+        from brain.observe.values import normalize
+
+        matches = [
+            element
+            for element in observation.elements
+            if element.enabled
+            and element.role.casefold() == "edit"
+            and normalize(element.value) == normalize(record_id)
+        ]
+        if len(matches) != 1:
+            return False
+        element = matches[0]
+        self.submitted_query_identity = {
+            "value": element.value,
+            "obs_id": str(observation.obs_id),
+            "capture_id": str(observation.screenshot.geometry.capture_id),
+            "screenshot": observation.screenshot.path,
+            "ref": element.ref,
+            "bbox": list(element.bbox),
+            "window": observation.active_window.handle,
+            "record_id": record_id,
+            "session_id": self.session_id,
+            "screen_kind": observation.screen_kind,
+            "explicit": True,
+            "proof_kind": "submitted_query_input",
+        }
+        return True
 
     def after_action(self, decision: Decision, before: SceneObservation) -> None:
         choice = decision.action
@@ -69,12 +102,51 @@ class SavedEvidence:
             from brain.observe.values import normalize
 
             identifier = (self.query_identity or {}).get("record_id")
-            if not identifier or not any(
-                _within(e, target.ref, before)
-                and normalize(e.value or e.name) == normalize(identifier)
-                for e in before.elements
-                if e.enabled
-            ):
+            exact_row_identity = bool(
+                identifier
+                and any(
+                    _within(e, target.ref, before)
+                    and normalize(e.value or e.name) == normalize(identifier)
+                    for e in before.elements
+                    if e.enabled
+                )
+            )
+            selected_query_row = bool(
+                self.query_row_ref == target.ref
+                and self.last_obs_id == str(before.obs_id)
+                and self.last_screen == "query"
+                and self.query_identity
+            )
+            # The visual executor renews an identical capture immediately before
+            # input. Element refs are observation-scoped, so the same sole row
+            # receives a new ref even though its pixels and query identity did not
+            # change. Preserve that proven row link across the renewal; the detail
+            # screen must still expose the exact record identity before any detail
+            # values can be accepted.
+            if not selected_query_row and self.query_row_seen and self.query_identity:
+                record_id = self.query_identity.get("record_id")
+                current_rows = [
+                    element
+                    for element in before.elements
+                    if element.enabled
+                    and element.role.casefold() in {"row", "dataitem", "listitem"}
+                ]
+                exact_inputs = [
+                    element
+                    for element in before.elements
+                    if element.enabled
+                    and element.role.casefold() == "edit"
+                    and normalize(element.value) == normalize(record_id or "")
+                ]
+                selected_query_row = bool(
+                    self.last_hash == before.screen_hash
+                    and self.last_window == before.active_window.handle
+                    and self.last_screen == "query"
+                    and len(current_rows) == 1
+                    and current_rows[0].ref == target.ref
+                    and len(exact_inputs) == 1
+                )
+            if not exact_row_identity and not selected_query_row:
                 self.reset()
 
     def snapshot(self, values: dict[str, str]) -> dict:
@@ -87,6 +159,8 @@ class SavedEvidence:
             "conflict": self.conflict,
             "detail_identity_observed": self.detail_identity is not None,
             "query_identity": self.query_identity,
+            "submitted_query_identity": self.submitted_query_identity,
+            "query_row_ref": self.query_row_ref,
             "detail_identity": self.detail_identity,
             "evidence": self.fields,
         }
@@ -131,6 +205,8 @@ class SavedEvidence:
         values: dict[str, str],
         matches: Matcher,
         bindings: dict[str, str],
+        *,
+        selected_row_ref: str | None = None,
     ) -> EvidenceReview:
         oid = str(observation.obs_id)
         if not self.session_id or oid == self.origin_obs_id:
@@ -140,7 +216,7 @@ class SavedEvidence:
                 reason="fresh_query_result_required",
                 missing_fields=tuple(sorted(values)),
             )
-        key = (oid, tuple(sorted(bindings.items())))
+        key = (oid, tuple(sorted(bindings.items())), selected_row_ref)
         if key in self.seen and self.last_review is not None:
             return self.last_review
         self.seen.add(key)
@@ -150,9 +226,112 @@ class SavedEvidence:
             row = review_final(observation, values, matches)
             if row.status == "blocked":
                 self.conflict = row.reason
-            if row.row_ref and row.matching_rows == 1:
+            row_ref = row.row_ref
+            matching_rows = row.matching_rows
+            identity_input = by_ref.get(bindings.get("hbl_no"))
+            bound_identity_valid = bool(
+                identity_input is not None
+                and identity_input.role.casefold() == "edit"
+                and matches("hbl_no", identity_input.value, values)
+            )
+            if not bound_identity_valid:
+                exact_query_inputs = [
+                    element
+                    for element in by_ref.values()
+                    if element.role.casefold() == "edit"
+                    and matches("hbl_no", element.value, values)
+                ]
+                if len(exact_query_inputs) == 1:
+                    identity_input = exact_query_inputs[0]
+            candidate_rows = [
+                element
+                for element in by_ref.values()
+                if element.role.casefold() in {"row", "dataitem", "listitem"}
+            ]
+            query_identity_anchor = (
+                identity_input
+                if identity_input is not None
+                and identity_input.role.casefold() == "edit"
+                and matches("hbl_no", identity_input.value, values)
+                else None
+            )
+            if self.query_row_seen and len(candidate_rows) == 1:
+                current_row = candidate_rows[0]
+                exact_visible_query_values = [
+                    element
+                    for element in by_ref.values()
+                    if element.role.casefold() in {"edit", "text"}
+                    and matches("hbl_no", element.value or element.name, values)
+                    and not _within(element, current_row.ref, observation)
+                ]
+                if len(exact_visible_query_values) == 1:
+                    query_identity_anchor = exact_visible_query_values[0]
+            # Selecting a result row commonly changes only focus/highlight pixels and
+            # exposes a separate "open/edit" button.  The next model plan therefore
+            # need not click the row again.  Carry the already-proven sole row across
+            # that repaint when the exact query value remains visible outside the row,
+            # even if the selected-state repaint changes its OCR role from editable to
+            # read-only text.  Initial linkage still requires the actual edit or the
+            # submitted-query record; this role-neutral anchor is continuity only.
+            carried_query_row = False
+            if (
+                row_ref is None
+                and self.query_row_seen
+                and self.query_identity
+                and query_identity_anchor is not None
+                and self.last_screen == "query"
+                and self.last_window == observation.active_window.handle
+                and len(candidate_rows) == 1
+            ):
+                current_row = candidate_rows[0]
+                current_cells = [
+                    element
+                    for element in by_ref.values()
+                    if element.ref != current_row.ref
+                    and _within(element, current_row.ref, observation)
+                ]
+                prior_row_fields = {
+                    name
+                    for name, evidence in self.fields.items()
+                    if name != "hbl_no"
+                    and evidence.get("screen_kind") == "query"
+                    and evidence.get("session_id") == self.session_id
+                }
+                carried_query_row = bool(prior_row_fields) and all(
+                    any(matches(name, item.value or item.name, values) for item in current_cells)
+                    for name in prior_row_fields
+                )
+                if carried_query_row:
+                    row_ref = current_row.ref
+                    matching_rows = 1
+            query_bound_row = bool(
+                row_ref is None
+                and selected_row_ref is not None
+                and len(candidate_rows) == 1
+                and candidate_rows[0].ref == selected_row_ref
+                and (
+                    (
+                        identity_input is not None
+                        and identity_input.role.casefold() == "edit"
+                        and matches("hbl_no", identity_input.value, values)
+                    )
+                    or (
+                        self.submitted_query_identity is not None
+                        and self.submitted_query_identity.get("record_id") == values["hbl_no"]
+                    )
+                )
+            )
+            if query_bound_row:
+                row_ref = selected_row_ref
+                matching_rows = 1
+                if identity_input is not None and identity_input.role.casefold() == "edit":
+                    self._store(
+                        "hbl_no", identity_input, observation, values, matches, explicit=True
+                    )
+            if row_ref and matching_rows == 1:
                 current_link = self.query_row_seen = True
-                cells = [e for e in by_ref.values() if _within(e, row.row_ref, observation)]
+                self.query_row_ref = row_ref
+                cells = [e for e in by_ref.values() if _within(e, row_ref, observation)]
                 candidates = {
                     name: {e.ref for e in cells if matches(name, e.value or e.name, values)}
                     for name in values
@@ -160,7 +339,7 @@ class SavedEvidence:
                 assignment = assign_result_fields(candidates)
                 for name, ref in assignment.items():
                     self._store(name, by_ref[ref], observation, values, matches, explicit=False)
-                self.query_identity = self.fields.get("hbl_no")
+                self.query_identity = self.fields.get("hbl_no") or self.submitted_query_identity
                 owners: dict[str, list[str]] = {}
                 for name, ref in bindings.items():
                     if name in values:
@@ -171,9 +350,19 @@ class SavedEvidence:
                     if (
                         ref in by_ref
                         and by_ref[ref].role in {"cell", "text"}
-                        and _within(by_ref[ref], row.row_ref, observation)
+                        and _within(by_ref[ref], row_ref, observation)
                     ):
                         for name in names:
+                            # The exact current query value is the identity anchor. A
+                            # selected-state repaint may expose it as read-only text,
+                            # while the grid preview clips it with arbitrary punctuation.
+                            # The preview cannot overwrite that established identity.
+                            if (
+                                name == "hbl_no"
+                                and query_identity_anchor is not None
+                                and ref != query_identity_anchor.ref
+                            ):
+                                continue
                             self._store(
                                 name, by_ref[ref], observation, values, matches, explicit=True
                             )
@@ -182,11 +371,28 @@ class SavedEvidence:
                 self.fields.clear()
                 self.query_row_seen = False
                 self.query_identity = None
+                self.query_row_ref = None
             self.detail_window = None
             self.detail_identity = None
         elif observation.screen_kind == "editor" and self.query_row_seen:
-            inputs = {r: e for r, e in by_ref.items() if is_record_input(e, observation)}
+            inputs = {
+                ref: element
+                for ref, element in by_ref.items()
+                if is_record_input(element, observation)
+                or (
+                    element.role.casefold() in {"text", "cell"}
+                    and bool(element.value or element.name)
+                    and any(matches(name, element.value or element.name, values) for name in values)
+                )
+            }
             identity = inputs.get(bindings.get("hbl_no"))
+            if identity is None or not matches("hbl_no", identity.value, values):
+                exact_identities = [
+                    element
+                    for element in inputs.values()
+                    if matches("hbl_no", element.value, values)
+                ]
+                identity = exact_identities[0] if len(exact_identities) == 1 else identity
             if identity is not None:
                 if matches("hbl_no", identity.value, values):
                     self.detail_window = observation.active_window.handle

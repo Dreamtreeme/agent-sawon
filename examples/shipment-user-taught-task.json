@@ -1,0 +1,116 @@
+{
+  "schema_version": "0.1",
+  "name": "사용자가 교육한 합성 House B/L 입력 업무",
+  "objective": "제공된 선적 레코드를 업무 전산에 중복 없이 입력하고 저장한 뒤 저장된 건을 다시 조회해 확인한다.",
+  "requirements": [
+    "동일한 House B/L 번호의 기존 건을 먼저 조회한다.",
+    "중복이 없을 때만 신규 레코드를 입력한다.",
+    "별도 품목 자료가 없으므로 품목 입력 표는 작성하지 않는다.",
+    "저장 후 같은 House B/L 번호로 다시 조회하고 기본 정보와 추가 정보를 확인한다."
+  ],
+  "completion_conditions": [
+    "중복이면 신규 입력 없이 기존 건을 확인한 근거로 종료한다.",
+    "신규 건이면 저장 후 다시 조회한 상세 화면에서 제공된 모든 값의 일치가 확인된다."
+  ],
+  "constraints": [
+    "전송, 승인, 결재는 수행하지 않는다.",
+    "사용자가 가르친 UI 명칭을 현재 화면에서 다시 찾아 사용하고 과거 좌표는 재사용하지 않는다."
+  ],
+  "procedure": [
+    {
+      "id": "login",
+      "instruction": "로그인 화면이면 사용자명 칸과 비밀번호 칸을 채운 뒤 로그인 버튼을 누른다.",
+      "completion": "House B/L 조회 버튼이 있는 업무 메뉴가 보인다.",
+      "actions": [
+        {"verb": "fill", "target": "사용자명 입력 칸", "input_key": "credential.username"},
+        {"verb": "fill", "target": "비밀번호 입력 칸", "input_key": "credential.password"},
+        {"verb": "activate", "target": "로그인 버튼"}
+      ]
+    },
+    {
+      "id": "open-query",
+      "instruction": "업무 메뉴에서 House B/L 조회 버튼을 누른다.",
+      "completion": "House B/L 번호 입력 칸과 조회 버튼이 보인다.",
+      "actions": [
+        {"verb": "activate", "target": "House B/L 조회 버튼"}
+      ]
+    },
+    {
+      "id": "check-duplicate",
+      "instruction": "House B/L 번호 입력 칸에 hbl_no를 입력하고 조회 버튼을 눌러 같은 번호의 기존 건이 있는지 확인한다.",
+      "completion": "같은 House B/L 번호의 결과 행이 있거나 결과가 0건임이 표시된다.",
+      "actions": [
+        {"verb": "fill", "target": "House B/L 번호 입력 칸", "input_key": "hbl_no"},
+        {"verb": "activate", "target": "조회 버튼"},
+        {"verb": "verify", "target": "조회 결과 건수와 결과 행", "input_key": "hbl_no"}
+      ]
+    },
+    {
+      "id": "open-new-record",
+      "instruction": "조회 결과가 0건이면 신규 버튼을 눌러 House B/L 등록 화면을 연다.",
+      "completion": "기본 정보 탭의 신규 House B/L 입력 화면이 보인다.",
+      "actions": [
+        {"verb": "activate", "target": "신규 버튼"}
+      ]
+    },
+    {
+      "id": "enter-visible-record",
+      "instruction": "기본 정보 탭에서 송하인, Consignee, House B/L 번호, MBL No., Description을 입력한다.",
+      "completion": "기본 정보 탭의 다섯 입력값이 제공된 값과 일치한다.",
+      "actions": [
+        {"verb": "fill", "target": "송하인 입력 칸", "input_key": "shipper"},
+        {"verb": "fill", "target": "Consignee 입력 칸", "input_key": "consignee"},
+        {"verb": "fill", "target": "House B/L 번호 입력 칸", "input_key": "hbl_no"},
+        {"verb": "fill", "target": "MBL No. 입력 칸", "input_key": "mbl_no"},
+        {"verb": "fill", "target": "Description 입력 칸", "input_key": "description"}
+      ]
+    },
+    {
+      "id": "reveal-and-enter-remaining",
+      "instruction": "추가 정보 탭을 누르고 포장 수량, 단위, 총중량, 선적항, 컨테이너 번호, 도착항을 입력한다.",
+      "completion": "추가 정보 탭의 여섯 입력값이 제공된 값과 일치한다.",
+      "actions": [
+        {"verb": "activate", "target": "추가 정보 탭"},
+        {"verb": "fill", "target": "포장 수량 입력 칸", "input_key": "packages.count"},
+        {"verb": "fill", "target": "단위 입력 칸", "input_key": "packages.unit"},
+        {"verb": "fill", "target": "총중량 입력 칸", "input_key": "gross_weight_kg"},
+        {"verb": "fill", "target": "선적항 입력 칸", "input_key": "pol"},
+        {"verb": "fill", "target": "컨테이너 번호 입력 칸", "input_key": "container_no"},
+        {"verb": "fill", "target": "도착항 입력 칸", "input_key": "pod"}
+      ]
+    },
+    {
+      "id": "save-record",
+      "instruction": "저장 버튼을 누르고 저장 확인 창이 나오면 예 버튼을 누른 뒤 저장 완료 안내를 확인한다.",
+      "completion": "저장 완료 안내 또는 저장 번호가 보인다.",
+      "actions": [
+        {"verb": "activate", "target": "저장 버튼"},
+        {"verb": "activate", "target": "저장 확인 창의 예 버튼"},
+        {"verb": "verify", "target": "저장 완료 안내 또는 저장 번호"}
+      ]
+    },
+    {
+      "id": "requery-saved-record",
+      "instruction": "저장 완료 안내를 닫고 House B/L 조회 화면으로 돌아가 House B/L 번호에 hbl_no를 입력한 뒤 조회 버튼을 누른다.",
+      "completion": "저장한 House B/L 번호의 결과 행이 보인다.",
+      "actions": [
+        {"verb": "activate", "target": "저장 완료 안내의 닫기 또는 확인 버튼"},
+        {"verb": "activate", "target": "House B/L 조회 버튼"},
+        {"verb": "fill", "target": "House B/L 번호 입력 칸", "input_key": "hbl_no"},
+        {"verb": "activate", "target": "조회 버튼"},
+        {"verb": "verify", "target": "저장한 House B/L 결과 행", "input_key": "hbl_no"}
+      ]
+    },
+    {
+      "id": "verify-requeried-record",
+      "instruction": "저장한 House B/L 결과 행을 열어 기본 정보 값을 확인하고 추가 정보 탭을 눌러 나머지 값도 확인한다.",
+      "completion": "재조회한 상세 화면의 기본 정보와 추가 정보에서 제공된 모든 값이 일치한다.",
+      "actions": [
+        {"verb": "activate", "target": "저장한 House B/L 결과 행"},
+        {"verb": "verify", "target": "기본 정보 탭의 저장된 값"},
+        {"verb": "activate", "target": "추가 정보 탭"},
+        {"verb": "verify", "target": "추가 정보 탭의 저장된 값"}
+      ]
+    }
+  ]
+}

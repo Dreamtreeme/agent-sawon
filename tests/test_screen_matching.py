@@ -25,8 +25,10 @@ from brain.graph.matching import (
     compile_match,
     compile_screen_action_plan,
     defer_unwritable_fill_targets,
+    enforce_taught_input_surfaces,
     omit_nonblocking_image_request,
     omit_nonblocking_refinement,
+    task_action_contract,
     validate_match_plan,
 )
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
@@ -390,8 +392,183 @@ def test_generic_query_input_keeps_its_boundary_intent(tmp_path, record):
         brain,
         set(brain.values),
     )
-
     assert validated.steps[0].intent == "query_input"
+
+
+def test_taught_step_allows_other_provided_input_visible_on_current_screen(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.task_instruction = TaskInstruction.model_validate(
+        {
+            "name": "Taught shipment entry",
+            "objective": "Enter the taught shipment fields.",
+            "completion_conditions": ["The shipment is saved."],
+            "procedure": [
+                {
+                    "id": "fill-basic",
+                    "instruction": "Enter the House B/L number.",
+                    "completion": "The House B/L number is visible.",
+                    "actions": [
+                        {
+                            "verb": "fill",
+                            "target": "House B/L number field",
+                            "input_key": "hbl_no",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    brain.procedure = None
+    brain.phase = "task"
+    capability = ProcedureStep(
+        id="task-action",
+        phase="task",
+        screen="any",
+        actions=["fill"],
+        goal="Perform the current taught action",
+        completion="The taught action is complete",
+    )
+
+    def planned(source):
+        return ScreenMatch.model_validate(
+            {
+                "screen_kind": "editor",
+                "procedure_step": "task-action",
+                "taught_step_id": "fill-basic",
+                "controls": [{"id": 1, "role": "edit", "confidence": 1}],
+                "steps": [{"target": 1, "action": "fill", "intent": "fill", "source": source}],
+            }
+        )
+
+    accepted, _ = validate_match_plan(
+        planned("hbl_no"),
+        [capability],
+        brain._decision_policy(),
+        brain,
+        set(brain.values),
+    )
+    assert accepted.steps[0].source == "hbl_no"
+    accepted, _ = validate_match_plan(
+        planned("mbl_no"),
+        [capability],
+        brain._decision_policy(),
+        brain,
+        set(brain.values),
+    )
+    assert accepted.steps[0].source == "mbl_no"
+
+
+def test_taught_direct_input_is_not_written_into_a_detected_grid_cell(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.task_instruction = TaskInstruction.model_validate(
+        {
+            "name": "Direct fields only",
+            "objective": "Enter direct record fields without line items.",
+            "completion_conditions": ["Record fields are entered."],
+            "procedure": [
+                {
+                    "id": "fill-record",
+                    "instruction": "Enter the record fields.",
+                    "completion": "The direct fields match.",
+                    "actions": [
+                        {"verb": "fill", "target": "House reference", "input_key": "hbl_no"},
+                        {"verb": "fill", "target": "Shipper", "input_key": "shipper"},
+                    ],
+                }
+            ],
+        }
+    )
+    screen = {
+        "markers": [
+            {"id": 1, "bbox": [10, 10, 80, 30], "source": "pixel_rectangle"},
+            {"id": 2, "bbox": [90, 10, 80, 30], "source": "pixel_rectangle"},
+            {"id": 3, "bbox": [10, 40, 80, 30], "source": "pixel_rectangle"},
+            {"id": 4, "bbox": [90, 40, 80, 30], "source": "pixel_rectangle"},
+            {"id": 5, "bbox": [10, 100, 160, 30], "source": "pixel_rectangle"},
+        ]
+    }
+    proposed = ScreenMatch.model_validate(
+        {
+            "screen_kind": "editor",
+            "procedure_step": "task-action",
+            "controls": [
+                {"id": 3, "role": "edit", "confidence": 1},
+                {"id": 5, "role": "edit", "confidence": 1},
+            ],
+            "steps": [
+                {"target": 5, "action": "fill", "intent": "fill", "source": "hbl_no"},
+                {"target": 3, "action": "fill", "intent": "fill", "source": "shipper"},
+            ],
+        }
+    )
+
+    filtered = enforce_taught_input_surfaces(brain, proposed, screen)
+
+    assert [(step.target, step.source) for step in filtered.steps] == [(5, "hbl_no")]
+    event = next(
+        item
+        for item in brain.log.read_all()
+        if item.payload.get("check") == "taught_input_surface_mismatch_deferred"
+    )
+    assert event.payload["rejected"] == [
+        {
+            "source": "shipper",
+            "target": 3,
+            "observed_surface": "table_cell",
+            "allowed_surfaces": ["direct_input"],
+        }
+    ]
+
+
+def test_taught_table_cell_surface_explicitly_allows_grid_input(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.task_instruction = TaskInstruction.model_validate(
+        {
+            "name": "Line item entry",
+            "objective": "Enter one line item.",
+            "completion_conditions": ["The line item is entered."],
+            "procedure": [
+                {
+                    "id": "fill-line",
+                    "instruction": "Enter the line quantity.",
+                    "completion": "The grid quantity matches.",
+                    "actions": [
+                        {
+                            "verb": "fill",
+                            "target": "Line quantity cell",
+                            "input_key": "packages.count",
+                            "surface": "table_cell",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    screen = {
+        "markers": [
+            {"id": 1, "bbox": [10, 10, 80, 30], "source": "pixel_rectangle"},
+            {"id": 2, "bbox": [90, 10, 80, 30], "source": "pixel_rectangle"},
+            {"id": 3, "bbox": [10, 40, 80, 30], "source": "pixel_rectangle"},
+            {"id": 4, "bbox": [90, 40, 80, 30], "source": "pixel_rectangle"},
+        ]
+    }
+    proposed = ScreenMatch.model_validate(
+        {
+            "screen_kind": "editor",
+            "procedure_step": "task-action",
+            "controls": [{"id": 3, "role": "edit", "confidence": 1}],
+            "steps": [
+                {
+                    "target": 3,
+                    "action": "fill",
+                    "intent": "fill",
+                    "source": "packages.count",
+                }
+            ],
+        }
+    )
+
+    assert enforce_taught_input_surfaces(brain, proposed, screen).steps == proposed.steps
 
 
 def test_model_only_generic_task_keeps_model_grounded_input_progress(tmp_path, record):
@@ -491,7 +668,7 @@ def test_pending_fill_cannot_claim_its_own_pre_action_evidence(tmp_path, record)
     assert event.payload["fields"] == ["hbl_no"]
 
 
-def test_current_model_evidence_can_unlock_save_in_the_same_task_turn(tmp_path):
+def test_task_capability_allows_save_after_prior_evidence_without_hiding_inputs(tmp_path):
     from types import SimpleNamespace
 
     brain = SimpleNamespace(
@@ -501,9 +678,11 @@ def test_current_model_evidence_can_unlock_save_in_the_same_task_turn(tmp_path):
             "hbl_no": "METHOD-HBL-707",
             "shipper": "Synthetic shipper",
         },
-        # Generic policy keeps all inputs reusable. The notebook ledger is the
-        # source of truth for which current task inputs still need evidence.
-        verified={"hbl_no": "prior-ref", "shipper": "prior-ref"},
+        verified={
+            "description": "current-ref",
+            "hbl_no": "prior-ref",
+            "shipper": "prior-ref",
+        },
         settings=SimpleNamespace(visual_model_only_review=True),
         task_instruction=TaskInstruction(
             name="Register shipment",
@@ -515,19 +694,19 @@ def test_current_model_evidence_can_unlock_save_in_the_same_task_turn(tmp_path):
         log=RunLog(tmp_path, case_id="same-turn-save", agent_id="test"),
     )
     policy = DecisionPolicy(
-        ExecutionFacts("task", field_names=("description", "hbl_no", "shipper"))
+        ExecutionFacts(
+            "task",
+            field_names=("description", "hbl_no", "shipper"),
+            verified_field_names=("description", "hbl_no", "shipper"),
+        )
     )
-    capability = ProcedureStep(
-        id="task-action",
-        phase="task",
-        screen="any",
-        checkpoint="any",
-        view="current.observed.screen",
-        field_scope=["description", "hbl_no", "shipper"],
-        actions=["fill", "navigate"],
-        goal="Save the supplied shipment.",
-        completion="A visible result confirms that the shipment was saved.",
-    )
+    contract = {
+        "allowed_intents": [
+            choice["intent"] for choice in policy.as_prompt()["allowed_next_choices"]
+        ],
+        "checkpoint": policy.current_step,
+    }
+    capability = task_action_contract(brain, contract, {"description", "hbl_no", "shipper"})
     response = ScreenMatch.model_validate(
         {
             "screen_kind": "editor",
@@ -544,25 +723,14 @@ def test_current_model_evidence_can_unlock_save_in_the_same_task_turn(tmp_path):
                     "point": [700, 50],
                 }
             ],
-            "evidence": [{"field": "description", "target": 24}],
+            "evidence": [],
         }
     )
 
     validated, _ = validate_match_plan(response, [capability], policy, brain, set(brain.values))
     assert validated.steps[0].intent == "save"
-    assert any(
-        event.payload.get("check") == "same_turn_evidence_unlocks_save"
-        for event in brain.log.read_all()
-    )
-
-    with pytest.raises(ValueError, match="screen_match_action_outside_procedure"):
-        validate_match_plan(
-            response.model_copy(update={"evidence": []}),
-            [capability],
-            policy,
-            brain,
-            set(brain.values),
-        )
+    assert "fill" in capability.actions
+    assert "save" in capability.actions
 
 
 def test_grounded_current_action_does_not_refine_for_future_hidden_input(tmp_path, record):
@@ -784,10 +952,12 @@ def test_identical_capture_reuses_ocr_but_rematches_new_procedure_step(tmp_path,
 
 def test_gemini_interprets_and_plans_in_one_image_call(tmp_path, record):
     meaning = fixture()[-1]
+    plan = response(meaning)
+    plan["evidence"] = [{"field": "hbl_no", "target": meaning.controls[0].id}]
     brain, model, _, _, _, _ = setup_brain(
         tmp_path,
         record,
-        [response(meaning)],
+        [plan],
     )
     images_seen = []
     original = model._generate
@@ -798,10 +968,36 @@ def test_gemini_interprets_and_plans_in_one_image_call(tmp_path, record):
 
     model._generate = generate
     brain._observe()
+    assert brain.saved_bindings == (
+        str(brain.observation.obs_id),
+        {"hbl_no": brain.observation.elements[0].ref},
+    )
     assert brain._select_node({}) == {"next": "review"}
     assert brain._review_node({}) == {"next": "act"}
     assert images_seen == [True]
     assert model.prompts[0].startswith(RULES)
+
+
+def test_task_planner_sees_that_post_save_query_is_still_missing(tmp_path, record):
+    meaning = fixture()[-1]
+    task_response = response(meaning, procedure_step="Continue the taught procedure")
+    brain, model, *_ = setup_brain(tmp_path, record, [task_response])
+    brain.task_instruction = TaskInstruction.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    brain.procedure = None
+    brain.phase = "task"
+    brain.saved_evidence.begin("saved-dialog-observation")
+
+    brain._observe()
+
+    state = json.loads(model.prompts[0][len(TASK_RULES) :])
+    saved = state["notebook"]["saved_record_review"]
+    assert saved["query_row_seen"] is False
+    assert saved["confirmed_fields"] == []
+    assert saved["missing_fields"] == sorted(brain.values)
 
 
 def test_local_grounding_retry_receives_only_the_relevant_correction(tmp_path, record):
@@ -1220,6 +1416,26 @@ def test_login_and_record_arrays_compile_to_existing_batches(tmp_path, record):
     assert action.type == "scroll"
     assert action.wheel_delta == -600
     assert action.target.image_point
+
+    # A model-grounded table can be disabled as an activation target when its
+    # row semantics are uncertain. Its current local geometry is still a safe
+    # wheel anchor because no click is dispatched to the control.
+    disabled_scroll_scene = scene.model_copy(
+        update={
+            "screen_kind": "editor",
+            "elements": [
+                item.model_copy(update={"role": "table", "enabled": False})
+                if item.ref == prefix + "3"
+                else item
+                for item in scene.elements
+            ],
+        }
+    )
+    brain.observation = disabled_scroll_scene
+    brain._guard_action(
+        scroll_decision,
+        DecisionPolicy(ExecutionFacts("enter", duplicate_clear=True)),
+    )
 
 
 @pytest.mark.parametrize(

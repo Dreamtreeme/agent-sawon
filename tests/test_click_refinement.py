@@ -148,7 +148,9 @@ def test_failed_center_click_refines_once_then_uses_shared_execution_and_verific
     assert any(e.payload.get("check") == "navigation_observed_change" for e in brain.log.read_all())
 
 
-@pytest.mark.parametrize("mode", ["disabled", "replan", "same_point", "still_no_change"])
+@pytest.mark.parametrize(
+    "mode", ["disabled", "replan", "same_point", "near_center", "still_no_change"]
+)
 def test_no_blind_repeated_click_or_repeated_image_request(tmp_path, record, mode):
     answer = {
         "outcome": "retry",
@@ -156,6 +158,8 @@ def test_no_blind_repeated_click_or_repeated_image_request(tmp_path, record, mod
         "y": 35,
         "explanation": "One correction",
     }
+    if mode == "near_center":
+        answer["x"] = 112
     if mode == "replan":
         answer = {"outcome": "replan", "explanation": "Already selected; do not click again"}
     brain, relay, model = setup(tmp_path, record, answer, success=False, enabled=mode != "disabled")

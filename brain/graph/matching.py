@@ -12,7 +12,7 @@ from brain.cache import visual_match_key
 from brain.input_binding import MODEL_INPUTS_NAME, normalize_action_source, resolve_input_key
 from brain.runtime.storage import atomic_write_json
 from brain.visual.marker_contract import local_response, model_controls, model_screen
-from brain.visual.markers import marker_role_allowed
+from brain.visual.markers import Marker, grid_cell_marker_ids, marker_role_allowed
 from brain.visual.scene import SemanticDetection, contains, overlap
 
 from .context import execution_context
@@ -430,6 +430,17 @@ screen-boundary actions. Advance only when current evidence or the just-delivere
 the preceding completion. If required content is below the current viewport, use grounded
 navigation such as pagedown rather than reporting a missing detector control. operation=complete
 is allowed only for the final taught step and its completion evidence.
+Each taught step's actions preserve the user's actual button, tab and field instructions.
+Treat target as a semantic CURRENT-screen label, never as a stored coordinate. For fill actions,
+input_key identifies the value the user associated with that target. The procedure describes the
+expected route; it does not hide other supplied inputs that are visibly writable on the current
+screen. Fill every confidently matched visible input from notebook.inputs, even when the user
+mentioned that input in another procedure step. Perform taught navigation actions in order across
+as many screen-boundary batches as needed; use exploration only when a taught target cannot be
+grounded on the current screen.
+For a fill action, surface=null means a standalone direct input. surface=table_cell explicitly
+authorizes a grid cell and surface=any authorizes either. Do not bind a direct_input to a line-item
+or detail-table cell merely because its column caption resembles the business input name.
 """
 
 METHOD_RULES = """
@@ -445,6 +456,13 @@ progress, not business completion proof. A null method_id means a new purpose or
 For navigation into the screen that will perform a learned method, select that method_id and its
 bindings NOW so the next observed screen can use it directly. Select only for the current or
 immediately next subgoal; after a delivered batch the next purpose is chosen from new evidence.
+"""
+
+POST_ACTION_REVIEW_RULES = """
+This call reviews the result of a field batch that was already executed. Describe the current
+screen and map every readable supplied input to evidence. Do not choose the next action in this
+call: return operation=stop, steps=[], completion_evidence=[], and no save result. A later Decision
+call will use the accepted evidence and choose what to do next.
 """
 
 
@@ -900,6 +918,7 @@ _REPLANNABLE_MATCH_ERRORS = {
     "screen_match_field_outside_procedure_scope",
     "screen_match_login_batch_incomplete",
     "screen_match_mixed_boundary_actions",
+    "screen_match_task_surface_mismatch",
 }
 
 
@@ -917,37 +936,6 @@ def _is_login_batch(steps: list[MatchAction]) -> bool:
             for action in steps[:-1]
         )
     )
-
-
-def _same_turn_evidence_unlocks_save(response: ScreenMatch, brain) -> bool:
-    """Allow model-reviewed current evidence to unlock its immediate save action.
-
-    Generic tasks receive screen meaning, current evidence and the next action in
-    one response.  Requiring the evidence to be persisted before validating the
-    action forced a redundant second model turn and rejected a correct Save plan.
-    This only relaxes the preliminary procedure-envelope check; the evidence is
-    still grounded and recorded before the executor recomputes its state policy.
-    """
-    # Generic task policy deliberately keeps every input reusable across
-    # screens, so policy.facts.remaining_fields contains the full input set.
-    # Save coverage must use the model-owned evidence notebook instead.
-    remaining = set(brain.values) - set(brain.verified)
-    if (
-        not remaining
-        or not brain.settings.visual_model_only_review
-        or response.operation != "act"
-        or len(response.steps) != 1
-        or response.steps[0].intent != "save"
-    ):
-        return False
-    controls = {control.id: control for control in response.controls}
-    current_input_evidence = {
-        evidence.field
-        for evidence in response.evidence
-        if evidence.target in controls
-        and controls[evidence.target].role.casefold() in {"edit", "combobox"}
-    }
-    return remaining <= current_input_evidence
 
 
 def validate_match_plan(
@@ -1030,15 +1018,6 @@ def validate_match_plan(
     allowed_intents = set(step.actions)
     if "login" in allowed_intents:
         allowed_intents.add("credential")
-    if step.id == "task-action" and _same_turn_evidence_unlocks_save(response, brain):
-        allowed_intents.add("save")
-        brain.log.append(
-            "verify",
-            payload={
-                "check": "same_turn_evidence_unlocks_save",
-                "fields": sorted(set(brain.values) - set(brain.verified)),
-            },
-        )
     if brain.phase != "save_result" and any(
         action.intent not in allowed_intents for action in response.steps
     ):
@@ -1225,6 +1204,73 @@ def defer_unwritable_fill_targets(brain, response: ScreenMatch, screen: dict) ->
     )
 
 
+def enforce_taught_input_surfaces(brain, response: ScreenMatch, screen: dict) -> ScreenMatch:
+    """Keep a taught record input off a grid unless the user authorized that surface."""
+
+    task = brain.task_instruction
+    if task is None or not task.procedure or not response.steps:
+        return response
+    permitted: dict[str, set[str]] = {}
+    for procedure_step in task.procedure:
+        for action in procedure_step.actions:
+            if action.verb != "fill" or action.input_key is None:
+                continue
+            source = resolve_input_key(action.input_key, brain.values) or action.input_key
+            permitted.setdefault(source, set()).add(action.surface or "direct_input")
+    markers = [
+        Marker(
+            id=marker["id"],
+            bbox=marker["bbox"],
+            source=marker["source"],
+            confidence=marker.get("candidate_confidence", 1),
+            text_ids=marker.get("text_ids", ()),
+        )
+        for marker in screen.get("markers", [])
+    ]
+    grid_targets = grid_cell_marker_ids(markers)
+    invalid = []
+    for step in response.steps:
+        if step.action != "fill" or step.source is None:
+            continue
+        source = resolve_input_key(step.source, brain.values) or step.source
+        surfaces = permitted.get(source)
+        if not surfaces or "any" in surfaces:
+            continue
+        actual = "table_cell" if step.target in grid_targets else "direct_input"
+        if actual not in surfaces:
+            invalid.append((step, source, actual, sorted(surfaces)))
+    if not invalid:
+        return response
+    invalid_steps = {id(item[0]) for item in invalid}
+    retained = [step for step in response.steps if id(step) not in invalid_steps]
+    brain.log.append(
+        "verify",
+        payload={
+            "check": "taught_input_surface_mismatch_deferred",
+            "rejected": [
+                {
+                    "source": source,
+                    "target": step.target,
+                    "observed_surface": actual,
+                    "allowed_surfaces": surfaces,
+                }
+                for step, source, actual, surfaces in invalid
+            ],
+            "safe_steps_retained": len(retained),
+        },
+    )
+    if response.operation == "act" and not retained:
+        raise ValueError("screen_match_task_surface_mismatch")
+    invalid_targets = {item[0].target for item in invalid}
+    invalid_sources = {item[1] for item in invalid}
+    evidence = [
+        item
+        for item in response.evidence
+        if item.target not in invalid_targets and item.field not in invalid_sources
+    ]
+    return response.model_copy(update={"steps": retained, "evidence": evidence})
+
+
 def exclude_current_navigation_step(brain, candidates: list[ProcedureStep]) -> list[ProcedureStep]:
     """Offer the successor while current-screen navigation verification is pending."""
     completed = None
@@ -1288,7 +1334,25 @@ def model_capability(step: ProcedureStep) -> dict:
     return payload
 
 
+def normalize_task_capability(
+    brain, response: ScreenMatch, candidates: list[ProcedureStep]
+) -> ScreenMatch:
+    """Bind a human-readable task plan to the single runtime capability ID."""
+    if brain.task_instruction is None:
+        return response
+    return response.model_copy(
+        update={
+            "purpose": (response.purpose or response.procedure_step)[:160],
+            "procedure_step": candidates[0].id,
+        }
+    )
+
+
 def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
+    pending_execution = None if brain.pending is None else brain.pending.get("execution")
+    post_action_review = (
+        pending_execution is not None and pending_execution.plan.verification == "fields"
+    )
     policy = brain._decision_policy()
     contract = execution_context(brain, policy, anticipate=True)
     required = required_verification(brain)
@@ -1368,6 +1432,12 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
                 MODEL_INPUTS_NAME: record,
             }
         )
+        if brain.saved_evidence.session_id:
+            # This is workflow state, not a second value judge.  It tells the
+            # planner whether a post-save query has actually produced a result;
+            # otherwise an editor left open after Save can be mistaken for the
+            # required re-queried record.
+            notebook["saved_record_review"] = brain.saved_evidence.snapshot(brain.values)
     else:
         notebook.update(
             {
@@ -1391,8 +1461,18 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         "screen": screen if brain.matching_model is not None else model_screen(screen),
         "execution": contract,
     }
+    if post_action_review:
+        state["post_action_review"] = {
+            "mode": "field_evidence_only",
+            "delivered_sources": pending_verification_fields,
+        }
     if brain.task_instruction is not None:
         state["task"] = brain.task_instruction.model_dump(mode="json", exclude={"procedure"})
+        # The digest is the user-education contract boundary.  Two companies can
+        # show identical pixels, and one company's memo can later be revised
+        # without changing its display name.  Neither case may reuse a decision
+        # compiled under another education file.
+        state["task_contract_sha256"] = brain.task_instruction_sha256
         state["taught_procedure_progress"] = brain.methods.procedure_prompt_context()
         if brain.task_instruction.procedure:
             state["taught_procedure_rules"] = TAUGHT_PROCEDURE_RULES.strip()
@@ -1418,9 +1498,10 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     prompt = (
         (TASK_RULES if brain.task_instruction is not None else RULES)
         + method_rules
+        + (POST_ACTION_REVIEW_RULES if post_action_review else "")
         + json.dumps(state, ensure_ascii=False)
     )
-    cache_hit = brain.visual_match_cache.lookup(state)
+    cache_hit = None if post_action_review else brain.visual_match_cache.lookup(state)
     if cache_hit is not None:
         _, cached = cache_hit
         response = ScreenMatch.model_validate(cached)
@@ -1489,18 +1570,28 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         response = omit_nonblocking_image_request(brain, response, screen)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
-    if brain.task_instruction is not None:
-        # There is exactly one synthetic capability envelope in generic task
-        # mode.  Its internal ID is compiler metadata, not a business decision
-        # the model should have to echo instead of a human-readable subgoal.
+    if post_action_review:
+        # The model's semantic controls and field evidence are the review result.
+        # A speculative next action from this same response must not run or block
+        # verification of the batch that has already been delivered.
         response = response.model_copy(
             update={
-                "purpose": (response.purpose or response.procedure_step)[:160],
-                "procedure_step": candidates[0].id,
+                "operation": "stop",
+                "steps": [],
+                "completion_evidence": [],
+                "save_result": None,
+                "message_targets": [],
+                "repair_fields": [],
+                "expected_result": "Review the delivered field values on the current screen",
             }
         )
-    response = defer_unwritable_fill_targets(brain, response, screen)
+    # There is exactly one synthetic capability envelope in generic task mode.
+    # Its internal ID is compiler metadata, not a business decision the model
+    # should have to echo instead of a human-readable subgoal.
+    response = normalize_task_capability(brain, response, candidates)
     try:
+        response = enforce_taught_input_surfaces(brain, response, screen)
+        response = defer_unwritable_fill_targets(brain, response, screen)
         response, step = validate_match_plan(response, candidates, policy, brain, active_fields)
     except ValueError as error:
         # A novel combined response can have sound screen semantics but choose an
@@ -1540,6 +1631,9 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
             page=page,
         )
         response = ScreenMatch.model_validate({**interpretation.model_dump(), **plan.model_dump()})
+        response = normalize_task_capability(brain, response, candidates)
+        response = enforce_taught_input_surfaces(brain, response, screen)
+        response = defer_unwritable_fill_targets(brain, response, screen)
         response, step = validate_match_plan(response, candidates, policy, brain, active_fields)
         atomic_write_json(
             brain.case_dir / "matching" / f"{uuid4().hex}-action-correction.json", response

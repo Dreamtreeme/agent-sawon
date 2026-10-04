@@ -182,17 +182,21 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
             )
         elif facts.available_credential_sources:
             rules.append(_ActionRule("login", ("login",), click_types=("click",), keys=("enter",)))
-        if facts.remaining_fields:
+        # Task inputs remain reusable across screens (for example, the same
+        # identifier can be entered in a query and later in an editor).  The
+        # verified set answers a different question: whether every supplied
+        # input has been evidenced at least once and Save may be offered.
+        if facts.field_names:
             rules.extend(
                 [
-                    _ActionRule("fill", work_screens, text_sources=facts.remaining_fields),
+                    _ActionRule("fill", work_screens, text_sources=facts.field_names),
                     _ActionRule("search", work_screens, click_types=("click",), keys=("enter",)),
                     _ActionRule(
                         "select_option",
                         work_screens,
                         click_types=("click", "double_click"),
                         keys=("enter",),
-                        option_sources=facts.remaining_fields,
+                        option_sources=facts.field_names,
                         named_option=True,
                     ),
                 ]

@@ -1,5 +1,6 @@
 """Fresh saved-result proof, linked detail tabs, and real graph completion."""
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -8,9 +9,11 @@ from test_brain import record as record
 from test_screen_matching import setup_brain
 from test_visual_scene import wire
 
+from brain.graph.save_review import SaveReviewResponse
 from brain.graph.saved_evidence import SavedEvidence
 from brain.graph.schemas import Choice, Decision
 from brain.observe.values import field_matches, values_for
+from brain.task_instruction import TaskInstruction
 from brain.visual.scene import SceneObservation
 
 
@@ -199,6 +202,305 @@ def test_merged_query_cell_is_missing_evidence_not_a_field_conflict(record):
     assert proof.conflict is None
 
 
+@pytest.mark.parametrize("bind_query_input", [False, True])
+def test_unique_selected_row_links_clipped_identifier_to_exact_query_input(
+    record, bind_query_input
+):
+    values = values_for(record)
+    proof = SavedEvidence()
+    proof.begin()
+    q = query(values, identity=values["hbl_no"][:8] + "...")
+    query_input = element("query-input", "edit", name="House reference", value=values["hbl_no"])
+    q = q.model_copy(update={"elements": [*q.elements, query_input]})
+
+    result = proof.observe(
+        q,
+        values,
+        field_matches,
+        {"hbl_no": query_input.ref} if bind_query_input else {},
+        selected_row_ref=ref("row"),
+    )
+
+    assert result.status == "ready"
+    assert proof.query_row_seen is True
+    assert proof.query_identity["value"] == values["hbl_no"]
+    assert proof.query_row_ref == ref("row")
+    assert result.missing_fields == ()
+
+    # Selecting the exact row linked by the current query must preserve the
+    # saved-record session even when the row renders only a clipped identifier.
+    proof.after_action(action(q), q)
+    assert proof.session_id is not None
+    assert proof.query_row_seen is True
+
+
+def test_selected_row_uses_exact_query_input_when_model_binds_row_text(record):
+    values = values_for(record)
+    proof = SavedEvidence()
+    proof.begin()
+    q = query(values, identity=values["hbl_no"][:8] + ".")
+    query_input = element("query-input", "edit", name="House reference", value=values["hbl_no"])
+    misleading = element(
+        "row-hbl-text",
+        "text",
+        parent="row",
+        value=values["hbl_no"][:8] + ".",
+    )
+    q = q.model_copy(update={"elements": [*q.elements, query_input, misleading]})
+
+    result = proof.observe(
+        q,
+        values,
+        field_matches,
+        {"hbl_no": misleading.ref},
+        selected_row_ref=ref("row"),
+    )
+
+    assert result.status == "ready"
+    assert proof.query_row_seen is True
+    assert proof.query_identity["ref"] == query_input.ref
+
+
+def test_unique_selected_row_links_to_exact_submitted_query_when_input_is_not_detected(record):
+    values = values_for(record)
+    proof = SavedEvidence()
+    pre_search = scene(
+        "query",
+        [element("query-input", "edit", value=values["hbl_no"])],
+    )
+    proof.begin(str(pre_search.obs_id))
+    assert proof.remember_submitted_query(pre_search, values["hbl_no"])
+    result = query(values, identity=values["hbl_no"][:8] + "...")
+
+    review = proof.observe(
+        result,
+        values,
+        field_matches,
+        {"hbl_no": ref("row")},
+        selected_row_ref=ref("row"),
+    )
+
+    assert review.matching_rows == 1
+    assert proof.query_row_seen is True
+    assert proof.query_identity["proof_kind"] == "submitted_query_input"
+
+
+def test_screen_binding_promotes_a_clicked_result_cell_to_its_parent_row(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    observation = scene("query", [])
+    prefix = "e" + str(observation.obs_id.int) + "0"
+    brain.observation = observation.model_copy(
+        update={
+            "elements": [
+                raw_element(prefix + "1", "row"),
+                raw_element(prefix + "2", "cell", parent=prefix + "1"),
+            ]
+        }
+    )
+    response = SimpleNamespace(
+        evidence=[],
+        controls=[
+            SimpleNamespace(id=1, role="row", parent_id=None),
+            SimpleNamespace(id=2, role="cell", parent_id=1),
+        ],
+        steps=[SimpleNamespace(target=2, action="click")],
+    )
+
+    brain._bind_saved_evidence(response)
+
+    assert brain.saved_row_binding == (str(observation.obs_id), prefix + "1")
+
+
+def test_different_result_row_still_resets_selected_row_link(record):
+    values = values_for(record)
+    proof = SavedEvidence()
+    proof.begin()
+    q = query(values, identity=values["hbl_no"][:8] + "...")
+    query_input = element("query-input", "edit", name="House reference", value=values["hbl_no"])
+    other_row = element("other-row", "row", parent="grid")
+    q = q.model_copy(update={"elements": [*q.elements, query_input, other_row]})
+
+    # Establish the link on an unambiguous copy first, then prove that choosing
+    # another currently visible row cannot inherit it.
+    linked_q = q.model_copy(update={"elements": [e for e in q.elements if e.ref != other_row.ref]})
+    proof.observe(
+        linked_q,
+        values,
+        field_matches,
+        {},
+        selected_row_ref=ref("row"),
+    )
+    proof.after_action(action(q, target="other-row"), q)
+
+    assert proof.session_id is None
+    assert proof.query_row_seen is False
+
+
+def test_identical_capture_renewal_preserves_the_same_unique_selected_row(record):
+    values = values_for(record)
+    proof = SavedEvidence()
+    proof.begin()
+    q = query(values, identity=values["hbl_no"][:8] + "...")
+    query_input = element("query-input", "edit", value=values["hbl_no"])
+    q = q.model_copy(update={"elements": [*q.elements, query_input]})
+    proof.observe(q, values, field_matches, {}, selected_row_ref=ref("row"))
+
+    renewed_row = element("renewed-row", "row", parent="renewed-grid")
+    renewed = q.model_copy(
+        update={
+            "wire": q.wire.model_copy(update={"obs_id": uuid4()}),
+            "elements": [
+                element("renewed-grid", "table"),
+                renewed_row,
+                element("renewed-query-input", "edit", value=values["hbl_no"]),
+            ],
+        }
+    )
+    proof.after_action(action(renewed, target="renewed-row"), renewed)
+
+    assert proof.session_id is not None
+    assert proof.query_row_seen is True
+
+
+def test_selected_unique_row_survives_focus_repaint_before_open_button(record):
+    values = values_for(record)
+    proof = SavedEvidence()
+    proof.begin()
+    first = query(
+        values,
+        omit=("description", "container_no"),
+        identity=values["hbl_no"][:8] + "...",
+    )
+    first_input = element("first-query-input", "edit", value=values["hbl_no"])
+    first = first.model_copy(update={"elements": [*first.elements, first_input]})
+    initial = proof.observe(
+        first,
+        values,
+        field_matches,
+        {"hbl_no": first_input.ref},
+        selected_row_ref=ref("row"),
+    )
+    assert initial.matching_rows == 1
+    assert {"consignee", "shipper"} <= set(proof.fields)
+
+    # The selected-row highlight changes the capture and all observation refs.
+    # The next plan clicks a separate open button, so it has no selected_row_ref.
+    repainted = query(
+        values,
+        omit=("description", "container_no"),
+        identity=values["hbl_no"][:8] + "...",
+    )
+    repainted_input = element("repainted-query-input", "text", value=values["hbl_no"])
+    repainted = repainted.model_copy(update={"elements": [*repainted.elements, repainted_input]})
+    carried = proof.observe(
+        repainted,
+        values,
+        field_matches,
+        {"hbl_no": repainted_input.ref},
+    )
+
+    assert carried.matching_rows == 1
+    assert proof.query_row_seen is True
+    assert proof.query_row_ref == ref("row")
+
+    proof.after_action(action(repainted, target="open"), repainted)
+    opened = detail(
+        {
+            "hbl_no": values["hbl_no"],
+            "description": values["description"],
+        }
+    )
+    opened_review = observe(proof, opened, values)
+    assert opened_review.status == "needs_more"
+    assert proof.query_row_seen is True
+    assert proof.detail_identity is not None
+    assert "description" in proof.fields
+
+
+def test_selected_row_repaint_does_not_carry_changed_row(record):
+    values = values_for(record)
+    proof = SavedEvidence()
+    proof.begin()
+    first = query(values, identity=values["hbl_no"][:8] + "...")
+    first_input = element("first-query-input", "edit", value=values["hbl_no"])
+    first = first.model_copy(update={"elements": [*first.elements, first_input]})
+    proof.observe(
+        first,
+        values,
+        field_matches,
+        {"hbl_no": first_input.ref},
+        selected_row_ref=ref("row"),
+    )
+
+    changed = query(values, identity=values["hbl_no"][:8] + "...")
+    changed_input = element("changed-query-input", "text", value=values["hbl_no"])
+    changed_elements = [
+        item.model_copy(update={"value": "OTHER CONSIGNEE", "name": "OTHER CONSIGNEE"})
+        if item.ref == ref("consignee")
+        else item
+        for item in changed.elements
+    ]
+    changed = changed.model_copy(update={"elements": [*changed_elements, changed_input]})
+    result = proof.observe(
+        changed,
+        values,
+        field_matches,
+        {"hbl_no": changed_input.ref},
+    )
+
+    assert result.matching_rows == 0
+    assert proof.query_row_seen is False
+    assert not proof.fields
+
+
+def test_detail_uses_unique_exact_identity_when_model_binding_is_not_an_input(record):
+    values = values_for(record)
+    proof = SavedEvidence()
+    proof.begin()
+    q = query(values)
+    assert observe(proof, q, values).status == "ready"
+    proof.after_action(action(q, target="row"), q)
+    d = detail({"hbl_no": values["hbl_no"], "description": values["description"]})
+    label = element("hbl-label", "text", name="House B/L")
+    d = d.model_copy(update={"elements": [*d.elements, label]})
+
+    result = proof.observe(
+        d,
+        values,
+        field_matches,
+        {"hbl_no": label.ref, "description": ref("description")},
+    )
+
+    assert result.status == "ready"
+    assert proof.detail_identity is not None
+    assert "description" in proof.fields
+
+
+def test_linked_read_only_detail_accepts_exact_current_value_text(record):
+    values = values_for(record)
+    proof = SavedEvidence()
+    proof.begin()
+    q = query(values, omit=("description", "container_no"))
+    assert observe(proof, q, values).status == "needs_more"
+    proof.after_action(action(q, target="row"), q)
+    hbl = element("read-hbl", "text", value=values["hbl_no"])
+    description = element("read-description", "text", value=values["description"])
+    unrelated = element("unbound-value", "text", value=values["container_no"])
+    d = scene("editor", [hbl, description, unrelated], handle=2)
+
+    result = proof.observe(
+        d,
+        values,
+        field_matches,
+        {"hbl_no": hbl.ref, "description": description.ref},
+    )
+
+    assert proof.detail_identity is not None
+    assert "description" in proof.fields
+    assert "container_no" in proof.fields
+    assert result.status == "ready"
+
+
 def test_graph_review_completes_from_unambiguous_current_inputs_without_rematch(tmp_path, record):
     brain, *_ = setup_brain(tmp_path, record, [])
     brain.phase = "final_query"
@@ -228,3 +530,74 @@ def test_graph_review_completes_from_unambiguous_current_inputs_without_rematch(
     assert brain.query_descriptor is None
     assert (tmp_path / "saved-evidence.json").exists()
     assert not brain.model.prompts
+
+
+def test_generic_task_review_joins_post_save_query_and_detail_tabs(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.phase = "task"
+    brain.save_issued = True
+    brain.task_instruction = TaskInstruction(
+        name="Register shipment",
+        objective="Save and requery the supplied shipment.",
+        completion_conditions=["The saved shipment values match after requery."],
+    )
+    brain.saved_evidence.begin()
+    values = brain.values
+    q = query(values, omit=("description", "container_no"))
+    brain.observation = q
+    brain.review = None
+    assert brain._review_node({}) == {"next": "select"}
+    brain.saved_evidence.after_action(action(q), q)
+    d = detail({"hbl_no": values["hbl_no"], "description": values["description"]})
+    brain.observation = d
+    brain.review = None
+    brain.saved_bindings = (
+        str(d.obs_id),
+        {"hbl_no": ref("hbl_no"), "description": ref("description")},
+    )
+    assert brain._review_node({}) == {"next": "select"}
+    brain.saved_evidence.after_action(action(d, "select_tab", "tab"), d)
+    last = detail({"container_no": values["container_no"]})
+    brain.observation = last
+    brain.review = None
+
+    final_review = brain._current_review()
+    assert final_review.missing_fields == ()
+    assert final_review.status == "ready"
+    assert brain._review_node({}) == {"next": "finish"}
+    assert brain.result.status == "success"
+    assert brain.result.reason == "saved_and_verified_awaiting_approval"
+
+
+def test_generic_visual_task_starts_saved_evidence_after_save_review(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.phase = "save_result"
+    brain.task_instruction = TaskInstruction(
+        name="Register shipment",
+        objective="Save and requery the supplied shipment.",
+        completion_conditions=["The saved shipment values match after requery."],
+    )
+    message = element("saved", "text", name="Saved")
+    brain.observation = scene("dialog", [message])
+    review = SaveReviewResponse.model_validate(
+        {
+            "result": "ready_for_query",
+            "evidence_refs": [message.ref],
+            "repair_fields": [],
+            "next_decision": {
+                "decision": {
+                    "screen_kind": "dialog",
+                    "operation": "stop",
+                    "intent": "stop",
+                    "subgoal": "Review saved record",
+                    "reason": "Plan from the fresh query screen",
+                    "action": None,
+                }
+            },
+        }
+    )
+
+    assert brain._apply_save_review(review) is None
+    assert brain.phase == "task"
+    assert brain.saved_evidence.session_id is not None
+    assert brain.saved_evidence.origin_obs_id == str(brain.observation.obs_id)

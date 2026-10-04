@@ -169,6 +169,42 @@ def nested_rectangle_count(marker: Marker, markers: list[Marker]) -> int:
     )
 
 
+def grid_cell_marker_ids(markers: list[Marker]) -> set[int]:
+    """Return rectangles supported as cells by both a row and a column.
+
+    A same-row neighbour alone can describe an ordinary two-column form.
+    Requiring a vertically aligned neighbour identifies a local grid without
+    using application labels, stored coordinates or model prose.
+    """
+
+    rectangles = [marker for marker in markers if marker.source == "pixel_rectangle"]
+
+    def horizontally_adjacent(left: Marker, right: Marker) -> bool:
+        x, y, width, height = left.bbox
+        other_x, other_y, other_width, other_height = right.bbox
+        return (
+            abs(y - other_y) <= 2
+            and abs(height - other_height) <= 2
+            and (abs(x + width - other_x) <= 2 or abs(other_x + other_width - x) <= 2)
+        )
+
+    def vertically_adjacent(top: Marker, bottom: Marker) -> bool:
+        x, y, width, height = top.bbox
+        other_x, other_y, other_width, other_height = bottom.bbox
+        return (
+            abs(x - other_x) <= 2
+            and abs(width - other_width) <= 2
+            and (abs(y + height - other_y) <= 2 or abs(other_y + other_height - y) <= 2)
+        )
+
+    return {
+        marker.id
+        for marker in rectangles
+        if any(peer.id != marker.id and horizontally_adjacent(marker, peer) for peer in rectangles)
+        and any(peer.id != marker.id and vertically_adjacent(marker, peer) for peer in rectangles)
+    }
+
+
 def ground_meanings(
     meanings: SemanticDetection,
     markers: list[Marker],

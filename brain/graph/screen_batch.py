@@ -194,17 +194,35 @@ def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Ob
         delivered for delivered in execution.delivered if delivered["choice"].source is not None
     ]
     if brain.settings.visual_model_only_review:
-        delegated = [delivered["choice"].source for delivered in delivered_fields]
+        proposal = getattr(brain, "visual_proposal", None)
+        if proposal is not None:
+            brain._remember_model_task_evidence(proposal)
+        matched, mismatched = [], []
+        for delivered in delivered_fields:
+            source = delivered["choice"].source
+            if source in brain.verified:
+                execution.matched_refs.add(delivered["choice"].ref)
+                matched.append(source)
+            else:
+                mismatched.append(source)
         payload = {
             "check": "screen_fill_values",
-            "ok": True,
-            "matched": [],
-            "mismatched": [],
-            "delegated": delegated,
+            "ok": not mismatched,
+            "matched": matched,
+            "mismatched": mismatched,
+            "delegated": [delivered["choice"].source for delivered in delivered_fields],
             "reviewer": "screen_model",
         }
         brain.log.append("verify", payload={**payload, "obs_id": str(observation.obs_id)})
         brain.feedback.append(payload)
+        # This proposal belonged only to post-action evidence review. The next
+        # Decision must be planned from the updated notebook instead of reusing it.
+        brain.visual_proposal = None
+        brain.visual_match_candidate = None
+        if mismatched:
+            outcome = brain._fail("screen_fill_evidence_missing")
+            if outcome["next"] == "finish":
+                return outcome
         return {"next": "review"}
 
     matched, mismatched, mismatched_refs = [], [], []

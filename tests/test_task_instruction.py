@@ -18,6 +18,53 @@ from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 
 
+def test_user_taught_actions_preserve_ui_labels_without_coordinates():
+    task = TaskInstruction.model_validate(
+        {
+            "name": "Enter invoice",
+            "objective": "Enter and save an invoice.",
+            "completion_conditions": ["The saved invoice is visible."],
+            "procedure": [
+                {
+                    "id": "open-extra",
+                    "instruction": "Press Additional information and enter the amount.",
+                    "completion": "The amount is visible.",
+                    "actions": [
+                        {"verb": "activate", "target": "Additional information tab"},
+                        {
+                            "verb": "fill",
+                            "target": "Amount field",
+                            "input_key": "amount",
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+
+    actions = task.procedure[0].actions
+    assert [(item.verb, item.target, item.input_key) for item in actions] == [
+        ("activate", "Additional information tab", None),
+        ("fill", "Amount field", "amount"),
+    ]
+    with pytest.raises(ValidationError):
+        TaskInstruction.model_validate(
+            {
+                "name": "Unsafe route",
+                "objective": "Use a stored point.",
+                "completion_conditions": ["Done"],
+                "procedure": [
+                    {
+                        "id": "click",
+                        "instruction": "Click the control.",
+                        "completion": "The next screen is visible.",
+                        "actions": [{"verb": "activate", "target": "Next", "point": [10, 20]}],
+                    }
+                ],
+            }
+        )
+
+
 def test_task_record_accepts_arbitrary_business_keys():
     record = TaskInputRecord(
         case_id="invoice-17",
@@ -46,7 +93,7 @@ def test_input_key_vocabulary_is_normalized_at_one_boundary():
     )
 
 
-def test_task_policy_derives_choices_from_runtime_keys():
+def test_task_policy_keeps_runtime_keys_reusable_across_screens():
     policy = DecisionPolicy(
         ExecutionFacts(
             phase="task",
@@ -57,7 +104,8 @@ def test_task_policy_derives_choices_from_runtime_keys():
     allowed = policy.as_prompt()["allowed_next_choices"]
     fill = next(choice for choice in allowed if choice["intent"] == "fill")
 
-    assert fill["action"][0]["source"] == ["invoice.number"]
+    assert fill["action"][0]["source"] == ["invoice.number", "vendor_code"]
+    assert policy.as_prompt()["remaining_fields"] == ["invoice.number"]
     assert policy.allows(
         DecisionResponse.model_validate(
             {
@@ -105,7 +153,7 @@ def test_task_save_requires_all_inputs_evidenced_and_is_issued_once():
     assert not issued.allows(save)
 
 
-def test_generic_task_guard_uses_evidence_ledger_to_authorize_save(tmp_path):
+def test_generic_task_policy_uses_evidence_ledger_to_authorize_save(tmp_path):
     record = TaskInputRecord(
         case_id="invoice-save",
         inputs={"invoice.number": "INV-17", "vendor_code": "V-9"},
@@ -143,11 +191,8 @@ def test_generic_task_guard_uses_evidence_ledger_to_authorize_save(tmp_path):
         brain._guard_action(save)
 
     brain.verified = {field: "current-model-evidence" for field in brain.values}
+    assert brain._decision_policy().allows(save)
     brain._guard_action(save)
-    assert any(
-        event.payload.get("check") == "task_evidence_ledger_authorizes_save"
-        for event in brain.log.read_all()
-    )
 
 
 def test_task_completion_is_tied_to_user_condition_not_all_input_fields():

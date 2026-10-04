@@ -77,6 +77,7 @@ def setup(
         method_id="business-entry",
         purpose=source_response.purpose,
         task_objective=task.objective,
+        task_contract_sha256=hashlib.sha256(task_path.read_bytes()).hexdigest(),
     )
     assert method is not None
     source = MethodLibrary(tmp_path / "source-methods.json", enabled=True)
@@ -179,6 +180,15 @@ def setup(
     return brain, model, relay
 
 
+def test_learned_method_is_scoped_to_exact_user_education_file(tmp_path):
+    brain, _, _ = setup(tmp_path)
+
+    assert brain.methods.prompt_context()["methods"]
+    brain.task_instruction_sha256 = "0" * 64
+
+    assert brain.methods.prompt_context()["methods"] == []
+
+
 @pytest.mark.parametrize("observe_again", [False, True])
 @pytest.mark.parametrize("separate_observation_decision", [False, True])
 def test_learned_method_uses_current_scene_and_executor_without_model(
@@ -205,6 +215,16 @@ def test_learned_method_uses_current_scene_and_executor_without_model(
     ]
     assert model.prompts == []
     assert not any(event.kind == "model_call" for event in brain.log.read_all())
+    education = next(
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "user_education_loaded"
+    )
+    assert education.payload["name"] == brain.task_instruction.name
+    assert len(education.payload["sha256"]) == 64
+    assert education.payload["procedure_step_ids"] == [
+        step.id for step in brain.task_instruction.procedure
+    ]
     assert brain.methods.history[-1]["origin"] == "reuse"
     assert brain.methods.history[-1]["status"] == "delivered"
     assert brain.methods.used
@@ -516,6 +536,34 @@ def test_prompt_context_keeps_only_current_method_and_procedure_window(tmp_path)
         "group-third",
     ]
     assert len(memory["recent_executions"]) == 2
+
+
+def test_delivered_batch_does_not_complete_a_multi_action_taught_step(tmp_path):
+    brain, _, _ = setup(tmp_path)
+    atomic_write_json(brain.methods.library.path, MethodDocument())
+    brain.task_instruction = TaskInstruction.model_validate(
+        {
+            "name": "Multi-screen procedure",
+            "objective": brain.task_instruction.objective,
+            "completion_conditions": ["Done"],
+            "procedure": [
+                {"id": f"step-{index}", "instruction": f"Do {index}", "completion": "Done"}
+                for index in range(1, 5)
+            ],
+        }
+    )
+    brain.methods.history.append(
+        {
+            "taught_step_id": "step-2",
+            "purpose": "first batch within step 2",
+            "status": "delivered",
+        }
+    )
+
+    procedure = brain.methods.procedure_prompt_context()
+
+    assert [step["id"] for step in procedure["steps"]] == ["step-2", "step-3"]
+    assert procedure["completed_step_ids"] == ["step-1"]
 
 
 def test_generic_success_trace_becomes_model_free_execution_graph(tmp_path):
