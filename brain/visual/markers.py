@@ -149,6 +149,26 @@ def marker_role_allowed(source: str, role: str, *, allow_ocr_inputs: bool = Fals
     return True
 
 
+def nested_rectangle_count(marker: Marker, markers: list[Marker]) -> int:
+    """Count materially smaller closed rectangles inside one rectangle.
+
+    A desktop text input can contain OCR, but a large frame containing several
+    independently detected rectangles is a container/grid candidate.  It must
+    not become the writable extent for a nearby field whose own boundary is
+    clipped outside the capture.
+    """
+    if marker.source != "pixel_rectangle":
+        return 0
+    area = marker.bbox[2] * marker.bbox[3]
+    return sum(
+        child.source == "pixel_rectangle"
+        and child.id != marker.id
+        and child.bbox[2] * child.bbox[3] <= area * 0.6
+        and contains(marker.bbox, child.bbox)
+        for child in markers
+    )
+
+
 def ground_meanings(
     meanings: SemanticDetection,
     markers: list[Marker],
@@ -173,6 +193,8 @@ def ground_meanings(
                 if marker.source == "ocr_group"
                 else "ocr_text_is_not_control_extent"
             )
+        if meaning.role in {"edit", "combobox"} and nested_rectangle_count(marker, markers) >= 2:
+            raise ValueError("nested_rectangle_container_is_not_input")
         # Literal value evidence is constrained to the measured box. OCR markers
         # cannot be relabelled with a different OCR block. Omitted links are
         # already known locally; asking the model to reproduce them adds no evidence.

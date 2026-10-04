@@ -180,6 +180,22 @@ def test_direct_fill_batch_records_delivered_prefix_on_relay_failure(tmp_path, r
     assert all(item["observed_effect"] == "unchecked" for item in transitions)
 
 
+def test_successful_input_delivery_separates_unrelated_phase_failures(tmp_path, record):
+    relay = BatchedChangingPixelsRelay(record)
+    relay.mode = "editor"
+    brain, _, _ = make_brain(tmp_path, record, relay, [screen_plan(record)])
+    brain.phase, brain.duplicate_clear = "enter", True
+    brain._observe()
+    assert brain._select_node({}) == {"next": "review"}
+    assert brain._review_node({}) == {"next": "act"}
+    brain.phase_failures["enter"] = 1
+
+    assert brain._act_node({}) == {"next": "verify"}
+
+    assert brain.phase_failures["enter"] == 0
+    assert not brain.verified  # delivery is not semantic/business verification
+
+
 def test_wrong_field_is_not_verified_and_only_that_field_is_replanned(tmp_path, record):
     class CorruptOnce(ChangingPixelsRelay):
         corrupt_once = True

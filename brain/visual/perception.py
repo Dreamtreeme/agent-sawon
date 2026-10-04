@@ -59,7 +59,13 @@ confidence is YOUR semantic certainty about role and relationships. It is NOT
 candidate_confidence (local detector evidence) or OCR confidence; do not copy either.
 pixel_rectangle markers are closed pixel line boundaries, NOT guaranteed controls/tables.
 Their candidate_confidence=1 only describes the deterministic boundary candidate.
+A rectangle containing multiple smaller closed rectangles is a container/grid frame,
+not an edit or combobox. If an input is clipped at the viewport edge, scroll to expose
+its own boundary instead of borrowing a nearby table/container rectangle.
 For inputs label_ids must name the field, text_ids must be only its current value.
+When a focused input has no closed rectangle, an OCR marker may represent the input only
+when it encloses that input's own CURRENT literal value. Never use the nearby label OCR
+marker while attaching a different value's text_id.
 For recognizable unlabeled icons/buttons use visual_description for their visual meaning,
 never for an input value, cell value or an invented visible text string.
 Do not invent text, values, hidden rows, or invisible controls. Empty text_ids means
@@ -484,6 +490,7 @@ class VisualPerception:
                     "ocr_text_is_not_control_extent",
                     "ocr_group_is_not_input_or_table_extent",
                     "ocr_marker_text_mismatch",
+                    "nested_rectangle_container_is_not_input",
                     "value_outside_local_marker",
                     "value_outside_visual_control",
                     "unknown_ocr_reference",

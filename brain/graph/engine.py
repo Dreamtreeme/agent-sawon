@@ -813,7 +813,9 @@ class Brain:
             for source, entry in self.credential_submissions.items()
             if entry["window_handle"] == observation.active_window.handle
         }
-        if self.phase in {"task", "enter"}:
+        if self.phase in {"task", "enter"} and not (
+            self.task_instruction is not None and self.settings.visual_model_only_review
+        ):
             self._invalidate_editor_evidence()
         if (
             self.query_value_verified
@@ -1480,7 +1482,8 @@ class Brain:
     def _collect_editor_evidence(self, decision: Decision) -> None:
         assert self.observation is not None
         by_ref = {item.ref: item for item in self.observation.elements}
-        self._invalidate_editor_evidence()
+        if not (self.task_instruction is not None and self.settings.visual_model_only_review):
+            self._invalidate_editor_evidence()
         for evidence in decision.evidence:
             item = by_ref.get(evidence.ref)
             if item is not None and item.role.casefold() in {"edit", "combobox"}:
@@ -1798,6 +1801,11 @@ class Brain:
         if choice.type in {"set_text", "type_text"}:
             target = next(item for item in self.observation.elements if item.ref == choice.ref)
             pending["descriptor"] = describe(target, self.observation.elements)
+            if choice.source in self.values:
+                # A successful relay return proves delivery, not business correctness.
+                # It still separates unrelated failures while semantic reread remains
+                # responsible for verified fields and business progress.
+                self._record_progress("input_delivery:" + choice.source, business=False)
         if (
             self.phase in {"duplicate_query", "final_query"}
             and decision.intent == "search"

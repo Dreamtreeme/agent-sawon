@@ -121,6 +121,34 @@ def test_model_led_semantics_accepts_ocr_input_evidence():
     assert control.bbox == blocks[0].bbox
 
 
+def test_nested_rectangle_container_cannot_be_used_as_input_extent():
+    markers = [
+        Marker(id=1, bbox=(10, 10, 300, 160), source="pixel_rectangle", confidence=1),
+        Marker(id=2, bbox=(20, 40, 120, 40), source="pixel_rectangle", confidence=1),
+        Marker(id=3, bbox=(160, 40, 120, 40), source="pixel_rectangle", confidence=1),
+    ]
+    edit = SemanticDetection.model_validate(
+        {"controls": [{"id": 1, "role": "edit", "confidence": 0.9}]}
+    )
+    with pytest.raises(ValueError, match="nested_rectangle_container_is_not_input"):
+        ground_meanings(edit, markers, [])
+
+    table = SemanticDetection.model_validate(
+        {"controls": [{"id": 1, "role": "table", "confidence": 0.9}]}
+    )
+    grounded = ground_meanings(table, markers, [])
+    assert grounded.controls[0].role == "table"
+
+
+def test_single_rectangle_remains_available_as_input_extent():
+    marker = Marker(id=1, bbox=(10, 10, 300, 40), source="pixel_rectangle", confidence=1)
+    edit = SemanticDetection.model_validate(
+        {"controls": [{"id": 1, "role": "edit", "confidence": 0.9}]}
+    )
+    grounded = ground_meanings(edit, [marker], [])
+    assert grounded.controls[0].role == "edit"
+
+
 def test_model_led_semantics_accepts_ocr_text_as_clickable_result_row():
     blocks, _, markers, _ = fixture()
     value = next(marker for marker in markers if marker.source == "ocr")

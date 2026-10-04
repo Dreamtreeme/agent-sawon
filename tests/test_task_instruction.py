@@ -188,3 +188,38 @@ def test_model_only_review_accepts_model_bound_completion_without_value_recheck(
         if event.payload.get("check") == "task_completion_fields"
     )
     assert event.payload["reviewer"] == "screen_model"
+
+
+def test_model_owned_generic_evidence_is_not_invalidated_by_later_screens(tmp_path):
+    record = TaskInputRecord(case_id="invoice-17", inputs={"invoice.number": "INV-17"})
+    relay = FakeRelay(record)
+    log = RunLog(tmp_path, case_id=record.case_id, agent_id="generic-task-test")
+    brain = Brain(
+        record=record,
+        goal="Save the supplied invoice.",
+        relay=relay,
+        model=ScriptedModel(log, []),
+        settings=BrainSettings(visual_model_only_review=True),
+        case_dir=tmp_path,
+        run_log=log,
+    )
+    brain.phase = "task"
+    brain.task_instruction = TaskInstruction(
+        name="Save invoice",
+        objective="Save the supplied invoice.",
+        completion_conditions=["A visible result confirms that the invoice was saved."],
+    )
+    brain._invalidate_editor_evidence = lambda: pytest.fail(
+        "generic model-owned evidence must survive a screen change"
+    )
+
+    brain._observe()
+    passive = DecisionResponse.model_validate(
+        {
+            "decision": decision(
+                intent="navigate",
+                action={"type": "click", "ref": "e2"},
+            )
+        }
+    ).to_decision()
+    brain._collect_editor_evidence(passive)

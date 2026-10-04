@@ -238,6 +238,10 @@ TASK_INPUT_RULES = """
 Distinguish field captions and column headers from the editable areas they name.
 Match values to the data scope requested by the user (record or line item), not merely to a
 same-text label in another section. Ground an input in its actual visible editable area.
+Never classify a rectangle containing multiple smaller closed rectangles as an edit/combobox;
+it is a container or grid candidate. When an input boundary is clipped at the viewport edge,
+scroll to expose that input instead of borrowing a nearby table or container rectangle.
+An OCR input marker must enclose that input's own current literal value, never its nearby label.
 """
 
 
