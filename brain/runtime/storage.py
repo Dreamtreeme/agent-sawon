@@ -104,9 +104,22 @@ def _validate_identity(case_id: str, agent_id: str = "storage") -> None:
 
 
 class RunLog:
-    """Single-case event stream with cross-process sequence assignment."""
+    """Single-case event stream with cross-process sequence assignment.
 
-    def __init__(self, case_dir: Path, *, case_id: str, agent_id: str, lock_timeout: float = 10):
+    Reuse validation only while the file identity/metadata is unchanged under
+    the cooperative writer lock. ``read_all`` always audits the entire file.
+    Set ``verify_each_append`` for untrusted writers that can restore metadata.
+    """
+
+    def __init__(
+        self,
+        case_dir: Path,
+        *,
+        case_id: str,
+        agent_id: str,
+        lock_timeout: float = 10,
+        verify_each_append: bool = False,
+    ):
         _validate_identity(case_id, agent_id)
         self.case_dir = Path(case_dir)
         self.case_id = case_id
@@ -115,6 +128,17 @@ class RunLog:
         self.case_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.case_dir / "run_log.jsonl"
         self.lock_path = self.case_dir / ".run_log.lock"
+        self.verify_each_append = verify_each_append
+        self._validated_stamp: tuple[int, ...] | None = None
+        self._validated_case_id: str | None = None
+        self._next_seq = 0
+
+    def _file_stamp(self) -> tuple[int, ...] | None:
+        try:
+            stat = self.path.stat()
+        except FileNotFoundError:
+            return None
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
     def _read_unlocked(self) -> list[RunEvent]:
         if not self.path.exists():
@@ -137,6 +161,7 @@ class RunLog:
 
     def read_all(self) -> list[RunEvent]:
         with portalocker.Lock(self.lock_path, mode="a", timeout=self.lock_timeout):
+            self._validated_stamp = None
             return self._read_unlocked()
 
     def append(
@@ -148,9 +173,17 @@ class RunLog:
         latency_ms: float = 0,
     ) -> RunEvent:
         with portalocker.Lock(self.lock_path, mode="a", timeout=self.lock_timeout):
-            previous = self._read_unlocked()
+            stamp = self._file_stamp()
+            if (
+                self.verify_each_append
+                or stamp is None
+                or stamp != self._validated_stamp
+                or self.case_id != self._validated_case_id
+            ):
+                self._validated_stamp = None
+                self._next_seq = len(self._read_unlocked())
             event = RunEvent(
-                seq=len(previous),
+                seq=self._next_seq,
                 ts=datetime.now(UTC),
                 case_id=self.case_id,
                 agent_id=self.agent_id,
@@ -159,10 +192,15 @@ class RunLog:
                 cost=EventCost() if cost is None else EventCost.model_validate(cost.model_dump()),
                 latency_ms=latency_ms,
             )
+            # A failed write/flush/fsync must force validation on the next call.
+            self._validated_stamp = None
             with self.path.open("ab") as stream:
                 stream.write((event.model_dump_json() + "\n").encode("utf-8"))
                 stream.flush()
                 os.fsync(stream.fileno())
+            self._validated_stamp = self._file_stamp()
+            self._validated_case_id = self.case_id
+            self._next_seq = event.seq + 1
             return event
 
 
