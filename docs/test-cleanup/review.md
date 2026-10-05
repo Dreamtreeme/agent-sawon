@@ -68,7 +68,8 @@
    - `test_partner_selection_and_search_remain_available_during_unfinished_entry`
    - `test_save_confirmation_requires_a_prior_save_and_a_dialog_activation`
    - `test_broad_action_types_cannot_bypass_intent_or_source_contract`
-4. **flaky 테스트**: 없음. 기준선 전체 실행 3회가 모두 855 passed였다.
+4. **flaky 테스트**: 기준선 3회에서는 발견되지 않았다. 이후 xdist coverage에서 드러난
+   Windows publication fault injection race는 수정했고, 실제 Windows CI에서 통과했다.
 5. **폐기된 기능의 테스트**: 없음. Jev와 Gemini 비교 경로, UIA 보조 경로, legacy wire 호환은
    production factory·설정·호환 계약에서 여전히 도달 가능하다.
 6. **가치가 낮은 테스트**: 확실한 삭제 후보 없음. 짧은 schema/bounds 테스트는 좌표, 비밀,
@@ -80,12 +81,6 @@
   - 네 변형이 같은 전체 업무 준비를 반복하지만 blur 활성화, 잘못된 값, focus 미이동, 기능 비활성화가
     `_verify_node`의 서로 다른 상태 결합을 통과한다. 같은 결함 탐지력을 가진 독립 단위 경계를
     만들지 않고 삭제하면 입력 검증 회귀를 놓칠 수 있어 보류한다.
-- `test_input_target_recovery.py::test_rejected_query_or_editor_target_can_recover_to_full_success`
-  - assertion은 같지만 query와 editor가 서로 다른 phase·policy·field state를 사용한다. query의
-    재선택 세부 테스트가 별도로 있어도 양쪽의 최종 성공을 대체하지 못하므로 보류한다.
-- `test_prepared_brain.py::test_prepared_case_finishes_and_appends_to_existing_log`
-  - engine/CLI 두 변형은 결과가 비슷하지만 CLI가 argument parsing, factory, 상태 파일을 추가로
-    검증한다. 두 public entry point가 남아 있어 보류한다.
 - `test_semantic_cache.py::test_corrupt_cache_preserved`와
   `test_shared_graph_cache_integration.py::test_corrupt_cache_preserved_while_model_finishes_task`
   - 전자는 저장소 fail-closed, 후자는 손상 캐시 뒤 전체 업무 fallback 성공을 검증한다. 계층이
@@ -95,7 +90,16 @@
   - 일반 구현 순서라면 재작성 후보지만, 이 저장소에서는 모델에 전달되는 최소 정보, 측정 호출 수,
     append-only 감사 이벤트가 외부 계약이다. 동등한 공개 관찰 기준 없이 삭제하지 않는다.
 
-## 자동 감사 결과
+## 보류 후 해결한 후보
+
+- `test_input_target_recovery.py::test_rejected_query_or_editor_target_can_recover_to_full_success`
+  - 동일 업무 안에서 query/editor 거부를 차례로 검증한 뒤 최종 성공을 확인하도록 통합했다.
+    두 경계 모두 유지한다. 최초 보류는 해제했으며 근거·측정은 `decisions.md` 단위 3에 있다.
+- `test_prepared_brain.py::test_prepared_case_finishes_and_appends_to_existing_log`
+  - CLI 대표 성공 경로를 남겼고, engine/CLI 거부 10개 조합은 유지했다. 최초 보류는 해제했다.
+    대체 검증과 측정은 `decisions.md` 단위 3에 있다.
+
+## 정리 종료 당시 자동 감사 결과
 
 - 정확히 같은 AST 본문: 0개
 - 정리 후 테스트 함수: 532개
@@ -104,3 +108,6 @@
 
 실행경로 context, 비용 계층, 53개 파일별 고유 실행 줄과 후속 우선순위는
 `detailed-audit.md`에 기록했다.
+
+위 844개는 정리 종료 시점의 수치다. 이후 별도 RunLog 개선의 회귀 8개가 추가돼 현재 852개이며,
+이 문서 정합성 수정에서는 테스트를 추가하거나 삭제하지 않았다. 최신 결과는 `result.md` 참조.
