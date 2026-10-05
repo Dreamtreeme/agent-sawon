@@ -70,3 +70,28 @@
   `tests/test_navigation_progress.py`는 0개를 탐지했고, 정리 후는 13개를 탐지했다. 변이 점수는
   0%에서 65%로 상승했다. 여섯 의미 변화 검증을 전체 그래프의 반복 입력에서 순수 상태 계약
   테스트로 옮긴 조치가 실제 조건식 결함을 탐지한다.
+
+## 단위 3: 고비용 전체 업무 중복
+
+### 통합
+
+- `tests/test_input_target_recovery.py::test_rejected_query_or_editor_target_can_recover_to_full_success`
+  - 분류: query와 editor 두 case가 각각 전체 업무를 실행하지만 같은 1,819개 프로덕션 줄과
+    같은 assertion 구조를 사용했다.
+  - 조치: 한 전체 업무 안에서 query와 editor의 잘못된 입력 대상을 차례로 제시하고, 두 번
+    모두 relay dispatch 전에 거부된 뒤 최종 성공하는지 검증한다.
+- `tests/test_prepared_brain.py::test_prepared_case_finishes_and_appends_to_existing_log`
+  - 분류: engine과 CLI 성공 변형 중 CLI가 동일 engine을 통과하고 factory, argument parsing,
+    상태 파일까지 더 넓게 검증한다. 직접 engine 성공은 다른 전체 그래프 테스트에도 남아 있다.
+  - 조치: public CLI 성공 변형을 대표 경로로 유지하고 직접 engine 성공 변형을 제거했다.
+    prepared 거부 경계는 engine/CLI 10개 조합을 그대로 유지한다.
+
+### 검증과 효과
+
+- 관련 case: 31개에서 29개로 감소했지만 query/editor 재선택과 engine/CLI 거부 계약은 모두
+  남아 있다.
+- 관련 파일 직접 시간: 18.033초에서 12.506초로 5.527초(30.65%) 감소했다.
+- 전체: 844 passed, JUnit 160.947초, pytest 163.48초.
+- 커버리지: 전체 87.63%, 문장 90.24%, 분기 80.14%로 이전 결과와 동일하다.
+- 변이 실행 가능성: 대상 engine 파일은 Cosmic Ray에서 3,763개 변이를 생성한다. Windows
+  local distributor가 순차 실행만 지원해 이 단위에서 전체 변이 비교는 실행하지 않았다.

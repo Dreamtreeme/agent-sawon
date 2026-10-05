@@ -94,14 +94,12 @@ def execute(mode, case_dir, record, log, monkeypatch, *, options=()):
     return lambda: runner.main(arguments + list(options)), relay, models
 
 
-@pytest.mark.parametrize("mode", ["engine", "cli"])
-def test_prepared_case_finishes_and_appends_to_existing_log(tmp_path, monkeypatch, mode):
+def test_prepared_cli_finishes_and_appends_to_existing_log(tmp_path, monkeypatch):
     case_dir, record, state, log = prepare(tmp_path)
     original = log.path.read_bytes()
     original_events = log.read_all()
-    call, relay, models = execute(mode, case_dir, record, log, monkeypatch)
-    result = call()
-    assert (result.status == "success") if mode == "engine" else result == 0
+    call, relay, models = execute("cli", case_dir, record, log, monkeypatch)
+    assert call() == 0
     assert state.read().status == CaseStatus.AWAITING_APPROVAL
     assert relay.health_calls == 1 and relay.actions
     assert models and models[0].prompts
