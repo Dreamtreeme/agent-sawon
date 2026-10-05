@@ -1,6 +1,6 @@
 # 별도 프로덕션 작업: RunLog append 확장성
 
-상태: **후속 프로덕션 개선 구현·로컬 검증 완료**, `codex/runlog-scaling-ci-coverage`
+상태: **후속 프로덕션 개선 구현·로컬 및 CI 검증 완료**, `codex/runlog-scaling-ci-coverage`
 측정일: 2026-10-05
 
 ## 개선 전 문제
@@ -103,3 +103,23 @@ strict/fast 경로의 재독 비용과 교대 작성자, 중간 손상·교체·
 
 최초 `--cov=brain.runtime.storage` 실행은 커버리지 수집 시 import 순환으로 Pydantic 모듈
 조회에 실패해 테스트 실행 전 중단됐다. 디렉터리 대상을 지정한 위 명령으로 전체 검증했다.
+
+## CI 검증 공백 해결
+
+CI unit을 Ubuntu/Windows matrix로 바꾸고 순차 기본값을 유지했다. 별도 Ubuntu n4 job도
+유지하며 모든 job에 `opencv-python-headless` 설치와 실제 import 검사를 추가했다.
+테스트 결과 XML은 job별 artifact로 남긴다.
+
+첫 Windows 실행에서 테스트 두 곳이 UTF-8 JSON의 encoding을 생략해 CP1252 decode 오류로
+실패했다. 전역 UTF-8 강제로 가리지 않고 해당 두 read_text에 UTF-8을 명시했다.
+
+수정 코드 `6db348a`의 [실제 CI 37274815048](https://github.com/Dreamtreeme/agent-sawon/actions/runs/37274815048)은
+Ubuntu 순차·Windows 순차·Ubuntu 병렬 모두 성공했다. 내려받은 JUnit으로 확인한 결과:
+
+- Windows: 852 passed, skip 0, JUnit 104.439초.
+- Ubuntu 순차: 850 passed, Windows 전용 2 skipped, JUnit 29.950초.
+- Ubuntu 병렬: 850 passed, Windows 전용 2 skipped, JUnit 40.113초.
+- OpenCV 사각형 인식 4개는 양 OS 모두 실제 통과했다.
+- Windows의 열린 reader replace와 응답 파일 publication 테스트 2개도 실제 통과했다.
+
+이번 작업은 ERP 실화면·유료 모델 재실행을 포함하지 않으며 M1/M2 완료 상태를 변경하지 않는다.
