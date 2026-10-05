@@ -172,7 +172,7 @@ def test_procedure_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path,
     brain.credentials = {"credential.username": "secret-user", "credential.password": "secret-pw"}
     assert brain._plan_node({}) == {"next": "observe"}
     assert not model.prompts
-    assert json.loads((tmp_path / "procedure.json").read_text())["steps"]
+    assert json.loads((tmp_path / "procedure.json").read_text(encoding="utf-8"))["steps"]
     brain._observe()
     assert brain._select_node({}) == {"next": "review"}
     assert brain.review_execution

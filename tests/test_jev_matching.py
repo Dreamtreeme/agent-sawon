@@ -305,7 +305,9 @@ def test_actual_brain_uses_argmax_unless_image_explicitly_requested(
     assert "SECRET_" not in brain.matching_model.request.model_dump_json()
     assert len(list((tmp_path / "jev").glob("*/answers.json"))) == 1
     if low_confidence:
-        saved = json.loads(next((tmp_path / "jev").glob("*/screen-match.json")).read_text())
+        saved = json.loads(
+            next((tmp_path / "jev").glob("*/screen-match.json")).read_text(encoding="utf-8")
+        )
         control = next(c for c in saved["controls"] if c["id"] == meaning.controls[0].id)
         assert control["confidence"] == 0.4
         assert control["confidence_policy"] == "argmax"
