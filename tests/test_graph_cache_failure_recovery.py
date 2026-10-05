@@ -74,14 +74,11 @@ def batch_proposal(relay):
 
 
 def test_temporary_failure_invalidates_locally_then_recovers_on_fresh_model_target(
-    tmp_path, record
+    tmp_path, record, graph_cache_snapshot
 ):
     path = tmp_path / "cache.json"
-    cold, _, _, _ = run_brain(
-        tmp_path / "cold", record, success_steps(record), settings=settings(path)
-    )
-    assert cold.status == "success"
-    original_bytes = path.read_bytes()
+    path.write_bytes(graph_cache_snapshot)
+    original_bytes = graph_cache_snapshot
     original = {entry.entry_id: entry for entry in SemanticCache(path).entries()}
 
     for field_index, max_retries, expected_mode in (
@@ -160,13 +157,12 @@ def test_temporary_failure_invalidates_locally_then_recovers_on_fresh_model_targ
         assert len([event for event in events if event.kind == "model_call"]) == len(model.prompts)
 
 
-def test_final_business_mismatch_discards_all_staged_cross_layout_mappings(tmp_path, record):
+def test_final_business_mismatch_discards_all_staged_cross_layout_mappings(
+    tmp_path, record, graph_cache_snapshot
+):
     path = tmp_path / "cache.json"
-    cold, _, _, _ = run_brain(
-        tmp_path / "cold", record, success_steps(record), settings=settings(path)
-    )
-    assert cold.status == "success"
-    original = path.read_bytes()
+    path.write_bytes(graph_cache_snapshot)
+    original = graph_cache_snapshot
     relay = MovingEditorRelay(record, bad_final_row=True)
     steps = [step for step in success_steps(record) if step["intent"] != "fill"]
     steps.insert(4, batch_proposal(relay))

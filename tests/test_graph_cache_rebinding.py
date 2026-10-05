@@ -27,12 +27,11 @@ def settings(path, mode="rebind"):
     return BrainSettings(cache=CacheSettings(enabled=True, path=path, matching_mode=mode))
 
 
-def test_full_graph_rebinds_six_fields_with_one_measured_call(tmp_path, record):
+def test_full_graph_rebinds_six_fields_with_one_measured_call(
+    tmp_path, record, graph_cache_snapshot
+):
     path = tmp_path / "cache.json"
-    cold, _, _, cold_model = run_brain(
-        tmp_path / "cold", record, success_steps(record), settings=settings(path)
-    )
-    assert cold.status == "success"
+    path.write_bytes(graph_cache_snapshot)
     relay = ChangedEditorRelay(record)
 
     def proposal(prompt):
@@ -52,9 +51,7 @@ def test_full_graph_rebinds_six_fields_with_one_measured_call(tmp_path, record):
     )
     assert warm.status == "success", warm
     assert relay.inputs == values_for(record)
-    assert (
-        len(cold_model.prompts) - len(model.prompts) == 10
-    )  # 11 cached inputs minus one measured mapping.
+    assert len(model.prompts) == 10  # 11 cached inputs minus one measured mapping.
     assert brain.cache_rebind_calls == 1
     hits = [e for e in brain.log.read_all() if e.kind == "cache_hit"]
     assert sum(e.payload["match_mode"] == "label_anchor" for e in hits) == 5
@@ -63,13 +60,11 @@ def test_full_graph_rebinds_six_fields_with_one_measured_call(tmp_path, record):
     assert len(SemanticCache(path).entries()) == 22
 
 
-def test_empty_or_invalid_proposals_fall_back_without_unmeasured_retry(tmp_path, record):
+def test_empty_or_invalid_proposals_fall_back_without_unmeasured_retry(
+    tmp_path, record, graph_cache_snapshot
+):
     path = tmp_path / "cache.json"
-    cold, _, _, _ = run_brain(
-        tmp_path / "cold", record, success_steps(record), settings=settings(path)
-    )
-    assert cold.status == "success"
-    cold_cache = path.read_bytes()
+    cold_cache = graph_cache_snapshot
 
     for variant in ("empty", "unknown-ref", "invalid-schema"):
         path.write_bytes(cold_cache)
@@ -109,13 +104,10 @@ def test_empty_or_invalid_proposals_fall_back_without_unmeasured_retry(tmp_path,
 
 
 def test_unknown_cost_in_rebind_call_stops_before_changed_label_inputs(
-    tmp_path, record, monkeypatch
+    tmp_path, record, monkeypatch, graph_cache_snapshot
 ):
     path = tmp_path / "cache.json"
-    cold, _, _, _ = run_brain(
-        tmp_path / "cold", record, success_steps(record), settings=settings(path)
-    )
-    assert cold.status == "success"
+    path.write_bytes(graph_cache_snapshot)
     original = path.read_bytes()
     generate = ScriptedModel._generate
 

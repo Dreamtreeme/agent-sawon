@@ -95,3 +95,33 @@
 - 커버리지: 전체 87.63%, 문장 90.24%, 분기 80.14%로 이전 결과와 동일하다.
 - 변이 실행 가능성: 대상 engine 파일은 Cosmic Ray에서 3,763개 변이를 생성한다. Windows
   local distributor가 순차 실행만 지원해 이 단위에서 전체 변이 비교는 실행하지 않았다.
+
+## 단위 4: L2 graph 반복 준비 공유
+
+### 측정과 분류
+
+- 현재 L2 전체 graph 223개와 변경 전 고비용 15개를 `build_worker_graph`, graph `invoke`,
+  verify/review node, pytest setup/call로 나눠 측정했다. 개별 측정은
+  `docs/test-cleanup/graph-timing.csv`에 기록했다.
+- 전체 계측 대상의 graph 생성은 71회 합계 0.117초뿐이었다. graph 객체는 생성한 `Brain`의
+  bound method를 보유하므로 공유하면 model, relay, 상태와 로그가 섞인다. 절감도 작고 격리도
+  깨지므로 graph 객체 공유는 보류했다.
+- graph cache rebind 3개와 failure/recovery 2개는 같은 cold 성공 cache를 다섯 번 만들었다.
+  개별 `Brain` 실행이 아니라 immutable cache bytes만 공유할 수 있는 중복 준비로 분류했다.
+
+### 적용과 격리
+
+- session fixture가 cold 성공을 한 번 실행하고 직렬화된 `bytes`만 반환한다.
+- 각 case는 function-scope `tmp_path`에 별도 cache 파일을 만들고 `Brain`, model, relay,
+  `StateStore`, `RunLog`, cache session을 새로 생성한다.
+- 소비 case 다섯 개의 역순 실행이 5 passed였고, 관련 세 파일과 전체 suite도 통과했다.
+
+### 검증과 효과
+
+- 다섯 cold 준비의 측정 합계 15.807초 중 네 번을 없애는 이론 절감은 약 12.6초다.
+- 관련 세 파일은 49.85초에서 39.48초로 10.37초(20.8%) 감소했다.
+- 전체는 844 passed를 유지하며 pytest 163.48초에서 148.92초, JUnit 160.947초에서
+  148.628초로 감소했다.
+- 전체·문장·분기 커버리지와 실행/누락 개수는 정확히 동일하다.
+- validation site는 2,388개에서 2,384개가 됐다. 제거된 네 곳은 반복 cold 성공 assertion이며
+  같은 조건을 session fixture의 단일 assertion이 검증한다. 시나리오 assertion은 유지했다.
