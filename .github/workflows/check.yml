@@ -29,3 +29,27 @@ jobs:
         working-directory: agent-sawon
       - run: python -m pytest
         working-directory: agent-sawon
+
+  parallel:
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: agent-sawon
+      - name: Require contract repository configuration
+        env:
+          BENCH_REPOSITORY: ${{ vars.BENCH_REPOSITORY }}
+        run: test -n "$BENCH_REPOSITORY"
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.BENCH_REPOSITORY }}
+          path: agent-sawon-bench
+          ssh-key: ${{ secrets.BENCH_READ_KEY }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -e agent-sawon-bench/interfaces -e './agent-sawon[dev,pipeline]'
+      - run: python -m pytest -n 4 --dist load --max-worker-restart=0
+        working-directory: agent-sawon

@@ -138,3 +138,31 @@ JUnit 결과를 사용했다.
 현재 적용 후보는 `-n 4 --dist load`를 별도 opt-in 명령으로 추가하고, xdist coverage가 순차
 coverage와 정확히 같은지 확인하는 것이다. 기본 `pytest` 명령 변경, fixture 추가 공유,
 프로덕션 `RunLog` 변경은 이 보고 단계에서 수행하지 않았다.
+
+## 후속 coverage 병합 검증
+
+같은 코드에서 순차와 `-n 4 --dist load` coverage를 각각 실행해 JSON 결과의 전체 수치와
+파일별 `executed_lines`, `missing_lines`, `executed_branches`, `missing_branches` 집합을 직접
+비교했다.
+
+| 지표 | 순차 | xdist n4 | 차이 |
+|---|---:|---:|---:|
+| tests | 844 passed | 844 passed | 0 |
+| 실행 line | 7,890 / 8,741 | 7,890 / 8,741 | 0 |
+| 누락 line | 851 | 851 | 0 |
+| 실행 branch | 2,438 / 3,042 | 2,438 / 3,042 | 0 |
+| 누락 branch | 604 | 604 | 0 |
+| 전체 coverage | 87.651702% | 87.651702% | 0.000000%p |
+| 문장 coverage | 90.264272% | 90.264272% | 0.000000%p |
+| 분기 coverage | 80.144642% | 80.144642% | 0.000000%p |
+| 파일별 실행·누락 집합 | 기준 | 동일 | 0개 차이 |
+
+첫 병렬 coverage 실행에서는 Windows response publication race 테스트 한 건이 `exists()`와
+`read_text()` 사이의 TOCTOU 때문에 fault를 주입하지 못해 실패했고 branch 한 개가 누락됐다.
+동일 조건의 단일 테스트는 3회 모두 통과했고 전체 재실행도 통과했다. 테스트 fault injection은
+응답을 실제로 한 번 읽어 publication을 확인한 뒤 `PermissionError`를 발생시키도록 바꿔 이
+race를 제거한다.
+
+기본 `python -m pytest`는 그대로 유지한다. 로컬 병렬 실행은
+`scripts/test-parallel.ps1`의 opt-in 명령으로 제공하고, CI는 순차 job이 통과한 뒤 별도 병렬
+job을 실행한다. 프로덕션 `RunLog` 개선은 `runlog-append-production-issue.md`로 분리했다.
