@@ -35,22 +35,24 @@ def repairs(brain):
     ]
 
 
-@pytest.mark.parametrize("position", [0, 4])
-def test_rejected_query_or_editor_target_can_recover_to_full_success(tmp_path, record, position):
+def test_rejected_query_and_editor_targets_recover_in_one_full_workflow(tmp_path, record):
     steps = success_steps(record)
-    steps.insert(
-        position,
-        bad_input() if position == 0 else bad_input(kind="editor", ref="e7"),
+    steps.insert(0, bad_input())
+    steps.insert(5, bad_input(kind="editor", ref="e7"))
+    result, brain, relay, model = run_brain(
+        tmp_path,
+        record,
+        steps,
+        settings=BrainSettings(max_input_target_retries=2),
     )
-    result, brain, relay, model = run_brain(tmp_path, record, steps)
     assert result.status == "success", result
     assert relay.inputs == relay.values
-    assert brain.input_target_retries == 1
-    assert len(repairs(brain)) == 1
-    assert repairs(brain)[0]["action_dispatched"] is False
-    assert len(model.prompts) == 21  # Original workflow plus one measured correction.
-    assert len([e for e in brain.log.read_all() if e.kind == "model_call"]) == 21
-    assert len(relay.actions) == 17  # Rejected target never reached the relay.
+    assert brain.input_target_retries == 2
+    assert len(repairs(brain)) == 2
+    assert all(item["action_dispatched"] is False for item in repairs(brain))
+    assert len(model.prompts) == 22  # Original workflow plus two measured corrections.
+    assert len([e for e in brain.log.read_all() if e.kind == "model_call"]) == 22
+    assert len(relay.actions) == 17  # Rejected targets never reached the relay.
 
 
 def test_retry_uses_new_observation_refs_and_explicit_non_dispatch_feedback(tmp_path, record):

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from test_brain import decision, run_brain, success_steps, text_choice, values_for
 from test_brain import record as record
 from test_graph_cache_rebinding import ChangedEditorRelay, settings
@@ -74,90 +73,96 @@ def batch_proposal(relay):
     return propose
 
 
-@pytest.mark.parametrize(
-    ("field_index", "max_retries", "expected_mode"),
-    [(0, 0, "label_anchor"), (6, 1, "model_rebind")],
-)
 def test_temporary_failure_invalidates_locally_then_recovers_on_fresh_model_target(
-    tmp_path, record, field_index, max_retries, expected_mode
+    tmp_path, record, graph_cache_snapshot
 ):
     path = tmp_path / "cache.json"
-    cold, _, _, _ = run_brain(
-        tmp_path / "cold", record, success_steps(record), settings=settings(path)
-    )
-    assert cold.status == "success"
-    original_bytes = path.read_bytes()
+    path.write_bytes(graph_cache_snapshot)
+    original_bytes = graph_cache_snapshot
     original = {entry.entry_id: entry for entry in SemanticCache(path).entries()}
-    failing_field = list(values_for(record))[field_index]
-    relay = MovingEditorRelay(record, failing_field=failing_field, failed_attempts=max_retries + 1)
 
-    def model_fallback(prompt):
-        # Earlier successful local proposals are still staged; failures cannot
-        # mutate the source snapshot while the business run is incomplete.
-        assert path.read_bytes() == original_bytes
-        assert "semantic_cache" in prompt
-        assert "input_value_mismatch" in prompt
-        return decision(
-            intent="fill",
-            kind="editor",
-            action=text_choice(failing_field, relay.current_refs[failing_field]),
+    for field_index, max_retries, expected_mode in (
+        (0, 0, "label_anchor"),
+        (6, 1, "model_rebind"),
+    ):
+        path.write_bytes(original_bytes)
+        failing_field = list(values_for(record))[field_index]
+        relay = MovingEditorRelay(
+            record, failing_field=failing_field, failed_attempts=max_retries + 1
         )
 
-    steps = [step for step in success_steps(record) if step["intent"] != "fill"]
-    steps[4:4] = [batch_proposal(relay), model_fallback]
-    run_settings = settings(path)
-    run_settings = run_settings.model_copy(
-        update={"cache": run_settings.cache.model_copy(update={"max_retries": max_retries})}
-    )
-    result, brain, _, model = run_brain(
-        tmp_path / "warm", record, steps, settings=run_settings, relay=relay
-    )
-    assert result.status == "success", result
-    assert relay.inputs == values_for(record)
-    assert brain.cache_rebind_calls == 1
-    events = brain.log.read_all()
-    failures = [
-        event
-        for event in events
-        if event.kind == "cache_miss" and event.payload.get("reason") == "input_value_mismatch"
-    ]
-    assert [event.payload["invalidated"] for event in failures] == [False] * max_retries + [True]
-    failed_ids = {event.payload["entry_id"] for event in failures}
-    assert len(failed_ids) == 1 and failed_ids.isdisjoint(original)
-    assert {
-        event.payload["match_mode"]
-        for event in events
-        if event.kind == "cache_hit" and event.payload["entry_id"] in failed_ids
-    } == {expected_mode}
-    attempts = [attempt for attempt in relay.input_attempts if attempt[0] == failing_field]
-    assert len(attempts) == max_retries + 2
-    assert len({ref for _, ref, _ in attempts}) == len(attempts)
-    assert len({obs_id for _, _, obs_id in attempts}) == len(attempts)
-    selections = [
-        event
-        for event in events
-        if event.kind == "select"
-        and event.payload["decision"]["intent"] == "fill"
-        and event.payload["decision"]["action"]["source"] == failing_field
-    ]
-    assert [event.payload["source"] for event in selections] == ["semantic_cache"] * (
-        max_retries + 1
-    ) + ["model"]
-    assert [event.payload["obs_id"] for event in selections] == [obs for _, _, obs in attempts]
-    saved = {entry.entry_id: entry for entry in SemanticCache(path).entries()}
-    assert len(saved) == 22
-    assert all(saved[entry_id] == entry for entry_id, entry in original.items())
-    assert all(saved[entry_id].failure_count == 0 for entry_id in failed_ids)
-    assert len([event for event in events if event.kind == "model_call"]) == len(model.prompts)
+        def model_fallback(prompt, failing_field=failing_field, relay=relay):
+            # Earlier successful local proposals are still staged; failures cannot
+            # mutate the source snapshot while the business run is incomplete.
+            assert path.read_bytes() == original_bytes
+            assert "semantic_cache" in prompt
+            assert "input_value_mismatch" in prompt
+            return decision(
+                intent="fill",
+                kind="editor",
+                action=text_choice(failing_field, relay.current_refs[failing_field]),
+            )
+
+        steps = [step for step in success_steps(record) if step["intent"] != "fill"]
+        steps[4:4] = [batch_proposal(relay), model_fallback]
+        run_settings = settings(path)
+        run_settings = run_settings.model_copy(
+            update={"cache": run_settings.cache.model_copy(update={"max_retries": max_retries})}
+        )
+        result, brain, _, model = run_brain(
+            tmp_path / f"warm-{expected_mode}",
+            record,
+            steps,
+            settings=run_settings,
+            relay=relay,
+        )
+        assert result.status == "success", (expected_mode, result)
+        assert relay.inputs == values_for(record)
+        assert brain.cache_rebind_calls == 1
+        events = brain.log.read_all()
+        failures = [
+            event
+            for event in events
+            if event.kind == "cache_miss" and event.payload.get("reason") == "input_value_mismatch"
+        ]
+        assert [event.payload["invalidated"] for event in failures] == [False] * max_retries + [
+            True
+        ]
+        failed_ids = {event.payload["entry_id"] for event in failures}
+        assert len(failed_ids) == 1 and failed_ids.isdisjoint(original)
+        assert {
+            event.payload["match_mode"]
+            for event in events
+            if event.kind == "cache_hit" and event.payload["entry_id"] in failed_ids
+        } == {expected_mode}
+        attempts = [attempt for attempt in relay.input_attempts if attempt[0] == failing_field]
+        assert len(attempts) == max_retries + 2
+        assert len({ref for _, ref, _ in attempts}) == len(attempts)
+        assert len({obs_id for _, _, obs_id in attempts}) == len(attempts)
+        selections = [
+            event
+            for event in events
+            if event.kind == "select"
+            and event.payload["decision"]["intent"] == "fill"
+            and event.payload["decision"]["action"]["source"] == failing_field
+        ]
+        assert [event.payload["source"] for event in selections] == ["semantic_cache"] * (
+            max_retries + 1
+        ) + ["model"]
+        assert [event.payload["obs_id"] for event in selections] == [obs for _, _, obs in attempts]
+        saved = {entry.entry_id: entry for entry in SemanticCache(path).entries()}
+        assert len(saved) == 22
+        assert all(saved[entry_id] == entry for entry_id, entry in original.items())
+        assert all(saved[entry_id].failure_count == 0 for entry_id in failed_ids)
+        assert len([event for event in events if event.kind == "model_call"]) == len(model.prompts)
 
 
-def test_final_business_mismatch_discards_all_staged_cross_layout_mappings(tmp_path, record):
+def test_final_business_mismatch_discards_all_staged_cross_layout_mappings(
+    tmp_path, record, graph_cache_snapshot
+):
     path = tmp_path / "cache.json"
-    cold, _, _, _ = run_brain(
-        tmp_path / "cold", record, success_steps(record), settings=settings(path)
-    )
-    assert cold.status == "success"
-    original = path.read_bytes()
+    path.write_bytes(graph_cache_snapshot)
+    original = graph_cache_snapshot
     relay = MovingEditorRelay(record, bad_final_row=True)
     steps = [step for step in success_steps(record) if step["intent"] != "fill"]
     steps.insert(4, batch_proposal(relay))

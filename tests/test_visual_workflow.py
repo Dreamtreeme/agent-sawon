@@ -78,14 +78,39 @@ class SyntheticPerception:
         return SceneObservation(wire=wire, elements=self.relay.items)
 
 
-@pytest.mark.parametrize(
-    "error", ["screen_changed", "unsupported_key", "PRIVATE unexpected server text"]
-)
-def test_relay_diagnostic_records_only_known_codes(tmp_path, record, error):
+def test_relay_error_code_allowlist_rejects_untrusted_text():
+    known = {
+        "observation_expired",
+        "capture_expired",
+        "capture_unavailable",
+        "capture_geometry_changed",
+        "screen_changed",
+        "window_changed",
+        "foreground_not_allowed",
+        "focus_not_confirmed",
+        "point_outside_allowed_window",
+        "point_outside_capture",
+        "observation_stale",
+        "observation_blocked",
+        "action_failed",
+        "unsupported_key",
+    }
+
+    assert {error: Brain._relay_error_code(error) for error in known} == {
+        error: error for error in known
+    }
+    assert Brain._relay_error_code(None) is None
+    assert Brain._relay_error_code("PRIVATE unexpected server text") is None
+
+
+def test_relay_diagnostic_redacts_untrusted_error_text(tmp_path, record):
     class RejectedRelay(VisualFixture):
         def act(self, action):
             return ActionResult(
-                action_id=action.root.action_id, ok=False, error=error, duration_ms=0
+                action_id=action.root.action_id,
+                ok=False,
+                error="PRIVATE unexpected server text",
+                duration_ms=0,
             )
 
     relay = RejectedRelay(record)
@@ -103,9 +128,7 @@ def test_relay_diagnostic_records_only_known_codes(tmp_path, record, error):
     brain.visual_perception = SyntheticPerception(relay)
     assert brain.run().status != "success"
     events = [e for e in log.read_all() if e.kind == "act" and e.payload.get("stage") == "returned"]
-    assert events and events[0].payload["error_code"] == (
-        error if error in {"screen_changed", "unsupported_key"} else None
-    )
+    assert events and events[0].payload["error_code"] is None
     assert "PRIVATE" not in (tmp_path / "run_log.jsonl").read_text()
 
 

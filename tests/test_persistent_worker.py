@@ -113,7 +113,11 @@ def test_response_temporarily_unreadable_preserves_inference_and_worker(worker, 
     denied = []
 
     def read(path, *args, **kwargs):
-        if path.suffix == ".json" and path.exists() and not denied:
+        if path.suffix == ".json" and not denied:
+            # Prove that the response was published before simulating Windows
+            # denying the first open. This avoids an exists/read TOCTOU where
+            # publication between both calls could bypass the injected fault.
+            original(path, *args, **kwargs)
             denied.append(path)
             raise PermissionError(13, "response not readable yet")
         return original(path, *args, **kwargs)

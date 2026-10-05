@@ -25,8 +25,7 @@ from models.budget import CallBudget
 from models.pricing import PriceRate
 
 
-@pytest.fixture
-def record():
+def make_record():
     values = {
         "hbl_no": "TEST-A01",
         "mbl_no": "TEST-PARENT",
@@ -46,6 +45,11 @@ def record():
             "fields": {name: {"value": value} for name, value in values.items()},
         }
     )
+
+
+@pytest.fixture
+def record():
+    return make_record()
 
 
 def element(ref, role, *, name="", value=None, parent=None, **kwargs):
