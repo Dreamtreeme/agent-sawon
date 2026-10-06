@@ -1,8 +1,0 @@
-schema_version = "0.1"
-checked_on = 2026-10-01
-source = "https://docs.typesafe.ai/models"
-basis = "standard_paid_text_image"
-
-[models."jev-1.13.0"]
-input_usd_per_million = "0.042"
-output_usd_per_million = "0"
