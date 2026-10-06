@@ -12,10 +12,16 @@ max_cost_usd = 1.0
 model_call_reserve_usd = 0.025
 recovery_enabled = false
 
+# [추가] 최근 3턴 델타만 프롬프트에 유지하여 토큰 폭증과 Attention drift 방지
+visual_rolling_buffer_size = 3
+max_feedback_history = 3
+
 [visual_detector]
 device = "cuda:0"
-pixel_rectangles_enabled = true
-weights = "../../../L2C/models/omniparser/icon_detect/model.pt"
+pixel_rectangles_enabled = false  # v2 활성화 시 수제 사각형 검출 오탐 차단
+use_v2 = true
+weights = "../../../L2C/models/omniparser_v2/icon_detect/model.pt"
+caption_weights = "../../../L2C/models/omniparser_v2/icon_caption"
 python = "C:/Users/psg/Desktop/L2C/.venv-app/Scripts/python.exe"
 
 [cache]

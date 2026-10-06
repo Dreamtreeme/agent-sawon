@@ -56,6 +56,7 @@ from .schemas import (
     Decision,
     Plan,
 )
+from .scratchpad import RollingContextManager
 from .screen_batch import (
     LOGIN_GUIDANCE,
     SCREEN_FILL_GUIDANCE,
@@ -278,6 +279,9 @@ class Brain:
         self.secrets = (password,) if password else ()
         self.values = values_for(record)
         self.state_store = StateStore(case_dir, case_id=record.case_id)
+        self.rolling_context = RollingContextManager(
+            buffer_size=settings.visual_rolling_buffer_size
+        )
         self.steps = 0
         self.phase = "duplicate_query"
         self.observation: Observation | None = None
@@ -347,7 +351,8 @@ class Brain:
 
             from .matching import Procedure
 
-            if settings.perception_mode != "visual_only" or (
+            # [수정] visual_only 대신 is_visual 검사
+            if not settings.is_visual or (
                 settings.task_path is None and settings.procedure_path is None
             ):
                 raise ValueError("screen_matching_requires_visual_procedure")
@@ -378,8 +383,9 @@ class Brain:
             promotion_path=settings.methods.promotion_path,
         )
         if settings.perception_mode == "visual_only":
-            if visual_ocr is None:
-                raise ValueError("visual_ocr_required")
+            if settings.is_visual:
+                if visual_ocr is None:
+                    raise ValueError("visual_ocr_required")
             self.visual_perception = VisualPerception(
                 relay,
                 visual_ocr,
@@ -668,10 +674,8 @@ class Brain:
                     "invalidated": invalidated,
                 }
             )
-            # Cache retries have their own bound. Once invalidated, let the
-            # measured model attempt recovery under the unchanged model limits.
             return {"next": "observe"}
-        # Use a deterministic key, never an arbitrary model-generated subgoal name.
+
         decision = self.decision
         exploration_failure = (
             self.phase == "task"
@@ -694,6 +698,7 @@ class Brain:
             self.phase_failures.setdefault(self.phase, 0)
         else:
             self.phase_failures[self.phase] = self.phase_failures.get(self.phase, 0) + 1
+
         feedback = {
             "ok": False,
             "reason": reason,
@@ -703,6 +708,7 @@ class Brain:
         }
         if validation_errors is not None:
             feedback["validation_errors"] = validation_errors
+
         if reason == "duplicate_evidence_required":
             feedback["required_response"] = DUPLICATE_EVIDENCE_GUIDANCE
         elif reason in {
@@ -762,8 +768,11 @@ class Brain:
                 "ref. If no appropriate input is visible, use allowed grounded navigation "
                 "or stop. " + self._phase_instruction()
             )
+
         if self.phase == "final_query":
             feedback["next_required_step"] = self._final_query_step()
+
+        # [필수] 피드백 누적 및 검증 실패 로그 기록
         self.feedback.append(feedback)
         self.log.append(
             "verify",
@@ -780,6 +789,25 @@ class Brain:
                 ),
             },
         )
+
+        # [추가] 롤링 버퍼에 실패 턴 기록 (존재할 경우에만 안전하게 호출)
+        if (
+            getattr(self, "rolling_context", None)
+            and self.decision
+            and self.decision.action
+        ):
+            act = self.decision.action
+            tgt = act.source or (act.keys if act.type == "key" else act.ref) or "unknown"
+            self.rolling_context.record_turn(
+                turn_index=self.steps,
+                intent=self.decision.intent,
+                target_summary=f"{act.type}:{tgt}",
+                action_type=act.type,
+                observed_effect=reason,
+                success=False,
+                checkpoint=self._decision_policy().current_step,
+            )
+
         if self.failures[key] >= self.settings.max_subgoal_failures:
             return self._finish("stopped", "repeated_subgoal_failure:" + key)
         if (
@@ -788,7 +816,7 @@ class Brain:
         ):
             return self._finish("stopped", "repeated_phase_failure:" + self.phase)
         return {"next": "observe"}
-
+    
     def _record_progress(self, mark: str, *, business: bool = True) -> None:
         key = self.phase + ":" + mark
         if key not in self.progress_marks:
@@ -1230,9 +1258,12 @@ class Brain:
         )
 
     def _current_feedback(self) -> list[dict]:
+        """비대한 피드백 목록을 설정된 크기(기본 3개)로 축소하여 프롬프트 비대화 방지."""
         result = []
         current_step = self._decision_policy().current_step
-        for item in self.feedback[-12:]:
+        history_limit = self.settings.max_feedback_history
+
+        for item in self.feedback[-history_limit:]:
             if item.get("phase", self.phase) != self.phase:
                 continue
             copy = dict(item)
@@ -1241,7 +1272,7 @@ class Brain:
                 and copy.get("next_required_step") is not None
                 and copy["next_required_step"] != self._final_query_step()
             ):
-                # Keep the historical outcome, not obsolete repair instructions.
+                # 과거 단계의 무의미해진 필수 수정보완 지침은 제거
                 copy.pop("required_response", None)
                 copy.pop("validation_errors", None)
             result.append(copy)
@@ -2570,6 +2601,27 @@ class Brain:
                     ),
                 }
             )
+            # [추가] 이번 턴의 실행 결과 델타를 롤링 버퍼에 기록 (버퍼 크기 초과 시 자동 에비션)
+            target_desc = (
+                choice.source
+                or (choice.keys if choice.type == "key" else choice.ref)
+                or "unknown"
+            )
+            self.rolling_context.record_turn(
+                turn_index=self.steps,
+                intent=decision.intent,
+                target_summary=f"{choice.type}:{target_desc}",
+                action_type=choice.type,
+                observed_effect=str(observed_effect),
+                success=bool(
+                    navigation_change or observed_effect != ObservedEffect.NO_CHANGE
+                ),
+                checkpoint=self._decision_policy().current_step,
+            )
+            if new_facts:
+                for fact in new_facts:
+                    self.rolling_context.mark_milestone(f"검증 완료: {fact}")
+
             if (
                 self.cache_session.cache.enabled
                 and not pending.get("blur_recheck")

@@ -1,4 +1,4 @@
-"""Configurable limits for the private, relay-only agent."""
+"""사설 에이전트의 런타임 제약 및 설정 모델 정의."""
 
 import tomllib
 from pathlib import Path
@@ -46,11 +46,38 @@ class BrainSettings(BaseModel):
     observation_max_depth: int = Field(default=12, ge=1, le=30)
     max_summary_elements: int = Field(default=500, ge=20, le=2000)
     navigation_history_size: int = Field(default=12, ge=4, le=64)
+
+    # Anthropic식 3계층 컨텍스트 축소 옵션
+    visual_rolling_buffer_size: int = Field(
+        default=3,
+        ge=1,
+        le=8,
+        description="최근 턴 델타 유지 개수 (이전 턴의 마커/스크린샷은 프롬프트에서 자동 드롭)",
+    )
+    max_feedback_history: int = Field(
+        default=12,
+        ge=1,
+        le=24,
+        description="프롬프트 주입용 최대 에러 피드백 개수 (기존 12개 )",
+    )
+
     cache: CacheSettings = Field(default_factory=CacheSettings)
     visual_match_cache: VisualMatchCacheSettings = Field(default_factory=VisualMatchCacheSettings)
     methods: MethodSettings = Field(default_factory=MethodSettings)
     recovery_enabled: bool = False
-    perception_mode: Literal["legacy_uia", "visual_only"] = "legacy_uia"
+
+    # [수정] 'hybrid' 모드 추가 (시각 좌표 클릭 메인 + 최소 OS 신호 보조)
+    perception_mode: Literal["legacy_uia", "visual_only", "hybrid"] = "legacy_uia"
+    hybrid_assist_focus: bool = Field(
+        default=True, description="창 포커스 상실 시 OS 레벨 포커스 자동 복원 보조"
+    )
+    hybrid_assist_ime: bool = Field(
+        default=True, description="영문/숫자 입력 시 OS 한/영 IME 꼬임 방지 보조"
+    )
+    hybrid_assist_scroll: bool = Field(
+        default=True, description="마우스 휠 스크롤 시 OS 스크롤바 메타데이터 보조"
+    )
+
     visual_min_confidence: float = Field(default=0.8, ge=0, le=1, allow_inf_nan=False)
     visual_input_blur_recheck: bool = True
     visual_click_refinement: bool = True
@@ -66,10 +93,16 @@ class BrainSettings(BaseModel):
     visual_detector: DetectorSettings = Field(default_factory=DetectorSettings)
     visual_merge: MergeSettings = Field(default_factory=MergeSettings)
 
+    @property
+    def is_visual(self) -> bool:
+        """순수 비전 또는 하이브리드 시각 모드 활성화 여부."""
+        return self.perception_mode in {"visual_only", "hybrid"}
     @classmethod
     def load(cls, path: Path) -> "BrainSettings":
         with path.open("rb") as stream:
             settings = cls.model_validate(tomllib.load(stream))
+
+        # 설정 파일 위치 기준 상대 경로들을 절대 경로로 변환
         if settings.procedure_path is not None and not settings.procedure_path.is_absolute():
             settings = settings.model_copy(
                 update={"procedure_path": (path.parent / settings.procedure_path).resolve()}
@@ -78,16 +111,26 @@ class BrainSettings(BaseModel):
             settings = settings.model_copy(
                 update={"task_path": (path.parent / settings.task_path).resolve()}
             )
+
+        # 검출기 모델 가중치 경로 보정 (weights 및 caption_weights)
+        detector_updates = {}
         if not settings.visual_detector.weights.is_absolute():
+            detector_updates["weights"] = (path.parent / settings.visual_detector.weights).resolve()
+        if (
+            settings.visual_detector.caption_weights is not None
+            and not settings.visual_detector.caption_weights.is_absolute()
+        ):
+            detector_updates["caption_weights"] = (
+                path.parent / settings.visual_detector.caption_weights
+            ).resolve()
+
+        if detector_updates:
             settings = settings.model_copy(
                 update={
-                    "visual_detector": settings.visual_detector.model_copy(
-                        update={
-                            "weights": (path.parent / settings.visual_detector.weights).resolve()
-                        }
-                    )
+                    "visual_detector": settings.visual_detector.model_copy(update=detector_updates)
                 }
             )
+
         if not settings.cache.path.is_absolute():
             settings = settings.model_copy(
                 update={

@@ -1,4 +1,4 @@
-"""State contract shared by the four worker responsibilities."""
+"""작업자 그래프의 4대 단일 책임 노드 간 공식 인계 상태 계약."""
 
 from __future__ import annotations
 
@@ -15,15 +15,16 @@ WorkerNode = Literal["observation", "decision", "execution", "review", "finish"]
 
 
 class ObservationState(TypedDict):
-    """Current environment evidence owned by the observation responsibility."""
+    """관찰 책임 노드가 소유하는 현재 환경 관찰 데이터."""
 
     current: Observation | None
     sequence: int
     reconciled: ReconciledObservation | None
+    rolling_turns: list[dict]  # [추가] 직전 N턴의 실행 델타 요약 목록
 
 
 class DecisionState(TypedDict):
-    """Current task choice and an optional compiled multi-action plan."""
+    """현재 작업 선택 및 컴파일된 다중 액션 실행 계획."""
 
     current: Decision | None
     action_plan: ActionPlan | None
@@ -31,14 +32,14 @@ class DecisionState(TypedDict):
 
 
 class ExecutionState(TypedDict):
-    """Delivered action awaiting an observed, verified effect."""
+    """중계에 전달되어 효과 관찰 및 검증을 대기 중인 액션."""
 
     pending: PendingAction | None
     authorized: bool
 
 
 class ReviewState(TypedDict):
-    """Evidence assessment and proposed work awaiting deterministic review."""
+    """결과 증거 평가 및 결정론적 검토 대기 상태."""
 
     current: EvidenceReview | None
     decision_pending: bool
@@ -46,7 +47,7 @@ class ReviewState(TypedDict):
 
 
 class LifecycleState(TypedDict):
-    """Deterministic graph routing and business-workflow progress."""
+    """결정론적 그래프 라우팅 및 비즈니스 진행 상태."""
 
     route: WorkerNode
     phase: str
@@ -54,7 +55,7 @@ class LifecycleState(TypedDict):
 
 
 class WorkerState(TypedDict):
-    """Serializable handoff contract between worker responsibilities."""
+    """작업자 책임 노드 간 직렬화 가능한 공식 상태 인계 계약."""
 
     observation: ObservationState
     decision: DecisionState
@@ -64,8 +65,14 @@ class WorkerState(TypedDict):
 
 
 def create_worker_state() -> WorkerState:
+    """초기 런타임 상태 생성."""
     return {
-        "observation": {"current": None, "sequence": 0, "reconciled": None},
+        "observation": {
+            "current": None,
+            "sequence": 0,
+            "reconciled": None,
+            "rolling_turns": [],  # [추가] 빈 롤링 버퍼로 초기화
+        },
         "decision": {"current": None, "action_plan": None, "task_plan": []},
         "execution": {"pending": None, "authorized": False},
         "review": {
@@ -82,10 +89,13 @@ def create_worker_state() -> WorkerState:
 
 
 def copy_worker_state(state: WorkerState) -> WorkerState:
-    """Copy section dictionaries so a graph node never mutates its input state."""
+    """그래프 노드가 입력 상태를 직접 변조하지 않도록 섹션별 복사."""
 
     return {
-        "observation": dict(state["observation"]),
+        "observation": {
+            **state["observation"],
+            "rolling_turns": list(state["observation"]["rolling_turns"]),
+        },
         "decision": {
             **state["decision"],
             "task_plan": list(state["decision"]["task_plan"]),

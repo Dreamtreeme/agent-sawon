@@ -11,8 +11,11 @@ if TYPE_CHECKING:
 
 
 def remember(brain: Brain) -> dict:
-    """Persist the central runtime facts without copying credentials or old bindings."""
+    """중앙 런타임 사실을 영구 수첩에 기록 (자격증명 및 오래된 바인딩 제외)."""
     scene = brain.observation
+    rolling = getattr(brain, "rolling_context", None)
+    max_history = getattr(brain.settings, "max_feedback_history", 3)
+
     memo = {
         "goal": brain.goal,
         "plan": brain.plan,
@@ -21,11 +24,24 @@ def remember(brain: Brain) -> dict:
             "task-instruction.json" if getattr(brain, "task_instruction", None) else None
         ),
         "procedure_path": "procedure.json" if getattr(brain, "procedure", None) else None,
-        "recent_feedback": brain.feedback[-3:],
+        # [수정] 12개 누적 대신 설정된 제한(기본 3개)만큼만 피드백 유지
+        "recent_feedback": brain.feedback[-max_history:],
+        # [추가] 롤링 컨텍스트 매니저로부터 최근 턴 및 완료된 마일스톤 주입
+        "recent_turns": (
+            [t.model_dump(mode="json") for t in rolling.recent_turns]
+            if rolling is not None
+            else []
+        ),
+        "completed_milestones": (
+            list(rolling._completed_milestones) if rolling is not None else []
+        ),
         "observation_id": str(scene.obs_id) if scene else None,
-        "observation_path": f"observations/{brain.observation_number:04d}.json" if scene else None,
+        "observation_path": (
+            f"observations/{brain.observation_number:04d}.json" if scene else None
+        ),
         "result": brain.result.model_dump(mode="json") if brain.result else None,
     }
+    
     if getattr(brain, "task_instruction", None) is not None:
         memo.update(
             {

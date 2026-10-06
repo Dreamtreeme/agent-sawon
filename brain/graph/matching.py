@@ -1408,12 +1408,22 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         }
         exposed_fields = (procedure_fields or active_fields) | verification_fields
         record = {field: brain.values[field] for field in sorted(exposed_fields)}
+    # [수정] 3계층 컨텍스트 매니저로부터 스크래치패드(Layer 1)와 롤링 버퍼(Layer 2) 추출
+    context_layers = brain.rolling_context.export_prompt_context(
+        current_goal=brain.goal,
+        verified_inputs=list(brain.verified.keys()),
+        remaining_inputs=list(set(brain.values.keys()) - set(brain.verified.keys())),
+    )
+
     notebook = {
         "phase": brain.phase,
         "checkpoint": policy.current_step,
         "pending_verification": brain.pending is not None,
         "pending_actions": contract["pending_actions"],
-        "recent_feedback": brain.feedback[-3:],
+        # [다이어트] 누적 raw feedback 대신 정제된 스크래치패드와 최근 N턴 버퍼 주입
+        "scratchpad": context_layers["scratchpad"],
+        "recent_turns": context_layers["recent_turns_buffer"],
+        "recent_feedback": brain._current_feedback()[-brain.settings.visual_rolling_buffer_size:],
         "required_verification": required,
         "available_credentials": sorted(k for k, value in brain.credentials.items() if value),
     }

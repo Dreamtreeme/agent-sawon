@@ -90,18 +90,22 @@ class HttpRelay:
 
     def health(self) -> dict:
         health = self._request("/health")
-        if health.get("observation_mode") == "visual_only" and not self.visual:
+        mode = health.get("observation_mode")
+        # visual 클라이언트가 아닌데 서버가 visual/hybrid 모드인 경우 차단
+        if mode in {"visual_only", "hybrid"} and not self.visual:
             raise RelayError("visual_mode_not_enabled")
-        if self.visual and health.get("observation_mode") != "visual_only":
+        # visual 클라이언트인데 서버가 visual/hybrid 모드가 아닌 경우 차단
+        if self.visual and mode not in {"visual_only", "hybrid"}:
             raise RelayError("visual_relay_mode_mismatch")
         return health
 
     def observe(self) -> Observation:
         query = urlencode({"screenshot": "false", "max_depth": self.max_depth})
         observation = Observation.model_validate(self._request(f"/observe?{query}"))
-        if observation.observation_mode == "visual_only" and not self.visual:
+        mode = observation.observation_mode
+        if mode in {"visual_only", "hybrid"} and not self.visual:
             raise RelayError("visual_mode_not_enabled")
-        if self.visual and observation.observation_mode != "visual_only":
+        if self.visual and mode not in {"visual_only", "hybrid"}:
             raise RelayError("visual_relay_mode_mismatch")
         return observation
 

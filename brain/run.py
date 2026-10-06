@@ -139,9 +139,16 @@ def main(argv: list[str] | None = None) -> int:
             os.environ.get("SAWON_RELAY_TOKEN", ""),
             timeout=settings.http_timeout_seconds,
             max_depth=settings.observation_max_depth,
-            visual=settings.perception_mode == "visual_only",
+            visual=settings.is_visual,  # [수정] is_visual 활용
         )
         visual_ocr = None
+        if settings.is_visual:  # [수정] is_visual 활용
+            if args.visual_ocr_config is None:
+                raise ValueError("Visual mode requires --visual-ocr-config")
+            from pipeline.ocr import PaddleOcrEngine
+            from pipeline.schemas import PipelineSettings
+
+            visual_ocr = PaddleOcrEngine(PipelineSettings.load(args.visual_ocr_config))
         if settings.perception_mode == "visual_only":
             if args.visual_ocr_config is None:
                 raise ValueError("Visual mode requires --visual-ocr-config")

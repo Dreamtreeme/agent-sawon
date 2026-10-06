@@ -18,8 +18,21 @@ from .markers import Marker
 
 
 class DetectorSettings(BaseModel):
+    """로컬 시각 검출기 런타임 제약 및 모델 경로 설정."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     weights: Path = Path("models/omniparser/icon_detect/model.pt")
+    
+    # [신규 추가] OmniParser v2 파이프라인 옵션
+    use_v2: bool = Field(
+        default=False,
+        description="YOLOv9-E + Florence-2 기반 OmniParser v2 파이프라인 활성화 여부",
+    )
+    caption_weights: Path | None = Field(
+        default=None,
+        description="아이콘 기능 캡셔닝 모델(Florence-2 등) 디렉터리 경로",
+    )
+
     python: str | None = None
     device: str = "cpu"
     confidence: float = Field(default=0.15, gt=0, le=1, allow_inf_nan=False)
@@ -89,6 +102,13 @@ class OmniParserDetector(MeasuredModelClient):
             {
                 "image": str(images[0].resolve()),
                 "weights": str(self.settings.weights.resolve()),
+                # [추가] OmniParser v2 캡셔닝 모델 가중치 및 v2 활성화 플래그
+                "caption_weights": (
+                    str(self.settings.caption_weights.resolve())
+                    if self.settings.caption_weights is not None
+                    else None
+                ),
+                "use_v2": self.settings.use_v2,
                 "device": self.settings.device,
                 "confidence": self.settings.confidence,
                 "max_dimension": self.settings.max_dimension,

@@ -1,4 +1,4 @@
-"""Local detector boxes are authoritative; the model can only name marker IDs."""
+"""로컬 검출기 상자와 OCR 텍스트를 결합하여 단일 마커 번호공간을 부여하는 모듈."""
 
 from __future__ import annotations
 
@@ -14,12 +14,18 @@ from .scene import Detection, SemanticDetection, VisualControl, contains, overla
 
 
 class Marker(BaseModel):
+    """화면 상의 로컬 시각 검출 영역 단위."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: int = Field(ge=0)
     bbox: tuple[int, int, int, int]
     source: Literal["ocr", "ocr_group", "omniparser", "pixel_rectangle"]
     confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
     text_ids: tuple[int, ...] = ()
+    # [추가] OmniParser v2(Florence-2) 기능형 설명 또는 OCR 원문 텍스트
+    functional_description: str | None = Field(
+        default=None, description="아이콘 기능형 설명(예: 'search button') 또는 텍스트"
+    )
 
 
 class MergeSettings(BaseModel):
@@ -45,8 +51,6 @@ def is_text_fragment(box: Marker, block: OcrBlock, settings: MergeSettings) -> b
     a, b, c, d = block.bbox
     padding = min(settings.max_text_padding, round(d * settings.text_padding_ratio))
     area = intersection(box.bbox, (a - padding, b - padding, c + 2 * padding, d + 2 * padding))
-    # Padding accounts for OCR line boxes versus individual glyph extents. A
-    # genuinely larger control enclosing the text must survive this filter.
     return h <= d * 1.5 and w * h <= c * d * 1.2 and area / (w * h) >= settings.text_overlap
 
 
@@ -56,8 +60,6 @@ def duplicate_detection(left: Marker, right: Marker, settings: MergeSettings) ->
     x, y, w, h = left.bbox
     a, b, c, d = right.bbox
     smaller, larger = sorted((w * h, c * d))
-    # Near-concentric nested icon boxes are duplicates, but a field/table and
-    # its much smaller child are not. OCR boxes are never passed to this rule.
     return (
         smaller / larger >= settings.nested_area_ratio
         and intersection(left.bbox, right.bbox) / smaller >= 0.9
@@ -74,14 +76,17 @@ def build_markers(
     *,
     settings: MergeSettings | None = None,
 ) -> list[Marker]:
-    """Keep OCR anchors and genuine enclosing controls; suppress duplicate detections.
-
-    Unlike L2C's icon-only merge, a larger detector box enclosing text is useful
-    for desktop inputs and tables. Never discard the OCR evidence itself.
-    """
+    """OCR 텍스트 영역과 탐지된 로컬 상자들을 병합하고 유일한 번호를 부여."""
     settings = settings or MergeSettings()
     candidates = [
-        Marker(id=0, bbox=b.bbox, source="ocr", confidence=b.confidence, text_ids=(b.id,))
+        Marker(
+            id=0,
+            bbox=b.bbox,
+            source="ocr",
+            confidence=b.confidence,
+            text_ids=(b.id,),
+            functional_description=b.text,  # OCR 텍스트는 원문 내용을 기능 설명으로 보존
+        )
         for b in blocks
     ]
     kept: list[Marker] = []
@@ -92,13 +97,12 @@ def build_markers(
         if min(x, y) < 0 or min(w, h) <= 0 or x + w > width or y + h > height:
             raise ValueError("local_marker_outside_capture")
 
-        # OmniParser sometimes calls individual glyphs icons. Remove detections
-        # substantially inside an OCR span, but retain larger enclosing controls.
         if any(is_text_fragment(box, block, settings) for block in blocks):
             continue
         if any(duplicate_detection(box, other, settings) for other in kept):
             continue
         kept.append(box)
+
     candidates += kept
     candidates += [
         Marker(
@@ -112,7 +116,9 @@ def build_markers(
     ]
     if len(candidates) > 500:
         raise ValueError("visual_marker_limit")
+
     result = []
+    # y축(상단) 우선, x축(좌측) 차순으로 화면 표시 순서 정렬
     for index, marker in enumerate(sorted(candidates, key=lambda m: (m.bbox[1], m.bbox[0]))):
         x, y, w, h = marker.bbox
         if min(x, y) < 0 or min(w, h) <= 0 or x + w > width or y + h > height:
@@ -122,7 +128,7 @@ def build_markers(
 
 
 def render_markers(path: Path, output: Path, markers: list[Marker]) -> None:
-    """Render numbered model-input evidence without altering the raw capture."""
+    """디버깅 및 시각 판단용 번호 표시 이미지 생성."""
     from PIL import Image, ImageDraw
 
     with Image.open(path) as original:
@@ -138,7 +144,7 @@ def render_markers(path: Path, output: Path, markers: list[Marker]) -> None:
 
 
 def marker_role_allowed(source: str, role: str, *, allow_ocr_inputs: bool = False) -> bool:
-    """Shared geometry capabilities for semantic questions and grounding."""
+    """각 마커 출처별로 허용되는 UI 역할 규칙."""
     if source == "ocr_group":
         return role in {"row", "header", "group", "text"}
     if source == "ocr":
@@ -150,13 +156,6 @@ def marker_role_allowed(source: str, role: str, *, allow_ocr_inputs: bool = Fals
 
 
 def nested_rectangle_count(marker: Marker, markers: list[Marker]) -> int:
-    """Count materially smaller closed rectangles inside one rectangle.
-
-    A desktop text input can contain OCR, but a large frame containing several
-    independently detected rectangles is a container/grid candidate.  It must
-    not become the writable extent for a nearby field whose own boundary is
-    clipped outside the capture.
-    """
     if marker.source != "pixel_rectangle":
         return 0
     area = marker.bbox[2] * marker.bbox[3]
@@ -170,13 +169,6 @@ def nested_rectangle_count(marker: Marker, markers: list[Marker]) -> int:
 
 
 def grid_cell_marker_ids(markers: list[Marker]) -> set[int]:
-    """Return rectangles supported as cells by both a row and a column.
-
-    A same-row neighbour alone can describe an ordinary two-column form.
-    Requiring a vertically aligned neighbour identifies a local grid without
-    using application labels, stored coordinates or model prose.
-    """
-
     rectangles = [marker for marker in markers if marker.source == "pixel_rectangle"]
 
     def horizontally_adjacent(left: Marker, right: Marker) -> bool:
@@ -255,9 +247,6 @@ def ground_meanings(
             meaning = meaning.model_copy(update={"parent_id": None})
         if meaning.role in {"edit", "combobox"} and nested_rectangle_count(marker, markers) >= 2:
             raise ValueError("nested_rectangle_container_is_not_input")
-        # Literal value evidence is constrained to the measured box. OCR markers
-        # cannot be relabelled with a different OCR block. Omitted links are
-        # already known locally; asking the model to reproduce them adds no evidence.
         if marker.source == "ocr" and not meaning.text_ids:
             meaning = meaning.model_copy(update={"text_ids": list(marker.text_ids)})
         if marker.source == "ocr" and set(meaning.text_ids) != set(marker.text_ids):
@@ -266,8 +255,15 @@ def ground_meanings(
             meaning = meaning.model_copy(
                 update={"text_ids": [b.id for b in blocks if contains(marker.bbox, b.bbox)]}
             )
+        
+        # 모델이 시각 설명을 비워두었으나 마커에 Florence-2 기능 설명이 있는 경우 보존
+        if not meaning.visual_description and marker.functional_description:
+            meaning = meaning.model_copy(
+                update={"visual_description": marker.functional_description[:160]}
+            )
+            
         controls.append(VisualControl(**meaning.model_dump(), bbox=list(marker.bbox)))
-    # Unclassified text remains visible as static evidence, never an input target.
+
     for marker in markers:
         if marker.id not in used and marker.source == "ocr":
             rows = [c for c in controls if c.role == "row" and contains(c.bbox, marker.bbox)]
@@ -289,8 +285,6 @@ def ground_meanings(
             if block.id in control.text_ids and contains(control.bbox, block.bbox)
         ]
         if len(valid_text_ids) != len(control.text_ids):
-            # A value relationship is evidence, not geometry. Preserve the locally
-            # grounded control/action target and withhold only the unsupported value.
             uncertainties.append(f"control:{control.id}:value_outside_local_marker")
             control = control.model_copy(update={"text_ids": valid_text_ids})
         grounded_controls.append(control)
