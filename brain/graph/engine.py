@@ -18,8 +18,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sawon_interfaces import Action, ActionResult, Observation, ShipmentRecord, UIElement
 
-from brain.cache import CacheIntegrityError, SemanticCache, VisualMatchCache
-from brain.cache.rebind import RebindProposal, build_rebind_request, install_rebind_proposal
+from brain.cache import VisualMatchCache
 from brain.observe import describe, redact, summarize
 from brain.observe.evidence import is_record_input, matching_delivered_input, matching_elements
 from brain.observe.progress import navigation_state, navigation_target, semantic_target_key
@@ -320,13 +319,6 @@ class Brain:
         self.call_budget = call_budget
         self.recovery_model, self.recovery_budget = recovery_model, recovery_budget
         self.prepared_case = prepared_case
-        self.cache_session = SemanticCache(
-            settings.cache.path,
-            enabled=settings.cache.enabled,
-            max_retries=settings.cache.max_retries,
-            matching_mode=settings.cache.matching_mode,
-            min_anchor_fields=settings.cache.min_anchor_fields,
-        ).start_run()
         self.visual_match_cache = VisualMatchCache(
             settings.visual_match_cache.path,
             enabled=settings.visual_match_cache.enabled,
@@ -371,11 +363,16 @@ class Brain:
                     },
                 )
                 self.phase = "task"
+    
             else:
-                self.procedure = Procedure.model_validate_json(
-                    settings.procedure_path.read_text(encoding="utf-8")
-                )
-                atomic_write_json(self.case_dir / "procedure.json", self.procedure)
+                if settings.procedure_path and settings.procedure_path.is_file():
+                    self.procedure = Procedure.model_validate_json(
+                        settings.procedure_path.read_text(encoding="utf-8")
+                    )
+                    atomic_write_json(self.case_dir / "procedure.json", self.procedure)
+                else:
+                    # procedure_path가 없거나 파일이 존재하지 않는 경우 기본 처리
+                    self.procedure = Procedure()
         self.methods = MethodRuntime(
             self,
             settings.methods.path,

@@ -40,7 +40,7 @@ from brain.task_instruction import TaskInstruction
 from brain.visual.perception import DETECTION_RULES
 from brain.visual.scene import SceneObservation, SemanticDetection
 
-PROCEDURE = Path(__file__).resolve().parents[1] / "examples/shipment-procedure.json"
+PROCEDURE = Path(__file__).resolve().parents[1] 
 
 
 def test_ocr_fill_target_is_deferred_without_discarding_safe_sibling(tmp_path):

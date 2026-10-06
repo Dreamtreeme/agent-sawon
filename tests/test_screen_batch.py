@@ -376,7 +376,6 @@ def test_shared_executor_checks_whole_plan_step_budget_before_delivery(
 def test_detail_row_cannot_substitute_for_flat_record_field(tmp_path, record, role):
     from test_brain import element
 
-    from brain.cache.semantic import describe_target
 
     relay = ChangingPixelsRelay(record)
     relay.mode = "editor"

@@ -13,7 +13,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from models.base import EventSink, ModelClient
 from models.gemini import GeminiClient
-from models.jev import JevClient
 from models.pricing import PriceBook
 from models.replay import ReplayClient
 

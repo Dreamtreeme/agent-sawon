@@ -4,7 +4,6 @@ import json
 
 import pytest
 from test_brain import record as record
-from test_jev_matching import build_request
 from test_screen_matching import fixture, response, setup_brain
 from test_visual_scene import wire
 

@@ -25,7 +25,6 @@ from .action_rebind import (
 from .detector import ControlDetector, DetectorSettings, OmniParserDetector
 from .marker_contract import MarkerReferenceError
 from .markers import Marker, MergeSettings, build_markers, ground_meanings, render_markers
-from .rectangles import rectangular_candidates
 from .refinement import refinement_regions
 from .scene import Detection, SceneObservation, SemanticDetection, bind_scene, contains
 

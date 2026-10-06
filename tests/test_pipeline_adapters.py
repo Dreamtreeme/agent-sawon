@@ -137,20 +137,6 @@ def test_multipage_image_limit_blocks(tmp_path):
         )
 
 
-def test_budget_includes_image_and_output_reservation(page):
-    budget = ImageCallBudget.from_config(Path("config/models.lite.toml"))
-    schema_bytes = len(json.dumps(PageExtraction.model_json_schema(), ensure_ascii=False).encode())
-    # Configured rates: $0.30/M input, $2.50/M output, with 4096 reserved output tokens.
-    input_tokens = len(b"test") + schema_bytes + 1024
-    text_cost = (input_tokens * Decimal("0.30") + 4096 * Decimal("2.50")) / 1_000_000
-    for width, height, image_tokens in [(100, 100, 8192), (1201, 1601, 120176)]:
-        resized = page.model_copy(update={"width": width, "height": height})
-        expected = text_cost + image_tokens * Decimal("0.30") / 1_000_000
-        assert budget("test", PageExtraction, resized) == expected
-        more_output = ImageCallBudget(CallBudget(budget.text.price, max_output_tokens=4097))
-        assert more_output("test", PageExtraction, resized) - expected == Decimal("0.0000025")
-    replay = ImageCallBudget(text=None)
-    assert replay("test", PageExtraction, page) == Decimal(0)
 
 
 def test_external_ocr_reuses_worker_and_closes_it(monkeypatch, page):

@@ -1,0 +1,86 @@
+Name                              Stmts   Miss  Cover   Missing
+---------------------------------------------------------------
+brain\__init__.py                     0      0   100%
+brain\cache\__init__.py               3      2    33%   15-17
+brain\cache\experiment.py           137    137     0%   9-223
+brain\cache\methods.py              373    373     0%   3-696
+brain\cache\visual_match.py          59     59     0%   3-89
+brain\demo_learning\__init__.py       2      2     0%   3-10
+brain\demo_learning\methods.py      128    128     0%   3-296
+brain\graph\__init__.py               7      4    43%   8-12
+brain\graph\click_refinement.py     103    103     0%   3-255
+brain\graph\context.py               81     81     0%   6-270
+brain\graph\engine.py              1490   1478     1%   22-3029
+brain\graph\execution.py            148    140     5%   20-252
+brain\graph\matching.py             693    687     1%   12-1894
+brain\graph\method_runtime.py       263    263     0%   3-590
+brain\graph\notebook.py              16     16     0%   3-72
+brain\graph\policy.py               196    126    36%   80, 88, 96, 99, 101, 105, 110, 120, 140-155, 164-269, 273, 277-309, 317-334, 347-357, 361-371, 374, 378-387, 390-422
+brain\graph\reconciliation.py        28     28     0%   8-77
+brain\graph\review.py                73     73     0%   7-151
+brain\graph\save_review.py           32     32     0%   3-73
+brain\graph\saved_evidence.py       195    195     0%   3-466
+brain\graph\schemas.py              143     28    80%   58-62, 108-117, 153-166, 306
+brain\graph\scratchpad.py            38     11    71%   54-56, 61, 75-84, 88-89, 99, 114-119
+brain\graph\screen_batch.py         120    120     0%   3-277
+brain\graph\state.py                 39     35    10%   10-109
+brain\graph\transitions.py          140     67    52%   50-51, 55-58, 63-78, 81-86, 89-94, 99-100, 106, 117, 141-147, 154, 157-158, 161, 169, 216-226, 235, 259-262, 267, 270-279
+brain\graph\visual_points.py         44     44     0%   3-59
+brain\graph\visual_turn.py           31     31     0%   3-50
+brain\graph\workflow.py              16     16     0%   3-37
+brain\input_binding.py               23     23     0%   9-46
+brain\observe\__init__.py             2      0   100%
+brain\observe\evidence.py            16     16     0%   3-40
+brain\observe\progress.py            16     16     0%   3-77
+brain\observe\rows.py                43     36    16%   22-66
+brain\observe\summary.py             72     60    17%   38-60, 64-71, 75, 88-111, 120-163
+brain\observe\values.py              38     38     0%   6-53
+brain\relay.py                       91     67    26%   32, 45-63, 66-89, 92-100, 103-110, 114-147, 150, 153
+brain\run.py                        136    128     6%   14-230
+brain\runtime\__init__.py             2      0   100%
+brain\runtime\storage.py            148    100    32%   70-80, 85-99, 103, 123-134, 137-141, 144-160, 163-165, 175-204, 215-221, 224-227, 230-237, 240-241, 250-261
+brain\settings.py                    87     87     0%   3-181
+brain\task_instruction.py            56     56     0%   3-90
+brain\visual\__init__.py              0      0   100%
+brain\visual\action_rebind.py       103     96     7%   14-171
+brain\visual\detector.py             61     61     0%   3-129
+brain\visual\detector_worker.py     109     94    14%   14-23, 32-42, 47-52, 56-74, 78-96, 99-184, 188-194, 198
+brain\visual\marker_contract.py      45     45     0%   3-95
+brain\visual\markers.py             152    152     0%   3-291
+brain\visual\perception.py          241    241     0%   3-688
+brain\visual\record.py               85     85     0%   3-119
+brain\visual\refinement.py           29     29     0%   3-50
+brain\visual\row_candidates.py       26     26     0%   3-60
+brain\visual\scene.py               162    157     3%   11-300
+models\__init__.py                    5      3    40%   5-8
+models\accounting.py                 14     14     0%   3-25
+models\base.py                       91     41    55%   35-37, 41, 90-96, 108-110, 115-175, 195
+models\budget.py                     41     41     0%   3-80
+models\factory.py                    53     42    21%   17-99
+models\gemini.py                     59     44    25%   50-56, 61-111, 121, 124-148
+models\openai_client.py              44     44     0%   3-113
+models\pricing.py                    45     18    60%   28-39, 52-53, 56-59
+models\replay.py                     44     44     0%   3-74
+models\schema.py                      9      9     0%   3-20
+models\validation.py                 58     52    10%   61-86, 101-129
+pipeline\__init__.py                  3      2    33%   4-6
+pipeline\checks.py                   87     87     0%   3-223
+pipeline\evaluate.py                 45     45     0%   7-131
+pipeline\extract.py                  42     42     0%   3-125
+pipeline\measure.py                 172    172     0%   7-403
+pipeline\normalize.py                47     47     0%   3-102
+pipeline\ocr.py                      47     47     0%   3-97
+pipeline\ocr_input.py                34     34     0%   3-81
+pipeline\ocr_validation.py           14     14     0%   3-25
+pipeline\ocr_worker.py               73     73     0%   7-148
+pipeline\persistent_worker.py       119    119     0%   3-170
+pipeline\render.py                   55     55     0%   3-89
+pipeline\run.py                      35     35     0%   3-78
+pipeline\runner.py                  143    133     7%   16-237
+pipeline\schemas.py                 149    149     0%   3-220
+pipeline\worker_broker.py            90     90     0%   3-126
+pipeline\worker_process.py           23     23     0%   3-31
+pipeline\worker_server.py            23     23     0%   3-36
+pipeline\workflow.py                 81     81     0%   8-160
+---------------------------------------------------------------
+TOTAL                              8086   7515     7%

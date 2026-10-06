@@ -31,11 +31,6 @@ their source traces belong in ignored private storage. See the learning CLI in
 
 ## Earlier semantic input cache
 
-`SemanticCache(path, enabled=True, max_retries=1)` creates a locked, atomic JSON
-store. Keep its path under ignored private `cases/`; never publish cache contents.
-Each entry stores an observed input label, role, ancestor semantics, field source,
-text action template, provenance, success/failure counts and verification time.
-It stores no coordinates, refs, AutomationIds, handles, input values or credentials.
 
 Integration: `start_run()` returns a session; `lookup(observation, phase="enter",
 allowed_sources=remaining_fields, record=record)` returns a current-observation

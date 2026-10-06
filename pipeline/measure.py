@@ -368,7 +368,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--evaluation-manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=Path("config/pipeline.toml"))
-    parser.add_argument("--model-config", type=Path, default=Path("config/models.lite.toml"))
     parser.add_argument("--env", type=Path)
     parser.add_argument(
         "--repeats", type=int, default=3, help="Repeats per case; use 1 for smoke runs"

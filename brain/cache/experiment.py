@@ -19,7 +19,6 @@ from sawon_interfaces import ShipmentRecord
 from brain.runtime.storage import CaseState, CaseStatus, RunLog, atomic_write_json
 from brain.settings import BrainSettings
 
-from .semantic import CacheDocument
 
 CacheIsolation = Literal["cold", "snapshot"]
 CacheOutcome = Literal["initializing", "running", "success", "stopped", "failed", "interrupted"]
