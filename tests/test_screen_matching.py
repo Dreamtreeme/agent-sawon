@@ -157,6 +157,11 @@ def setup_brain(
     return brain, model, relay, ocr, detector, meaning
 
 
+def matching_contract(brain, screen=None):
+    screen = screen or {"ocr": [], "markers": []}
+    return brain._screen_match_request(screen, None), brain._screen_match_services()
+
+
 def response(meaning, **kwargs):
     from brain.visual.marker_contract import model_controls
 
@@ -440,20 +445,13 @@ def test_taught_step_allows_other_provided_input_visible_on_current_screen(tmp_p
             }
         )
 
+    request, services = matching_contract(brain)
     accepted = validate_match_plan(
-        planned("hbl_no"),
-        capability,
-        brain._decision_policy(),
-        brain,
-        set(brain.values),
+        planned("hbl_no"), capability, request, services, set(brain.values)
     )
     assert accepted.steps[0].source == "hbl_no"
     accepted = validate_match_plan(
-        planned("mbl_no"),
-        capability,
-        brain._decision_policy(),
-        brain,
-        set(brain.values),
+        planned("mbl_no"), capability, request, services, set(brain.values)
     )
     assert accepted.steps[0].source == "mbl_no"
 
@@ -493,7 +491,8 @@ def test_taught_direct_input_is_not_written_into_a_detected_grid_cell(tmp_path, 
         }
     )
 
-    filtered = enforce_taught_input_surfaces(brain, proposed)
+    request, services = matching_contract(brain)
+    filtered = enforce_taught_input_surfaces(request, services, proposed)
 
     assert [(step.target, step.source) for step in filtered.steps] == [(5, "hbl_no")]
     event = next(
@@ -590,13 +589,14 @@ def test_taught_surface_agrees_through_compile_dispatch_and_reread(
         brain.observation, compile_match(proposed, brain.observation, ScreenFillPlan)
     )
     decision = plan.actions[0].decision
+    request, services = matching_contract(brain, screen)
     if not allowed:
         with pytest.raises(ValueError, match="task_surface_mismatch"):
-            enforce_taught_input_surfaces(brain, proposed)
+            enforce_taught_input_surfaces(request, services, proposed)
         with pytest.raises(GuardStop, match="record_input_scope_mismatch"):
             brain._guard_action(decision)
         return
-    assert enforce_taught_input_surfaces(brain, proposed).steps == proposed.steps
+    assert enforce_taught_input_surfaces(request, services, proposed).steps == proposed.steps
     sent = []
 
     def act(action):
@@ -704,31 +704,11 @@ def test_pending_fill_cannot_claim_its_own_pre_action_evidence(tmp_path, record,
     assert event.payload["fields"] == ["hbl_no"]
 
 
-def test_task_capability_allows_save_after_prior_evidence_without_hiding_inputs(tmp_path):
-    from types import SimpleNamespace
-
-    brain = SimpleNamespace(
-        phase="task",
-        values={
-            "description": "Synthetic procedure pump seals",
-            "hbl_no": "METHOD-HBL-707",
-            "shipper": "Synthetic shipper",
-        },
-        verified={
-            "description": "current-ref",
-            "hbl_no": "prior-ref",
-            "shipper": "prior-ref",
-        },
-        settings=SimpleNamespace(visual_model_only_review=True),
-        task_instruction=TaskInstruction(
-            name="Register shipment",
-            objective="Save the supplied shipment.",
-            completion_conditions=["A visible result confirms that the shipment was saved."],
-        ),
-        procedure=None,
-        pending=None,
-        log=RunLog(tmp_path, case_id="same-turn-save", agent_id="test"),
-    )
+def test_task_capability_allows_save_after_prior_evidence_without_hiding_inputs(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.phase = "task"
+    active = {"description", "hbl_no", "shipper"}
+    brain.verified = {field: f"prior-{field}" for field in active}
     policy = DecisionPolicy(
         ExecutionFacts(
             "task",
@@ -742,7 +722,7 @@ def test_task_capability_allows_save_after_prior_evidence_without_hiding_inputs(
         ],
         "checkpoint": policy.current_step,
     }
-    capability = task_action_contract(brain, contract, {"description", "hbl_no", "shipper"})
+    capability = task_action_contract(brain.phase, brain.task_instruction, contract, active)
     response = ScreenMatch.model_validate(
         {
             "screen_kind": "editor",
@@ -763,7 +743,8 @@ def test_task_capability_allows_save_after_prior_evidence_without_hiding_inputs(
         }
     )
 
-    validated = validate_match_plan(response, capability, policy, brain, set(brain.values))
+    request, services = matching_contract(brain)
+    validated = validate_match_plan(response, capability, request, services, set(brain.values))
     assert validated.steps[0].intent == "save"
     assert "fill" in capability.actions
     assert "save" in capability.actions
@@ -1618,7 +1599,8 @@ def test_delivered_input_verification_omission_is_repaired_without_reusing_old_v
         "descriptor": describe(target, before.elements),
         "before_observation": before,
     }
-    required = required_verification(brain)
+    required = required_verification(brain.pending)
+    services = brain._screen_match_services()
     if mode in {"changed_value", "renamed_wrong_value", "resized_wrong_value"}:
         blocks[-1] = blocks[-1].model_copy(update={"text": "DIFFERENT-NOW"})
     if mode.startswith("renamed"):
@@ -1649,10 +1631,10 @@ def test_delivered_input_verification_omission_is_repaired_without_reusing_old_v
     )
     if mode == "still_missing":
         with pytest.raises(GuardStop, match="required_verification_missing"):
-            retain_verification(brain, matched, screen, required)
+            retain_verification(services, matched, screen, required)
         assert len(model.prompts) == 1
         return
-    repaired = retain_verification(brain, matched, screen, required)
+    repaired = retain_verification(services, matched, screen, required)
     assert len(model.prompts) == (
         0 if mode == "present" or mode.startswith(("renamed", "resized")) else 1
     )
@@ -1684,7 +1666,12 @@ def test_model_only_review_delegates_required_verification_without_repair_call(t
         }
     ]
 
-    assert retain_verification(brain, matched, {"ocr": [], "markers": []}, required) == matched
+    assert (
+        retain_verification(
+            brain._screen_match_services(), matched, {"ocr": [], "markers": []}, required
+        )
+        == matched
+    )
     assert not model.prompts
     delegated = [
         event
@@ -1931,7 +1918,7 @@ def test_selected_record_value_is_verified_on_return_to_editor(tmp_path, record)
 
 
 def test_save_matching_receives_same_action_contract_as_validator(tmp_path, record):
-    from brain.graph.matching import TASK_RULES, match_screen
+    from brain.graph.matching import TASK_RULES
     from brain.graph.save_review import SAVE_RESULT_ACTIONS, SAVE_REVIEW_GUIDANCE
 
     brain, model, _, _, _, meaning = setup_brain(
@@ -1949,8 +1936,7 @@ def test_save_matching_receives_same_action_contract_as_validator(tmp_path, reco
         ],
     )
     brain.phase = "save_result"
-    match_screen(
-        brain,
+    brain._match_visual(
         {
             "ocr": [b.model_dump() for b in fixture()[0]],
             "markers": [m.model_dump() for m in fixture()[2]],
@@ -2026,7 +2012,7 @@ def test_delivered_final_search_exposes_only_evidence_step(tmp_path, record):
 
 @pytest.mark.parametrize("pending", [False, True])
 def test_task_prompt_separates_available_pending_and_verified_inputs(tmp_path, record, pending):
-    from brain.graph.matching import TASK_RULES, match_screen
+    from brain.graph.matching import TASK_RULES
     from brain.graph.schemas import Choice, Decision
 
     procedure_step = "save-entry" if pending else "fill-additional-entry"
@@ -2057,8 +2043,7 @@ def test_task_prompt_separates_available_pending_and_verified_inputs(tmp_path, r
         )
         brain.pending = {"decision": brain.decision}
 
-    match_screen(
-        brain,
+    brain._match_visual(
         {
             "ocr": [block.model_dump() for block in fixture()[0]],
             "markers": [marker.model_dump() for marker in fixture()[2]],
@@ -2077,16 +2062,20 @@ def test_task_prompt_separates_available_pending_and_verified_inputs(tmp_path, r
 
 def test_match_plan_rejects_an_action_outside_current_capability(tmp_path, record):
     brain, *_ = setup_brain(tmp_path, record, [])
-    capability = task_action_contract(brain, {"allowed_intents": ["navigate"]}, set(brain.values))
+    capability = task_action_contract(
+        brain.phase,
+        brain.task_instruction,
+        {"allowed_intents": ["navigate"]},
+        set(brain.values),
+    )
     proposal = ScreenMatch.model_validate(response(fixture()[-1], procedure_step="task-action"))
+    request, services = matching_contract(brain)
     with pytest.raises(ValueError, match="action_outside_procedure"):
-        validate_match_plan(
-            proposal, capability, brain._decision_policy(), brain, set(brain.values)
-        )
+        validate_match_plan(proposal, capability, request, services, set(brain.values))
 
 
 def test_pending_fields_remain_evidence_context_without_claiming_delivery(tmp_path, record):
-    from brain.graph.matching import TASK_RULES, match_screen
+    from brain.graph.matching import TASK_RULES
     from brain.graph.schemas import Choice, Decision
 
     meaning = fixture()[-1]
@@ -2118,8 +2107,7 @@ def test_pending_fields_remain_evidence_context_without_claiming_delivery(tmp_pa
     )
     brain.pending = {"decision": brain.decision}
 
-    match_screen(
-        brain,
+    brain._match_visual(
         {
             "ocr": [block.model_dump() for block in fixture()[0]],
             "markers": [marker.model_dump() for marker in fixture()[2]],
@@ -2137,12 +2125,16 @@ def test_pending_fields_remain_evidence_context_without_claiming_delivery(tmp_pa
 
 def test_input_outside_explicit_capability_scope_is_rejected(tmp_path, record):
     brain, *_ = setup_brain(tmp_path, record, [])
-    capability = task_action_contract(brain, {"allowed_intents": ["fill"]}, {"shipper"})
+    capability = task_action_contract(
+        brain.phase,
+        brain.task_instruction,
+        {"allowed_intents": ["fill"]},
+        {"shipper"},
+    )
     proposal = ScreenMatch.model_validate(response(fixture()[-1], procedure_step="task-action"))
+    request, services = matching_contract(brain)
     with pytest.raises(ValueError, match="field_outside_procedure_scope"):
-        validate_match_plan(
-            proposal, capability, brain._decision_policy(), brain, set(brain.values)
-        )
+        validate_match_plan(proposal, capability, request, services, set(brain.values))
 
 
 def test_final_row_matching_receives_visibility_and_action_contract(tmp_path, record):
@@ -2200,7 +2192,8 @@ def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
         required = [{"screen": "query", "descriptor": {"role": "edit", "name": "Other"}}]
     response = ScreenMatch.model_validate(payload)
     cleaned = sanitize_unused_controls(
-        brain,
+        brain._screen_match_services(),
+        brain.phase,
         response,
         {"markers": [m.model_dump() for m in markers], "ocr": [b.model_dump() for b in blocks]},
         required,
@@ -2272,7 +2265,8 @@ def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, depend
         payload["controls"][1]["parent_id"] = 16
         payload["controls"] = [payload["controls"][1], payload["controls"][2]]
     response = sanitize_unused_controls(
-        brain,
+        brain._screen_match_services(),
+        brain.phase,
         ScreenMatch.model_validate(payload),
         {
             "markers": [marker.model_dump() for marker in markers],
@@ -2308,7 +2302,8 @@ def test_control_cleanup_preserves_current_evidence_regardless_of_prior_verifica
         Marker(id=34, bbox=(120, 10, 80, 25), source="omniparser", confidence=1),
     ]
     response = sanitize_unused_controls(
-        brain,
+        brain._screen_match_services(),
+        brain.phase,
         ScreenMatch.model_validate(
             {
                 "screen_kind": "editor",

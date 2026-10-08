@@ -314,19 +314,93 @@ class Brain:
             promotion_path=self.settings.methods.promotion_path,
         )
 
-    def _match_visual(self, screen: dict, page, *, interpretation=None):
+    def _screen_match_request(self, screen: dict, page, *, interpretation=None, proposal=None):
+        from .matching import MatchRequest, required_verification
+
+        assert self.task_instruction is not None
+        assert self.task_instruction_sha256 is not None
+        policy = self._decision_policy()
+        contract = execution_context(self, policy, anticipate=True)
+        pending_execution = None if self.pending is None else self.pending.get("execution")
+        post_action_review = bool(
+            pending_execution is not None and pending_execution.plan.verification == "fields"
+        )
+        context_layers = self.rolling_context.export_prompt_context(
+            current_goal=self.goal,
+            verified_inputs=list(self.verified),
+            remaining_inputs=list(set(self.values) - set(self.verified)),
+        )
+        saved_record_review = (
+            self.saved_evidence.snapshot(self.values) if self.saved_evidence.session_id else None
+        )
+        return MatchRequest(
+            screen=screen,
+            page=page,
+            phase=self.phase,
+            values=self.values,
+            verified_fields=frozenset(self.verified),
+            execution_contract=contract,
+            required_verification=tuple(required_verification(self.pending)),
+            post_action_review=post_action_review,
+            pending_verification=self.pending is not None,
+            workflow_flags={
+                "duplicate_clear": self.duplicate_clear,
+                "query_value_verified": self.query_value_verified,
+                "query_submitted": self.query_submitted,
+                "save_issued": self.save_issued,
+            },
+            context_layers=context_layers,
+            recent_feedback=tuple(
+                self._current_feedback()[-self.settings.visual_rolling_buffer_size :]
+            ),
+            available_credentials=tuple(
+                sorted(key for key, value in self.credentials.items() if value)
+            ),
+            evidence_claims=tuple(self.evidence_ledger.prompt_context()),
+            failed_transitions=tuple(self._failed_exploration_transitions()),
+            saved_record_review=saved_record_review,
+            task_instruction=self.task_instruction,
+            task_instruction_sha256=self.task_instruction_sha256,
+            policy=policy,
+            grounded_interpretation=interpretation,
+            proposal=proposal,
+        )
+
+    def _screen_match_services(self):
+        from .matching import MatchServices
+
+        return MatchServices(
+            settings=self.settings,
+            log=self.log,
+            call=self._call,
+            case_dir=self.case_dir,
+            cache=self.visual_match_cache,
+            methods=self.methods,
+        )
+
+    def _match_visual(self, screen: dict, page, *, interpretation=None, proposal=None):
         from .matching import match_screen
 
-        return match_screen(self, screen, page, grounded_interpretation=interpretation)
+        request = self._screen_match_request(
+            screen,
+            page,
+            interpretation=interpretation,
+            proposal=proposal,
+        )
+        result = match_screen(
+            request,
+            self._screen_match_services(),
+        )
+        self.procedure_step = result.procedure_step
+        self.visual_match_candidate = result.visual_match_candidate
+        return result.response
 
     def _detect_visual(self, request: SemanticRequest) -> SemanticDetection:
         if self.settings.screen_matching and self.settings.separate_observation_decision:
             screen = dict(request.screen)
             response = self.methods.apply(screen) if request.correction is None else None
             if response is not None:
-                from .matching import match_screen
-
-                response = match_screen(self, screen, request.page, proposal=response)
+                response = self._match_visual(screen, request.page, proposal=response)
                 self.visual_proposal = response
                 atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
                 return response.interpretation()

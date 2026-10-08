@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
-from typing import Literal
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from brain.cache import visual_match_key
+from brain.cache import VisualMatchCache, visual_match_key
 from brain.input_binding import (
     MODEL_INPUTS_NAME,
     allowed_input_surfaces,
@@ -16,13 +19,16 @@ from brain.input_binding import (
     resolve_input_key,
 )
 from brain.observe.evidence import input_surface
-from brain.runtime.storage import atomic_write_json
+from brain.runtime.storage import RunLog, atomic_write_json
+from brain.settings import BrainSettings
+from brain.task_instruction import TaskInstruction
 from brain.visual.marker_contract import local_response, model_controls, model_screen
 from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import SemanticDetection, contains, overlap
 
-from .context import execution_context
-from .execution import GuardStop
+from .execution import GuardStop, PendingAction
+from .method_runtime import MethodRuntime
+from .policy import DecisionPolicy
 from .schemas import Choice, Decision, FieldName
 from .visual_turn import adapt_proposal, bind_proposal
 
@@ -200,6 +206,54 @@ class ScreenMatch(SemanticDetection, ScreenPlan):
         return SemanticDetection.model_validate(
             self.model_dump(include=set(SemanticDetection.model_fields))
         )
+
+
+@dataclass(frozen=True)
+class MatchRequest:
+    """Immutable state needed to choose one action boundary for one screen."""
+
+    screen: dict
+    page: Any
+    phase: str
+    values: Mapping[str, str]
+    verified_fields: frozenset[str]
+    execution_contract: dict
+    required_verification: tuple[dict, ...]
+    post_action_review: bool
+    pending_verification: bool
+    workflow_flags: Mapping[str, bool]
+    context_layers: dict
+    recent_feedback: tuple[dict, ...]
+    available_credentials: tuple[str, ...]
+    evidence_claims: tuple[dict, ...]
+    failed_transitions: tuple[dict, ...]
+    saved_record_review: dict | None
+    task_instruction: TaskInstruction
+    task_instruction_sha256: str
+    policy: DecisionPolicy
+    grounded_interpretation: SemanticDetection | None = None
+    proposal: ScreenMatch | None = None
+
+
+@dataclass(frozen=True)
+class MatchServices:
+    """Explicit side-effect boundary used by screen matching."""
+
+    settings: BrainSettings
+    log: RunLog
+    call: Callable[..., BaseModel]
+    case_dir: Path
+    cache: VisualMatchCache
+    methods: MethodRuntime
+
+
+@dataclass(frozen=True)
+class MatchResult:
+    """Screen decision plus the two state updates owned by the graph runtime."""
+
+    response: ScreenMatch
+    procedure_step: str
+    visual_match_candidate: tuple[str, dict] | None
 
 
 SCREEN_BOUNDARY_BATCH_RULES = """
@@ -380,11 +434,17 @@ def verification_requirements(
     return result, matched_ids
 
 
-def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, required: list[dict]):
+def sanitize_unused_controls(
+    services: MatchServices,
+    phase: str,
+    response: ScreenMatch,
+    screen: dict,
+    required: list[dict] | tuple[dict, ...],
+):
     """Discard unrelated role mistakes and impossible parent links before grounding."""
     markers = {m["id"]: m for m in screen.get("markers", [])}
     controls = {c.id: c for c in response.controls}
-    ignored_save_result = brain.phase != "save_result" and response.save_result is not None
+    ignored_save_result = phase != "save_result" and response.save_result is not None
     if ignored_save_result:
         response = response.model_copy(update={"save_result": None, "message_targets": []})
     direct_needed = (
@@ -403,7 +463,7 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
                 screen,
                 required,
                 response.screen_kind,
-                brain.settings.visual_min_confidence,
+                services.settings.visual_min_confidence,
             )[1]
         )
     needed = set(direct_needed)
@@ -424,7 +484,7 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
                 or not marker_role_allowed(
                     parent_marker["source"],
                     parent.role,
-                    allow_ocr_inputs=brain.settings.visual_model_led_semantics,
+                    allow_ocr_inputs=services.settings.visual_model_led_semantics,
                 )
                 or not contains(tuple(parent_marker["bbox"]), tuple(child_marker["bbox"]))
             ):
@@ -438,7 +498,7 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
         and not marker_role_allowed(
             markers[c.id]["source"],
             c.role,
-            allow_ocr_inputs=brain.settings.visual_model_led_semantics,
+            allow_ocr_inputs=services.settings.visual_model_led_semantics,
         )
     }
     # Children depend on a parent's classification; never leave dangling parents.
@@ -468,17 +528,17 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
             control = control.model_copy(update={"parent_id": None})
         normalized.append(control)
     if removed:
-        brain.log.append(
+        services.log.append(
             "verify",
             payload={"check": "unused_invalid_roles_omitted", "marker_ids": sorted(removed)},
         )
     if ignored_save_result:
-        brain.log.append(
+        services.log.append(
             "verify",
             payload={"check": "out_of_phase_save_result_omitted"},
         )
     if invalid_parents:
-        brain.log.append(
+        services.log.append(
             "verify",
             payload={
                 "check": "unused_invalid_parent_links_omitted",
@@ -488,12 +548,12 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
     return response.model_copy(update={"controls": normalized})
 
 
-def required_verification(brain) -> list[dict]:
+def required_verification(pending: PendingAction | None) -> list[dict]:
     """Carry identities and transient input regions, never previously read values."""
     required = []
-    if brain.pending is not None:
-        execution = brain.pending.get("execution")
-        delivered = execution.delivered if execution else [brain.pending]
+    if pending is not None:
+        execution = pending.get("execution")
+        delivered = execution.delivered if execution else [pending]
         for item in delivered:
             decision = item["decision"]
             descriptor = item.get("descriptor")
@@ -518,10 +578,14 @@ def required_verification(brain) -> list[dict]:
 
 
 def retain_verification(
-    brain, response: ScreenMatch, screen: dict, required: list[dict], page=None
+    services: MatchServices,
+    response: ScreenMatch,
+    screen: dict,
+    required: list[dict] | tuple[dict, ...],
+    page=None,
 ):
-    if brain.settings.visual_model_only_review:
-        brain.log.append(
+    if services.settings.visual_model_only_review:
+        services.log.append(
             "verify",
             payload={
                 "check": "required_verification_delegated",
@@ -533,14 +597,18 @@ def retain_verification(
 
     def missing(controls):
         absent, _ = verification_requirements(
-            controls, screen, required, response.screen_kind, brain.settings.visual_min_confidence
+            controls,
+            screen,
+            list(required),
+            response.screen_kind,
+            services.settings.visual_min_confidence,
         )
         # In model-led mode the worker can bind a field directly to CURRENT
         # visual evidence.  That binding is stronger than trying to recover the
         # old, empty input extent by IoU after the value has changed the OCR box.
         # The graph still rereads the bound element and compares its literal OCR
         # value before any proposed next action is eligible.
-        if brain.settings.visual_model_led_semantics:
+        if services.settings.visual_model_led_semantics:
             by_id = {control.id: control for control in controls}
             explicit = {
                 evidence.field
@@ -551,7 +619,7 @@ def retain_verification(
                     and control.role in {"edit", "combobox"}
                     and (
                         control.confidence_policy != "threshold"
-                        or control.confidence >= brain.settings.visual_min_confidence
+                        or control.confidence >= services.settings.visual_min_confidence
                     )
                 )
             }
@@ -563,7 +631,7 @@ def retain_verification(
         return response
     # Only an actual omission causes this measured repair call. The action/proof
     # proposal remains unchanged; original verification still checks current values.
-    supplement = brain._call(
+    supplement = services.call(
         "Return only missing verification controls and their necessary parents from CURRENT "
         "OCR/markers. Preserve their labels and literal contained text. No actions or invented "
         "values/boxes. Report uncertainty if they cannot be observed.\n"
@@ -584,7 +652,7 @@ def retain_verification(
         }
     )
     remaining = missing(response.controls)
-    brain.log.append(
+    services.log.append(
         "verify",
         payload={
             "check": "required_verification_repaired",
@@ -597,7 +665,9 @@ def retain_verification(
     return response
 
 
-def retain_action_targets(brain, response: ScreenMatch, screen: dict, page=None) -> ScreenMatch:
+def retain_action_targets(
+    services: MatchServices, response: ScreenMatch, screen: dict, page=None
+) -> ScreenMatch:
     """Add semantics for model-selected action and evidence targets."""
     controls = {control.id: control for control in response.controls}
     required = (
@@ -618,7 +688,7 @@ def retain_action_targets(brain, response: ScreenMatch, screen: dict, page=None)
         return response
 
     original_steps = response.steps
-    supplement = brain._call(
+    supplement = services.call(
         TARGET_GROUNDING_RULES
         + json.dumps(
             {
@@ -658,9 +728,9 @@ def retain_action_targets(brain, response: ScreenMatch, screen: dict, page=None)
     if repaired.steps != original_steps:
         raise AssertionError("action_target_grounding_changed_plan")
     atomic_write_json(
-        brain.case_dir / "matching" / f"{uuid4().hex}-target-grounding.json", repaired
+        services.case_dir / "matching" / f"{uuid4().hex}-target-grounding.json", repaired
     )
-    brain.log.append(
+    services.log.append(
         "verify",
         payload={
             "check": "action_targets_grounded",
@@ -722,12 +792,12 @@ def _is_login_batch(steps: list[MatchAction]) -> bool:
 def validate_match_plan(
     response: ScreenMatch,
     capability: ActionCapability,
-    policy,
-    brain,
+    request: MatchRequest,
+    services: MatchServices,
     active_fields: set[str],
 ) -> ScreenMatch:
     """Validate task actions separately from an already grounded screen interpretation."""
-    taught = brain.task_instruction.procedure
+    taught = request.task_instruction.procedure
     if taught:
         taught_ids = [item.id for item in taught]
         if response.taught_step_id is not None and response.taught_step_id not in taught_ids:
@@ -743,11 +813,11 @@ def validate_match_plan(
         source = normalize_action_source(
             intent=item.intent,
             candidate=item.source,
-            inputs=brain.values,
+            inputs=request.values,
         )
         item = item.model_copy(update={"source": source})
         if (
-            brain.phase == "task"
+            request.phase == "task"
             and item.action == "fill"
             and item.source is not None
             and not item.source.startswith("credential.")
@@ -760,7 +830,7 @@ def validate_match_plan(
             # fill contract carry the action as next_decision instead of
             # rejecting it as a hidden single-field write.
             item = item.model_copy(update={"intent": "navigate"})
-            brain.log.append(
+            services.log.append(
                 "verify",
                 payload={
                     "check": "nonwriting_fill_intent_normalized",
@@ -777,7 +847,7 @@ def validate_match_plan(
             "evidence": [
                 evidence.model_copy(
                     update={
-                        "field": resolve_input_key(evidence.field, brain.values) or evidence.field
+                        "field": resolve_input_key(evidence.field, request.values) or evidence.field
                     }
                 )
                 for evidence in response.evidence
@@ -787,11 +857,11 @@ def validate_match_plan(
     allowed_intents = set(capability.actions)
     if "login" in allowed_intents:
         allowed_intents.add("credential")
-    if brain.phase != "save_result" and any(
+    if request.phase != "save_result" and any(
         action.intent not in allowed_intents for action in response.steps
     ):
         raise ValueError("screen_match_action_outside_procedure")
-    if any(evidence.field not in brain.values for evidence in response.evidence):
+    if any(evidence.field not in request.values for evidence in response.evidence):
         raise ValueError("screen_match_unknown_task_field")
     if response.operation == "complete" and not response.completion_evidence:
         raise ValueError("screen_match_task_completion_evidence_required")
@@ -799,7 +869,7 @@ def validate_match_plan(
         # Completion annotations do not alter an otherwise grounded action.
         # Keep the action and discard proof that belongs only to a later
         # operation=complete turn.
-        brain.log.append(
+        services.log.append(
             "verify",
             payload={
                 "check": "premature_completion_evidence_omitted",
@@ -808,7 +878,7 @@ def validate_match_plan(
         )
         response = response.model_copy(update={"completion_evidence": []})
     if any(
-        item.condition_index >= len(brain.task_instruction.completion_conditions)
+        item.condition_index >= len(request.task_instruction.completion_conditions)
         for item in response.completion_evidence
     ):
         raise ValueError("screen_match_task_completion_condition_unknown")
@@ -817,7 +887,7 @@ def validate_match_plan(
     ):
         raise ValueError("screen_match_login_batch_incomplete")
     if _is_login_batch(response.steps):
-        expected_credentials = set(policy.facts.remaining_credentials)
+        expected_credentials = set(request.policy.facts.remaining_credentials)
         planned_credentials = {
             action.source for action in response.steps[:-1] if action.source is not None
         }
@@ -875,7 +945,9 @@ def _action_targets_have_groundable_roles(response: ScreenMatch, screen: dict) -
     return True
 
 
-def omit_nonblocking_refinement(brain, response: ScreenMatch, screen: dict) -> ScreenMatch:
+def omit_nonblocking_refinement(
+    services: MatchServices, response: ScreenMatch, screen: dict
+) -> ScreenMatch:
     """Do not refine unrelated future work when the current action is grounded."""
     if not response.needs_refinement or response.operation != "act" or not response.steps:
         return response
@@ -885,7 +957,7 @@ def omit_nonblocking_refinement(brain, response: ScreenMatch, screen: dict) -> S
         response, screen
     ):
         return response
-    brain.log.append(
+    services.log.append(
         "verify",
         payload={
             "check": "nonblocking_refinement_omitted",
@@ -896,7 +968,9 @@ def omit_nonblocking_refinement(brain, response: ScreenMatch, screen: dict) -> S
     return response.model_copy(update={"needs_refinement": False})
 
 
-def omit_nonblocking_image_request(brain, response: ScreenMatch, screen: dict) -> ScreenMatch:
+def omit_nonblocking_image_request(
+    services: MatchServices, response: ScreenMatch, screen: dict
+) -> ScreenMatch:
     """A grounded immediate action does not need another copy of the same image."""
     if not response.needs_image or response.operation != "act" or not response.steps:
         return response
@@ -906,7 +980,7 @@ def omit_nonblocking_image_request(brain, response: ScreenMatch, screen: dict) -
         response, screen
     ):
         return response
-    brain.log.append(
+    services.log.append(
         "verify",
         payload={
             "check": "nonblocking_image_request_omitted",
@@ -917,7 +991,9 @@ def omit_nonblocking_image_request(brain, response: ScreenMatch, screen: dict) -
     return response.model_copy(update={"needs_image": False})
 
 
-def defer_unwritable_fill_targets(brain, response: ScreenMatch, screen: dict) -> ScreenMatch:
+def defer_unwritable_fill_targets(
+    services: MatchServices, response: ScreenMatch, screen: dict
+) -> ScreenMatch:
     """Keep OCR-only input evidence readable but never use it as a write surface."""
 
     markers = {marker["id"]: marker for marker in screen.get("markers", [])}
@@ -946,7 +1022,7 @@ def defer_unwritable_fill_targets(brain, response: ScreenMatch, screen: dict) ->
         for control in response.controls
         if control.id not in invalid_targets or control.id in still_referenced
     ]
-    brain.log.append(
+    services.log.append(
         "verify",
         payload={
             "check": "unwritable_fill_target_deferred",
@@ -968,18 +1044,20 @@ def defer_unwritable_fill_targets(brain, response: ScreenMatch, screen: dict) ->
     )
 
 
-def enforce_taught_input_surfaces(brain, response: ScreenMatch) -> ScreenMatch:
+def enforce_taught_input_surfaces(
+    request: MatchRequest, services: MatchServices, response: ScreenMatch
+) -> ScreenMatch:
     """Keep a taught record input off a grid unless the user authorized that surface."""
 
-    task = brain.task_instruction
-    if task is None or not task.procedure or not response.steps:
+    task = request.task_instruction
+    if not task.procedure or not response.steps:
         return response
     controls = {control.id: control for control in response.controls}
     invalid = []
     for step in response.steps:
         if step.action != "fill" or step.source is None:
             continue
-        source = resolve_input_key(step.source, brain.values) or step.source
+        source = resolve_input_key(step.source, request.values) or step.source
         control = controls.get(step.target)
         if control is None:
             # Missing action roles are grounded by retain_action_targets before execution.
@@ -993,14 +1071,14 @@ def enforce_taught_input_surfaces(brain, response: ScreenMatch) -> ScreenMatch:
             parents.append(parent.role)
             parent_id = parent.parent_id
         actual = input_surface(control.role, parents)
-        surfaces = allowed_input_surfaces(task, source, brain.values)
+        surfaces = allowed_input_surfaces(task, source, request.values)
         if actual is not None and actual not in surfaces:
             invalid.append((step, source, actual, sorted(surfaces)))
     if not invalid:
         return response
     invalid_steps = {id(item[0]) for item in invalid}
     retained = [step for step in response.steps if id(step) not in invalid_steps]
-    brain.log.append(
+    services.log.append(
         "verify",
         payload={
             "check": "taught_input_surface_mismatch_deferred",
@@ -1028,16 +1106,20 @@ def enforce_taught_input_surfaces(brain, response: ScreenMatch) -> ScreenMatch:
     return response.model_copy(update={"steps": retained, "evidence": evidence})
 
 
-def task_action_contract(brain, contract: dict, active_fields: set[str]) -> ActionCapability:
+def task_action_contract(
+    phase: str,
+    instruction: TaskInstruction,
+    contract: dict,
+    active_fields: set[str],
+) -> ActionCapability:
     """Expose runtime capabilities without encoding an application route."""
     actions = set(contract["allowed_intents"])
     actions.difference_update({"stop", "verify"})
     if "credential" in actions:
         actions.remove("credential")
         actions.add("login")
-    if brain.phase == "task":
+    if phase == "task":
         actions.add("complete")
-    instruction = brain.task_instruction
     return ActionCapability(
         input_scope=sorted(active_fields),
         actions=sorted(actions),
@@ -1046,7 +1128,13 @@ def task_action_contract(brain, contract: dict, active_fields: set[str]) -> Acti
     )
 
 
-def prepare_match_plan(brain, response, screen, capability, policy, active_fields):
+def prepare_match_plan(
+    request: MatchRequest,
+    services: MatchServices,
+    response: ScreenMatch,
+    capability: ActionCapability,
+    active_fields: set[str],
+):
     """Compile every proposal through the same task and write-surface contract."""
     response = response.model_copy(
         update={
@@ -1054,34 +1142,29 @@ def prepare_match_plan(brain, response, screen, capability, policy, active_field
             "procedure_step": capability.capability_id,
         }
     )
-    response = enforce_taught_input_surfaces(brain, response)
-    response = defer_unwritable_fill_targets(brain, response, screen)
-    return validate_match_plan(response, capability, policy, brain, active_fields)
+    response = enforce_taught_input_surfaces(request, services, response)
+    response = defer_unwritable_fill_targets(services, response, request.screen)
+    return validate_match_plan(response, capability, request, services, active_fields)
 
 
-def match_screen(
-    brain, screen: dict, page, *, grounded_interpretation=None, proposal: ScreenMatch | None = None
-):
-    pending_execution = None if brain.pending is None else brain.pending.get("execution")
-    post_action_review = (
-        pending_execution is not None and pending_execution.plan.verification == "fields"
-    )
-    policy = brain._decision_policy()
-    contract = execution_context(brain, policy, anticipate=True)
-    required = required_verification(brain)
+def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
+    screen, page = request.screen, request.page
+    post_action_review = request.post_action_review
+    contract = request.execution_contract
+    required = request.required_verification
     pending_verification_fields = sorted(
         {
             item["source"]
             for item in contract["pending_actions"]
-            if item["intent"] == "fill" and item["source"] in brain.values
+            if item["intent"] == "fill" and item["source"] in request.values
         }
     )
     # Generic input keys are reusable across screens. Keep action eligibility
     # broad while exposing a separate, model-owned coverage ledger. Calling
     # every source "remaining" forever made matching values look unfinished
     # and obscured the few fields that had never been observed.
-    available_inputs = sorted(brain.values)
-    remaining_inputs = sorted(set(brain.values) - set(brain.verified))
+    available_inputs = sorted(request.values)
+    remaining_inputs = sorted(set(request.values) - request.verified_fields)
     contract = {
         **contract,
         "available_inputs": available_inputs,
@@ -1092,34 +1175,31 @@ def match_screen(
     # Re-adding them to action eligibility lets a fallback plan repeat work
     # that the executor has already delivered.
     active_fields = set(available_inputs)
-    verified_fields = set(brain.verified)
-    capability = task_action_contract(brain, contract, active_fields)
-    record = brain.values
-    # 3계층 컨텍스트에서 스크래치패드와 최근 턴 버퍼를 추출한다.
-    context_layers = brain.rolling_context.export_prompt_context(
-        current_goal=brain.goal,
-        verified_inputs=list(brain.verified.keys()),
-        remaining_inputs=list(set(brain.values.keys()) - set(brain.verified.keys())),
+    verified_fields = set(request.verified_fields)
+    capability = task_action_contract(
+        request.phase, request.task_instruction, contract, active_fields
     )
+    record = dict(request.values)
+    context_layers = request.context_layers
 
     notebook = {
-        "phase": brain.phase,
-        "checkpoint": policy.current_step,
-        "pending_verification": brain.pending is not None,
+        "phase": request.phase,
+        "checkpoint": request.policy.current_step,
+        "pending_verification": request.pending_verification,
         "pending_actions": contract["pending_actions"],
         # 누적 raw feedback 대신 정제된 스크래치패드와 최근 N턴 버퍼를 주입한다.
         "scratchpad": context_layers["scratchpad"],
         "recent_turns": context_layers["recent_turns_buffer"],
-        "recent_feedback": brain._current_feedback()[-brain.settings.visual_rolling_buffer_size :],
+        "recent_feedback": list(request.recent_feedback),
         "required_verification": required,
-        "available_credentials": sorted(k for k, value in brain.credentials.items() if value),
+        "available_credentials": list(request.available_credentials),
     }
-    if brain.phase == "task":
+    if request.phase == "task":
         notebook.update(
             {
-                "verified_inputs": sorted(brain.verified),
-                "evidence_claims": brain.evidence_ledger.prompt_context(),
-                "failed_transitions": brain._failed_exploration_transitions(),
+                "verified_inputs": sorted(request.verified_fields),
+                "evidence_claims": list(request.evidence_claims),
+                "failed_transitions": list(request.failed_transitions),
                 "anticipated_verified_inputs": (
                     sorted(verified_fields) if contract["conditional"] else []
                 ),
@@ -1129,25 +1209,22 @@ def match_screen(
                 MODEL_INPUTS_NAME: record,
             }
         )
-        if brain.saved_evidence.session_id:
+        if request.saved_record_review is not None:
             # This is workflow state, not a second value judge.  It tells the
             # planner whether a post-save query has actually produced a result;
             # otherwise an editor left open after Save can be mistaken for the
             # required re-queried record.
-            notebook["saved_record_review"] = brain.saved_evidence.snapshot(brain.values)
+            notebook["saved_record_review"] = request.saved_record_review
     else:
         notebook.update(
             {
-                "verified_fields": sorted(brain.verified),
+                "verified_fields": sorted(request.verified_fields),
                 "anticipated_verified_fields": (
                     sorted(verified_fields) if contract["conditional"] else []
                 ),
                 "remaining_fields": remaining_inputs,
                 "pending_verification_fields": pending_verification_fields,
-                "duplicate_clear": brain.duplicate_clear,
-                "query_value_verified": brain.query_value_verified,
-                "query_submitted": brain.query_submitted,
-                "save_issued": brain.save_issued,
+                **request.workflow_flags,
                 "record": record,
             }
         )
@@ -1161,14 +1238,14 @@ def match_screen(
             "mode": "field_evidence_only",
             "delivered_sources": pending_verification_fields,
         }
-    state["task"] = brain.task_instruction.model_dump(mode="json", exclude={"procedure"})
+    state["task"] = request.task_instruction.model_dump(mode="json", exclude={"procedure"})
     # The digest is the user-education contract boundary.  Two companies can
     # show identical pixels, and one company's memo can later be revised
     # without changing its display name.  Neither case may reuse a decision
     # compiled under another education file.
-    state["task_contract_sha256"] = brain.task_instruction_sha256
-    state["taught_procedure_progress"] = brain.methods.procedure_prompt_context()
-    if brain.task_instruction.procedure:
+    state["task_contract_sha256"] = request.task_instruction_sha256
+    state["taught_procedure_progress"] = services.methods.procedure_prompt_context()
+    if request.task_instruction.procedure:
         state["taught_procedure_rules"] = TAUGHT_PROCEDURE_RULES.strip()
     state["capability"] = capability.model_dump()
     if contract["conditional"]:
@@ -1178,24 +1255,22 @@ def match_screen(
         }
     if "save_review" in contract:
         state["save_review"] = contract["save_review"]
-    methods = brain.methods
+    methods = services.methods
     if methods.enabled:
         state["method_memory"] = methods.prompt_context()
     method_rules = METHOD_RULES if methods.enabled else ""
-    taught_rules = TAUGHT_PROCEDURE_RULES if brain.task_instruction.procedure else ""
+    taught_rules = TAUGHT_PROCEDURE_RULES if request.task_instruction.procedure else ""
     prompt = (
         TASK_RULES
         + method_rules
         + (POST_ACTION_REVIEW_RULES if post_action_review else "")
         + json.dumps(state, ensure_ascii=False)
     )
-    method_proposal = proposal
+    method_proposal = request.proposal
     if method_proposal is None and not post_action_review and "correction" not in screen:
         method_proposal = methods.apply(screen)
     cache_hit = (
-        brain.visual_match_cache.lookup(state)
-        if method_proposal is None and not post_action_review
-        else None
+        services.cache.lookup(state) if method_proposal is None and not post_action_review else None
     )
     used_image = False
     if method_proposal is not None:
@@ -1204,7 +1279,7 @@ def match_screen(
         _, cached = cache_hit
         response = ScreenMatch.model_validate(cached)
         used_image = False
-        brain.log.append(
+        services.log.append(
             "cache_hit",
             payload={
                 "check": "visual_match_cache",
@@ -1212,7 +1287,8 @@ def match_screen(
                 "procedure_step": response.procedure_step,
             },
         )
-    elif grounded_interpretation is not None:
+    elif request.grounded_interpretation is not None:
+        grounded_interpretation = request.grounded_interpretation
         plan_state = {
             **state,
             "screen": model_screen(screen),
@@ -1222,7 +1298,7 @@ def match_screen(
                 "uncertainties": grounded_interpretation.uncertainties,
             },
         }
-        plan = brain._call(
+        plan = services.call(
             TASK_PLAN_RULES
             + taught_rules
             + method_rules
@@ -1233,8 +1309,10 @@ def match_screen(
         response = ScreenMatch.model_validate(
             {**grounded_interpretation.model_dump(), **plan.model_dump()}
         )
-        atomic_write_json(brain.case_dir / "matching" / f"{uuid4().hex}-cached-plan.json", response)
-        brain.log.append(
+        atomic_write_json(
+            services.case_dir / "matching" / f"{uuid4().hex}-cached-plan.json", response
+        )
+        services.log.append(
             "verify",
             payload={
                 "check": "grounded_interpretation_planned",
@@ -1242,15 +1320,15 @@ def match_screen(
             },
         )
     else:
-        response = brain._call(prompt, ScreenMatch, page=page)
-        atomic_write_json(brain.case_dir / "matching" / f"{uuid4().hex}-markers.json", response)
+        response = services.call(prompt, ScreenMatch, page=page)
+        atomic_write_json(services.case_dir / "matching" / f"{uuid4().hex}-markers.json", response)
         response = local_response(response, screen)
-    response = omit_nonblocking_image_request(brain, response, screen)
+    response = omit_nonblocking_image_request(services, response, screen)
     if cache_hit is None and method_proposal is None:
         used_image = True
     if response.needs_image:
         image_state = {**state, "screen": model_screen(screen)}
-        response = brain._call(
+        response = services.call(
             TASK_RULES
             + taught_rules
             + method_rules
@@ -1259,9 +1337,9 @@ def match_screen(
             ScreenMatch,
             page=page,
         )
-        atomic_write_json(brain.case_dir / "matching" / f"{uuid4().hex}-image.json", response)
+        atomic_write_json(services.case_dir / "matching" / f"{uuid4().hex}-image.json", response)
         response = local_response(response, screen)
-        response = omit_nonblocking_image_request(brain, response, screen)
+        response = omit_nonblocking_image_request(services, response, screen)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
     if post_action_review:
@@ -1283,7 +1361,7 @@ def match_screen(
     # Its internal ID is compiler metadata, not a business decision the model
     # should have to echo instead of a human-readable subgoal.
     try:
-        response = prepare_match_plan(brain, response, screen, capability, policy, active_fields)
+        response = prepare_match_plan(request, services, response, capability, active_fields)
     except ValueError as error:
         # A novel combined response can have sound screen semantics but choose an
         # ineligible task step. Preserve the grounded controls and correct only the
@@ -1307,7 +1385,7 @@ def match_screen(
                 ),
             },
         }
-        plan = brain._call(
+        plan = services.call(
             TASK_PLAN_RULES
             + taught_rules
             + method_rules
@@ -1316,11 +1394,12 @@ def match_screen(
             page=page,
         )
         response = ScreenMatch.model_validate({**interpretation.model_dump(), **plan.model_dump()})
-        response = prepare_match_plan(brain, response, screen, capability, policy, active_fields)
+        response = prepare_match_plan(request, services, response, capability, active_fields)
         atomic_write_json(
-            brain.case_dir / "matching" / f"{uuid4().hex}-action-correction.json", response
+            services.case_dir / "matching" / f"{uuid4().hex}-action-correction.json",
+            response,
         )
-        brain.log.append(
+        services.log.append(
             "verify",
             payload={
                 "check": "combined_action_corrected",
@@ -1328,14 +1407,14 @@ def match_screen(
                 "procedure_step": capability.capability_id,
             },
         )
-    response = omit_nonblocking_refinement(brain, response, screen)
+    response = omit_nonblocking_refinement(services, response, screen)
     if not response.needs_refinement:
-        response = sanitize_unused_controls(brain, response, screen, required)
+        response = sanitize_unused_controls(services, request.phase, response, screen, required)
         # The model chooses current evidence with the next action. Ground every
         # referenced target before the evidence reviewer asks whether it exists.
-        response = retain_action_targets(brain, response, screen, page)
+        response = retain_action_targets(services, response, screen, page)
         response = retain_verification(
-            brain,
+            services,
             response,
             screen,
             required,
@@ -1344,9 +1423,9 @@ def match_screen(
         # Repair calls can add a parent chain after the first cleanup pass.
         # An invalid parent is optional structure; retain its controls and proof
         # independently instead of rejecting the grounded action.
-        response = sanitize_unused_controls(brain, response, screen, required)
+        response = sanitize_unused_controls(services, request.phase, response, screen, required)
         if response.operation == "act" and not response.steps:
-            completion = brain._call(
+            completion = services.call(
                 "The current form was matched but operation=act had no executable steps. "
                 "Return only the missing steps for this procedure goal using these CURRENT "
                 "control IDs and source keys. Never infer that an action already happened. "
@@ -1370,7 +1449,7 @@ def match_screen(
                     "steps": completion.steps,
                 }
             )
-            brain.log.append(
+            services.log.append(
                 "verify",
                 payload={
                     "check": "missing_match_actions_completed",
@@ -1381,12 +1460,11 @@ def match_screen(
     # Action completion and target repair are later model boundaries and can
     # introduce a fill after the first check above. Enforce the write-surface
     # contract on the final response as well.
-    response = prepare_match_plan(brain, response, screen, capability, policy, active_fields)
+    response = prepare_match_plan(request, services, response, capability, active_fields)
     if not response.needs_refinement:
-        response = retain_action_targets(brain, response, screen, page)
-        response = sanitize_unused_controls(brain, response, screen, required)
-    brain.procedure_step = capability.capability_id
-    brain.visual_match_candidate = (
+        response = retain_action_targets(services, response, screen, page)
+        response = sanitize_unused_controls(services, request.phase, response, screen, required)
+    visual_match_candidate = (
         (
             cache_hit[0] if cache_hit is not None else visual_match_key(state),
             response.model_dump(mode="json"),
@@ -1394,11 +1472,11 @@ def match_screen(
         if method_proposal is None
         else None
     )
-    brain.log.append(
+    services.log.append(
         "select",
         payload={
             "check": "screen_mapping",
-            "phase": brain.phase,
+            "phase": request.phase,
             "procedure_step": capability.capability_id,
             "steps": len(response.steps),
             "expected_result": response.expected_result,
@@ -1409,7 +1487,11 @@ def match_screen(
     )
     if methods is not None and methods.enabled and response != method_proposal:
         methods.remember(screen, response)
-    return response
+    return MatchResult(
+        response=response,
+        procedure_step=capability.capability_id,
+        visual_match_candidate=visual_match_candidate,
+    )
 
 
 def compile_match(response: ScreenMatch, observation, schema):
