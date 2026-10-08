@@ -12,7 +12,7 @@ max_cost_usd = 1.0
 model_call_reserve_usd = 0.025
 recovery_enabled = false
 
-# [추가] 최근 3턴 델타만 프롬프트에 유지하여 토큰 폭증과 Attention drift 방지
+# 최근 3턴 델타만 프롬프트에 유지하여 토큰 폭증과 attention drift 방지
 visual_rolling_buffer_size = 3
 max_feedback_history = 3
 
@@ -23,7 +23,7 @@ weights = "../data/models/omniparser-v2/icon_detect/model.pt"
 caption_weights = "../data/models/omniparser-v2/icon_caption"
 caption_batch_size = 16
 image_size = 640
-python = "C:/Users/psg/Desktop/개발/agent-sawon/.tools/vision-venv/Scripts/python.exe"
+python = "../.tools/vision-venv/Scripts/python.exe"
 
 [visual_match_cache]
 enabled = true

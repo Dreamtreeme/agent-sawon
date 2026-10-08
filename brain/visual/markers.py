@@ -22,7 +22,7 @@ class Marker(BaseModel):
     source: Literal["ocr", "ocr_group", "omniparser"]
     confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
     text_ids: tuple[int, ...] = ()
-    # [추가] OmniParser v2(Florence-2) 기능형 설명 또는 OCR 원문 텍스트
+    # OmniParser v2(Florence-2) 기능형 설명 또는 OCR 원문 텍스트
     functional_description: str | None = Field(
         default=None, description="아이콘 기능형 설명(예: 'search button') 또는 텍스트"
     )

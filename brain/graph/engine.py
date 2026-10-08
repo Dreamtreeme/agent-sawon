@@ -633,7 +633,7 @@ class Brain:
         if self.phase == "final_query":
             feedback["next_required_step"] = self._final_query_step()
 
-        # [필수] 피드백 누적 및 검증 실패 로그 기록
+        # 피드백 누적 및 검증 실패 로그 기록
         self.feedback.append(feedback)
         self.log.append(
             "verify",
@@ -651,8 +651,8 @@ class Brain:
             },
         )
 
-        # [추가] 롤링 버퍼에 실패 턴 기록 (존재할 경우에만 안전하게 호출)
-        if getattr(self, "rolling_context", None) and self.decision and self.decision.action:
+        # 실패 턴도 다음 판단에 필요한 최근 행동 이력으로 남긴다.
+        if self.decision and self.decision.action:
             act = self.decision.action
             tgt = act.source or (act.keys if act.type == "key" else act.ref) or "unknown"
             self.rolling_context.record_turn(
@@ -2384,7 +2384,7 @@ class Brain:
                     ),
                 }
             )
-            # [추가] 이번 턴의 실행 결과 델타를 롤링 버퍼에 기록 (버퍼 크기 초과 시 자동 에비션)
+            # 이번 턴의 실행 결과 델타를 제한된 롤링 버퍼에 기록한다.
             target_desc = (
                 choice.source or (choice.keys if choice.type == "key" else choice.ref) or "unknown"
             )

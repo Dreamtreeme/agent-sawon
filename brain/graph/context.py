@@ -223,8 +223,8 @@ def execution_context(
         contract["query_input"] = query_input_requirement(
             actual.facts.phase, actual.current_step, query_pending
         )
-    saved = getattr(brain, "saved_evidence", None)
-    if saved is not None and saved.session_id:
+    saved = brain.saved_evidence
+    if saved.session_id:
         proof = saved.snapshot(brain.values)
         # The model needs review progress, not run-local provenance.  UUIDs,
         # observation/capture IDs, paths and refs made an otherwise identical

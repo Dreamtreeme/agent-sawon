@@ -23,7 +23,7 @@ class DetectorSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     weights: Path = Path("models/omniparser/icon_detect/model.pt")
 
-    # [신규 추가] OmniParser v2 파이프라인 옵션
+    # OmniParser v2 파이프라인 옵션
     use_v2: bool = Field(
         default=False,
         description="OmniParser v2 icon_detect + Florence-2 캡셔닝 활성화 여부",

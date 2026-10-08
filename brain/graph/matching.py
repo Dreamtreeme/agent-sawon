@@ -1095,7 +1095,7 @@ def match_screen(
     verified_fields = set(brain.verified)
     capability = task_action_contract(brain, contract, active_fields)
     record = brain.values
-    # [수정] 3계층 컨텍스트 매니저로부터 스크래치패드(Layer 1)와 롤링 버퍼(Layer 2) 추출
+    # 3계층 컨텍스트에서 스크래치패드와 최근 턴 버퍼를 추출한다.
     context_layers = brain.rolling_context.export_prompt_context(
         current_goal=brain.goal,
         verified_inputs=list(brain.verified.keys()),
@@ -1107,7 +1107,7 @@ def match_screen(
         "checkpoint": policy.current_step,
         "pending_verification": brain.pending is not None,
         "pending_actions": contract["pending_actions"],
-        # [다이어트] 누적 raw feedback 대신 정제된 스크래치패드와 최근 N턴 버퍼 주입
+        # 누적 raw feedback 대신 정제된 스크래치패드와 최근 N턴 버퍼를 주입한다.
         "scratchpad": context_layers["scratchpad"],
         "recent_turns": context_layers["recent_turns_buffer"],
         "recent_feedback": brain._current_feedback()[-brain.settings.visual_rolling_buffer_size :],
@@ -1178,10 +1178,10 @@ def match_screen(
         }
     if "save_review" in contract:
         state["save_review"] = contract["save_review"]
-    methods = getattr(brain, "methods", None)
-    if methods is not None and methods.enabled:
+    methods = brain.methods
+    if methods.enabled:
         state["method_memory"] = methods.prompt_context()
-    method_rules = METHOD_RULES if methods is not None and methods.enabled else ""
+    method_rules = METHOD_RULES if methods.enabled else ""
     taught_rules = TAUGHT_PROCEDURE_RULES if brain.task_instruction.procedure else ""
     prompt = (
         TASK_RULES

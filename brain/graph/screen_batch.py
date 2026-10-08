@@ -228,7 +228,7 @@ def verify_screen_fields(
     matched, mismatched, mismatched_refs = [], [], []
     source_counts = Counter(item["choice"].source for item in delivered_fields)
     explicit_evidence = {}
-    proposal = getattr(brain, "visual_proposal", None)
+    proposal = brain.visual_proposal
     if proposal is not None and isinstance(observation, SceneObservation):
         prefix = "e" + str(observation.obs_id.int) + "0"
         explicit_evidence = {item.field: prefix + str(item.target) for item in proposal.evidence}

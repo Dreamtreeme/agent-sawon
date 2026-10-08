@@ -37,7 +37,7 @@ class BrainSettings(BaseModel):
     max_summary_elements: int = Field(default=500, ge=20, le=2000)
     navigation_history_size: int = Field(default=12, ge=4, le=64)
 
-    # Anthropic식 3계층 컨텍스트 축소 옵션
+    # 3계층 컨텍스트 축소 옵션
     visual_rolling_buffer_size: int = Field(
         default=3,
         ge=1,
@@ -55,7 +55,7 @@ class BrainSettings(BaseModel):
     methods: MethodSettings = Field(default_factory=MethodSettings)
     recovery_enabled: bool = False
 
-    # [수정] 'hybrid' 모드 추가 (시각 좌표 클릭 메인 + 최소 OS 신호 보조)
+    # 시각 좌표 클릭 메인 + 최소 OS 신호 보조
     perception_mode: Literal["legacy_uia", "visual_only", "hybrid"] = "legacy_uia"
 
     visual_min_confidence: float = Field(default=0.8, ge=0, le=1, allow_inf_nan=False)
@@ -87,8 +87,12 @@ class BrainSettings(BaseModel):
                 update={"task_path": (path.parent / settings.task_path).resolve()}
             )
 
-        # 검출기 모델 가중치 경로 보정 (weights 및 caption_weights)
+        # 검출기 실행기와 모델 자산을 설정 파일 위치 기준으로 보정
         detector_updates = {}
+        if settings.visual_detector.python is not None:
+            detector_python = Path(settings.visual_detector.python)
+            if not detector_python.is_absolute():
+                detector_updates["python"] = str((path.parent / detector_python).resolve())
         if not settings.visual_detector.weights.is_absolute():
             detector_updates["weights"] = (path.parent / settings.visual_detector.weights).resolve()
         if (

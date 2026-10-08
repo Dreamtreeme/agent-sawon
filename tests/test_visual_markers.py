@@ -306,8 +306,13 @@ def test_settings_resolve_local_weights_relative_to_config(tmp_path):
     from brain.settings import BrainSettings
 
     config = tmp_path / "brain.toml"
-    config.write_text('[visual_detector]\nweights="weights/model.pt"', encoding="utf-8")
-    assert BrainSettings.load(config).visual_detector.weights == tmp_path / "weights/model.pt"
+    config.write_text(
+        '[visual_detector]\nweights="weights/model.pt"\npython="venv/python.exe"',
+        encoding="utf-8",
+    )
+    detector = BrainSettings.load(config).visual_detector
+    assert detector.weights == tmp_path / "weights/model.pt"
+    assert detector.python == str(tmp_path / "venv/python.exe")
 
 
 def test_settings_resolve_method_promotion_path_relative_to_config(tmp_path):
