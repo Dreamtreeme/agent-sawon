@@ -1,0 +1,55 @@
+{
+  "base_commit": "1582835",
+  "before": {
+    "production_files": 83,
+    "production_lines": 16466,
+    "test_assertions": 1854,
+    "coverage_totals": {
+      "covered_lines": 6924,
+      "num_statements": 7736,
+      "percent_covered": 86.82795698924731,
+      "percent_covered_display": "87",
+      "missing_lines": 812,
+      "excluded_lines": 75,
+      "percent_statements_covered": 89.50361944157187,
+      "percent_statements_covered_display": "90",
+      "num_branches": 2680,
+      "num_partial_branches": 426,
+      "covered_branches": 2120,
+      "missing_branches": 560,
+      "percent_branches_covered": 79.1044776119403,
+      "percent_branches_covered_display": "79"
+    },
+    "tests_passed": 681,
+    "coverage_run_seconds": 102.11
+  },
+  "after": {
+    "production_files": 83,
+    "production_lines": 16365,
+    "test_assertions": 1862,
+    "coverage_totals": {
+      "covered_lines": 6897,
+      "num_statements": 7687,
+      "percent_covered": 87.13110788582486,
+      "percent_covered_display": "87",
+      "missing_lines": 790,
+      "excluded_lines": 78,
+      "percent_statements_covered": 89.72290880707688,
+      "percent_statements_covered_display": "90",
+      "num_branches": 2648,
+      "num_partial_branches": 414,
+      "covered_branches": 2108,
+      "missing_branches": 540,
+      "percent_branches_covered": 79.60725075528701,
+      "percent_branches_covered_display": "80"
+    },
+    "tests_passed": 677,
+    "coverage_run_seconds": 98.44
+  },
+  "implementation_commit": "cd8473e",
+  "notes": [
+    "One coverage run per revision; elapsed time is not a causal speed claim.",
+    "Assertions count AST statements, not runtime executions.",
+    "No live ERP or paid model run."
+  ]
+}

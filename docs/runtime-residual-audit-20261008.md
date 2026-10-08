@@ -1,5 +1,9 @@
 # 성공 파일럿 경로의 잔여 코드 조사
 
+후속 상태: 사용자가 지정한 A1–A3/B 항목의 수정·검증은
+[런타임 잔여 문제 수정 기록](runtime-residual-fixes-20261008.md)에 기록했다.
+아래 내용은 수정 전 조사 시점의 근거로 보존한다.
+
 기준: `194000c`의 소스(직전 실제 실행 코드는 `564e27c`로 동일).
 대상 실행: `core-pilot-20261008-141420-refactor`, seed19, 회사별 TaskInstruction,
 Luna, visual_only, combined matching, OmniParser icon_detect(캡션 비활성), model-only review.
