@@ -2239,6 +2239,295 @@ class Brain:
             "confirm_save": ExpectedEffect.SAVE_ACKNOWLEDGEMENT,
         }.get(decision.intent, ExpectedEffect.OBSERVATION_ONLY)
 
+    def _verify_navigation(
+        self,
+        pending: PendingAction,
+        observation: Observation,
+        decision: Decision,
+        observed_state: str,
+        changed: bool,
+    ) -> tuple[WorkerNode | None, bool | None]:
+        if decision.intent not in {"navigate", "select_tab", "login"}:
+            return None, None
+        if not changed:
+            self.pending = None
+            if self.click_refinement.prepare(self, pending, observation):
+                self.execution_authorized = True
+                return "execution", False
+            target = pending.get("navigation_target")
+            if target is not None:
+                failed = self.unproductive_navigation.setdefault(observed_state, [])
+                if target not in failed:
+                    failed.append(target)
+            if "exploration_action_key" in pending:
+                attempt = ExplorationAttempt(
+                    state_key=pending["source_navigation_state"],
+                    goal_key=pending["exploration_goal_key"],
+                    action_key=pending["exploration_action_key"],
+                    action=pending["exploration_action"],
+                    outcome="no_change",
+                )
+                self.exploration.record(attempt)
+                self._last_exploration_failure_key = attempt.action_key
+            return self._fail("navigation_no_progress"), False
+        if self.navigation_history.observe(
+            pending["source_navigation_state"],
+            observed_state,
+            f"{self.phase}:{self.business_revision}",
+        ):
+            self.pending = None
+            if self.click_refinement.prepare(
+                self, pending, observation, failure="navigation_cycle"
+            ):
+                self.execution_authorized = True
+                return "execution", True
+            if "exploration_action_key" in pending:
+                attempt = ExplorationAttempt(
+                    state_key=pending["source_navigation_state"],
+                    goal_key=pending["exploration_goal_key"],
+                    action_key=pending["exploration_action_key"],
+                    action=pending["exploration_action"],
+                    outcome="cycle",
+                )
+                self.exploration.record(attempt)
+                self._last_exploration_failure_key = attempt.action_key
+            return self._fail("navigation_cycle"), True
+        self._record_progress("navigation_state:" + observed_state, business=False)
+        self.log.append(
+            "verify",
+            payload={
+                "ok": True,
+                "check": "navigation_observed_change",
+                "state_sha256": observed_state,
+                "obs_id": str(observation.obs_id),
+            },
+        )
+        return None, True
+
+    def _verify_selected_option(
+        self,
+        observation: Observation,
+        effect_source: str | None,
+        new_facts: list[TransitionFact],
+    ) -> tuple[WorkerNode | None, ObservedEffect | None]:
+        if effect_source is None:
+            return None, None
+        descriptor = self.deferred_field_checks.get(effect_source)
+        matches = matching_elements(observation, descriptor) if descriptor else []
+        if len(matches) != 1:
+            return self._fail("selected_field_target_not_observed"), None
+        if not self._record_verified_field(effect_source, matches[0]):
+            return self._fail("selected_field_value_mismatch"), None
+        del self.deferred_field_checks[effect_source]
+        new_facts.append(effect_source)
+        self.log.append(
+            "verify",
+            payload={
+                "ok": True,
+                "check": "selected_field_value_matches",
+                "field": effect_source,
+                "ref": matches[0].ref,
+                "obs_id": str(observation.obs_id),
+            },
+        )
+        return None, ObservedEffect.INPUT_VALUE_MATCHES
+
+    def _verify_repeated_target(
+        self, pending: PendingAction, observation: Observation
+    ) -> WorkerNode | None:
+        current_scope = (
+            f"{self.phase}:{self._decision_policy().current_step}:{self.business_revision}"
+        )
+        if not self.click_refinement.repeated_target(pending, current_scope):
+            return None
+        self.pending = None
+        if self.click_refinement.prepare(
+            self,
+            pending,
+            observation,
+            failure="semantic_target_repeated",
+        ):
+            self.execution_authorized = True
+            return "execution"
+        return self._fail("semantic_target_repeated")
+
+    def _verify_text_input(
+        self,
+        pending: PendingAction,
+        observation: Observation,
+        choice: Choice,
+        decision: Decision,
+        new_facts: list[TransitionFact],
+        observed_effect: ObservedEffect,
+    ) -> tuple[WorkerNode | None, Observation, ObservedEffect]:
+        if choice.type not in {"set_text", "type_text"}:
+            return None, observation, observed_effect
+        descriptor = pending["descriptor"]
+        matches = matching_delivered_input(
+            observation,
+            pending["before_observation"],
+            choice.ref,
+            descriptor,
+            allowed_surfaces=self._input_surfaces(choice.source),
+        )
+        if len(matches) != 1:
+            return self._fail("input_target_ambiguous_after_action"), observation, observed_effect
+        element = matches[0]
+        source = choice.source
+        if (
+            isinstance(observation, SceneObservation)
+            and self.settings.visual_input_blur_recheck
+            and source not in self.credentials
+            and element.focused
+            and not field_matches(source, element.value, self.values)
+        ):
+            before_window = observation.active_window
+            outcome = self._blur_visual_input(element, decision)
+            if outcome is not None:
+                return outcome, observation, observed_effect
+            pending["blur_recheck"] = True
+            observation = self._observe()
+            matches = matching_delivered_input(
+                observation,
+                pending["before_observation"],
+                choice.ref,
+                descriptor,
+                allowed_surfaces=self._input_surfaces(choice.source),
+            )
+            if observation.active_window != before_window or len(matches) != 1:
+                return self._fail("input_target_ambiguous_after_blur"), observation, observed_effect
+            element = matches[0]
+            if element.focused:
+                return self._fail("input_focus_not_moved"), observation, observed_effect
+        if source == "credential.password":
+            check = "protected_input_reread"
+            observed_effect = ObservedEffect.PROTECTED_INPUT_REREAD
+        elif source == "credential.username":
+            if element.value != self.credentials[source]:
+                return self._fail("credential_input_mismatch"), observation, observed_effect
+            check = "input_value_matches"
+            observed_effect = ObservedEffect.INPUT_VALUE_MATCHES
+            self._record_progress(source)
+        elif not field_matches(source, element.value, self.values):
+            return self._fail("input_value_mismatch"), observation, observed_effect
+        else:
+            check = "input_value_matches"
+            observed_effect = ObservedEffect.INPUT_VALUE_MATCHES
+            if decision.intent == "query_input":
+                self.query_value_verified = True
+                self.query_submitted = False
+                self.query_descriptor = describe(element, observation.elements)
+                self.query_input_anchor = (observation, element.ref)
+                self.query_window_handle = observation.active_window.handle
+                self._record_progress("query_input")
+                new_facts.append("query_input_verified")
+            if decision.intent == "fill" and (
+                self.phase == "task" or decision.screen_kind == "editor"
+            ):
+                if not self._record_verified_field(source, element):
+                    return self._fail("record_input_scope_mismatch"), observation, observed_effect
+                new_facts.append(source)
+        self.log.append(
+            "verify",
+            payload={
+                "ok": True,
+                "check": check,
+                "field": source,
+                "ref": element.ref,
+                "obs_id": str(observation.obs_id),
+                "descriptor": descriptor,
+            },
+        )
+        if source in self.credentials:
+            self.credential_submissions[source] = {
+                "window_handle": observation.active_window.handle,
+                "descriptor": descriptor,
+            }
+            new_facts.append(source + "_submitted")
+        return None, observation, observed_effect
+
+    def _begin_saved_query_proof(self, pending: PendingAction, decision: Decision) -> None:
+        identity_field = self.identity_input_key
+        if not (
+            self.phase == "task"
+            and self.save_issued
+            and decision.intent == "search"
+            and identity_field is not None
+        ):
+            return
+        before = pending["before_observation"]
+        self.saved_evidence.begin(str(before.obs_id))
+        if isinstance(before, SceneObservation):
+            self.saved_evidence.remember_submitted_query(before, self.values[identity_field])
+        self.review = None
+
+    def _record_action_verification(
+        self,
+        decision: Decision,
+        choice: Choice,
+        effect_source: str | None,
+        navigation_change: bool | None,
+        observed_effect: ObservedEffect,
+        new_facts: list[TransitionFact],
+    ) -> None:
+        self.feedback.append(
+            {
+                "ok": True,
+                "intent": decision.intent,
+                "source": effect_source or choice.source,
+                "action": choice.type,
+                "subgoal": decision.subgoal,
+                "phase": self.phase,
+                "navigation_changed": navigation_change,
+                "check": "navigation_observed_change" if navigation_change else "action_delivered",
+            }
+        )
+        target_desc = (
+            choice.source or (choice.keys if choice.type == "key" else choice.ref) or "unknown"
+        )
+        self.rolling_context.record_turn(
+            turn_index=self.steps,
+            intent=decision.intent,
+            target_summary=f"{choice.type}:{target_desc}",
+            action_type=choice.type,
+            observed_effect=str(observed_effect),
+            success=bool(navigation_change or observed_effect != ObservedEffect.NO_CHANGE),
+            checkpoint=self._decision_policy().current_step,
+        )
+        for fact in new_facts:
+            self.rolling_context.mark_milestone(f"검증 완료: {fact}")
+
+    def _log_verification_transition(
+        self,
+        pending: PendingAction,
+        observation: Observation | None,
+        observed_effect: ObservedEffect,
+        new_facts: list[TransitionFact],
+    ) -> None:
+        execution = pending.get("execution")
+        if execution is not None and execution.plan.verification == "fields":
+            for delivered in execution.delivered:
+                source = delivered["choice"].source
+                if (
+                    observation is not None
+                    and source is not None
+                    and delivered["choice"].ref in execution.matched_refs
+                ):
+                    log_transition(
+                        self.log,
+                        delivered,
+                        observation,
+                        ObservedEffect.INPUT_VALUE_MATCHES,
+                        (source,),
+                    )
+                else:
+                    log_transition(self.log, delivered)
+            return
+        if execution is not None:
+            for delivered in execution.delivered[:-1]:
+                log_transition(self.log, delivered)
+        log_transition(self.log, pending, observation, observed_effect, tuple(new_facts))
+
     def _verify_node(self) -> WorkerNode:
         assert self.pending is not None
         pending = self.pending
@@ -2271,236 +2560,42 @@ class Brain:
                 new_facts.append("query_submitted")
             elif decision.intent == "save":
                 new_facts.append("save_issued")
-            navigation_change = None
-            if decision.intent in {"navigate", "select_tab", "login"}:
-                navigation_change = changed
-                if not navigation_change:
-                    self.pending = None
-                    if self.click_refinement.prepare(self, pending, observation):
-                        self.execution_authorized = True
-                        return "execution"
-                    target = pending.get("navigation_target")
-                    if target is not None:
-                        failed = self.unproductive_navigation.setdefault(observed_state, [])
-                        if target not in failed:
-                            failed.append(target)
-                    if "exploration_action_key" in pending:
-                        attempt = ExplorationAttempt(
-                            state_key=pending["source_navigation_state"],
-                            goal_key=pending["exploration_goal_key"],
-                            action_key=pending["exploration_action_key"],
-                            action=pending["exploration_action"],
-                            outcome="no_change",
-                        )
-                        self.exploration.record(attempt)
-                        self._last_exploration_failure_key = attempt.action_key
-                    return self._fail("navigation_no_progress")
-                if self.navigation_history.observe(
-                    self.pending["source_navigation_state"],
-                    observed_state,
-                    f"{self.phase}:{self.business_revision}",
-                ):
-                    self.pending = None
-                    if self.click_refinement.prepare(
-                        self,
-                        pending,
-                        observation,
-                        failure="navigation_cycle",
-                    ):
-                        self.execution_authorized = True
-                        return "execution"
-                    if "exploration_action_key" in pending:
-                        attempt = ExplorationAttempt(
-                            state_key=pending["source_navigation_state"],
-                            goal_key=pending["exploration_goal_key"],
-                            action_key=pending["exploration_action_key"],
-                            action=pending["exploration_action"],
-                            outcome="cycle",
-                        )
-                        self.exploration.record(attempt)
-                        self._last_exploration_failure_key = attempt.action_key
-                    return self._fail("navigation_cycle")
-                # Distinct observed states count once per phase, never model prose.
-                self._record_progress("navigation_state:" + observed_state, business=False)
-                self.log.append(
-                    "verify",
-                    payload={
-                        "ok": True,
-                        "check": "navigation_observed_change",
-                        "state_sha256": observed_state,
-                        "obs_id": str(observation.obs_id),
-                    },
-                )
+            outcome, navigation_change = self._verify_navigation(
+                pending, observation, decision, observed_state, changed
+            )
+            if outcome is not None:
+                return outcome
             effect_source = pending.get("effect_source")
             if decision.intent == "select_option" and effect_source is not None:
-                descriptor = self.deferred_field_checks.get(effect_source)
-                matches = matching_elements(observation, descriptor) if descriptor else []
-                if len(matches) != 1:
-                    return self._fail("selected_field_target_not_observed")
-                if not self._record_verified_field(effect_source, matches[0]):
-                    return self._fail("selected_field_value_mismatch")
-                del self.deferred_field_checks[effect_source]
-                observed_effect = ObservedEffect.INPUT_VALUE_MATCHES
-                new_facts.append(effect_source)
-                self.log.append(
-                    "verify",
-                    payload={
-                        "ok": True,
-                        "check": "selected_field_value_matches",
-                        "field": effect_source,
-                        "ref": matches[0].ref,
-                        "obs_id": str(observation.obs_id),
-                    },
+                outcome, selected_effect = self._verify_selected_option(
+                    observation, effect_source, new_facts
                 )
-            current_scope = (
-                f"{self.phase}:{self._decision_policy().current_step}:{self.business_revision}"
+                if outcome is not None:
+                    return outcome
+                if selected_effect is not None:
+                    observed_effect = selected_effect
+            outcome = self._verify_repeated_target(pending, observation)
+            if outcome is not None:
+                return outcome
+            outcome, observation, observed_effect = self._verify_text_input(
+                pending,
+                observation,
+                choice,
+                decision,
+                new_facts,
+                observed_effect,
             )
-            if self.click_refinement.repeated_target(pending, current_scope):
-                self.pending = None
-                if self.click_refinement.prepare(
-                    self,
-                    pending,
-                    observation,
-                    failure="semantic_target_repeated",
-                ):
-                    self.execution_authorized = True
-                    return "execution"
-                return self._fail("semantic_target_repeated")
-            if choice.type in {"set_text", "type_text"}:
-                descriptor = self.pending["descriptor"]
-                matches = matching_delivered_input(
-                    observation,
-                    pending["before_observation"],
-                    choice.ref,
-                    descriptor,
-                    allowed_surfaces=self._input_surfaces(choice.source),
-                )
-                if len(matches) != 1:
-                    return self._fail("input_target_ambiguous_after_action")
-                element = matches[0]
-                source = choice.source
-                if (
-                    isinstance(observation, SceneObservation)
-                    and self.settings.visual_input_blur_recheck
-                    and source not in self.credentials
-                    and element.focused
-                    and not field_matches(source, element.value, self.values)
-                ):
-                    before_window = observation.active_window
-                    result = self._blur_visual_input(element, decision)
-                    if result is not None:
-                        return result
-                    pending["blur_recheck"] = True
-                    observation = self._observe()
-                    matches = matching_delivered_input(
-                        observation,
-                        pending["before_observation"],
-                        choice.ref,
-                        descriptor,
-                        allowed_surfaces=self._input_surfaces(choice.source),
-                    )
-                    if observation.active_window != before_window or len(matches) != 1:
-                        return self._fail("input_target_ambiguous_after_blur")
-                    element = matches[0]
-                    if element.focused:
-                        return self._fail("input_focus_not_moved")
-                if source == "credential.password":
-                    # The relay intentionally never discloses a password ValuePattern.
-                    # Reread establishes the same protected control still exists;
-                    # subsequent login/navigation is the actual credential test.
-                    check = "protected_input_reread"
-                    observed_effect = ObservedEffect.PROTECTED_INPUT_REREAD
-                elif source == "credential.username":
-                    if element.value != self.credentials[source]:
-                        return self._fail("credential_input_mismatch")
-                    check = "input_value_matches"
-                    observed_effect = ObservedEffect.INPUT_VALUE_MATCHES
-                    self._record_progress(source)
-                elif not field_matches(source, element.value, self.values):
-                    return self._fail("input_value_mismatch")
-                else:
-                    check = "input_value_matches"
-                    observed_effect = ObservedEffect.INPUT_VALUE_MATCHES
-                    if decision.intent == "query_input":
-                        self.query_value_verified = True
-                        self.query_submitted = False
-                        self.query_descriptor = describe(element, observation.elements)
-                        self.query_input_anchor = (observation, element.ref)
-                        self.query_window_handle = observation.active_window.handle
-                        self._record_progress("query_input")
-                        new_facts.append("query_input_verified")
-                    if decision.intent == "fill" and (
-                        self.phase == "task" or decision.screen_kind == "editor"
-                    ):
-                        if not self._record_verified_field(source, element):
-                            return self._fail("record_input_scope_mismatch")
-                        new_facts.append(source)
-                self.log.append(
-                    "verify",
-                    payload={
-                        "ok": True,
-                        "check": check,
-                        "field": source,
-                        "ref": element.ref,
-                        "obs_id": str(observation.obs_id),
-                        "descriptor": descriptor,
-                    },
-                )
-                if source in self.credentials:
-                    # This is input delivery, never proof of a hidden password value
-                    # or successful authentication. Only the app can authenticate.
-                    self.credential_submissions[source] = {
-                        "window_handle": observation.active_window.handle,
-                        "descriptor": descriptor,
-                    }
-                    new_facts.append(source + "_submitted")
-            if (
-                self.phase == "task"
-                and self.save_issued
-                and decision.intent == "search"
-                and self.identity_input_key is not None
-            ):
-                # A query input/search invalidates earlier saved evidence before
-                # dispatch. The observed result starts a fresh post-save proof
-                # session, anchored to the pre-search frame.
-                identity_field = self.identity_input_key
-                assert identity_field is not None
-                self.saved_evidence.begin(str(pending["before_observation"].obs_id))
-                if isinstance(pending["before_observation"], SceneObservation):
-                    self.saved_evidence.remember_submitted_query(
-                        pending["before_observation"], self.values[identity_field]
-                    )
-                self.review = None
-            self.feedback.append(
-                {
-                    "ok": True,
-                    "intent": decision.intent,
-                    "source": effect_source or choice.source,
-                    "action": choice.type,
-                    "subgoal": decision.subgoal,
-                    "phase": self.phase,
-                    "navigation_changed": navigation_change,
-                    "check": (
-                        "navigation_observed_change" if navigation_change else "action_delivered"
-                    ),
-                }
+            if outcome is not None:
+                return outcome
+            self._begin_saved_query_proof(pending, decision)
+            self._record_action_verification(
+                decision,
+                choice,
+                effect_source,
+                navigation_change,
+                observed_effect,
+                new_facts,
             )
-            # 이번 턴의 실행 결과 델타를 제한된 롤링 버퍼에 기록한다.
-            target_desc = (
-                choice.source or (choice.keys if choice.type == "key" else choice.ref) or "unknown"
-            )
-            self.rolling_context.record_turn(
-                turn_index=self.steps,
-                intent=decision.intent,
-                target_summary=f"{choice.type}:{target_desc}",
-                action_type=choice.type,
-                observed_effect=str(observed_effect),
-                success=bool(navigation_change or observed_effect != ObservedEffect.NO_CHANGE),
-                checkpoint=self._decision_policy().current_step,
-            )
-            if new_facts:
-                for fact in new_facts:
-                    self.rolling_context.mark_milestone(f"검증 완료: {fact}")
 
             self._stage_visual_match_candidate(pending)
             self.pending = None
@@ -2522,29 +2617,7 @@ class Brain:
             )
             return self._fail("verification_error:" + type(exc).__name__)
         finally:
-            execution = pending.get("execution")
-            if execution is not None and execution.plan.verification == "fields":
-                for delivered in execution.delivered:
-                    source = delivered["choice"].source
-                    if (
-                        observation is not None
-                        and source is not None
-                        and delivered["choice"].ref in execution.matched_refs
-                    ):
-                        log_transition(
-                            self.log,
-                            delivered,
-                            observation,
-                            ObservedEffect.INPUT_VALUE_MATCHES,
-                            (source,),
-                        )
-                    else:
-                        log_transition(self.log, delivered)
-            else:
-                if execution is not None:
-                    for delivered in execution.delivered[:-1]:
-                        log_transition(self.log, delivered)
-                log_transition(self.log, pending, observation, observed_effect, tuple(new_facts))
+            self._log_verification_transition(pending, observation, observed_effect, new_facts)
             self.pending = None
 
     def _stage_visual_match_candidate(self, pending: PendingAction | None = None) -> None:

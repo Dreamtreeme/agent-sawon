@@ -201,6 +201,319 @@ class SavedEvidence:
             "identity_obs_id": (self.detail_identity or self.query_identity or {}).get("obs_id"),
         }
 
+    def _observe_editor(
+        self,
+        observation: SceneObservation,
+        values: dict[str, str],
+        matches: Matcher,
+        bindings: dict[str, str],
+        by_ref: dict,
+    ) -> bool:
+        inputs = {
+            ref: element
+            for ref, element in by_ref.items()
+            if is_record_input(element, observation)
+            or (
+                element.role.casefold() in {"text", "cell"}
+                and bool(element.value or element.name)
+                and any(matches(name, element.value or element.name, values) for name in values)
+            )
+        }
+        identity = inputs.get(bindings.get(self.identity_field))
+        if identity is None or not matches(self.identity_field, identity.value, values):
+            exact_identities = [
+                element
+                for element in inputs.values()
+                if matches(self.identity_field, element.value, values)
+            ]
+            identity = exact_identities[0] if len(exact_identities) == 1 else identity
+        current_link = False
+        if identity is not None:
+            if matches(self.identity_field, identity.value, values):
+                self.detail_window = observation.active_window.handle
+                self._store(
+                    self.identity_field,
+                    identity,
+                    observation,
+                    values,
+                    matches,
+                    explicit=True,
+                )
+                self.detail_identity = self.fields.get(self.identity_field)
+                current_link = True
+            else:
+                self.conflict = "saved_record_identity_changed"
+                self.fields.clear()
+                self.detail_identity = None
+        else:
+            unchanged = (
+                self.last_hash == observation.screen_hash
+                and self.last_window == observation.active_window.handle
+            )
+            current_link = bool(
+                self.detail_identity
+                and self.detail_window == observation.active_window.handle
+                and self.last_screen == "editor"
+                and (self.tab_continuity or unchanged)
+            )
+        if not current_link:
+            self.detail_window = None
+            self.detail_identity = None
+            return False
+        candidates = {
+            name: {ref for ref, element in inputs.items() if matches(name, element.value, values)}
+            for name in values
+        }
+        assignment = assign_result_fields(candidates)
+        for name, ref in assignment.items():
+            self._store(name, inputs[ref], observation, values, matches, explicit=False)
+        owners: dict[str, list[str]] = {}
+        for name, ref in bindings.items():
+            if name in values and ref in inputs:
+                owners.setdefault(ref, []).append(name)
+        oid = str(observation.obs_id)
+        for ref, names in owners.items():
+            if len(names) > 1:
+                for name in names:
+                    if self.fields.get(name, {}).get("obs_id") == oid or name in bindings:
+                        self.fields.pop(name, None)
+                continue
+            self._store(names[0], inputs[ref], observation, values, matches, explicit=True)
+        return True
+
+    def _query_identity_input(self, by_ref, bindings, values, matches: Matcher):
+        identity = by_ref.get(bindings.get(self.identity_field))
+        valid = bool(
+            identity is not None
+            and identity.role.casefold() == "edit"
+            and matches(self.identity_field, identity.value, values)
+        )
+        if valid:
+            return identity
+        exact = [
+            element
+            for element in by_ref.values()
+            if element.role.casefold() == "edit"
+            and matches(self.identity_field, element.value, values)
+        ]
+        return exact[0] if len(exact) == 1 else identity
+
+    def _query_identity_anchor(
+        self, identity, candidate_rows, observation, by_ref, values, matches: Matcher
+    ):
+        anchor = (
+            identity
+            if identity is not None
+            and identity.role.casefold() == "edit"
+            and matches(self.identity_field, identity.value, values)
+            else None
+        )
+        if not self.query_row_seen or len(candidate_rows) != 1:
+            return anchor
+        current_row = candidate_rows[0]
+        exact = [
+            element
+            for element in by_ref.values()
+            if element.role.casefold() in {"edit", "text"}
+            and matches(self.identity_field, element.value or element.name, values)
+            and not _within(element, current_row.ref, observation)
+        ]
+        return exact[0] if len(exact) == 1 else anchor
+
+    def _carried_query_row(
+        self,
+        row_ref,
+        matching_rows,
+        identity_anchor,
+        candidate_rows,
+        observation,
+        by_ref,
+        values,
+        matches: Matcher,
+    ):
+        eligible = (
+            row_ref is None
+            and self.query_row_seen
+            and self.query_identity
+            and identity_anchor is not None
+            and self.last_screen == "query"
+            and self.last_window == observation.active_window.handle
+            and len(candidate_rows) == 1
+        )
+        if not eligible:
+            return row_ref, matching_rows
+        current_row = candidate_rows[0]
+        current_cells = [
+            element
+            for element in by_ref.values()
+            if element.ref != current_row.ref and _within(element, current_row.ref, observation)
+        ]
+        prior_fields = {
+            name
+            for name, evidence in self.fields.items()
+            if name != self.identity_field
+            and evidence.get("screen_kind") == "query"
+            and evidence.get("session_id") == self.session_id
+        }
+        carried = bool(prior_fields) and all(
+            any(matches(name, item.value or item.name, values) for item in current_cells)
+            for name in prior_fields
+        )
+        return (current_row.ref, 1) if carried else (row_ref, matching_rows)
+
+    def _store_query_row(
+        self,
+        row_ref,
+        identity_anchor,
+        observation,
+        by_ref,
+        bindings,
+        values,
+        matches: Matcher,
+    ) -> None:
+        self.query_row_seen = True
+        self.query_row_ref = row_ref
+        cells = [element for element in by_ref.values() if _within(element, row_ref, observation)]
+        candidates = {
+            name: {
+                element.ref
+                for element in cells
+                if matches(name, element.value or element.name, values)
+            }
+            for name in values
+        }
+        for name, ref in assign_result_fields(candidates).items():
+            self._store(name, by_ref[ref], observation, values, matches, explicit=False)
+        self.query_identity = self.fields.get(self.identity_field) or self.submitted_query_identity
+        owners: dict[str, list[str]] = {}
+        for name, ref in bindings.items():
+            if name in values:
+                owners.setdefault(ref, []).append(name)
+        for ref, names in owners.items():
+            if len(names) > 1 and set(names) != {"packages.count", "packages.unit"}:
+                continue
+            if (
+                ref not in by_ref
+                or by_ref[ref].role not in {"cell", "text"}
+                or not _within(by_ref[ref], row_ref, observation)
+            ):
+                continue
+            for name in names:
+                if (
+                    name == self.identity_field
+                    and identity_anchor is not None
+                    and ref != identity_anchor.ref
+                ):
+                    continue
+                self._store(name, by_ref[ref], observation, values, matches, explicit=True)
+
+    def _observe_query(
+        self,
+        observation: SceneObservation,
+        values: dict[str, str],
+        matches: Matcher,
+        bindings: dict[str, str],
+        by_ref: dict,
+        selected_row_ref: str | None,
+    ) -> bool:
+        review = review_final(observation, values, matches, self.identity_field)
+        if review.status == "blocked":
+            self.conflict = review.reason
+        row_ref, matching_rows = review.row_ref, review.matching_rows
+        identity_input = self._query_identity_input(by_ref, bindings, values, matches)
+        candidate_rows = [
+            element
+            for element in by_ref.values()
+            if element.role.casefold() in {"row", "dataitem", "listitem"}
+        ]
+        identity_anchor = self._query_identity_anchor(
+            identity_input, candidate_rows, observation, by_ref, values, matches
+        )
+        row_ref, matching_rows = self._carried_query_row(
+            row_ref,
+            matching_rows,
+            identity_anchor,
+            candidate_rows,
+            observation,
+            by_ref,
+            values,
+            matches,
+        )
+        selected_row_is_bound = bool(
+            row_ref is None
+            and selected_row_ref is not None
+            and len(candidate_rows) == 1
+            and candidate_rows[0].ref == selected_row_ref
+            and (
+                (
+                    identity_input is not None
+                    and identity_input.role.casefold() == "edit"
+                    and matches(self.identity_field, identity_input.value, values)
+                )
+                or (
+                    self.submitted_query_identity is not None
+                    and self.submitted_query_identity.get("record_id")
+                    == values[self.identity_field]
+                )
+            )
+        )
+        if selected_row_is_bound:
+            row_ref, matching_rows = selected_row_ref, 1
+            if identity_input is not None and identity_input.role.casefold() == "edit":
+                self._store(
+                    self.identity_field,
+                    identity_input,
+                    observation,
+                    values,
+                    matches,
+                    explicit=True,
+                )
+        current_link = bool(row_ref and matching_rows == 1)
+        if current_link:
+            self._store_query_row(
+                row_ref,
+                identity_anchor,
+                observation,
+                by_ref,
+                bindings,
+                values,
+                matches,
+            )
+        else:
+            self.fields.clear()
+            self.query_row_seen = False
+            self.query_identity = None
+            self.query_row_ref = None
+        self.detail_window = None
+        self.detail_identity = None
+        return current_link
+
+    def _finish_observation(
+        self,
+        observation: SceneObservation,
+        values: dict[str, str],
+        *,
+        current_link: bool,
+    ) -> EvidenceReview:
+        oid = str(observation.obs_id)
+        self.tab_continuity = False
+        self.last_obs_id, self.last_hash = oid, observation.screen_hash
+        self.last_window, self.last_screen = (
+            observation.active_window.handle,
+            observation.screen_kind,
+        )
+        missing = tuple(sorted(set(values) - self.fields.keys()))
+        ready = current_link and self.query_row_seen and not missing and not self.conflict
+        self.last_review = EvidenceReview(
+            obs_id=oid,
+            status="blocked" if self.conflict else "ready" if ready else "needs_more",
+            reason=self.conflict
+            or ("saved_record_evidence_complete" if ready else "saved_record_evidence_missing"),
+            missing_fields=missing,
+            matching_rows=int(self.query_row_seen),
+        )
+        return self.last_review
+
     def observe(
         self,
         observation: SceneObservation,
@@ -225,259 +538,17 @@ class SavedEvidence:
         current_link = False
         by_ref = {e.ref: e for e in observation.elements if e.enabled}
         if observation.screen_kind == "query":
-            row = review_final(observation, values, matches, self.identity_field)
-            if row.status == "blocked":
-                self.conflict = row.reason
-            row_ref = row.row_ref
-            matching_rows = row.matching_rows
-            identity_input = by_ref.get(bindings.get(self.identity_field))
-            bound_identity_valid = bool(
-                identity_input is not None
-                and identity_input.role.casefold() == "edit"
-                and matches(self.identity_field, identity_input.value, values)
+            current_link = self._observe_query(
+                observation,
+                values,
+                matches,
+                bindings,
+                by_ref,
+                selected_row_ref,
             )
-            if not bound_identity_valid:
-                exact_query_inputs = [
-                    element
-                    for element in by_ref.values()
-                    if element.role.casefold() == "edit"
-                    and matches(self.identity_field, element.value, values)
-                ]
-                if len(exact_query_inputs) == 1:
-                    identity_input = exact_query_inputs[0]
-            candidate_rows = [
-                element
-                for element in by_ref.values()
-                if element.role.casefold() in {"row", "dataitem", "listitem"}
-            ]
-            query_identity_anchor = (
-                identity_input
-                if identity_input is not None
-                and identity_input.role.casefold() == "edit"
-                and matches(self.identity_field, identity_input.value, values)
-                else None
-            )
-            if self.query_row_seen and len(candidate_rows) == 1:
-                current_row = candidate_rows[0]
-                exact_visible_query_values = [
-                    element
-                    for element in by_ref.values()
-                    if element.role.casefold() in {"edit", "text"}
-                    and matches(self.identity_field, element.value or element.name, values)
-                    and not _within(element, current_row.ref, observation)
-                ]
-                if len(exact_visible_query_values) == 1:
-                    query_identity_anchor = exact_visible_query_values[0]
-            # Selecting a result row commonly changes only focus/highlight pixels and
-            # exposes a separate "open/edit" button.  The next model plan therefore
-            # need not click the row again.  Carry the already-proven sole row across
-            # that repaint when the exact query value remains visible outside the row,
-            # even if the selected-state repaint changes its OCR role from editable to
-            # read-only text.  Initial linkage still requires the actual edit or the
-            # submitted-query record; this role-neutral anchor is continuity only.
-            carried_query_row = False
-            if (
-                row_ref is None
-                and self.query_row_seen
-                and self.query_identity
-                and query_identity_anchor is not None
-                and self.last_screen == "query"
-                and self.last_window == observation.active_window.handle
-                and len(candidate_rows) == 1
-            ):
-                current_row = candidate_rows[0]
-                current_cells = [
-                    element
-                    for element in by_ref.values()
-                    if element.ref != current_row.ref
-                    and _within(element, current_row.ref, observation)
-                ]
-                prior_row_fields = {
-                    name
-                    for name, evidence in self.fields.items()
-                    if name != self.identity_field
-                    and evidence.get("screen_kind") == "query"
-                    and evidence.get("session_id") == self.session_id
-                }
-                carried_query_row = bool(prior_row_fields) and all(
-                    any(matches(name, item.value or item.name, values) for item in current_cells)
-                    for name in prior_row_fields
-                )
-                if carried_query_row:
-                    row_ref = current_row.ref
-                    matching_rows = 1
-            query_bound_row = bool(
-                row_ref is None
-                and selected_row_ref is not None
-                and len(candidate_rows) == 1
-                and candidate_rows[0].ref == selected_row_ref
-                and (
-                    (
-                        identity_input is not None
-                        and identity_input.role.casefold() == "edit"
-                        and matches(self.identity_field, identity_input.value, values)
-                    )
-                    or (
-                        self.submitted_query_identity is not None
-                        and self.submitted_query_identity.get("record_id")
-                        == values[self.identity_field]
-                    )
-                )
-            )
-            if query_bound_row:
-                row_ref = selected_row_ref
-                matching_rows = 1
-                if identity_input is not None and identity_input.role.casefold() == "edit":
-                    self._store(
-                        self.identity_field,
-                        identity_input,
-                        observation,
-                        values,
-                        matches,
-                        explicit=True,
-                    )
-            if row_ref and matching_rows == 1:
-                current_link = self.query_row_seen = True
-                self.query_row_ref = row_ref
-                cells = [e for e in by_ref.values() if _within(e, row_ref, observation)]
-                candidates = {
-                    name: {e.ref for e in cells if matches(name, e.value or e.name, values)}
-                    for name in values
-                }
-                assignment = assign_result_fields(candidates)
-                for name, ref in assignment.items():
-                    self._store(name, by_ref[ref], observation, values, matches, explicit=False)
-                self.query_identity = (
-                    self.fields.get(self.identity_field) or self.submitted_query_identity
-                )
-                owners: dict[str, list[str]] = {}
-                for name, ref in bindings.items():
-                    if name in values:
-                        owners.setdefault(ref, []).append(name)
-                for ref, names in owners.items():
-                    if len(names) > 1 and set(names) != {"packages.count", "packages.unit"}:
-                        continue
-                    if (
-                        ref in by_ref
-                        and by_ref[ref].role in {"cell", "text"}
-                        and _within(by_ref[ref], row_ref, observation)
-                    ):
-                        for name in names:
-                            # The exact current query value is the identity anchor. A
-                            # selected-state repaint may expose it as read-only text,
-                            # while the grid preview clips it with arbitrary punctuation.
-                            # The preview cannot overwrite that established identity.
-                            if (
-                                name == self.identity_field
-                                and query_identity_anchor is not None
-                                and ref != query_identity_anchor.ref
-                            ):
-                                continue
-                            self._store(
-                                name, by_ref[ref], observation, values, matches, explicit=True
-                            )
-            else:
-                # A changed/empty/different result must never reuse a previous row proof.
-                self.fields.clear()
-                self.query_row_seen = False
-                self.query_identity = None
-                self.query_row_ref = None
-            self.detail_window = None
-            self.detail_identity = None
         elif observation.screen_kind == "editor" and self.query_row_seen:
-            inputs = {
-                ref: element
-                for ref, element in by_ref.items()
-                if is_record_input(element, observation)
-                or (
-                    element.role.casefold() in {"text", "cell"}
-                    and bool(element.value or element.name)
-                    and any(matches(name, element.value or element.name, values) for name in values)
-                )
-            }
-            identity = inputs.get(bindings.get(self.identity_field))
-            if identity is None or not matches(self.identity_field, identity.value, values):
-                exact_identities = [
-                    element
-                    for element in inputs.values()
-                    if matches(self.identity_field, element.value, values)
-                ]
-                identity = exact_identities[0] if len(exact_identities) == 1 else identity
-            if identity is not None:
-                if matches(self.identity_field, identity.value, values):
-                    self.detail_window = observation.active_window.handle
-                    self._store(
-                        self.identity_field,
-                        identity,
-                        observation,
-                        values,
-                        matches,
-                        explicit=True,
-                    )
-                    self.detail_identity = self.fields.get(self.identity_field)
-                    current_link = True
-                else:
-                    self.conflict = "saved_record_identity_changed"
-                    self.fields.clear()
-                    self.detail_identity = None
-            else:
-                unchanged = (
-                    self.last_hash == observation.screen_hash
-                    and self.last_window == observation.active_window.handle
-                )
-                current_link = bool(
-                    self.detail_identity
-                    and self.detail_window == observation.active_window.handle
-                    and self.last_screen == "editor"
-                    and (self.tab_continuity or unchanged)
-                )
-            if current_link:
-                # The reviewer verifies unambiguous current values itself. Model bindings
-                # remain useful for ambiguous equal values, but are not required for a
-                # field whose current input has exactly one valid assignment.
-                candidates = {
-                    name: {
-                        ref
-                        for ref, element in inputs.items()
-                        if matches(name, element.value, values)
-                    }
-                    for name in values
-                }
-                assignment = assign_result_fields(candidates)
-                for name, ref in assignment.items():
-                    self._store(name, inputs[ref], observation, values, matches, explicit=False)
-                # Every field has its own current value; one arbitrary box cannot prove many fields.
-                owners: dict[str, list[str]] = {}
-                for name, ref in bindings.items():
-                    if name in values and ref in inputs:
-                        owners.setdefault(ref, []).append(name)
-                for ref, names in owners.items():
-                    if len(names) > 1:
-                        for name in names:
-                            if self.fields.get(name, {}).get("obs_id") == oid or name in bindings:
-                                self.fields.pop(name, None)
-                        continue
-                    self._store(names[0], inputs[ref], observation, values, matches, explicit=True)
-            else:
-                self.detail_window = None
-                self.detail_identity = None
+            current_link = self._observe_editor(observation, values, matches, bindings, by_ref)
         else:
             self.detail_window = None
             self.detail_identity = None
-        self.tab_continuity = False
-        self.last_obs_id, self.last_hash = oid, observation.screen_hash
-        self.last_window, self.last_screen = (
-            observation.active_window.handle,
-            observation.screen_kind,
-        )
-        missing = tuple(sorted(set(values) - self.fields.keys()))
-        ready = current_link and self.query_row_seen and not missing and not self.conflict
-        self.last_review = EvidenceReview(
-            obs_id=oid,
-            status="blocked" if self.conflict else "ready" if ready else "needs_more",
-            reason=self.conflict
-            or ("saved_record_evidence_complete" if ready else "saved_record_evidence_missing"),
-            missing_fields=missing,
-            matching_rows=int(self.query_row_seen),
-        )
-        return self.last_review
+        return self._finish_observation(observation, values, current_link=current_link)

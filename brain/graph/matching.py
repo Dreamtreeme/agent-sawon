@@ -256,6 +256,26 @@ class MatchResult:
     visual_match_candidate: tuple[str, dict] | None
 
 
+@dataclass(frozen=True)
+class MatchPromptContext:
+    state: dict
+    notebook: dict
+    contract: dict
+    capability: ActionCapability
+    active_fields: frozenset[str]
+    prompt: str
+    taught_rules: str
+    method_rules: str
+
+
+@dataclass(frozen=True)
+class MatchSelection:
+    response: ScreenMatch
+    cache_hit: tuple[str, dict] | None
+    method_proposal: ScreenMatch | None
+    used_image: bool
+
+
 SCREEN_BOUNDARY_BATCH_RULES = """
 Return exactly one CURRENT-screen action boundary. A login boundary is one atomic batch: fill
 every remaining credential source into its grounded input, then click the grounded login command
@@ -1147,9 +1167,9 @@ def prepare_match_plan(
     return validate_match_plan(response, capability, request, services, active_fields)
 
 
-def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
-    screen, page = request.screen, request.page
-    post_action_review = request.post_action_review
+def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchPromptContext:
+    """Assemble the bounded model context without selecting or mutating a plan."""
+
     contract = request.execution_contract
     required = request.required_verification
     pending_verification_fields = sorted(
@@ -1230,10 +1250,10 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
         )
     state = {
         "notebook": notebook,
-        "screen": model_screen(screen),
+        "screen": model_screen(request.screen),
         "execution": contract,
     }
-    if post_action_review:
+    if request.post_action_review:
         state["post_action_review"] = {
             "mode": "field_evidence_only",
             "delivered_sources": pending_verification_fields,
@@ -1263,22 +1283,42 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
     prompt = (
         TASK_RULES
         + method_rules
-        + (POST_ACTION_REVIEW_RULES if post_action_review else "")
+        + (POST_ACTION_REVIEW_RULES if request.post_action_review else "")
         + json.dumps(state, ensure_ascii=False)
     )
-    method_proposal = request.proposal
-    if method_proposal is None and not post_action_review and "correction" not in screen:
-        method_proposal = methods.apply(screen)
-    cache_hit = (
-        services.cache.lookup(state) if method_proposal is None and not post_action_review else None
+    return MatchPromptContext(
+        state=state,
+        notebook=notebook,
+        contract=contract,
+        capability=capability,
+        active_fields=frozenset(active_fields),
+        prompt=prompt,
+        taught_rules=taught_rules,
+        method_rules=method_rules,
     )
-    used_image = False
+
+
+def select_match_response(
+    request: MatchRequest,
+    services: MatchServices,
+    prepared: MatchPromptContext,
+) -> MatchSelection:
+    """Resolve method, cache, grounded-plan and model sources in priority order."""
+
+    screen, page = request.screen, request.page
+    method_proposal = request.proposal
+    if method_proposal is None and not request.post_action_review and "correction" not in screen:
+        method_proposal = services.methods.apply(screen)
+    cache_hit = (
+        services.cache.lookup(prepared.state)
+        if method_proposal is None and not request.post_action_review
+        else None
+    )
     if method_proposal is not None:
         response = method_proposal
     elif cache_hit is not None:
         _, cached = cache_hit
         response = ScreenMatch.model_validate(cached)
-        used_image = False
         services.log.append(
             "cache_hit",
             payload={
@@ -1288,27 +1328,25 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
             },
         )
     elif request.grounded_interpretation is not None:
-        grounded_interpretation = request.grounded_interpretation
+        grounded = request.grounded_interpretation
         plan_state = {
-            **state,
+            **prepared.state,
             "screen": model_screen(screen),
             "grounded_interpretation": {
-                "screen_kind": grounded_interpretation.screen_kind,
-                "controls": model_controls(grounded_interpretation.controls, screen),
-                "uncertainties": grounded_interpretation.uncertainties,
+                "screen_kind": grounded.screen_kind,
+                "controls": model_controls(grounded.controls, screen),
+                "uncertainties": grounded.uncertainties,
             },
         }
         plan = services.call(
             TASK_PLAN_RULES
-            + taught_rules
-            + method_rules
+            + prepared.taught_rules
+            + prepared.method_rules
             + json.dumps(plan_state, ensure_ascii=False),
             ScreenPlan,
             page=page,
         )
-        response = ScreenMatch.model_validate(
-            {**grounded_interpretation.model_dump(), **plan.model_dump()}
-        )
+        response = ScreenMatch.model_validate({**grounded.model_dump(), **plan.model_dump()})
         atomic_write_json(
             services.case_dir / "matching" / f"{uuid4().hex}-cached-plan.json", response
         )
@@ -1316,22 +1354,21 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
             "verify",
             payload={
                 "check": "grounded_interpretation_planned",
-                "controls": len(grounded_interpretation.controls),
+                "controls": len(grounded.controls),
             },
         )
     else:
-        response = services.call(prompt, ScreenMatch, page=page)
+        response = services.call(prepared.prompt, ScreenMatch, page=page)
         atomic_write_json(services.case_dir / "matching" / f"{uuid4().hex}-markers.json", response)
         response = local_response(response, screen)
     response = omit_nonblocking_image_request(services, response, screen)
-    if cache_hit is None and method_proposal is None:
-        used_image = True
+    used_image = cache_hit is None and method_proposal is None
     if response.needs_image:
-        image_state = {**state, "screen": model_screen(screen)}
+        image_state = {**prepared.state, "screen": model_screen(screen)}
         response = services.call(
             TASK_RULES
-            + taught_rules
-            + method_rules
+            + prepared.taught_rules
+            + prepared.method_rules
             + json.dumps(image_state, ensure_ascii=False)
             + "\nResolve the reported ambiguity with this image.",
             ScreenMatch,
@@ -1342,7 +1379,146 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
         response = omit_nonblocking_image_request(services, response, screen)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
-    if post_action_review:
+    return MatchSelection(response, cache_hit, method_proposal, used_image)
+
+
+def validate_or_replan(
+    response: ScreenMatch,
+    request: MatchRequest,
+    services: MatchServices,
+    prepared: MatchPromptContext,
+) -> ScreenMatch:
+    """Validate one task plan and repair only a re-plannable action error."""
+
+    active_fields = set(prepared.active_fields)
+    try:
+        return prepare_match_plan(request, services, response, prepared.capability, active_fields)
+    except ValueError as error:
+        if str(error) not in _REPLANNABLE_MATCH_ERRORS:
+            raise
+        interpretation = response.interpretation()
+        correction_state = {
+            **prepared.state,
+            "screen": model_screen(request.screen),
+            "grounded_interpretation": {
+                "screen_kind": interpretation.screen_kind,
+                "controls": model_controls(interpretation.controls, request.screen),
+                "uncertainties": interpretation.uncertainties,
+            },
+            "correction": {
+                "error": str(error),
+                "instruction": (
+                    "Keep grounded_interpretation unchanged. Return a task plan that matches "
+                    "the supplied capability and the execution contract."
+                ),
+            },
+        }
+        plan = services.call(
+            TASK_PLAN_RULES
+            + prepared.taught_rules
+            + prepared.method_rules
+            + json.dumps(correction_state, ensure_ascii=False),
+            ScreenPlan,
+            page=request.page,
+        )
+        corrected = ScreenMatch.model_validate({**interpretation.model_dump(), **plan.model_dump()})
+        corrected = prepare_match_plan(
+            request, services, corrected, prepared.capability, active_fields
+        )
+        atomic_write_json(
+            services.case_dir / "matching" / f"{uuid4().hex}-action-correction.json",
+            corrected,
+        )
+        services.log.append(
+            "verify",
+            payload={
+                "check": "combined_action_corrected",
+                "error": str(error),
+                "procedure_step": prepared.capability.capability_id,
+            },
+        )
+        return corrected
+
+
+def ground_match_response(
+    response: ScreenMatch,
+    request: MatchRequest,
+    services: MatchServices,
+    prepared: MatchPromptContext,
+    *,
+    used_image: bool,
+) -> ScreenMatch:
+    """Ground referenced controls, repair an empty act once, and revalidate writes."""
+
+    screen, page = request.screen, request.page
+    required = request.required_verification
+    response = omit_nonblocking_refinement(services, response, screen)
+    if not response.needs_refinement:
+        response = sanitize_unused_controls(services, request.phase, response, screen, required)
+        response = retain_action_targets(services, response, screen, page)
+        response = retain_verification(
+            services,
+            response,
+            screen,
+            required,
+            page if used_image else None,
+        )
+        response = sanitize_unused_controls(services, request.phase, response, screen, required)
+        if response.operation == "act" and not response.steps:
+            completion = services.call(
+                "The current form was matched but operation=act had no executable steps. "
+                "Return only the missing steps for this procedure goal using these CURRENT "
+                "control IDs and source keys. Never infer that an action already happened. "
+                "If no valid action is available, return operation=stop and steps=[].\n"
+                + json.dumps(
+                    {
+                        "capability": prepared.capability.model_dump(),
+                        "notebook": prepared.notebook,
+                        "execution": prepared.contract,
+                        "screen": model_screen(screen),
+                        "controls": model_controls(response.controls, screen),
+                    },
+                    ensure_ascii=False,
+                ),
+                ActionCompletion,
+                page=page if used_image else None,
+            )
+            response = response.model_copy(
+                update={"operation": completion.operation, "steps": completion.steps}
+            )
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "missing_match_actions_completed",
+                    "operation": completion.operation,
+                    "steps": len(completion.steps),
+                },
+            )
+    response = prepare_match_plan(
+        request,
+        services,
+        response,
+        prepared.capability,
+        set(prepared.active_fields),
+    )
+    if not response.needs_refinement:
+        response = retain_action_targets(services, response, screen, page)
+        response = sanitize_unused_controls(services, request.phase, response, screen, required)
+    return response
+
+
+def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
+    screen = request.screen
+    prepared = build_match_prompt(request, services)
+    state = prepared.state
+    capability = prepared.capability
+    prompt = prepared.prompt
+    selection = select_match_response(request, services, prepared)
+    response = selection.response
+    cache_hit = selection.cache_hit
+    method_proposal = selection.method_proposal
+    used_image = selection.used_image
+    if request.post_action_review:
         # The model's semantic controls and field evidence are the review result.
         # A speculative next action from this same response must not run or block
         # verification of the batch that has already been delivered.
@@ -1357,113 +1533,14 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
                 "expected_result": "Review the delivered field values on the current screen",
             }
         )
-    # There is exactly one synthetic capability envelope in generic task mode.
-    # Its internal ID is compiler metadata, not a business decision the model
-    # should have to echo instead of a human-readable subgoal.
-    try:
-        response = prepare_match_plan(request, services, response, capability, active_fields)
-    except ValueError as error:
-        # A novel combined response can have sound screen semantics but choose an
-        # ineligible task step. Preserve the grounded controls and correct only the
-        # action once; semantic/marker failures are handled by VisualPerception.
-        if str(error) not in _REPLANNABLE_MATCH_ERRORS:
-            raise
-        interpretation = response.interpretation()
-        correction_state = {
-            **state,
-            "screen": model_screen(screen),
-            "grounded_interpretation": {
-                "screen_kind": interpretation.screen_kind,
-                "controls": model_controls(interpretation.controls, screen),
-                "uncertainties": interpretation.uncertainties,
-            },
-            "correction": {
-                "error": str(error),
-                "instruction": (
-                    "Keep grounded_interpretation unchanged. Return a task plan that matches "
-                    "the supplied capability and the execution contract."
-                ),
-            },
-        }
-        plan = services.call(
-            TASK_PLAN_RULES
-            + taught_rules
-            + method_rules
-            + json.dumps(correction_state, ensure_ascii=False),
-            ScreenPlan,
-            page=page,
-        )
-        response = ScreenMatch.model_validate({**interpretation.model_dump(), **plan.model_dump()})
-        response = prepare_match_plan(request, services, response, capability, active_fields)
-        atomic_write_json(
-            services.case_dir / "matching" / f"{uuid4().hex}-action-correction.json",
-            response,
-        )
-        services.log.append(
-            "verify",
-            payload={
-                "check": "combined_action_corrected",
-                "error": str(error),
-                "procedure_step": capability.capability_id,
-            },
-        )
-    response = omit_nonblocking_refinement(services, response, screen)
-    if not response.needs_refinement:
-        response = sanitize_unused_controls(services, request.phase, response, screen, required)
-        # The model chooses current evidence with the next action. Ground every
-        # referenced target before the evidence reviewer asks whether it exists.
-        response = retain_action_targets(services, response, screen, page)
-        response = retain_verification(
-            services,
-            response,
-            screen,
-            required,
-            page if used_image else None,
-        )
-        # Repair calls can add a parent chain after the first cleanup pass.
-        # An invalid parent is optional structure; retain its controls and proof
-        # independently instead of rejecting the grounded action.
-        response = sanitize_unused_controls(services, request.phase, response, screen, required)
-        if response.operation == "act" and not response.steps:
-            completion = services.call(
-                "The current form was matched but operation=act had no executable steps. "
-                "Return only the missing steps for this procedure goal using these CURRENT "
-                "control IDs and source keys. Never infer that an action already happened. "
-                "If no valid action is available, return operation=stop and steps=[].\n"
-                + json.dumps(
-                    {
-                        "capability": capability.model_dump(),
-                        "notebook": notebook,
-                        "execution": contract,
-                        "screen": model_screen(screen),
-                        "controls": model_controls(response.controls, screen),
-                    },
-                    ensure_ascii=False,
-                ),
-                ActionCompletion,
-                page=page if used_image else None,
-            )
-            response = response.model_copy(
-                update={
-                    "operation": completion.operation,
-                    "steps": completion.steps,
-                }
-            )
-            services.log.append(
-                "verify",
-                payload={
-                    "check": "missing_match_actions_completed",
-                    "operation": completion.operation,
-                    "steps": len(completion.steps),
-                },
-            )
-    # Action completion and target repair are later model boundaries and can
-    # introduce a fill after the first check above. Enforce the write-surface
-    # contract on the final response as well.
-    response = prepare_match_plan(request, services, response, capability, active_fields)
-    if not response.needs_refinement:
-        response = retain_action_targets(services, response, screen, page)
-        response = sanitize_unused_controls(services, request.phase, response, screen, required)
+    response = validate_or_replan(response, request, services, prepared)
+    response = ground_match_response(
+        response,
+        request,
+        services,
+        prepared,
+        used_image=used_image,
+    )
     visual_match_candidate = (
         (
             cache_hit[0] if cache_hit is not None else visual_match_key(state),
@@ -1485,8 +1562,8 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
             "prompt_chars": len(prompt),
         },
     )
-    if methods is not None and methods.enabled and response != method_proposal:
-        methods.remember(screen, response)
+    if services.methods.enabled and response != method_proposal:
+        services.methods.remember(screen, response)
     return MatchResult(
         response=response,
         procedure_step=capability.capability_id,
