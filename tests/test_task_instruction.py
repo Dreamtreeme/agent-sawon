@@ -262,7 +262,9 @@ def test_generic_search_does_not_require_or_mutate_legacy_query_state(tmp_path):
 
     brain._guard_action(search)
     brain.decision = search
-    assert brain._dispatch_action() == {"next": "verify"}
+    from brain.graph.execution import ActionPlan
+
+    assert brain._execute_plan(ActionPlan.single(search)) == {"next": "verify"}
 
     assert not brain.query_value_verified
     assert not brain.query_submitted

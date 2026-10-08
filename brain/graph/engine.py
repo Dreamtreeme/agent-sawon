@@ -16,7 +16,7 @@ from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, ValidationError
-from sawon_interfaces import Action, ActionResult, Observation, ShipmentRecord, UIElement
+from sawon_interfaces import Action, Observation, ShipmentRecord, UIElement
 
 from brain.cache import VisualMatchCache
 from brain.observe import describe, redact, summarize
@@ -41,7 +41,15 @@ from pipeline.ocr import OcrEngine
 from pipeline.schemas import RenderedPage
 
 from .context import DUPLICATE_EVIDENCE_GUIDANCE, execution_context
-from .execution import ActionPlan, PendingAction, execute_plan, log_transition
+from .execution import (
+    ActionPlan,
+    ExecutionRequest,
+    PendingAction,
+    PlanExecution,
+    PreparedAction,
+    execute_plan,
+    log_transition,
+)
 from .execution import GuardStop as GuardStop
 from .method_runtime import MethodRuntime
 from .policy import DecisionPolicy, ExecutionFacts
@@ -1868,46 +1876,6 @@ class Brain:
             data["duration_ms"] = choice.duration_ms
         return Action.model_validate(data)
 
-    def _log_action_requested(self, action: Action, choice: Choice) -> None:
-        logged = action.model_dump(mode="json")
-        if choice.source and choice.source.startswith("credential."):
-            logged["text"] = "[REDACTED]"
-        self.log.append("act", payload={"stage": "requested", "action": logged})
-
-    def _log_action_returned(self, action: Action, response: ActionResult) -> None:
-        self.log.append(
-            "act",
-            payload={
-                "stage": "returned",
-                "action_id": str(action.root.action_id),
-                "ok": response.ok,
-                "error": "relay_action_failed" if response.error else None,
-                "error_code": self._relay_error_code(response.error),
-                "post_obs_id": str(response.post_obs_id) if response.post_obs_id else None,
-            },
-            latency_ms=response.duration_ms,
-        )
-
-    @staticmethod
-    def _relay_error_code(error: str | None) -> str | None:
-        known_errors = {
-            "observation_expired",
-            "capture_expired",
-            "capture_unavailable",
-            "capture_geometry_changed",
-            "screen_changed",
-            "window_changed",
-            "foreground_not_allowed",
-            "focus_not_confirmed",
-            "point_outside_allowed_window",
-            "point_outside_capture",
-            "observation_stale",
-            "observation_blocked",
-            "action_failed",
-            "unsupported_key",
-        }
-        return error if error in known_errors else None
-
     def _accept_dispatched_action(
         self,
         action: Action,
@@ -2020,7 +1988,7 @@ class Brain:
         self.action_plan = None
         visual_candidate, self.visual_match_candidate = self.visual_match_candidate, None
         try:
-            outcome = execute_plan(self, plan)
+            outcome = self._execute_plan(plan)
             self.methods.delivered(outcome)
             if visual_candidate is not None and self.pending is not None:
                 self.pending["visual_match_candidate"] = visual_candidate
@@ -2035,41 +2003,106 @@ class Brain:
         except Exception as exc:
             return self._fail("action_error:" + type(exc).__name__)
 
-    def _dispatch_action(self, *, screen_batch: bool = False) -> dict:
-        assert self.decision is not None and self.observation is not None
-        decision, choice = self.decision, self.decision.action
-        assert choice is not None
-        try:
+    def _prepare_actions(self, plan: ActionPlan, *, batch: bool):
+        fresh = self.relay.observe() if batch else None
+        for index, planned in enumerate(plan.actions):
+            if index:
+                self.steps += 1
+            decision, choice = planned.decision, planned.decision.action
+            assert choice is not None
+            self.decision = decision
             progress_scope = (
                 f"{self.phase}:{self._decision_policy().current_step}:{self.business_revision}"
             )
-            point_refined = self.click_refinement.applies(self, decision)
-            action = self._wire_action(choice, decision, screen_batch=screen_batch)
-            self._log_action_requested(action, choice)
-            if self.settings.screen_matching and isinstance(self.observation, SceneObservation):
-                self.saved_evidence.after_action(decision, self.observation)
-                self.review = None
-            response = self.relay.act(action)
-            self._log_action_returned(action, response)
-            if response.action_id != action.root.action_id:
-                raise GuardStop("relay_action_identity_mismatch")
-            if not response.ok:
-                return self._fail("relay_action_failed")
-            self.pending = self._accept_dispatched_action(
-                action,
-                decision,
-                choice,
-                progress_scope=progress_scope,
-                point_refined=point_refined,
-            )
-            return {"next": "verify"}
-        except GuardStop as exc:
-            return self._finish("stopped", str(exc))
-        except Exception as exc:
-            return self._fail("action_error:" + type(exc).__name__)
+            try:
+                refined = self.click_refinement.applies(self, decision)
+                action = self._wire_action(
+                    choice,
+                    decision,
+                    screen_batch=index > 0,
+                    fresh_observation=fresh,
+                    log_renewal=not batch or index == 0,
+                )
+                if self.settings.screen_matching and isinstance(self.observation, SceneObservation):
+                    self.saved_evidence.after_action(decision, self.observation)
+                    self.review = None
+                yield PreparedAction(planned, action, progress_scope, refined)
+            finally:
+                self.click_refinement.bound = None
 
+    def _execute_plan(self, plan: ActionPlan) -> dict:
+        assert self.observation is not None
+        plan = self._reconcile_action_plan(plan)
+        if not plan.actions:
+            self.log.append(
+                "select",
+                payload={
+                    "check": "action_plan_already_satisfied",
+                    "obs_id": str(self.observation.obs_id),
+                    **plan.audit,
+                },
+            )
+            return {"next": "review"}
+        if self.steps + len(plan.actions) - 1 > self.settings.max_steps:
+            raise GuardStop("max_steps")
+        for action in plan.actions:
+            self._guard_action(action.decision, action.policy)
+        if plan.audit:
+            self.log.append(
+                "select", payload={"obs_id": str(self.observation.obs_id), **plan.audit}
+            )
+        batch = (
+            plan.verification == "fields"
+            and len(plan.actions) > 1
+            and isinstance(self.observation, SceneObservation)
+            and callable(getattr(self.relay, "act_batch", None))
+            and all(
+                item.decision.intent == "fill" and item.decision.action.type == "set_text"
+                for item in plan.actions
+            )
+        )
+        actions = self._prepare_actions(plan, batch=batch)
+        try:
+            result = execute_plan(ExecutionRequest(actions, batch), self.relay, self.log)
         finally:
-            self.click_refinement.bound = None
+            actions.close()
+        execution = PlanExecution(plan, self.observation)
+        for item in result.delivered:
+            pending = self._accept_dispatched_action(
+                item.wire,
+                item.planned.decision,
+                item.planned.decision.action,
+                progress_scope=item.progress_scope,
+                point_refined=item.point_refined,
+            )
+            if item.planned.effect_source is not None:
+                pending["effect_source"] = item.planned.effect_source
+                pending["transition"] = pending["transition"].model_copy(
+                    update={"source": item.planned.effect_source}
+                )
+            execution.delivered.append(pending)
+        if result.error is not None:
+            for pending in execution.delivered:
+                log_transition(self.log, pending)
+            self.pending = None
+            if isinstance(result.error, GuardStop):
+                if str(result.error) == "relay_action_failed":
+                    return self._fail("relay_action_failed")
+                raise result.error
+            return self._fail("action_error:" + type(result.error).__name__)
+        self.pending = {**execution.delivered[-1], "execution": execution}
+        if plan.verification == "login":
+            scene = execution.before
+            by_ref = {item.ref: item for item in scene.elements}
+            self.pending["login_plan_descriptors"] = [
+                describe(by_ref[item.decision.action.ref], scene.elements) for item in plan.actions
+            ]
+            for delivered in execution.delivered[:-1]:
+                self.credential_submissions[delivered["choice"].source] = {
+                    "window_handle": scene.active_window.handle,
+                    "descriptor": delivered["descriptor"],
+                }
+        return {"next": "verify"}
 
     def _blur_visual_input(self, element: UIElement, decision: Decision) -> dict:
         """One guarded focus move; never infer the next control or modify its value."""
@@ -2091,7 +2124,7 @@ class Brain:
         )
         try:
             self.decision = blur
-            outcome = execute_plan(self, ActionPlan.single(blur))
+            outcome = self._execute_plan(ActionPlan.single(blur))
             if outcome["next"] == "verify":
                 log_transition(self.log, self.pending)
             return outcome

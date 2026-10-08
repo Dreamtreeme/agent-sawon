@@ -79,6 +79,8 @@ class SyntheticPerception:
 
 
 def test_relay_error_code_allowlist_rejects_untrusted_text():
+    from brain.graph.execution import relay_error_code
+
     known = {
         "observation_expired",
         "capture_expired",
@@ -96,11 +98,9 @@ def test_relay_error_code_allowlist_rejects_untrusted_text():
         "unsupported_key",
     }
 
-    assert {error: Brain._relay_error_code(error) for error in known} == {
-        error: error for error in known
-    }
-    assert Brain._relay_error_code(None) is None
-    assert Brain._relay_error_code("PRIVATE unexpected server text") is None
+    assert {error: relay_error_code(error) for error in known} == {error: error for error in known}
+    assert relay_error_code(None) is None
+    assert relay_error_code("PRIVATE unexpected server text") is None
 
 
 def test_relay_diagnostic_redacts_untrusted_error_text(tmp_path, record):
