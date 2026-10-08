@@ -189,14 +189,11 @@ def prepare_screen_fill(scene: Observation, plan: ScreenFillPlan) -> ActionPlan:
 
 
 def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Observation) -> dict:
-    """Evaluate the one new scene using the same field-evidence writer as singles."""
+    """Evaluate a batch after observation has published the current model evidence."""
     delivered_fields = [
         delivered for delivered in execution.delivered if delivered["choice"].source is not None
     ]
     if brain.settings.visual_model_only_review:
-        proposal = getattr(brain, "visual_proposal", None)
-        if proposal is not None:
-            brain._remember_model_task_evidence(proposal)
         matched, mismatched = [], []
         for delivered in delivered_fields:
             source = delivered["choice"].source

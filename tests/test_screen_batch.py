@@ -511,7 +511,7 @@ def test_joint_verification_survives_corrected_visual_label(tmp_path, record, wr
     assert set(brain.verified) == set(brain.values) - ({"mbl_no"} if wrong_value else set())
 
 
-def test_model_only_screen_review_records_model_evidence_before_next_decision(tmp_path, record):
+def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
     from brain.graph.execution import ActionPlan, PlanExecution
     from brain.graph.matching import ScreenMatch
     from brain.graph.schemas import Choice, Decision
@@ -543,7 +543,7 @@ def test_model_only_screen_review_records_model_evidence_before_next_decision(tm
             ]
         }
     )
-    brain.visual_proposal = ScreenMatch(
+    proposal = ScreenMatch(
         screen_kind="editor",
         procedure_step="task-action",
         controls=[],
@@ -567,9 +567,24 @@ def test_model_only_screen_review_records_model_evidence_before_next_decision(tm
         {"choice": fill.action, "descriptor": {}},
         {"choice": boundary.action, "descriptor": {}},
     ]
-    brain.observation = current
+
+    def observe_with_proposal(wire):
+        brain.visual_proposal = proposal
+        return current
+
+    brain.visual_perception.observe = observe_with_proposal
+    assert brain._observe() is current
+    claims = brain.evidence_ledger.history
+    assert len(claims) == 1
 
     assert verify_screen_fields(brain, execution, current) == {"next": "review"}
+    assert brain.evidence_ledger.history == claims
+    recorded = [
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "model_task_evidence_recorded"
+    ]
+    assert len(recorded) == 1
     assert source in brain.verified
     event = next(
         event
