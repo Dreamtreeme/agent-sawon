@@ -19,8 +19,13 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from sawon_interfaces import Action, Observation, ShipmentRecord, UIElement
 
 from brain.cache import VisualMatchCache
+from brain.input_binding import allowed_input_surfaces
 from brain.observe import describe, redact, summarize
-from brain.observe.evidence import is_record_input, matching_delivered_input, matching_elements
+from brain.observe.evidence import (
+    matching_delivered_input,
+    matching_elements,
+    observed_input_surface,
+)
 from brain.observe.progress import navigation_state, navigation_target, semantic_target_key
 from brain.observe.rows import row_refs
 from brain.observe.summary import ancestors
@@ -597,9 +602,9 @@ class Brain:
             )
         elif reason == "record_input_scope_mismatch":
             feedback["required_response"] = (
-                "No record input was sent. The selected control belongs to a repeated "
-                "detail row/table, not the task's direct input form. Keep verified fields; "
-                "choose observed tabs/navigation to find the missing record field."
+                "No record input was sent. The selected input surface does not match the "
+                "user-taught surface for this source (standalone input by default; table cell "
+                "when explicitly taught). Keep verified fields and locate the taught target."
             )
         elif reason == "input_surface_claimed_by_other_field":
             feedback.update(self._last_surface_conflict or {})
@@ -1477,7 +1482,7 @@ class Brain:
             if len(matches) > 1 or (
                 matches
                 and (
-                    not is_record_input(matches[0], self.observation)
+                    not self._input_surface_allowed(field, matches[0])
                     or not field_matches(field, matches[0].value, self.values)
                 )
             ):
@@ -1496,9 +1501,18 @@ class Brain:
         self._record_progress("field:" + field)
         return superseded
 
+    def _input_surfaces(self, source: str | None) -> set[str]:
+        if self.task_instruction is not None and source in self.values:
+            return allowed_input_surfaces(self.task_instruction, source, self.values)
+        return {"direct_input"}
+
+    def _input_surface_allowed(self, source: str | None, element: UIElement) -> bool:
+        assert self.observation is not None
+        return observed_input_surface(element, self.observation) in self._input_surfaces(source)
+
     def _record_verified_field(self, source: str, element: UIElement) -> bool:
         assert self.observation is not None
-        if not is_record_input(element, self.observation) or not field_matches(
+        if not self._input_surface_allowed(source, element) or not field_matches(
             source, element.value, self.values
         ):
             return False
@@ -1513,7 +1527,7 @@ class Brain:
             self._invalidate_editor_evidence()
         for evidence in decision.evidence:
             item = by_ref.get(evidence.ref)
-            if item is not None and item.role.casefold() in {"edit", "combobox"}:
+            if item is not None and item.role.casefold() in TEXT_INPUT_ROLES:
                 if self.settings.visual_model_only_review:
                     self._record_model_evidence(evidence.field, item)
                 else:
@@ -1608,7 +1622,7 @@ class Brain:
             if by_ref[choice.ref].role.casefold() not in TEXT_INPUT_ROLES:
                 raise GuardStop("target_not_text_input")
         if decision.intent == "fill" and (self.phase == "task" or decision.screen_kind == "editor"):
-            if not is_record_input(by_ref[choice.ref], self.observation):
+            if not self._input_surface_allowed(choice.source, by_ref[choice.ref]):
                 raise GuardStop("record_input_scope_mismatch")
             if self.phase == "task" and choice.source is not None:
                 descriptor = describe(by_ref[choice.ref], self.observation.elements)
@@ -1906,11 +1920,7 @@ class Brain:
             by_ref = {item.ref: item for item in self.observation.elements}
             for evidence in decision.evidence:
                 target = by_ref.get(evidence.ref)
-                if (
-                    target is not None
-                    and target.role.casefold() in {"edit", "combobox"}
-                    and is_record_input(target, self.observation)
-                ):
+                if target is not None and self._input_surface_allowed(evidence.field, target):
                     self.deferred_field_checks[evidence.field] = describe(
                         target, self.observation.elements
                     )
@@ -2264,7 +2274,11 @@ class Brain:
             if choice.type in {"set_text", "type_text"}:
                 descriptor = self.pending["descriptor"]
                 matches = matching_delivered_input(
-                    observation, pending["before_observation"], choice.ref, descriptor
+                    observation,
+                    pending["before_observation"],
+                    choice.ref,
+                    descriptor,
+                    allowed_surfaces=self._input_surfaces(choice.source),
                 )
                 if len(matches) != 1:
                     return self._fail("input_target_ambiguous_after_action")
@@ -2284,7 +2298,11 @@ class Brain:
                     pending["blur_recheck"] = True
                     observation = self._observe()
                     matches = matching_delivered_input(
-                        observation, pending["before_observation"], choice.ref, descriptor
+                        observation,
+                        pending["before_observation"],
+                        choice.ref,
+                        descriptor,
+                        allowed_surfaces=self._input_surfaces(choice.source),
                     )
                     if observation.active_window != before_window or len(matches) != 1:
                         return self._fail("input_target_ambiguous_after_blur")

@@ -14,7 +14,6 @@ from brain.visual.markers import (
     Marker,
     MergeSettings,
     build_markers,
-    grid_cell_marker_ids,
     ground_meanings,
 )
 from brain.visual.perception import VisualPerception
@@ -41,19 +40,6 @@ def fixture():
         }
     )
     return blocks, boxes, markers, meaning
-
-
-def test_grid_cells_require_both_row_and_column_geometry():
-    markers = [
-        Marker(id=0, bbox=(10, 10, 80, 30), source="pixel_rectangle", confidence=1),
-        Marker(id=1, bbox=(90, 10, 80, 30), source="pixel_rectangle", confidence=1),
-        Marker(id=2, bbox=(10, 40, 80, 30), source="pixel_rectangle", confidence=1),
-        Marker(id=3, bbox=(90, 40, 80, 30), source="pixel_rectangle", confidence=1),
-        Marker(id=4, bbox=(10, 100, 80, 30), source="pixel_rectangle", confidence=1),
-        Marker(id=5, bbox=(120, 100, 80, 30), source="pixel_rectangle", confidence=1),
-    ]
-
-    assert grid_cell_marker_ids(markers) == {0, 1, 2, 3}
 
 
 def test_only_local_geometry_becomes_click_target():
@@ -119,7 +105,7 @@ def test_unsupported_ocr_structure_is_kept_as_text_without_dropping_child_contro
     blocks = [OcrBlock(id=8, text="Registration window", bbox=(10, 10, 120, 20), confidence=1)]
     markers = [
         Marker(id=1, bbox=blocks[0].bbox, source="ocr", text_ids=(8,), confidence=1),
-        Marker(id=2, bbox=(20, 50, 200, 30), source="pixel_rectangle", confidence=1),
+        Marker(id=2, bbox=(20, 50, 200, 30), source="omniparser", confidence=1),
     ]
     meaning = SemanticDetection.model_validate(
         {
@@ -162,34 +148,6 @@ def test_model_led_semantics_accepts_ocr_input_evidence():
     control = next(element for element in scene.elements if element.role == "edit")
     assert control.value == "Reference"
     assert control.bbox == blocks[0].bbox
-
-
-def test_nested_rectangle_container_cannot_be_used_as_input_extent():
-    markers = [
-        Marker(id=1, bbox=(10, 10, 300, 160), source="pixel_rectangle", confidence=1),
-        Marker(id=2, bbox=(20, 40, 120, 40), source="pixel_rectangle", confidence=1),
-        Marker(id=3, bbox=(160, 40, 120, 40), source="pixel_rectangle", confidence=1),
-    ]
-    edit = SemanticDetection.model_validate(
-        {"controls": [{"id": 1, "role": "edit", "confidence": 0.9}]}
-    )
-    with pytest.raises(ValueError, match="nested_rectangle_container_is_not_input"):
-        ground_meanings(edit, markers, [])
-
-    table = SemanticDetection.model_validate(
-        {"controls": [{"id": 1, "role": "table", "confidence": 0.9}]}
-    )
-    grounded = ground_meanings(table, markers, [])
-    assert grounded.controls[0].role == "table"
-
-
-def test_single_rectangle_remains_available_as_input_extent():
-    marker = Marker(id=1, bbox=(10, 10, 300, 40), source="pixel_rectangle", confidence=1)
-    edit = SemanticDetection.model_validate(
-        {"controls": [{"id": 1, "role": "edit", "confidence": 0.9}]}
-    )
-    grounded = ground_meanings(edit, [marker], [])
-    assert grounded.controls[0].role == "edit"
 
 
 def test_model_led_semantics_accepts_ocr_text_as_clickable_result_row():
@@ -638,11 +596,11 @@ def test_ocr_rows_feed_existing_final_review_without_inventing_values(clipped, e
     ]
     markers = build_markers(
         blocks,
-        [Marker(id=0, bbox=(1, 1, 350, 150), source="pixel_rectangle", confidence=1)],
+        [Marker(id=0, bbox=(1, 1, 350, 150), source="omniparser", confidence=1)],
         400,
         200,
     )
-    table = next(m for m in markers if m.source == "pixel_rectangle")
+    table = next(m for m in markers if m.source == "omniparser")
     row = next(m for m in markers if m.source == "ocr_group" and m.text_ids == (2, 3))
     cells = [m for m in markers if m.source == "ocr" and m.text_ids[0] in {2, 3}]
     meanings = SemanticDetection(

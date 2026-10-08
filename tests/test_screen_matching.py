@@ -67,7 +67,7 @@ def test_ocr_fill_target_is_deferred_without_discarding_safe_sibling(tmp_path):
     )
     screen = {
         "markers": [
-            {"id": 1, "source": "pixel_rectangle"},
+            {"id": 1, "source": "omniparser"},
             {"id": 2, "source": "ocr"},
         ]
     }
@@ -484,11 +484,11 @@ def test_taught_direct_input_is_not_written_into_a_detected_grid_cell(tmp_path, 
     brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
     screen = {
         "markers": [
-            {"id": 1, "bbox": [10, 10, 80, 30], "source": "pixel_rectangle"},
-            {"id": 2, "bbox": [90, 10, 80, 30], "source": "pixel_rectangle"},
-            {"id": 3, "bbox": [10, 40, 80, 30], "source": "pixel_rectangle"},
-            {"id": 4, "bbox": [90, 40, 80, 30], "source": "pixel_rectangle"},
-            {"id": 5, "bbox": [10, 100, 160, 30], "source": "pixel_rectangle"},
+            {"id": 1, "bbox": [10, 10, 80, 30], "source": "omniparser"},
+            {"id": 2, "bbox": [90, 10, 80, 30], "source": "omniparser"},
+            {"id": 3, "bbox": [10, 40, 80, 30], "source": "omniparser"},
+            {"id": 4, "bbox": [90, 40, 80, 30], "source": "omniparser"},
+            {"id": 5, "bbox": [10, 100, 160, 30], "source": "omniparser"},
         ]
     }
     proposed = ScreenMatch.model_validate(
@@ -496,7 +496,7 @@ def test_taught_direct_input_is_not_written_into_a_detected_grid_cell(tmp_path, 
             "screen_kind": "editor",
             "procedure_step": "task-action",
             "controls": [
-                {"id": 3, "role": "edit", "confidence": 1},
+                {"id": 3, "role": "cell", "confidence": 1},
                 {"id": 5, "role": "edit", "confidence": 1},
             ],
             "steps": [
@@ -524,7 +524,20 @@ def test_taught_direct_input_is_not_written_into_a_detected_grid_cell(tmp_path, 
     ]
 
 
-def test_taught_table_cell_surface_explicitly_allows_grid_input(tmp_path, record):
+@pytest.mark.parametrize(
+    "role,parent_role,surface,allowed",
+    [
+        ("cell", None, "table_cell", True),
+        ("edit", "row", "table_cell", True),
+        ("combobox", "table", "any", True),
+        ("edit", None, "table_cell", False),
+        ("edit", "row", None, False),
+        ("edit", None, None, True),
+    ],
+)
+def test_taught_surface_agrees_through_compile_dispatch_and_reread(
+    tmp_path, record, role, parent_role, surface, allowed
+):
     task_instruction = TaskInstruction.model_validate(
         {
             "name": "Line item entry",
@@ -540,7 +553,7 @@ def test_taught_table_cell_surface_explicitly_allows_grid_input(tmp_path, record
                             "verb": "fill",
                             "target": "Line quantity cell",
                             "input_key": "packages.count",
-                            "surface": "table_cell",
+                            "surface": surface,
                         }
                     ],
                 }
@@ -550,17 +563,17 @@ def test_taught_table_cell_surface_explicitly_allows_grid_input(tmp_path, record
     brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
     screen = {
         "markers": [
-            {"id": 1, "bbox": [10, 10, 80, 30], "source": "pixel_rectangle"},
-            {"id": 2, "bbox": [90, 10, 80, 30], "source": "pixel_rectangle"},
-            {"id": 3, "bbox": [10, 40, 80, 30], "source": "pixel_rectangle"},
-            {"id": 4, "bbox": [90, 40, 80, 30], "source": "pixel_rectangle"},
+            {"id": 1, "bbox": [10, 10, 80, 30], "source": "omniparser"},
+            {"id": 2, "bbox": [90, 10, 80, 30], "source": "omniparser"},
+            {"id": 3, "bbox": [10, 40, 80, 30], "source": "omniparser"},
+            {"id": 4, "bbox": [90, 40, 80, 30], "source": "omniparser"},
         ]
     }
     proposed = ScreenMatch.model_validate(
         {
             "screen_kind": "editor",
             "procedure_step": "task-action",
-            "controls": [{"id": 3, "role": "edit", "confidence": 1}],
+            "controls": [{"id": 3, "role": role, "confidence": 1}],
             "steps": [
                 {
                     "target": 3,
@@ -572,7 +585,53 @@ def test_taught_table_cell_surface_explicitly_allows_grid_input(tmp_path, record
         }
     )
 
+    from sawon_interfaces import ActionResult
+
+    from brain.graph.execution import GuardStop
+    from brain.graph.screen_batch import ScreenFillPlan, prepare_screen_fill
+    from brain.visual.markers import Marker, ground_meanings
+    from brain.visual.scene import ControlMeaning, bind_scene
+    from pipeline.schemas import OcrBlock
+
+    if parent_role is not None:
+        screen["markers"].append({"id": 6, "bbox": [0, 0, 180, 80], "source": "omniparser"})
+        proposed.controls[0] = proposed.controls[0].model_copy(update={"parent_id": 6})
+        proposed.controls.append(ControlMeaning(id=6, role=parent_role, confidence=1))
+    markers = [Marker(**marker, confidence=1) for marker in screen["markers"]]
+    brain.observation = bind_scene(wire(), [], ground_meanings(proposed, markers, []))
+    plan = prepare_screen_fill(
+        brain.observation, compile_match(proposed, brain.observation, ScreenFillPlan)
+    )
+    decision = plan.actions[0].decision
+    if not allowed:
+        with pytest.raises(ValueError, match="task_surface_mismatch"):
+            enforce_taught_input_surfaces(brain, proposed, screen)
+        with pytest.raises(GuardStop, match="record_input_scope_mismatch"):
+            brain._guard_action(decision)
+        return
     assert enforce_taught_input_surfaces(brain, proposed, screen).steps == proposed.steps
+    sent = []
+
+    def act(action):
+        sent.append(action)
+        return ActionResult(
+            action_id=action.root.action_id,
+            ok=True,
+            duration_ms=0,
+            post_obs_id=brain.relay.current.obs_id,
+        )
+
+    brain.relay.act = act
+    assert brain._execute_plan(plan) == {"next": "verify"}, brain.feedback
+    assert len(sent) == 1 and sent[0].root.text == brain.values["packages.count"]
+    blocks = [
+        OcrBlock(id=10, text=brain.values["packages.count"], bbox=(15, 45, 50, 15), confidence=1)
+    ]
+    proposed.controls[0] = proposed.controls[0].model_copy(update={"text_ids": [10]})
+    after = bind_scene(wire(), blocks, ground_meanings(proposed, markers, blocks))
+    brain.visual_perception.observe = lambda _: after
+    assert brain._verify_node({}) == {"next": "review"}
+    assert "packages.count" in brain.verified
 
 
 def test_model_only_generic_task_keeps_model_grounded_input_progress(
@@ -2190,7 +2249,7 @@ def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, depend
     brain, *_ = setup_brain(tmp_path, record, [])
     blocks = [OcrBlock(id=0, text="조회 결과 0건", bbox=(10, 110, 70, 15), confidence=1)]
     markers = [
-        Marker(id=16, bbox=(0, 0, 100, 100), source="pixel_rectangle", confidence=1),
+        Marker(id=16, bbox=(0, 0, 100, 100), source="omniparser", confidence=1),
         Marker(id=31, bbox=blocks[0].bbox, source="ocr", text_ids=(0,), confidence=1),
         Marker(id=34, bbox=(120, 110, 80, 25), source="omniparser", confidence=1),
     ]

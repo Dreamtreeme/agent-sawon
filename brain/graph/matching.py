@@ -9,10 +9,16 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from brain.cache import visual_match_key
-from brain.input_binding import MODEL_INPUTS_NAME, normalize_action_source, resolve_input_key
+from brain.input_binding import (
+    MODEL_INPUTS_NAME,
+    allowed_input_surfaces,
+    normalize_action_source,
+    resolve_input_key,
+)
+from brain.observe.evidence import input_surface
 from brain.runtime.storage import atomic_write_json
 from brain.visual.marker_contract import local_response, model_controls, model_screen
-from brain.visual.markers import Marker, grid_cell_marker_ids, marker_role_allowed
+from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import SemanticDetection, contains, overlap
 
 from .context import execution_context
@@ -1006,34 +1012,27 @@ def enforce_taught_input_surfaces(brain, response: ScreenMatch, screen: dict) ->
     task = brain.task_instruction
     if task is None or not task.procedure or not response.steps:
         return response
-    permitted: dict[str, set[str]] = {}
-    for procedure_step in task.procedure:
-        for action in procedure_step.actions:
-            if action.verb != "fill" or action.input_key is None:
-                continue
-            source = resolve_input_key(action.input_key, brain.values) or action.input_key
-            permitted.setdefault(source, set()).add(action.surface or "direct_input")
-    markers = [
-        Marker(
-            id=marker["id"],
-            bbox=marker["bbox"],
-            source=marker["source"],
-            confidence=marker.get("candidate_confidence", 1),
-            text_ids=marker.get("text_ids", ()),
-        )
-        for marker in screen.get("markers", [])
-    ]
-    grid_targets = grid_cell_marker_ids(markers)
+    controls = {control.id: control for control in response.controls}
     invalid = []
     for step in response.steps:
         if step.action != "fill" or step.source is None:
             continue
         source = resolve_input_key(step.source, brain.values) or step.source
-        surfaces = permitted.get(source)
-        if not surfaces or "any" in surfaces:
+        control = controls.get(step.target)
+        if control is None:
+            # Missing action roles are grounded by retain_action_targets before execution.
             continue
-        actual = "table_cell" if step.target in grid_targets else "direct_input"
-        if actual not in surfaces:
+        parents = []
+        parent_id = control.parent_id
+        seen = {control.id}
+        while parent_id in controls and parent_id not in seen:
+            seen.add(parent_id)
+            parent = controls[parent_id]
+            parents.append(parent.role)
+            parent_id = parent.parent_id
+        actual = input_surface(control.role, parents)
+        surfaces = allowed_input_surfaces(task, source, brain.values)
+        if actual is not None and actual not in surfaces:
             invalid.append((step, source, actual, sorted(surfaces)))
     if not invalid:
         return response

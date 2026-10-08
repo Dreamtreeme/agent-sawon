@@ -15,7 +15,7 @@ def refinement_regions(
     limit: int = 3,
     min_confidence: float = 0.8,
 ) -> list[tuple[int, int, int, int]]:
-    controls = [m for m in markers if m.source in {"omniparser", "pixel_rectangle"}]
+    controls = [m for m in markers if m.source in {"omniparser"}]
     regions: list[tuple[int, int, int, int]] = []
     for block in sorted(blocks, key=lambda b: (-b.confidence, b.bbox[1], b.bbox[0])):
         x, y, w, h = block.bbox

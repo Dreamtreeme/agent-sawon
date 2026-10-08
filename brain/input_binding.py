@@ -7,12 +7,32 @@ the screen-match boundary and are immediately converted to the canonical key.
 """
 
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 from brain.observe.values import normalize
+
+if TYPE_CHECKING:
+    from brain.task_instruction import TaskInstruction
 
 MODEL_INPUTS_NAME = "inputs"
 LEGACY_INPUT_CONTAINERS = ("record.", "inputs.")
 SOURCE_BOUND_INTENTS = frozenset({"credential", "query_input", "fill", "select_option"})
+
+
+def allowed_input_surfaces(
+    task: "TaskInstruction", source: str, inputs: Mapping[str, str]
+) -> set[str]:
+    """Resolve taught write permissions once for planning, execution and rereading."""
+    surfaces = {
+        action.surface or "direct_input"
+        for step in task.procedure
+        for action in step.actions
+        if action.verb == "fill"
+        and (resolve_input_key(action.input_key, inputs) or action.input_key) == source
+    }
+    if "any" in surfaces:
+        return {"direct_input", "table_cell"}
+    return surfaces or {"direct_input"}
 
 
 def resolve_input_key(candidate: str | None, inputs: Mapping[str, str]) -> str | None:

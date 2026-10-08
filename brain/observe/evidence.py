@@ -1,5 +1,7 @@
 """Resolve semantic evidence in the current observation, never by an old ref."""
 
+from collections.abc import Iterable
+
 from sawon_interfaces import Observation, UIElement
 
 from .summary import ancestors, describe
@@ -11,16 +13,39 @@ def matching_elements(observation: Observation, descriptor: dict) -> list[UIElem
     ]
 
 
-def is_record_input(element: UIElement, observation: Observation) -> bool:
-    """Business input records describe form fields, not repeated detail rows."""
-    return element.role.casefold() in {"edit", "combobox"} and not any(
-        parent.role.casefold() in {"table", "datagrid", "list", "row", "dataitem", "listitem"}
-        for parent in ancestors(element, observation.elements)
+def input_surface(role: str, parent_roles: Iterable[str]) -> str | None:
+    """Classify a grounded input by its semantics, independently of detector geometry."""
+    role = role.casefold()
+    if role in {"cell", "dataitem"}:
+        return "table_cell"
+    if role not in {"edit", "combobox"}:
+        return None
+    if any(
+        parent.casefold() in {"table", "datagrid", "list", "row", "dataitem", "listitem"}
+        for parent in parent_roles
+    ):
+        return "table_cell"
+    return "direct_input"
+
+
+def observed_input_surface(element: UIElement, observation: Observation) -> str | None:
+    return input_surface(
+        element.role, (parent.role for parent in ancestors(element, observation.elements))
     )
 
 
+def is_record_input(element: UIElement, observation: Observation) -> bool:
+    """Legacy record inputs are standalone form fields."""
+    return observed_input_surface(element, observation) == "direct_input"
+
+
 def matching_delivered_input(
-    observation: Observation, before: Observation, ref: str, descriptor: dict
+    observation: Observation,
+    before: Observation,
+    ref: str,
+    descriptor: dict,
+    *,
+    allowed_surfaces: Iterable[str] = ("direct_input",),
 ) -> list[UIElement]:
     """Link an immediately verified visual input by its observed extent, not changing labels."""
     from brain.visual.scene import SceneObservation, overlap
@@ -40,5 +65,7 @@ def matching_delivered_input(
     return [
         e
         for e in observation.elements
-        if e.enabled and is_record_input(e, observation) and overlap(old.bbox, e.bbox) >= 0.7
+        if e.enabled
+        and observed_input_surface(e, observation) in allowed_surfaces
+        and overlap(old.bbox, e.bbox) >= 0.7
     ]

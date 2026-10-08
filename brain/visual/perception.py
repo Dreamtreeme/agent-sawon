@@ -56,11 +56,11 @@ Each marker lists contained_ocr_ids. text_ids must be a subset of this list.
 Do not identify a container/table from its position in the list: verify its actual extent.
 confidence is YOUR semantic certainty about role and relationships. It is NOT
 candidate_confidence (local detector evidence) or OCR confidence; do not copy either.
-pixel_rectangle markers are closed pixel line boundaries, NOT guaranteed controls/tables.
-Their candidate_confidence=1 only describes the deterministic boundary candidate.
-A rectangle containing multiple smaller closed rectangles is a container/grid frame,
-not an edit or combobox. If an input is clipped at the viewport edge, scroll to expose
-its own boundary instead of borrowing a nearby table/container rectangle.
+Classify writable table cells as cell, or as edit/combobox with their observed row/table
+parent_id. Standalone form inputs use edit/combobox outside those structures. Nearby or aligned
+boxes alone do not establish a table. Bind parents only to observed containing regions.
+If an input is clipped at the viewport edge, scroll to expose its own boundary instead of
+borrowing a nearby table/container rectangle.
 For inputs label_ids must name the field, text_ids must be only its current value.
 When a focused input has no closed rectangle, an OCR marker may represent the input only
 when it encloses that input's own CURRENT literal value. Never use the nearby label OCR
@@ -486,7 +486,6 @@ class VisualPerception:
                     "ocr_text_is_not_control_extent",
                     "ocr_group_is_not_input_or_table_extent",
                     "ocr_marker_text_mismatch",
-                    "nested_rectangle_container_is_not_input",
                     "value_outside_local_marker",
                     "value_outside_visual_control",
                     "unknown_ocr_reference",

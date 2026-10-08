@@ -19,7 +19,7 @@ class Marker(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: int = Field(ge=0)
     bbox: tuple[int, int, int, int]
-    source: Literal["ocr", "ocr_group", "omniparser", "pixel_rectangle"]
+    source: Literal["ocr", "ocr_group", "omniparser"]
     confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
     text_ids: tuple[int, ...] = ()
     # [추가] OmniParser v2(Florence-2) 기능형 설명 또는 OCR 원문 텍스트
@@ -92,7 +92,7 @@ def build_markers(
     kept: list[Marker] = []
     for box in sorted(boxes, key=lambda b: -b.confidence):
         x, y, w, h = box.bbox
-        if box.source not in {"omniparser", "pixel_rectangle"} or box.text_ids:
+        if box.source != "omniparser" or box.text_ids:
             raise ValueError("invalid_detector_marker_source")
         if min(x, y) < 0 or min(w, h) <= 0 or x + w > width or y + h > height:
             raise ValueError("local_marker_outside_capture")
@@ -155,48 +155,6 @@ def marker_role_allowed(source: str, role: str, *, allow_ocr_inputs: bool = Fals
     return True
 
 
-def nested_rectangle_count(marker: Marker, markers: list[Marker]) -> int:
-    if marker.source != "pixel_rectangle":
-        return 0
-    area = marker.bbox[2] * marker.bbox[3]
-    return sum(
-        child.source == "pixel_rectangle"
-        and child.id != marker.id
-        and child.bbox[2] * child.bbox[3] <= area * 0.6
-        and contains(marker.bbox, child.bbox)
-        for child in markers
-    )
-
-
-def grid_cell_marker_ids(markers: list[Marker]) -> set[int]:
-    rectangles = [marker for marker in markers if marker.source == "pixel_rectangle"]
-
-    def horizontally_adjacent(left: Marker, right: Marker) -> bool:
-        x, y, width, height = left.bbox
-        other_x, other_y, other_width, other_height = right.bbox
-        return (
-            abs(y - other_y) <= 2
-            and abs(height - other_height) <= 2
-            and (abs(x + width - other_x) <= 2 or abs(other_x + other_width - x) <= 2)
-        )
-
-    def vertically_adjacent(top: Marker, bottom: Marker) -> bool:
-        x, y, width, height = top.bbox
-        other_x, other_y, other_width, other_height = bottom.bbox
-        return (
-            abs(x - other_x) <= 2
-            and abs(width - other_width) <= 2
-            and (abs(y + height - other_y) <= 2 or abs(other_y + other_height - y) <= 2)
-        )
-
-    return {
-        marker.id
-        for marker in rectangles
-        if any(peer.id != marker.id and horizontally_adjacent(marker, peer) for peer in rectangles)
-        and any(peer.id != marker.id and vertically_adjacent(marker, peer) for peer in rectangles)
-    }
-
-
 def ground_meanings(
     meanings: SemanticDetection,
     markers: list[Marker],
@@ -245,8 +203,6 @@ def ground_meanings(
                 raise ValueError("invalid_visual_parent_bounds")
             uncertainties.append(f"decorative_parent_omitted:{meaning.id}:{meaning.parent_id}")
             meaning = meaning.model_copy(update={"parent_id": None})
-        if meaning.role in {"edit", "combobox"} and nested_rectangle_count(marker, markers) >= 2:
-            raise ValueError("nested_rectangle_container_is_not_input")
         if marker.source == "ocr" and not meaning.text_ids:
             meaning = meaning.model_copy(update={"text_ids": list(marker.text_ids)})
         if marker.source == "ocr" and set(meaning.text_ids) != set(marker.text_ids):

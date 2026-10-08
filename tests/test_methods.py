@@ -23,7 +23,7 @@ def scene(*, offset=0, old_value="Old customer", ids=0):
         "markers": [
             {
                 "id": 10 + ids,
-                "source": "pixel_rectangle",
+                "source": "omniparser",
                 "bbox": [100, 25 + offset, 200, 30],
                 "text_ids": [],
             },
@@ -126,7 +126,7 @@ def test_missing_or_ambiguous_current_anchor_returns_to_model(tmp_path):
     duplicate = scene()
     duplicate["ocr"].append({"id": 8, "text": "Customer", "bbox": [10, 100, 80, 20]})
     duplicate["markers"].append(
-        {"id": 18, "source": "pixel_rectangle", "bbox": [100, 95, 200, 30], "text_ids": []}
+        {"id": 18, "source": "omniparser", "bbox": [100, 95, 200, 30], "text_ids": []}
     )
     assert library.bind("find-party", {}, duplicate, {"party": "value"}) is None
     assert library.bind("find-party", {}, scene(), {"unrelated": "value"}) is None

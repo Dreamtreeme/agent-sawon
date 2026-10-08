@@ -148,7 +148,7 @@ def rebind_action_target(
     expected_height = max(1, target.bbox[3] * scale_y)
     candidates = []
     for marker in markers:
-        if marker.source not in {"omniparser", "pixel_rectangle"}:
+        if marker.source not in {"omniparser"}:
             continue
         x, y, width, height = marker.bbox
         if width * height > fresh_width * fresh_height * 0.5:

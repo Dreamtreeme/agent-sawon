@@ -237,7 +237,11 @@ def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Ob
             [bound]
             if bound is not None
             else matching_delivered_input(
-                observation, execution.before, delivered["choice"].ref, delivered["descriptor"]
+                observation,
+                execution.before,
+                delivered["choice"].ref,
+                delivered["descriptor"],
+                allowed_surfaces=brain._input_surfaces(source),
             )
         )
         ok = (
