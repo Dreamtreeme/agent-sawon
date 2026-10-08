@@ -79,7 +79,7 @@ Luna 주 경로는 번호가 표시된 현재 이미지와 OCR/영역 JSON을 �
 ## 공통 작업 메모와 실행
 
 `brain/graph/notebook.py`는 계획·단계·검증 상태·현재 관찰 경로를
-`case/task-notebook.json`에 원자적으로 기록한다. 중앙 Brain 상태가 원본이다.
+`case/task-notebook.json`에 원자적으로 기록한다. WorkerState의 진행·증거·방법 상태가 원본이다.
 자격 증명이나 과거 좌표를 기록하지 않고 이 파일만으로 실행을 재개하지 않는다.
 이전 번호 선택/공동 판단 실험 경로는 제거했으며 현재 화면 매칭이 기존 공통
 ActionPlan 실행기와 검증기를 사용한다. 과거 실험 내용은 Git과 진행 기록에 남아 있다.

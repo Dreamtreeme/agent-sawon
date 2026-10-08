@@ -1,0 +1,91 @@
+{
+  "date": "2026-10-08",
+  "baseline_commit": "347e81d",
+  "runs_per_version": 1,
+  "command": "python -m coverage run --branch --source=brain,models,pipeline -m pytest -q",
+  "before": {
+    "tests_passed": 680,
+    "elapsed_seconds": 107.83,
+    "assert_statements": 1828,
+    "production_physical_lines": 16465,
+    "coverage": {
+      "covered_lines": 6904,
+      "num_statements": 7762,
+      "percent_covered": 86.23563218390805,
+      "percent_covered_display": "86",
+      "missing_lines": 858,
+      "excluded_lines": 73,
+      "percent_statements_covered": 88.94614790002576,
+      "percent_statements_covered_display": "89",
+      "num_branches": 2678,
+      "num_partial_branches": 433,
+      "covered_branches": 2099,
+      "missing_branches": 579,
+      "percent_branches_covered": 78.37938760268857,
+      "percent_branches_covered_display": "78"
+    }
+  },
+  "after": {
+    "tests_passed": 680,
+    "elapsed_seconds": 63.08,
+    "coverage": {
+      "covered_lines": 6877,
+      "num_statements": 7722,
+      "percent_covered": 86.36713488551086,
+      "percent_covered_display": "86",
+      "missing_lines": 845,
+      "excluded_lines": 73,
+      "percent_statements_covered": 89.05723905723906,
+      "percent_statements_covered_display": "89",
+      "num_branches": 2672,
+      "num_partial_branches": 426,
+      "covered_branches": 2100,
+      "missing_branches": 572,
+      "percent_branches_covered": 78.59281437125749,
+      "percent_branches_covered_display": "79"
+    },
+    "production_files": 83,
+    "production_physical_lines": 16399,
+    "assert_statements": 1833,
+    "modules": {
+      "brain/graph/engine.py": 2766,
+      "brain/graph/matching.py": 1653,
+      "brain/graph/execution.py": 208,
+      "brain/graph/state.py": 185,
+      "brain/graph/method_runtime.py": 606
+    }
+  },
+  "source_counts": {
+    "347e81d": {
+      "production_files": 83,
+      "production_physical_lines": 16465,
+      "assert_statements": 1828,
+      "modules": {
+        "brain/graph/engine.py": 2835,
+        "brain/graph/matching.py": 1694,
+        "brain/graph/execution.py": 252,
+        "brain/graph/state.py": 111,
+        "brain/graph/method_runtime.py": 590
+      }
+    },
+    "current": {
+      "production_files": 83,
+      "production_physical_lines": 16399,
+      "assert_statements": 1833,
+      "modules": {
+        "brain/graph/engine.py": 2766,
+        "brain/graph/matching.py": 1653,
+        "brain/graph/execution.py": 208,
+        "brain/graph/state.py": 185,
+        "brain/graph/method_runtime.py": 606
+      }
+    }
+  },
+  "live_pilot": false,
+  "mutation_score": null,
+  "notes": [
+    "GUI excluded by repository defaults. Tests use fake/replay model and relay.",
+    "Single-run timings from different times; not evidence of a live pilot speedup.",
+    "Physical line counts use git-tracked Python files only. Assert statements are AST counts, not execution counts."
+  ]
+}

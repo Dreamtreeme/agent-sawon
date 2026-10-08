@@ -313,13 +313,7 @@ class Brain:
                 response = match_screen(self, screen, request.page, proposal=response)
                 self.visual_proposal = response
                 atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
-                return SemanticDetection.model_validate(
-                    {
-                        key: value
-                        for key, value in response.model_dump().items()
-                        if key in SemanticDetection.model_fields
-                    }
-                )
+                return response.interpretation()
         if self.settings.screen_matching and not self.settings.separate_observation_decision:
             screen = dict(request.screen)
             if request.correction is not None:
@@ -331,13 +325,7 @@ class Brain:
             response = self._match_visual(screen, request.page)
             self.visual_proposal = response
             atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
-            return SemanticDetection.model_validate(
-                {
-                    key: value
-                    for key, value in response.model_dump().items()
-                    if key in SemanticDetection.model_fields
-                }
-            )
+            return response.interpretation()
         # Observation classifies the current pixels only.  Task planning happens
         # later in _selection_call against this immutable interpretation.
         return self._call(request.prompt(), SemanticDetection, page=request.page)
@@ -411,13 +399,7 @@ class Brain:
                     raise ValueError("visual_proposal_unknown_marker")
                 if not missing_targets <= response_control_ids:
                     raise ValueError("action_target_semantics_missing")
-                semantics = SemanticDetection.model_validate(
-                    {
-                        key: value
-                        for key, value in response.model_dump().items()
-                        if key in SemanticDetection.model_fields
-                    }
-                )
+                semantics = response.interpretation()
                 self.observation = self.visual_perception.merge_interpretation(
                     self.observation.wire, semantics
                 )

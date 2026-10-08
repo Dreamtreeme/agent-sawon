@@ -179,22 +179,6 @@ class MethodRuntime:
                 result = result.replace(value, "{" + source + "}")
         return result
 
-    def procedure_context(self) -> dict:
-        task = self.task_context.task
-        steps = [] if task is None else [item.model_dump(mode="json") for item in task.procedure]
-        return {
-            "steps": steps,
-            "delivered": [
-                {
-                    "taught_step_id": item.get("taught_step_id"),
-                    "purpose": item.get("purpose"),
-                    "status": item.get("status"),
-                }
-                for item in self.state.history
-                if item.get("taught_step_id")
-            ],
-        }
-
     def procedure_prompt_context(self) -> dict:
         """Return the current taught step window instead of the whole procedure."""
         task = self.task_context.task

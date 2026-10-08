@@ -180,31 +180,6 @@ class MethodChoice(BaseModel):
     method_bindings: list[MethodBinding] = Field(default_factory=list, max_length=100)
 
 
-class ScreenMatch(SemanticDetection, MethodChoice):
-    """Only relevant controls/verification anchors; no nested execution union."""
-
-    procedure_step: str
-    steps: list[MatchAction] = Field(default_factory=list, max_length=50)
-    operation: Literal["act", "duplicate_clear", "duplicate_found", "complete", "stop"] = "act"
-    grid: int | None = Field(default=None, ge=0)
-    row: int | None = Field(default=None, ge=0)
-    evidence: list[MatchEvidence] = Field(
-        default_factory=list,
-        max_length=100,
-        description="Current field observations whose target is also defined in controls. Omit "
-        "past or incidental observations not needed by this action. Completion maps these to "
-        "final row proof; duplicate checks verify the query input separately.",
-    )
-    completion_evidence: list[MatchCompletionEvidence] = Field(default_factory=list, max_length=50)
-    save_result: (
-        Literal["rejected", "confirmation_required", "ready_for_query", "unknown"] | None
-    ) = None
-    message_targets: list[int] = Field(default_factory=list, max_length=50)
-    repair_fields: list[FieldName] = Field(default_factory=list, max_length=100)
-    expected_result: str = Field(default="", max_length=240)
-    needs_image: bool = False
-
-
 class ScreenPlan(MethodChoice):
     """Task decision over a previously grounded screen interpretation."""
 
@@ -222,6 +197,24 @@ class ScreenPlan(MethodChoice):
     message_targets: list[int] = Field(default_factory=list, max_length=50)
     repair_fields: list[FieldName] = Field(default_factory=list, max_length=100)
     expected_result: str = Field(default="", max_length=240)
+
+
+class ScreenMatch(SemanticDetection, ScreenPlan):
+    """Task plan with the same fields, plus current-screen interpretation."""
+
+    evidence: list[MatchEvidence] = Field(
+        default_factory=list,
+        max_length=100,
+        description="Current field observations whose target is also defined in controls. Omit "
+        "past or incidental observations not needed by this action. Completion maps these to "
+        "final row proof; duplicate checks verify the query input separately.",
+    )
+    needs_image: bool = False
+
+    def interpretation(self) -> SemanticDetection:
+        return SemanticDetection.model_validate(
+            self.model_dump(include=set(SemanticDetection.model_fields))
+        )
 
 
 SCREEN_BOUNDARY_BATCH_RULES = """
@@ -1120,21 +1113,14 @@ def model_capability(step: ProcedureStep) -> dict:
     return payload
 
 
-def normalize_task_capability(
-    brain, response: ScreenMatch, candidates: list[ProcedureStep]
-) -> ScreenMatch:
-    """Bind a human-readable task plan to the single runtime capability ID."""
-    return response.model_copy(
+def prepare_match_plan(brain, response, screen, candidates, policy, active_fields):
+    """Compile every proposal through the same task and write-surface contract."""
+    response = response.model_copy(
         update={
             "purpose": (response.purpose or response.procedure_step)[:160],
             "procedure_step": candidates[0].id,
         }
     )
-
-
-def prepare_match_plan(brain, response, screen, candidates, policy, active_fields):
-    """Compile every proposal through the same task and write-surface contract."""
-    response = normalize_task_capability(brain, response, candidates)
     response = enforce_taught_input_surfaces(brain, response, screen)
     response = defer_unwritable_fill_targets(brain, response, screen)
     return validate_match_plan(response, candidates, policy, brain, active_fields)
@@ -1385,13 +1371,7 @@ def match_screen(
         # action once; semantic/marker failures are handled by VisualPerception.
         if str(error) not in _REPLANNABLE_MATCH_ERRORS:
             raise
-        interpretation = SemanticDetection.model_validate(
-            {
-                key: value
-                for key, value in response.model_dump().items()
-                if key in SemanticDetection.model_fields
-            }
-        )
+        interpretation = response.interpretation()
         correction_state = {
             **state,
             "screen": model_screen(screen),
