@@ -79,7 +79,9 @@ def test_actual_observation_retry_reports_bad_label_and_is_bounded(tmp_path, rec
     bad = response(meaning)
     bad["controls"][0]["label_ids"] = [999]
     corrected = response(meaning)
-    brain, model, *_ = setup_brain(tmp_path, record, [bad, corrected if fixed else bad])
+    brain, model, *_ = setup_brain(
+        tmp_path, record, [bad, corrected if fixed else bad], task_instruction=None
+    )
     if fixed:
         brain._observe()
         assert brain._select_node({}) == {"next": "review"}

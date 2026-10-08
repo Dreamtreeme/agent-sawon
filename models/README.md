@@ -23,13 +23,13 @@ client = create_model_client(Path("config/models.toml"), run_log=log, env_path=P
 ```
 
 비밀값은 명시한 `.env`에서 선택한 공급자의 키만 읽는다(Gemini: `GEMINI_API_KEY`,
-OpenAI: `OPENAI_API_KEY`, Jev: `TYPESAFE_API_KEY` 또는 `JEV_API_KEY`). 부모 폴더 검색, 환경 변수
+OpenAI: `OPENAI_API_KEY`). 부모 폴더 검색, 환경 변수
 키 자동 선택, 환경 변수 보간은 하지 않는다. 테스트는 가짜 SDK를 주입하며
 실제 API를 호출하지 않는다. SDK의 자동 재시도와 자동 함수 호출을 끄므로
 측정 한 건이 숨은 추가 요청을 만들지 않는다.
 
-`config/pricing.toml`은 모델별 텍스트/이미지 입력과 JSON 출력의 추정 가격표다.
-사용 모델은 `config/models.toml` 또는 `config/models.lite.toml`에서 지정하며,
+`models/pricing.toml`은 모델별 텍스트/이미지 입력과 JSON 출력의 추정 가격표다.
+사용 모델은 `config/models.toml`에서 지정하며,
 가격표에 보존된 과거 모델 항목이 현재 기본 모델을 뜻하지는 않는다.
 설정의 확인 날짜·출처를 기준으로 사용하고 실제 계정 청구서나 무료 할당량과 구분한다.
 입력에서 캐시 적중 토큰을 분리하고 출력에는 응답과 생각 토큰을 합산한다.
@@ -46,11 +46,8 @@ OpenAI: `OPENAI_API_KEY`, Jev: `TYPESAFE_API_KEY` 또는 `JEV_API_KEY`). 부모 
 도중에는 완료 이벤트를 기록할 수 없으므로 해당 실행을 불완전한 측정으로
 처리해야 한다.
 
-오프라인 연동 확인:
+오프라인 재생은 테스트가 생성하는 합성 fixture로 검증합니다.
 
-```powershell
-python -m examples.replay_demo
-```
 
 이는 모델 계층과 기록 작성기만 확인하는 합성 예제이며 ERP 시연이나 성능
 평가가 아니다. Replay JSONL의 각 행은 `ReplayEntry`이며 `request_sha256`은
@@ -62,14 +59,14 @@ python -m examples.replay_demo
 
 ## Luna 화면 작업자
 
-`config/models.luna.toml`은 `gpt-5.6-luna`, Responses API, reasoning low, 출력8192를 사용한다.
-`config/harness_agents.luna.json`을 harness의 `--agent-config`에 지정하면 기존 화면 작업자를
-동일한 절차/검증/도구로 실행한다. Gemini 설정은 비교 기준으로 보존한다.
+`config/models.toml`은 `gpt-5.6-luna`, Responses API, reasoning low, 출력8192를 사용한다.
+화면 작업자는 `brain.run --model-config config/models.toml`로 실행한다.
+Gemini 어댑터는 유지하고, 비교 프리셋은 삭제했다.
 OpenAI SDK는 자동 재시도0이며 명시적 OpenAI API 주소를 사용한다. 원본 크기의 이미지를
 전달하고 Pydantic 스키마를 strict JSON schema로 변환한다. 파싱 전 사용량을 확보하므로
 불완전/잘못된 응답도 발생 비용을 기록하며 실행 가능한 행동으로 처리하지 않는다.
 
-`config/pricing.openai.toml`은 [공식 Luna 가격](https://developers.openai.com/api/docs/models/gpt-5.6-luna)을
+`models/pricing.toml`은 [공식 Luna 가격](https://developers.openai.com/api/docs/models/gpt-5.6-luna)을
 기록한다. 사용량의 캐시 읽기/쓰기와 추론 토큰을 분리한다. 272K 초과 입력의 단가 배수를
 적용하고 호출 전 예약은 긴 문맥·캐시 쓰기 상한 단가로 보수적으로 계산한다.
 

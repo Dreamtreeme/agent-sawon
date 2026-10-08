@@ -286,7 +286,7 @@ def test_unique_selected_row_links_to_exact_submitted_query_when_input_is_not_de
 
 
 def test_screen_binding_promotes_a_clicked_result_cell_to_its_parent_row(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [])
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=None)
     observation = scene("query", [])
     prefix = "e" + str(observation.obs_id.int) + "0"
     brain.observation = observation.model_copy(
@@ -502,7 +502,7 @@ def test_linked_read_only_detail_accepts_exact_current_value_text(record):
 
 
 def test_graph_review_completes_from_unambiguous_current_inputs_without_rematch(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [])
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=None)
     brain.phase = "final_query"
     brain.save_issued = brain.duplicate_clear = True
     brain.query_submitted = brain.query_value_verified = True
@@ -533,14 +533,13 @@ def test_graph_review_completes_from_unambiguous_current_inputs_without_rematch(
 
 
 def test_generic_task_review_joins_post_save_query_and_detail_tabs(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [])
-    brain.phase = "task"
-    brain.save_issued = True
-    brain.task_instruction = TaskInstruction(
+    task_instruction = TaskInstruction(
         name="Register shipment",
         objective="Save and requery the supplied shipment.",
         completion_conditions=["The saved shipment values match after requery."],
     )
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
+    brain.save_issued = True
     brain.saved_evidence.begin()
     values = brain.values
     q = query(values, omit=("description", "container_no"))
@@ -570,13 +569,13 @@ def test_generic_task_review_joins_post_save_query_and_detail_tabs(tmp_path, rec
 
 
 def test_generic_visual_task_starts_saved_evidence_after_save_review(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [])
-    brain.phase = "save_result"
-    brain.task_instruction = TaskInstruction(
+    task_instruction = TaskInstruction(
         name="Register shipment",
         objective="Save and requery the supplied shipment.",
         completion_conditions=["The saved shipment values match after requery."],
     )
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
+    brain.phase = "save_result"
     message = element("saved", "text", name="Saved")
     brain.observation = scene("dialog", [message])
     review = SaveReviewResponse.model_validate(

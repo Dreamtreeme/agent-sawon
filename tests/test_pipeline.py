@@ -367,8 +367,10 @@ def test_manifest_digest_mismatch_is_rejected(tmp_path, documents):
 
 def test_windows_config_selects_gpu_without_changing_pipeline_rules():
     settings = PipelineSettings.load(Path("config/pipeline.toml"))
+    assert settings.ocr_language == "korean"
     assert settings.ocr_device == "gpu:0"
     assert settings.ocr_python
     assert (
-        settings.model_copy(update={"ocr_device": "cpu", "ocr_python": None}) == PipelineSettings()
+        settings.model_copy(update={"ocr_device": "cpu", "ocr_python": None, "ocr_language": "en"})
+        == PipelineSettings()
     )

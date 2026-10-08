@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Literal, TypedDict
 
 from sawon_interfaces import Observation
@@ -55,7 +56,7 @@ class LifecycleState(TypedDict):
 
 
 class WorkerState(TypedDict):
-    """작업자 책임 노드 간 직렬화 가능한 공식 상태 인계 계약."""
+    """작업자 책임 노드 간 데이터 스냅샷 계약. 실행 중 서비스 객체는 포함하지 않는다."""
 
     observation: ObservationState
     decision: DecisionState
@@ -89,21 +90,12 @@ def create_worker_state() -> WorkerState:
 
 
 def copy_worker_state(state: WorkerState) -> WorkerState:
-    """그래프 노드가 입력 상태를 직접 변조하지 않도록 섹션별 복사."""
+    """Detach nested mutable plans, pending executions and observations at handoff.
 
-    return {
-        "observation": {
-            **state["observation"],
-            "rolling_turns": list(state["observation"]["rolling_turns"]),
-        },
-        "decision": {
-            **state["decision"],
-            "task_plan": list(state["decision"]["task_plan"]),
-        },
-        "execution": dict(state["execution"]),
-        "review": dict(state["review"]),
-        "lifecycle": dict(state["lifecycle"]),
-    }
+    deepcopy preserves aliases and cycles within this snapshot while separating
+    it from the caller. WorkerState must contain data, never runtime services.
+    """
+    return deepcopy(state)
 
 
 __all__ = [

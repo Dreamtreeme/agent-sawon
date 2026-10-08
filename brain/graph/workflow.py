@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 from langgraph.graph import END, START, StateGraph
 
 from .state import WorkerState
 
-if TYPE_CHECKING:
-    from .engine import Brain
+
+class WorkerNodes(Protocol):
+    """Only the four state transformations are needed to construct the graph."""
+
+    def observation_node(self, state: WorkerState) -> WorkerState: ...
+    def decision_node(self, state: WorkerState) -> WorkerState: ...
+    def execution_node(self, state: WorkerState) -> WorkerState: ...
+    def review_node(self, state: WorkerState) -> WorkerState: ...
 
 
 def route_after_responsibility(state: WorkerState) -> str:
     return state["lifecycle"]["route"]
 
 
-def build_worker_graph(brain: Brain):
+def build_worker_graph(brain: WorkerNodes):
     """Compile the four responsibility nodes around the shared state contract."""
 
     graph = StateGraph(WorkerState)

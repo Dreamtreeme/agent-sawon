@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import json
-from decimal import Decimal
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
-from models.budget import CallBudget, ImageCallBudget
 from pipeline.ocr import PaddleOcrEngine
 from pipeline.ocr_worker import recognize
 from pipeline.render import PipelineDependencyError, render_document
@@ -135,8 +132,6 @@ def test_multipage_image_limit_blocks(tmp_path):
             tmp_path / "pages",
             PipelineSettings(max_pages=1),
         )
-
-
 
 
 def test_external_ocr_reuses_worker_and_closes_it(monkeypatch, page):

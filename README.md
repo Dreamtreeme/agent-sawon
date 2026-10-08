@@ -29,7 +29,7 @@ OCR·컨트롤 탐지·현재 좌표 입력·화면 검증이 기본이며 UIA�
 에이전트6/6·60/60필드 성공을 확인했습니다. 경량160회·상위6회의 혼합 조건이며 연습300건은 미실행입니다.
 
 - 두뇌: 상태별 행동 제한, 중복 조회, 입력 검증, 최종 조회와 제한된 복구.
-- 캐시: 의미 입력 캐시, 관찰 기반 시연 학습, 화면 변화에 따른 재연결과 독립 실행.
+- 재사용: 현재 화면·업무 상태 기반 캐시와 실제 화면 실행 기록에서 학습한 업무 방법.
 - 서류: 합성 PDF·OCR·측정 비전 추출·교차 검증·ERP 연계.
 - 경계: 환경 접근은 relay HTTP, 모든 모델 호출은 비용 기록, 승인 없는 전송 금지.
 
@@ -83,24 +83,14 @@ import하지 않습니다. 두 저장소는 로컬 Git과 GitHub 비공개 저�
 - `brain/observe/`: `flat_fields` / `label_grouped` 관찰 요약.
 - `brain/relay.py`, `brain/run.py`: 인증 HTTP 중계 클라이언트와 건별 실행 CLI.
 - `models/budget.py`: 호출 전 비용 예약, 비용 미상·예산 초과 시 중단.
-- `config/brain.toml`, `config/models.toml`, `config/pricing.toml`: 제한·요약·모델·가격 설정.
-- `config/harness_agents*.json`: 비교 조건별 외부 CLI 설정. [설정 안내](config/README.md)에서 선택.
+- `config/brain.visual.toml`, `config/models.toml`, `config/pipeline.toml`: 화면·모델·OCR 설정.
+- `models/pricing.toml`: 호출 비용 계산용 단가 데이터. [설정 안내](config/README.md).
 - `tests/`: 실제 API 호출 없는 모델 테스트, 손상 로그/동시 쓰기/상태 저장 테스트.
 
-```powershell
-# API 키 없이 저장된 합성 응답 재생
-./.venv/Scripts/python.exe -m examples.replay_demo
-```
-
-실행 결과는 무시되는 `cases/`에 기록합니다. 같은 폴더에서 재실행하면 기존 로그에
-덧붙이며 순번을 이어 갑니다. replay의 실제 모델 비용은 0이며 원래 응답의 사용량은
-별도 메타데이터입니다. Gemini 비용은 가격표 기반 추정치로 청구서 금액을 보장하지 않습니다.
-
-Gemini는 비공개 `.env` 파일에 `GEMINI_API_KEY`를 설정한 뒤
-`create_model_client(Path('config/models.toml'), run_log=log, env_path=Path('.env'))`로
-명시적으로 로드합니다. 테스트와 기본 재생 예제는 실제 API를 호출하지 않습니다.
-가격은 호출 전에 확인하고 `config/pricing.toml`을 갱신합니다. 측정할 수 없는 실패 비용은
-null이며 0으로 취급하지 않습니다. 자세한 예제는 [모델 계층 설명](models/README.md)을 봅니다.
+현재 주 모델은 Luna이며 비공개 `.env`의 `OPENAI_API_KEY`를 명시적으로 읽습니다.
+실행 자료는 무시되는 `cases/`에 저장합니다. 비용은 `models/pricing.toml`의 확인 날짜와
+출처에 따른 추정치이며, 측정 불가 비용은 0이 아닌 null입니다.
+[모델 계층 설명](models/README.md)과 [실행 설정](config/README.md)을 참고하세요.
 
 ## 화면 실행과 검증
 
@@ -119,28 +109,8 @@ null이며 0으로 취급하지 않습니다. 자세한 예제는 [모델 계층
 보완 요청도 같은 실패 횟수·단계·비용 한도에 포함됩니다. 정확한 조회값과 같은 조회 창의
 현재 결과를 검증한 뒤에만 입력 단계로 전환하며, 전경 이탈·조회값 변경은 즉시 중단합니다.
 
-아래는 이전 M1 두 요약 전략 비교의 재현 예시입니다. 새 연습 시험은 개정 계획과 브리프 9.5절을 따릅니다.
-화면 검증은 벤치 저장소에서 새 출력 경로로 실행합니다. 이전 전체 비교용 경량 모델의 두
-요약 전략은 `config/harness_agents.m1-final.json`의 `core_lite`와 `core_lite_flat`입니다.
-두 설정은 같은 캐시 비활성·상위 복구 조건에서 요약 전략만 다릅니다. 초기 비교용
-`harness_agents.json`과 `harness_agents.lite.json`은 이전 조건의 재현에 사용합니다.
-
-```powershell
-# 공개 저장소 루트에서: 로그인한 Windows 데스크톱과 빌드된 ERP가 필요
-./.venv/Scripts/python.exe -m pip install -e '.[dev,relay]'
-$RunStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$ReferencePath = "evidence/references/seed0-$RunStamp.json"
-./.venv/Scripts/python.exe -m harness.record_reference --output $ReferencePath
-if ($LASTEXITCODE -ne 0) { throw 'Reference recording failed.' }
-./.venv/Scripts/python.exe -m harness.run --agent core_lite,core_lite_flat,selector_script,coord_replay --agent-config ../agent-sawon/config/harness_agents.m1-final.json --reference $ReferencePath --seeds 0,17 --modes stable,none --repeats 3 --max-cost-usd 5 --desktop-handoff --output "evidence/runs/dev-pilot-$RunStamp"
-```
-
-참조 녹화는 모델을 호출하지 않습니다. 비교 명령은 실제 모델을 호출하며, 예약 예산이
-부족하거나 비용 미상 호출이 있으면 남은 모델 실행을 중단하고 미실행 행도 집계합니다.
-GUI 명령을 실행하는 동안 전산 창을 유지해야 합니다. 허용 목록 밖의 창이 전경에
-오면 중계가 중단합니다. 실패 자료는 보존하며 기존 출력 경로에 덮어쓰지 않습니다.
-위 예제는 전경 인계 옵션을 명시한 별도 파일럿이며, 기존 전체 비교의 재개 계획을 대신하지 않습니다.
-자세한 절차는 공개 저장소의 `harness/README.md`에 있습니다.
+현재 화면 실행 명령은 [설정 안내](config/README.md)에 있습니다.
+과거 하네스 비교 프리셋은 삭제했으며 기존 결과와 Git 이력은 보존합니다.
 
 벤치 저장소에는 수치·상태·해시만 내보내며, 비공개 모델 로그·프롬프트·캐시는
 선택한 에이전트 설정의 `case_root` 아래에 남깁니다. API 키는 무시되는 `.env`에만 저장합니다.

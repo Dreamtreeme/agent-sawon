@@ -289,7 +289,7 @@ def test_replay_exhaustion_and_validation_are_logged(run_log: RunLog):
 
 
 def test_unknown_prices_and_invalid_usage_fail_explicitly():
-    book = PriceBook.load(Path(__file__).parents[1] / "config" / "pricing.toml")
+    book = PriceBook.load(Path(__file__).parents[1] / "models" / "pricing.toml")
     with pytest.raises(PricingError, match="No configured price"):
         book.for_model("unpriced-model")
     rate = PriceRate(input_usd_per_million=1, output_usd_per_million=1)
@@ -322,6 +322,10 @@ def test_factory_replay_does_not_read_env(run_log: RunLog, tmp_path: Path, monke
     client = create_model_client(config, run_log=run_log)
     assert client.complete_json("test", Answer).response.value == 7
     read_env.assert_not_called()
+    config.write_text('provider = "replay"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="explicit replay_path"):
+        create_model_client(config, run_log=run_log)
+    read_env.assert_not_called()
 
 
 def test_factory_requires_explicit_env_even_with_ambient_key(run_log: RunLog, monkeypatch):
@@ -333,14 +337,23 @@ def test_factory_requires_explicit_env_even_with_ambient_key(run_log: RunLog, mo
 def test_factory_uses_only_explicit_file_and_disables_retries(
     run_log: RunLog, tmp_path: Path, monkeypatch
 ):
+    config = tmp_path / "gemini.toml"
+    config.write_text(
+        'provider = "gemini"\nmodel = "test-model"\npricing_path = "pricing.toml"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "pricing.toml").write_text(
+        'checked_on = 2026-10-01\nsource = "test fixture"\n'
+        'basis = "standard_paid_text_image"\n[models.test-model]\n'
+        'input_usd_per_million = "0.30"\noutput_usd_per_million = "2.50"\n',
+        encoding="utf-8",
+    )
     env = tmp_path / ".env"
     env.write_text("GEMINI_API_KEY=synthetic-test-key\n", encoding="utf-8")
     monkeypatch.setenv("GEMINI_API_KEY", "ambient-key-must-not-be-used")
     constructor = Mock()
-    monkeypatch.setattr("models.factory.genai.Client", constructor)
-    create_model_client(
-        Path(__file__).parents[1] / "config/models.toml", run_log=run_log, env_path=env
-    )
+    monkeypatch.setattr("google.genai.Client", constructor)
+    create_model_client(config, run_log=run_log, env_path=env)
     kwargs = constructor.call_args.kwargs
     assert kwargs["api_key"] == "synthetic-test-key"
     assert kwargs["vertexai"] is False
@@ -370,13 +383,14 @@ def test_cost_only_replay_metadata_is_preserved(run_log: RunLog):
     assert run_log.read_all()[0].payload["recorded_usd"] == "0.000105"
 
 
-def test_committed_replay_demo_fixture_matches_schema(run_log: RunLog):
-    from examples.replay_demo import DEMO_PROMPT, DemoResponse
-
-    config = Path(__file__).parents[1] / "config/models.toml"
-    client = create_model_client(config, run_log=run_log, provider="replay")
-    result = client.complete_json(DEMO_PROMPT, DemoResponse)
-    assert result.response.message == "Agent Sawon stage-0 replay and run log are connected."
+def test_replay_config_loads_explicit_fixture_without_credentials(tmp_path, run_log):
+    fixture = tmp_path / "responses.jsonl"
+    fixture.write_text(replay_entry().model_dump_json() + "\n", encoding="utf-8")
+    config = tmp_path / "models.toml"
+    config.write_text('provider = "replay"\nreplay_path = "responses.jsonl"\n', encoding="utf-8")
+    client = create_model_client(config, run_log=run_log)
+    result = client.complete_json("test", Answer)
+    assert result.response == Answer(value=7)
     assert result.usd == 0
 
 

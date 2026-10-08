@@ -255,13 +255,13 @@ def ground_meanings(
             meaning = meaning.model_copy(
                 update={"text_ids": [b.id for b in blocks if contains(marker.bbox, b.bbox)]}
             )
-        
+
         # 모델이 시각 설명을 비워두었으나 마커에 Florence-2 기능 설명이 있는 경우 보존
         if not meaning.visual_description and marker.functional_description:
             meaning = meaning.model_copy(
                 update={"visual_description": marker.functional_description[:160]}
             )
-            
+
         controls.append(VisualControl(**meaning.model_dump(), bbox=list(marker.bbox)))
 
     for marker in markers:

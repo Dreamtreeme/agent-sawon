@@ -10,16 +10,6 @@ from brain.visual.detector import DetectorSettings
 from brain.visual.markers import MergeSettings
 
 
-class CacheSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    enabled: bool = False
-    path: Path = Path("cases/semantic-cache.json")
-    max_retries: int = Field(default=1, ge=0, le=3)
-    matching_mode: Literal["exact", "rebind"] = "exact"
-    min_anchor_fields: int = Field(default=2, ge=2, le=11)
-    rebind_model_max_calls: int = Field(default=1, ge=0, le=3)
-
-
 class VisualMatchCacheSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     enabled: bool = False
@@ -61,22 +51,12 @@ class BrainSettings(BaseModel):
         description="프롬프트 주입용 최대 에러 피드백 개수 (기존 12개 )",
     )
 
-    cache: CacheSettings = Field(default_factory=CacheSettings)
     visual_match_cache: VisualMatchCacheSettings = Field(default_factory=VisualMatchCacheSettings)
     methods: MethodSettings = Field(default_factory=MethodSettings)
     recovery_enabled: bool = False
 
     # [수정] 'hybrid' 모드 추가 (시각 좌표 클릭 메인 + 최소 OS 신호 보조)
     perception_mode: Literal["legacy_uia", "visual_only", "hybrid"] = "legacy_uia"
-    hybrid_assist_focus: bool = Field(
-        default=True, description="창 포커스 상실 시 OS 레벨 포커스 자동 복원 보조"
-    )
-    hybrid_assist_ime: bool = Field(
-        default=True, description="영문/숫자 입력 시 OS 한/영 IME 꼬임 방지 보조"
-    )
-    hybrid_assist_scroll: bool = Field(
-        default=True, description="마우스 휠 스크롤 시 OS 스크롤바 메타데이터 보조"
-    )
 
     visual_min_confidence: float = Field(default=0.8, ge=0, le=1, allow_inf_nan=False)
     visual_input_blur_recheck: bool = True
@@ -87,7 +67,6 @@ class BrainSettings(BaseModel):
     visual_action_phash_distance: int = Field(default=16, ge=0, le=64)
     screen_matching: bool = False
     separate_observation_decision: bool = True
-    jev_request_max_bytes: int = Field(default=48_000, ge=8_000, le=48_000)
     task_path: Path | None = None
     procedure_path: Path | None = None
     visual_detector: DetectorSettings = Field(default_factory=DetectorSettings)
@@ -97,6 +76,7 @@ class BrainSettings(BaseModel):
     def is_visual(self) -> bool:
         """순수 비전 또는 하이브리드 시각 모드 활성화 여부."""
         return self.perception_mode in {"visual_only", "hybrid"}
+
     @classmethod
     def load(cls, path: Path) -> "BrainSettings":
         with path.open("rb") as stream:
@@ -131,14 +111,6 @@ class BrainSettings(BaseModel):
                 }
             )
 
-        if not settings.cache.path.is_absolute():
-            settings = settings.model_copy(
-                update={
-                    "cache": settings.cache.model_copy(
-                        update={"path": (path.parent / settings.cache.path).resolve()}
-                    )
-                }
-            )
         if not settings.visual_match_cache.path.is_absolute():
             settings = settings.model_copy(
                 update={

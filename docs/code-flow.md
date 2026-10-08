@@ -90,17 +90,15 @@ pipeline/workflow.py
   │   ├─ MeasuredModelClient.complete_json (이미지+OCR)
   │   ├─ bind_extraction (OCR 블록→출처 위치)
   │   └─ cross_validate → can_enter → READY 또는 FAILED
-  └─ brain.run.main(--prepared-case, 선택적 cache-isolation, 전체 비용 상한)
+  └─ brain.run.main(--prepared-case, 전체 비용 상한)
       ├─ READY·자기 레코드·검증 보고서·기록 정체성 확인
-      ├─ 선택적 건별 캐시 설치 (OCR 기록/비용 유지)
       └─ Brain.run()
           ├─ 그래프 전 _plan_node → 화면 매칭은 절차 로드 / 분리형 경로는 measured ModelClient
           ├─ observation_node → relay.observe → 민감정보 제거·스냅샷·pending 효과 검증
           ├─ review_node → review_final → 완료 가능 여부
           ├─ decision_node
           │   ├─ DecisionPolicy → 현재 응답 스키마
-          │   ├─ CacheSession.lookup (정확 일치 / 선택적 공통 라벨 재매칭)
-          │   ├─ 미적중 시 선택적 build_rebind_request → 측정 호출 → install_rebind_proposal
+          │   ├─ 화면 매칭 경로: 현재 화면 캐시 또는 업무 방법 재사용
           │   ├─ 미적중: 로그인/필드 묶음 또는 단일 결정 → ActionPlan
           │   ├─ save_result: 현재 근거·결과·다음 행동을 한 응답으로 판단
           │   │   └─ 거절→해당 필드 수정, 확인창→처리 후 재판정, 준비됨→최종 조회
@@ -108,24 +106,14 @@ pipeline/workflow.py
           ├─ review_node → 판단 evidence 저장 결과 재검토 → 완료/차단 또는 실행 허용
           ├─ execution_node → execute_plan → 전체 계획 선검사 → 순서대로 relay.act
           ├─ state.WorkerState → 관찰·결정·실행·검토 구역의 명시적 인계
-          └─ 성공 후 CacheSession.finish → 원자적 승격·결재 대기
+          └─ 종료 후 현재 화면 캐시·업무 방법 후보 처리
 ```
 
-캐시 v0.1은 **등록 입력의 필드→의미 대상 대응**을 재사용한다. 로그인·탐색·저장·승인 순서,
-좌표, AutomationId, 과거 ref, 실제 입력값은 저장하지 않는다. 매번 현재 관찰의 대상을 다시 찾고
-새 레코드 값을 넣어 읽어 본다. 전체 업무 실패 시 새 후보는 승격하지 않는다.
-손상 캐시는 파일을 보존하고 해당 실행에서 비활성화하여 모델 경로로 계속한다.
-
-기본은 정확 일치다. `config/brain.m2-rebind.toml`은 같은 최상위 의미 문맥에서 유일하게 대응하는
-공통 역할·라벨의 필드2개 이상을 근거로 중간 구조 변화를 허용한다. 라벨까지 달라진 남은 필드는
-기본 최대1회 모델 호출로 묶어서 제안받는다. 응답 전체의 현재 관찰·역할·고유성을 검사한 뒤
-임시 대응을 설치한다. 실패한 임시 대응은 원본 학습 항목과 분리해 무효화한다.
-모델 대응의 의미적 정답은 보장되지 않으며 기존 값 재읽기·최종 업무 검증을 그대로 거친다.
-자세한 범위와 미측정 항목은 [재연결 계획](cache-rebinding-plan-20260929.md)에 기록했다.
-
-`relay --observation-only`는 입력 요청을 거부한다. `relay.record`가 수집한 연속 관찰과
-명시된 합성 레코드를 `brain.demo_learning`에 주면 값 변화·포커스·고유 대응을 검증한
-시연 후보가 만들어진다. 캐시 설치는 별도의 명시된 `--install-cache` 동작이다.
+현재 재사용은 `brain/cache/visual_match.py`와 `brain/cache/methods.py`가 담당한다.
+화면 매칭 캐시는 현재 화면·업무 상태에 맞는 후보를 사용하고, 방법 라이브러리는
+새 업무 값과 현재 OCR 대상을 연결해 공통 실행기로 전달한다.
+`brain.demo_learning.methods`는 실제 전달된 화면 입력 묶음에서 방법을 학습한다.
+구형 UIA 필드 캐시와 관찰값 변화 기반 시연 변환·설치 경로는 제거됐다.
 
 ## L2C에서 반영한 부분과 남은 차이
 

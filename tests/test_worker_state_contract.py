@@ -36,3 +36,21 @@ def test_worker_graph_and_state_have_four_explicit_responsibilities():
         for name in build_worker_graph(WorkerStub()).get_graph().nodes
         if not name.startswith("__")
     } == {"observation", "decision", "execution", "review"}
+
+
+def test_nested_handoff_and_returned_node_state_are_isolated():
+    from brain.graph import Brain
+    from brain.graph.execution import ActionPlan
+
+    state = create_worker_state()
+    state["decision"]["action_plan"] = ActionPlan((), audit={"fields": ["original"]})
+    state["observation"]["rolling_turns"] = [{"effects": ["before"]}]
+    brain = Brain.__new__(Brain)
+    brain._adopt_worker_state(state)
+    brain.action_plan.audit["fields"].append("internal")
+    assert state["decision"]["action_plan"].audit == {"fields": ["original"]}
+    output = brain._complete_responsibility({"next": "observe"})
+    output["observation"]["rolling_turns"][0]["effects"].append("external")
+    output["lifecycle"]["steps"] = 100
+    assert brain.steps == 0
+    assert brain._worker_state["observation"]["rolling_turns"] == [{"effects": ["before"]}]

@@ -67,11 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pipeline-config", type=Path, default=Path("config/pipeline.toml"))
     parser.add_argument("--extraction-model-config", type=Path)
     parser.add_argument("--summary-strategy", choices=["flat_fields", "label_grouped"])
-    parser.add_argument("--cache-isolation", choices=["cold", "snapshot"])
-    parser.add_argument("--cache-snapshot", type=Path)
     args = parser.parse_args(argv)
-    if (args.cache_isolation == "snapshot") != (args.cache_snapshot is not None):
-        parser.error("--cache-snapshot is required only with --cache-isolation snapshot")
     started, owned_case, case_id = time.perf_counter(), False, None
     try:
         # Deliberately do not deserialize ShipmentRecord or inspect its fields.
@@ -81,8 +77,6 @@ def main(argv: list[str] | None = None) -> int:
         _, documents = load_inputs(args.manifest)
         settings = PipelineSettings.load(args.pipeline_config)
         brain_settings = BrainSettings.load(args.config)
-        if args.cache_isolation and not brain_settings.cache.enabled:
-            raise ValueError("Cache isolation requires cache.enabled=true")
         combined_limit = min(settings.max_cost_usd, brain_settings.max_cost_usd)
         if combined_limit <= 0:
             raise ValueError("workflow_has_no_model_budget")
@@ -140,8 +134,6 @@ def main(argv: list[str] | None = None) -> int:
             ("--env-path", args.env_path),
             ("--recovery-model-config", args.recovery_model_config),
             ("--summary-strategy", args.summary_strategy),
-            ("--cache-isolation", args.cache_isolation),
-            ("--cache-snapshot", args.cache_snapshot),
         ):
             if value is not None:
                 brain_args.extend([flag, str(value)])

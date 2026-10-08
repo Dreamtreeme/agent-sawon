@@ -376,7 +376,6 @@ def test_shared_executor_checks_whole_plan_step_budget_before_delivery(
 def test_detail_row_cannot_substitute_for_flat_record_field(tmp_path, record, role):
     from test_brain import element
 
-
     relay = ChangingPixelsRelay(record)
     relay.mode = "editor"
     brain, _, _ = make_brain(
@@ -400,7 +399,6 @@ def test_detail_row_cannot_substitute_for_flat_record_field(tmp_path, record, ro
     assert brain._act_node({}) == {"next": "observe"}
     assert not relay.actions
     assert not brain._record_verified_field("description", cell)
-    assert describe_target(cell, brain.observation) is None
     assert any(
         e.payload.get("reason") == "record_input_scope_mismatch" for e in brain.log.read_all()
     )

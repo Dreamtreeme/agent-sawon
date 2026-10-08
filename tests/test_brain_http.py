@@ -23,6 +23,11 @@ def server():
 
         def do_GET(self):
             requests.append((self.path, self.headers.get("Authorization")))
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", "/health")
+                self.end_headers()
+                return
             if self.path == "/health":
                 value = {"ok": True}
             elif self.path.startswith("/observe?"):
@@ -150,11 +155,13 @@ def test_authenticated_direct_fill_batch():
         ]
 
 
-def test_http_error_never_exposes_body_or_authentication_token():
-    with server() as (url, _):
+@pytest.mark.parametrize("path,status", [("/denied", 403), ("/redirect", 302)])
+def test_http_error_never_exposes_body_or_authentication_token(path, status):
+    with server() as (url, requests):
         relay = HttpRelay(url, "fixture-token")
-        with pytest.raises(RelayError, match="^relay_http_403$"):
-            relay._request("/denied")
+        with pytest.raises(RelayError, match=f"^relay_http_{status}$"):
+            relay._request(path)
+        assert requests == [(path, "Bearer fixture-token")]
 
 
 @pytest.mark.parametrize("token", ["", "invalid\r\nheader"])

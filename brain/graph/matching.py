@@ -1423,7 +1423,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         # [다이어트] 누적 raw feedback 대신 정제된 스크래치패드와 최근 N턴 버퍼 주입
         "scratchpad": context_layers["scratchpad"],
         "recent_turns": context_layers["recent_turns_buffer"],
-        "recent_feedback": brain._current_feedback()[-brain.settings.visual_rolling_buffer_size:],
+        "recent_feedback": brain._current_feedback()[-brain.settings.visual_rolling_buffer_size :],
         "required_verification": required,
         "available_credentials": sorted(k for k, value in brain.credentials.items() if value),
     }
@@ -1468,7 +1468,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         )
     state = {
         "notebook": notebook,
-        "screen": screen if brain.matching_model is not None else model_screen(screen),
+        "screen": model_screen(screen),
         "execution": contract,
     }
     if post_action_review:
@@ -1524,10 +1524,6 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
                 "procedure_step": response.procedure_step,
             },
         )
-    elif brain.matching_model is not None:
-        from .jev_matching import match_choices
-
-        response = match_choices(brain, state)
     elif grounded_interpretation is not None:
         plan_state = {
             **state,
@@ -1563,7 +1559,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         response = local_response(response, screen)
     response = omit_nonblocking_image_request(brain, response, screen)
     if cache_hit is None:
-        used_image = brain.matching_model is None or response.needs_image
+        used_image = True
     if response.needs_image:
         image_state = {**state, "screen": model_screen(screen)}
         response = brain._call(
@@ -1607,7 +1603,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         # A novel combined response can have sound screen semantics but choose an
         # ineligible task step. Preserve the grounded controls and correct only the
         # action once; semantic/marker failures are handled by VisualPerception.
-        if brain.matching_model is not None or str(error) not in _REPLANNABLE_MATCH_ERRORS:
+        if str(error) not in _REPLANNABLE_MATCH_ERRORS:
             raise
         interpretation = SemanticDetection.model_validate(
             {
@@ -1667,7 +1663,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
             response,
             screen,
             required,
-            page if used_image or brain.matching_model is not None else None,
+            page if used_image else None,
         )
         # Repair calls can add a parent chain after the first cleanup pass.
         # An invalid parent is optional structure; retain its controls and proof

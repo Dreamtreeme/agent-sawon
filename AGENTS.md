@@ -6,7 +6,7 @@ for image-based recovery. This does not authorize broad Jev sweeps or milestone 
 
 Current scope: through M2 / stages 3–4 (authorized by the user on 2026-09-29).
 Follow CODEX_BRIEF.md and track progress in sibling agent-sawon-bench/docs/progress.md.
-Implement semantic cache, demonstration learning, document extraction and validation,
+Maintain visual-match cache, executed-screen method learning, document extraction and validation,
 and integrate bounded evidence review/recovery before measured development runs.
 Unfinished M1 measurements remain open; scope expansion does not approve milestone exit.
 The 2026-09-30 brief revision replaces the next 1,200-run development sweep with a
@@ -40,3 +40,7 @@ See ../agent-sawon-bench/docs/visual-v1-contract-20260930.md. Preserve previous 
 The user selected Luna as the primary screen-worker path on 2026-10-02.
 Follow ../agent-sawon-bench/docs/luna-primary-plan-20261002.md.
 Preserve Gemini and Jev as comparison profiles; prioritize actual save/final-query completion.
+
+On 2026-10-08 the user removed legacy UIA semantic-cache and observation-delta demonstration learning. Do not restore their modules, CLI flags or cache formats. Keep visual_match, learned methods and visual recording; prepared document handoff lives in pipeline.handoff.
+
+On 2026-10-08 the user consolidated runtime profiles into config/brain.visual.toml, config/models.toml (Luna), and config/pipeline.toml (Korean GPU OCR). Do not restore milestone/harness/provider-comparison presets. Provider adapters may remain without committed comparison profiles. Cost-rate data lives in models/pricing.toml; historical experiment configurations remain in Git and run artifacts.

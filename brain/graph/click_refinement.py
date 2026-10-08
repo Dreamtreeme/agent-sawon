@@ -251,5 +251,4 @@ class ClickRefinement:
         )
         brain.action_plan = None
         brain.steps += 1
-        brain.cache_entry_id = None
         return True

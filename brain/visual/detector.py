@@ -22,7 +22,7 @@ class DetectorSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     weights: Path = Path("models/omniparser/icon_detect/model.pt")
-    
+
     # [신규 추가] OmniParser v2 파이프라인 옵션
     use_v2: bool = Field(
         default=False,
@@ -41,8 +41,6 @@ class DetectorSettings(BaseModel):
     refinement_enabled: bool = True
     refinement_max_regions: int = Field(default=3, ge=1, le=6)
     refinement_scale: float = Field(default=2.0, ge=1, le=3, allow_inf_nan=False)
-    pixel_rectangles_enabled: bool = False
-    pixel_rectangles_limit: int = Field(default=80, ge=1, le=100)
 
 
 class ControlDetector(Protocol):

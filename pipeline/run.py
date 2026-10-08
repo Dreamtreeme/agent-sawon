@@ -23,6 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--invoice", type=Path)
     parser.add_argument("--packing-list", type=Path)
     parser.add_argument("--config", type=Path, default=Path("config/pipeline.toml"))
+    parser.add_argument("--model-config", type=Path, default=Path("config/models.toml"))
     parser.add_argument("--env", type=Path)
     parser.add_argument("--provider", choices=("gemini", "replay"))
     args = parser.parse_args(argv)

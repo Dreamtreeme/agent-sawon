@@ -264,15 +264,10 @@ class Brain:
         recovery_budget: CallBudget | None = None,
         prepared_case: bool = False,
         visual_ocr: OcrEngine | None = None,
-        matching_model: ModelClient | None = None,
-        matching_budget: CallBudget | None = None,
     ) -> None:
         self._worker_state = create_worker_state()
         self.record, self.goal, self.relay, self.model = record, goal, relay, model
         self.settings, self.case_dir, self.log = settings, Path(case_dir), run_log
-        if matching_model is not None and not settings.screen_matching:
-            raise ValueError("matching_model_requires_screen_matching")
-        self.matching_model, self.matching_budget = matching_model, matching_budget
         self.credentials = {"credential.username": username, "credential.password": password}
         self.credential_submissions: dict[str, dict] = {}
         self.secrets = (password,) if password else ()
@@ -324,9 +319,7 @@ class Brain:
             enabled=settings.visual_match_cache.enabled,
         )
         self.visual_match_candidate: tuple[str, dict] | None = None
-        self.cache_rebind_calls = 0
         self.input_target_retries = 0
-        self.cache_entry_id: str | None = None
         self.deferred_field_checks: dict[str, dict] = {}
         self.review: EvidenceReview | None = None
         self.review_decision = False
@@ -363,16 +356,10 @@ class Brain:
                     },
                 )
                 self.phase = "task"
-    
+
             else:
-                if settings.procedure_path and settings.procedure_path.is_file():
-                    self.procedure = Procedure.model_validate_json(
-                        settings.procedure_path.read_text(encoding="utf-8")
-                    )
-                    atomic_write_json(self.case_dir / "procedure.json", self.procedure)
-                else:
-                    # procedure_path가 없거나 파일이 존재하지 않는 경우 기본 처리
-                    self.procedure = Procedure()
+                self.procedure = Procedure.model_validate_json(settings.procedure_path.read_bytes())
+                atomic_write_json(self.case_dir / "procedure.json", self.procedure)
         self.methods = MethodRuntime(
             self,
             settings.methods.path,
@@ -380,9 +367,8 @@ class Brain:
             promotion_path=settings.methods.promotion_path,
         )
         if settings.perception_mode == "visual_only":
-            if settings.is_visual:
-                if visual_ocr is None:
-                    raise ValueError("visual_ocr_required")
+            if visual_ocr is None:
+                raise ValueError("visual_ocr_required")
             self.visual_perception = VisualPerception(
                 relay,
                 visual_ocr,
@@ -651,28 +637,6 @@ class Brain:
         return {"next": "finish"}
 
     def _fail(self, reason: str, *, validation_errors: list[dict] | None = None) -> dict:
-        if self.cache_entry_id is not None:
-            invalidated = self.cache_session.record_failure(self.cache_entry_id)
-            self.log.append(
-                "cache_miss",
-                payload={
-                    "reason": reason,
-                    "entry_id": self.cache_entry_id,
-                    "invalidated": invalidated,
-                },
-            )
-            self.cache_entry_id = None
-            self.feedback.append(
-                {
-                    "ok": False,
-                    "reason": reason,
-                    "phase": self.phase,
-                    "source": "semantic_cache",
-                    "invalidated": invalidated,
-                }
-            )
-            return {"next": "observe"}
-
         decision = self.decision
         exploration_failure = (
             self.phase == "task"
@@ -788,11 +752,7 @@ class Brain:
         )
 
         # [추가] 롤링 버퍼에 실패 턴 기록 (존재할 경우에만 안전하게 호출)
-        if (
-            getattr(self, "rolling_context", None)
-            and self.decision
-            and self.decision.action
-        ):
+        if getattr(self, "rolling_context", None) and self.decision and self.decision.action:
             act = self.decision.action
             tgt = act.source or (act.keys if act.type == "key" else act.ref) or "unknown"
             self.rolling_context.record_turn(
@@ -813,7 +773,7 @@ class Brain:
         ):
             return self._finish("stopped", "repeated_phase_failure:" + self.phase)
         return {"next": "observe"}
-    
+
     def _record_progress(self, mark: str, *, business: bool = True) -> None:
         key = self.phase + ":" + mark
         if key not in self.progress_marks:
@@ -1446,7 +1406,6 @@ class Brain:
             self.decision = None
             self.action_plan = None
             self.execution_authorized = False
-            self.cache_entry_id = None
             schema = policy.response_schema()
             screen_fill = (
                 self.settings.visual_screen_fill
@@ -1465,131 +1424,45 @@ class Brain:
                 and not self.query_submitted
                 and bool(policy.facts.remaining_credentials)
             )
-            allowed_sources = (
-                policy.facts.remaining_fields
-                if self.phase in {"task", "enter"}
-                else ("hbl_no",)
-                if not self.query_value_verified and not self.query_submitted
-                else ()
-            )
-            try:
-                hit = (
-                    None
-                    if screen_fill or login_batch or self.phase == "save_result"
-                    else self.cache_session.lookup(
-                        self.observation,
-                        phase=self.phase,
-                        allowed_sources=allowed_sources,
-                        record=self.record,
-                    )
-                )
-                if (
-                    hit is None
-                    and not (screen_fill or login_batch)
-                    and self.phase == "enter"
-                    and not self.settings.screen_matching
-                    and self.cache_rebind_calls < self.settings.cache.rebind_model_max_calls
-                ):
-                    request = build_rebind_request(
-                        self.cache_session, self.observation, allowed_sources
-                    )
-                    if request is not None:
-                        self.cache_rebind_calls += 1
-                        installed, reason = 0, "accepted"
-                        try:
-                            proposal = self._call(request.prompt(), RebindProposal)
-                            installed = install_rebind_proposal(
-                                self.cache_session,
-                                request,
-                                proposal,
-                                self.observation,
-                                allowed_sources,
-                            )
-                        except (ValidationError, ValueError):
-                            reason = "invalid_proposal"
-                        self.log.append(
-                            "verify",
-                            payload={
-                                "check": "cache_rebind_proposal",
-                                "reason": reason,
-                                "installed_fields": installed,
-                                "call_number": self.cache_rebind_calls,
-                                "obs_id": str(self.observation.obs_id),
-                            },
-                        )
-                        hit = self.cache_session.lookup(
-                            self.observation,
-                            phase=self.phase,
-                            allowed_sources=allowed_sources,
-                            record=self.record,
-                        )
-            except CacheIntegrityError:
-                # A disposable optimization cannot make the task unavailable.
-                # Preserve the corrupt evidence and disable all cache writes.
-                self.cache_session.cache.enabled = False
-                self.cache_session.last_miss_reason = "cache_integrity_error"
-                hit = None
-            if hit is not None and policy.allows(hit.decision):
-                self.decision = hit.decision
-                self.cache_entry_id = hit.entry_id
-                self.log.append(
-                    "cache_hit",
-                    payload={
-                        "entry_id": hit.entry_id,
-                        "obs_id": str(self.observation.obs_id),
-                        "match_mode": hit.match_mode,
-                    },
-                )
-            else:
-                if self.settings.cache.enabled:
+            prompt = "" if self.settings.screen_matching else self._decision_prompt(policy)
+            if self.phase == "save_result":
+                schema = SaveReviewResponse
+                review = self._selection_call(prompt, schema)
+                outcome = self._apply_save_review(review)
+                if outcome is not None:
+                    return outcome
+                policy = self._decision_policy()
+                proposed = review.next_decision.to_decision()
+                if not policy.allows(proposed):
                     self.log.append(
-                        "cache_miss",
+                        "verify",
                         payload={
-                            "reason": self.cache_session.last_miss_reason
-                            if hit is None
-                            else "state_policy_rejected",
-                            "phase": self.phase,
+                            "check": "save_review_next_decision_reconciled",
+                            "discarded_intent": proposed.intent,
+                            "current_step": policy.current_step,
+                            "obs_id": str(self.observation.obs_id),
                         },
                     )
-                prompt = "" if self.settings.screen_matching else self._decision_prompt(policy)
-                if self.phase == "save_result":
-                    schema = SaveReviewResponse
-                    review = self._selection_call(prompt, schema)
-                    outcome = self._apply_save_review(review)
-                    if outcome is not None:
-                        return outcome
-                    policy = self._decision_policy()
-                    proposed = review.next_decision.to_decision()
-                    if not policy.allows(proposed):
-                        self.log.append(
-                            "verify",
-                            payload={
-                                "check": "save_review_next_decision_reconciled",
-                                "discarded_intent": proposed.intent,
-                                "current_step": policy.current_step,
-                                "obs_id": str(self.observation.obs_id),
-                            },
-                        )
-                        return {"next": "select"}
-                    self.decision = proposed
-                elif login_batch:
-                    schema = LoginScreenPlan
-                    plan = self._selection_call(prompt + LOGIN_GUIDANCE, schema)
-                    if plan.fields:
-                        self.action_plan = prepare_login_plan(self.observation, plan, policy)
-                        self.review_execution = True
-                        return {"next": "review"}
-                    self.decision = plan.next_decision.to_decision()
-                elif screen_fill:
-                    schema = ScreenFillPlan
-                    plan = self._selection_call(prompt + SCREEN_FILL_GUIDANCE, schema)
-                    if plan.fields:
-                        self.action_plan = prepare_screen_fill(self.observation, plan)
-                        self.review_execution = True
-                        return {"next": "review"}
-                    self.decision = plan.next_decision.to_decision()
-                else:
-                    self.decision = self._choose_decision(prompt, schema)
+                    return {"next": "select"}
+                self.decision = proposed
+            elif login_batch:
+                schema = LoginScreenPlan
+                plan = self._selection_call(prompt + LOGIN_GUIDANCE, schema)
+                if plan.fields:
+                    self.action_plan = prepare_login_plan(self.observation, plan, policy)
+                    self.review_execution = True
+                    return {"next": "review"}
+                self.decision = plan.next_decision.to_decision()
+            elif screen_fill:
+                schema = ScreenFillPlan
+                plan = self._selection_call(prompt + SCREEN_FILL_GUIDANCE, schema)
+                if plan.fields:
+                    self.action_plan = prepare_screen_fill(self.observation, plan)
+                    self.review_execution = True
+                    return {"next": "review"}
+                self.decision = plan.next_decision.to_decision()
+            else:
+                self.decision = self._choose_decision(prompt, schema)
             decision = self.decision
             self.log.append(
                 "select",
@@ -1598,7 +1471,7 @@ class Brain:
                     "decision": decision.model_dump(mode="json"),
                     "phase": self.phase,
                     "summary_strategy": self.settings.summary_strategy,
-                    "source": "semantic_cache" if self.cache_entry_id else "model",
+                    "source": "model",
                     "required_checkpoint": (
                         "duplicate_result_evidence" if duplicate_checkpoint else None
                     ),
@@ -1620,7 +1493,6 @@ class Brain:
         except GuardStop as exc:
             if (
                 str(exc) == "target_not_text_input"
-                and self.cache_entry_id is None
                 and self.pending is None
                 and self.decision is not None
                 and self.decision.action is not None
@@ -2600,9 +2472,7 @@ class Brain:
             )
             # [추가] 이번 턴의 실행 결과 델타를 롤링 버퍼에 기록 (버퍼 크기 초과 시 자동 에비션)
             target_desc = (
-                choice.source
-                or (choice.keys if choice.type == "key" else choice.ref)
-                or "unknown"
+                choice.source or (choice.keys if choice.type == "key" else choice.ref) or "unknown"
             )
             self.rolling_context.record_turn(
                 turn_index=self.steps,
@@ -2610,29 +2480,13 @@ class Brain:
                 target_summary=f"{choice.type}:{target_desc}",
                 action_type=choice.type,
                 observed_effect=str(observed_effect),
-                success=bool(
-                    navigation_change or observed_effect != ObservedEffect.NO_CHANGE
-                ),
+                success=bool(navigation_change or observed_effect != ObservedEffect.NO_CHANGE),
                 checkpoint=self._decision_policy().current_step,
             )
             if new_facts:
                 for fact in new_facts:
                     self.rolling_context.mark_milestone(f"검증 완료: {fact}")
 
-            if (
-                self.cache_session.cache.enabled
-                and not pending.get("blur_recheck")
-                and not pending.get("point_refined")
-                and (execution is None or execution.plan.verification == "single")
-            ):
-                self.cache_session.stage_validated(
-                    pending["before_observation"],
-                    observation,
-                    decision,
-                    self.record,
-                    phase=self.phase,
-                )
-            self.cache_entry_id = None
             self._stage_visual_match_candidate(pending)
             self.pending = None
             # Reuse an already interpreted visual scene for every visual action.
@@ -2880,10 +2734,8 @@ class Brain:
 
     def _complete_responsibility(self, outcome: dict) -> WorkerState:
         route = self._responsibility_route(str(outcome["next"]))
-        state = copy_worker_state(self._worker_state)
-        state["lifecycle"]["route"] = route
-        self._worker_state = state
-        return state
+        self._worker_state["lifecycle"]["route"] = route
+        return copy_worker_state(self._worker_state)
 
     def observation_node(self, state: WorkerState) -> WorkerState:
         """Capture a screen or observe and verify a delivered action's effect."""
@@ -2974,26 +2826,6 @@ class Brain:
                 "verify",
                 payload={
                     "check": "method_candidate_promotion",
-                    "ok": False,
-                    "error_type": type(exc).__name__,
-                },
-            )
-        try:
-            promoted = self.cache_session.finish(success=self.result.status == "success")
-            if self.settings.cache.enabled:
-                self.log.append(
-                    "verify",
-                    payload={
-                        "check": "semantic_cache_promotion",
-                        "promoted": promoted,
-                        "business_success": self.result.status == "success",
-                    },
-                )
-        except Exception as exc:
-            self.log.append(
-                "verify",
-                payload={
-                    "check": "semantic_cache_promotion",
                     "ok": False,
                     "error_type": type(exc).__name__,
                 },

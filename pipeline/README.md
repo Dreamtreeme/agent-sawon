@@ -41,9 +41,9 @@ the worker and its owned descendants, including the Windows virtualenv launcher.
 A request after failure starts a new worker; it does not silently retry the failed
 request. Call `close()` when supplying a caller-owned OCR adapter to a pipeline.
 `in_process` is an explicit option without a
-hard native-call timeout. Use `config/pipeline.korean.toml` for Korean documents.
+hard native-call timeout. `config/pipeline.toml` uses Korean OCR by default; edit `ocr_language` for other inputs.
 
-`config/pipeline.fax.toml` is an opt-in English fax profile. It reads both the
+Fax preprocessing is configured in `config/pipeline.toml`. The optional path reads both the
 original raster and a separate 3-pixel median-filtered copy. Filtering can remove
 isolated noise but can also damage punctuation, so both readings retain distinct
 IDs and `input_variant` labels. They are alternative OCR readings of one page,
@@ -139,32 +139,9 @@ Anomaly and document-field rates show coverage when truth could not be evaluated
 An unknown charge stops subsequent trials. `--repeats 1` is an explicit smoke run
 and has no three-consecutive-success estimate. These runs do not measure ERP entry.
 
-## Isolated document-to-ERP cache runs
+## 서류 인계 검증
 
-`pipeline.workflow` accepts `--cache-isolation cold`, or `--cache-isolation snapshot
---cache-snapshot <private-frozen-cache.json>`. Extraction and validation complete
-before the prepared case hands off to Brain. The handoff verifies the case's own
-extracted record, READY state, checks and log identity before installing an isolated
-cache. An existing execution or cache-experiment directory cannot be reset this way.
-The original snapshot is read-only; initial/working/provenance artifacts belong to
-the new case, and the original OCR log remains an append-only prefix.
-
-OCR and Brain share the smaller of the pipeline and Brain configured cost limits.
-The workflow forwards this as a reducing-only Brain `--max-cost-usd` limit; a caller
-cannot increase Brain's configured cap through that option. Earlier measured OCR
-charges remain in the same ledger, and unknown charges stop further model calls.
-
-`config/harness_agents.m2-workflow-cache-isolated.json` provides four matching
-examples: no cache, cold cache, exact snapshot, and rebind snapshot. Before a future
-comparison, explicitly supply the private input manifest at
-`cases/workflow-comparison-input/manifest.json` and a validated frozen cache at
-`cases/cache-snapshots/frozen.json`, or edit the example paths. The example tracks
-their metadata hashes; do not point a snapshot at a trial's mutable working cache.
-Keep manifest document paths relative to the manifest and preserve each trial's
-copied input bytes. The harness record supplies only identity, never expected field
-values to extraction or Brain. Failed extraction never proceeds to ERP.
-
-Select only the intended comparison agents, use fresh output/case roots, freeze
-models/configuration and snapshot, and report preparation failures and OCR charges
-alongside ERP outcomes. This implementation and its fake tests do not constitute a
-new GUI comparison. See [implementation scope](../docs/document-cache-integration-20260929.md).
+`pipeline.handoff.validate_prepared_case`는 READY 상태, 추출 레코드, 검사 결과와
+기존 실행 로그를 확인합니다. `brain.run --prepared-case`는 이 검증을 거쳐 동일
+케이스의 ERP 입력을 시작하며 서류 추출 비용도 전체 한도에 포함합니다.
+구형 UIA 캐시 격리 옵션은 더 이상 전달하지 않습니다.

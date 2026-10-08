@@ -118,7 +118,5 @@ class RollingContextManager:
         )
         return {
             "scratchpad": scratchpad.model_dump(mode="json"),
-            "recent_turns_buffer": [
-                turn.model_dump(mode="json") for turn in self.recent_turns
-            ],
+            "recent_turns_buffer": [turn.model_dump(mode="json") for turn in self.recent_turns],
         }

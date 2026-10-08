@@ -208,20 +208,6 @@ class VisualPerception:
         )
         local_started = perf_counter()
         boxes = self.detector.read(page)
-        if (
-            isinstance(self.detector, OmniParserDetector)
-            and self.detector.settings.pixel_rectangles_enabled
-        ):
-            from PIL import Image
-
-            with Image.open(path) as pixels:
-                rectangles = rectangular_candidates(
-                    pixels, limit=self.detector.settings.pixel_rectangles_limit
-                )
-            boxes += [
-                Marker(id=i, bbox=box, source="pixel_rectangle", confidence=1)
-                for i, box in enumerate(rectangles)
-            ]
         atomic_write_json(
             folder / "local-detections.json",
             {
@@ -332,20 +318,6 @@ class VisualPerception:
                         for block in blocks
                     ]
             boxes = self.detector.read(page)
-            if (
-                isinstance(self.detector, OmniParserDetector)
-                and self.detector.settings.pixel_rectangles_enabled
-            ):
-                from PIL import Image
-
-                with Image.open(path) as pixels:
-                    rectangles = rectangular_candidates(
-                        pixels, limit=self.detector.settings.pixel_rectangles_limit
-                    )
-                boxes += [
-                    Marker(id=i, bbox=box, source="pixel_rectangle", confidence=1)
-                    for i, box in enumerate(rectangles)
-                ]
             markers = build_markers(
                 blocks, boxes, shot.width, shot.height, settings=self.merge_settings
             )

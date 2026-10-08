@@ -24,13 +24,16 @@ from brain.visual.scene import bind_scene
         ("save_result", "inspect-save", False, False),
     ],
 )
-def test_basic_gemini_and_jev_receive_identical_execution_context(
+def test_direct_and_screen_matching_receive_identical_execution_context(
     tmp_path, record, phase, step, verified, submitted
 ):
     blocks, boxes, _, meanings = fixture()
     markers = build_markers(blocks, boxes, 400, 200)
     brain, model, *_ = setup_brain(
-        tmp_path, record, [response(meanings, procedure_step=step, steps=[], operation="stop")]
+        tmp_path,
+        record,
+        [response(meanings, procedure_step=step, steps=[], operation="stop")],
+        task_instruction=None,
     )
     brain.observation = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
     brain.phase = phase
@@ -56,15 +59,10 @@ def test_basic_gemini_and_jev_receive_identical_execution_context(
     )
     matched = json.loads(model.prompts[-1][len(RULES) :])
     assert matched["execution"] == expected
-    request = build_request(matched)
-    assert request.state["execution"] == expected
-    field_questions = [q for k, q in request.questions.items() if k.startswith("field:")]
-    assert field_questions
-    assert all(q.instructions["query_input"] == expected["query_input"] for q in field_questions)
 
 
 def test_pending_proposal_does_not_mutate_actual_facts_or_runtime_policy(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [])
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=None)
     brain.phase = "final_query"
     brain.decision = Decision(
         screen_kind="query",
@@ -85,15 +83,13 @@ def test_pending_proposal_does_not_mutate_actual_facts_or_runtime_policy(tmp_pat
 
 
 def test_generic_task_context_has_no_legacy_query_input_gate(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [])
-    brain.phase = "task"
-    brain.procedure = None
-    brain.task_instruction = TaskInstruction(
+    task_instruction = TaskInstruction(
         name="Arbitrary business task",
         objective="Use the supplied inputs to complete the user's work.",
         requirements=["Interpret the current application from visible evidence."],
         completion_conditions=["Visible evidence confirms the requested result."],
     )
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
 
     context = execution_context(brain)
 
@@ -105,7 +101,7 @@ def test_generic_task_context_has_no_legacy_query_input_gate(tmp_path, record):
 
 
 def test_saved_review_context_excludes_run_local_provenance(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [])
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=None)
     brain.phase = "final_query"
     brain.saved_evidence.begin("origin-a")
     brain.saved_evidence.query_row_seen = True
@@ -142,7 +138,7 @@ def test_saved_review_context_excludes_run_local_provenance(tmp_path, record):
 
 
 def test_pending_last_record_fill_proposes_save_without_mutating_verified_fields(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [])
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=None)
     brain.phase = "enter"
     brain.duplicate_clear = True
     last_field = "consignee"
@@ -178,7 +174,7 @@ def test_pending_last_record_fill_proposes_save_without_mutating_verified_fields
 
 
 def test_pending_external_selection_anticipates_its_verified_field(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [])
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=None)
     brain.phase = "enter"
     brain.duplicate_clear = True
     selected_field = "shipper"
@@ -226,7 +222,7 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
             }
         ],
     )
-    brain, model, *_ = setup_brain(tmp_path, record, [combined])
+    brain, model, *_ = setup_brain(tmp_path, record, [combined], task_instruction=None)
     brain.phase = "enter"
     brain.duplicate_clear = True
     basics = {"hbl_no", "mbl_no", "packages.count", "packages.unit", "pol"}
@@ -265,7 +261,7 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
 def test_pending_login_proposes_post_authentication_work_without_resubmitting_credentials(
     tmp_path, record
 ):
-    brain, *_ = setup_brain(tmp_path, record, [])
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=None)
     brain.credentials = {
         "credential.username": "fixture-user",
         "credential.password": "fixture-password",

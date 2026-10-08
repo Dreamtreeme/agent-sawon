@@ -40,7 +40,7 @@ def setup(tmp_path, *, text='{"value":7}', status="completed", usage=True):
         else None,
     )
     log = RunLog(tmp_path / "case", case_id="openai_test", agent_id="test")
-    rate = PriceBook.load(Path("config/pricing.openai.toml")).for_model("gpt-5.6-luna")
+    rate = PriceBook.load(Path("models/pricing.toml")).for_model("gpt-5.6-luna")
     client = OpenAIClient(sdk_client=sdk, model="gpt-5.6-luna", price=rate, run_log=log)
     return client, sdk, log
 
@@ -98,11 +98,11 @@ def test_factory_uses_explicit_key_and_disables_sdk_retries(tmp_path, monkeypatc
     env.write_text("GEMINI_API_KEY=fake\n", encoding="utf-8")
     monkeypatch.setenv("OPENAI_API_KEY", "ambient-must-not-be-used")
     with pytest.raises(ValueError, match="OPENAI_API_KEY"):
-        create_model_client(Path("config/models.luna.toml"), env_path=env, run_log=log)
+        create_model_client(Path("config/models.toml"), env_path=env, run_log=log)
     env.write_text("OPENAI_API_KEY=test-only\n", encoding="utf-8")
     constructor = Mock()
     monkeypatch.setattr("openai.OpenAI", constructor)
-    client = create_model_client(Path("config/models.luna.toml"), env_path=env, run_log=log)
+    client = create_model_client(Path("config/models.toml"), env_path=env, run_log=log)
     assert client.model == "gpt-5.6-luna"
     assert constructor.call_args.kwargs["max_retries"] == 0
     assert constructor.call_args.kwargs["api_key"] == "test-only"
@@ -121,7 +121,7 @@ def test_long_context_cache_write_pricing_and_reservation(tmp_path):
     # 272,000 input tokens still use the standard tier; the next token changes all rates.
     assert client._cost(usage.model_copy(update={"input_tokens": 272_000})) == Decimal("0.05372")
     assert client._cost(usage.model_copy(update={"input_tokens": 272_001})) == Decimal("0.1073804")
-    budget = CallBudget.from_config(Path("config/models.luna.toml"))
+    budget = CallBudget.from_config(Path("config/models.toml"))
     assert budget("x" * 300_000, Answer) > client._cost(usage)
     with pytest.raises(ValidationError):
         TokenUsage(input_tokens=10, response_tokens=0, cached_input_tokens=8, cache_write_tokens=3)

@@ -41,7 +41,7 @@ def test_unique_current_query_input_is_a_fact_but_result_cells_are_not(record):
 
 
 def test_observed_query_value_advances_policy_directly_to_search(tmp_path, record):
-    brain, _, _, _, _, _ = setup_brain(tmp_path, record, [])
+    brain, _, _, _, _, _ = setup_brain(tmp_path, record, [], task_instruction=None)
     brain.phase = "final_query"
     brain.duplicate_clear = brain.save_issued = True
     observed = scene(
@@ -60,7 +60,7 @@ def test_observed_query_value_advances_policy_directly_to_search(tmp_path, recor
 
 
 def test_matching_visible_fill_is_removed_before_dispatch(tmp_path, record):
-    brain, _, _, _, _, _ = setup_brain(tmp_path, record, [])
+    brain, _, _, _, _, _ = setup_brain(tmp_path, record, [], task_instruction=None)
     brain.phase = "enter"
     brain.duplicate_clear = True
     observed = scene(

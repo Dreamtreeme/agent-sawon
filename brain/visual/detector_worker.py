@@ -60,9 +60,11 @@ class DetectorSession:
         try:
             from transformers import AutoModelForCausalLM, AutoProcessor
 
-            self.caption_model = AutoModelForCausalLM.from_pretrained(
-                caption_path, trust_remote_code=True
-            ).to(device).eval()
+            self.caption_model = (
+                AutoModelForCausalLM.from_pretrained(caption_path, trust_remote_code=True)
+                .to(device)
+                .eval()
+            )
             self.caption_processor = AutoProcessor.from_pretrained(
                 caption_path, trust_remote_code=True
             )
@@ -79,18 +81,16 @@ class DetectorSession:
             return ""
         try:
             prompt = "<CAPTION>"
-            inputs = self.caption_processor(
-                text=prompt, images=crop, return_tensors="pt"
-            ).to(device)
+            inputs = self.caption_processor(text=prompt, images=crop, return_tensors="pt").to(
+                device
+            )
             generated_ids = self.caption_model.generate(
                 input_ids=inputs["input_ids"],
                 pixel_values=inputs["pixel_values"],
                 max_new_tokens=30,
                 num_beams=2,
             )
-            decoded = self.caption_processor.batch_decode(
-                generated_ids, skip_special_tokens=True
-            )
+            decoded = self.caption_processor.batch_decode(generated_ids, skip_special_tokens=True)
             return decoded[0].strip()
         except Exception:
             return ""

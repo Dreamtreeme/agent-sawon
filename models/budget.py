@@ -12,8 +12,8 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
-from models.factory import ModelSettings
 from models.pricing import PriceBook, PriceRate
+from models.settings import ModelSettings
 
 
 @dataclass(frozen=True)
