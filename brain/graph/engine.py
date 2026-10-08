@@ -957,13 +957,7 @@ class Brain:
             and self.saved_evidence.session_id
             and isinstance(self.observation, SceneObservation)
         )
-        legacy_saved_review = (
-            self._workflow_facts().final_query_workflow_ready
-            and self.settings.screen_matching
-            and self.saved_evidence.session_id
-            and isinstance(self.observation, SceneObservation)
-        )
-        if task_saved_review or legacy_saved_review:
+        if task_saved_review:
             bindings = (
                 self.saved_bindings[1]
                 if self.saved_bindings and self.saved_bindings[0] == str(self.observation.obs_id)
@@ -1964,9 +1958,6 @@ class Brain:
             and decision.screen_kind == "query"
         ):
             self.query_submitted = True
-            if self.settings.screen_matching and self.phase == "final_query":
-                self.saved_evidence.begin(str(self.observation.obs_id))
-                self.review = None
         if decision.intent == "save":
             self.save_issued = True
             self.phase = "save_result"
@@ -2174,10 +2165,6 @@ class Brain:
             ):
                 new_facts.append("query_submitted")
             elif decision.intent == "save":
-                if self.phase == "task":
-                    if not changed:
-                        return self._fail("save_no_progress")
-                    self.save_issued = True
                 new_facts.append("save_issued")
             navigation_change = None
             if decision.intent in {"navigate", "select_tab", "login"}:

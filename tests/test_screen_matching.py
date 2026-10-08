@@ -401,46 +401,6 @@ def test_generic_task_binds_prompt_container_path_to_input_key(
     assert brain.visual_proposal.evidence[0].field == "hbl_no"
 
 
-def test_generic_query_input_keeps_its_boundary_intent(tmp_path, record, task_instruction):
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
-    brain.phase = "final_query"
-    brain.save_issued = True
-    brain.duplicate_clear = True
-    brain.verified = {field: "current-evidence" for field in brain.values}
-    proposal = ScreenMatch.model_validate(
-        {
-            "screen_kind": "query",
-            "procedure_step": "task-action",
-            "controls": [{"id": 10, "role": "edit", "confidence": 1}],
-            "steps": [
-                {
-                    "target": 10,
-                    "action": "fill",
-                    "source": "hbl_no",
-                    "intent": "query_input",
-                }
-            ],
-        }
-    )
-    capability = ProcedureStep(
-        id="task-action",
-        phase="final_query",
-        screen="any",
-        actions=["query_input"],
-        goal="Query the saved record",
-        completion="The saved record is visible",
-    )
-
-    validated, _ = validate_match_plan(
-        proposal,
-        [capability],
-        brain._decision_policy(),
-        brain,
-        set(brain.values),
-    )
-    assert validated.steps[0].intent == "query_input"
-
-
 def test_taught_step_allows_other_provided_input_visible_on_current_screen(tmp_path, record):
     task_instruction = TaskInstruction.model_validate(
         {
@@ -1565,9 +1525,12 @@ def test_save_result_and_proof_use_the_existing_contract():
         "resized_wrong_value",
     ],
 )
-def test_query_verification_omission_is_repaired_without_reusing_old_value(tmp_path, record, mode):
+def test_delivered_input_verification_omission_is_repaired_without_reusing_old_value(
+    tmp_path, record, mode
+):
     from brain.graph.execution import GuardStop
     from brain.graph.matching import required_verification, retain_verification
+    from brain.graph.schemas import Choice, Decision
     from brain.observe.summary import describe
     from brain.visual.markers import Marker, build_markers, ground_meanings
     from brain.visual.scene import SemanticDetection, bind_scene
@@ -1592,18 +1555,22 @@ def test_query_verification_omission_is_repaired_without_reusing_old_value(tmp_p
         else model_controls(initial.controls[:1], {"markers": [m.model_dump() for m in markers]})
     }
     brain, model, _, _, _, _ = setup_brain(tmp_path, record, [supplemental])
-    brain.phase = "duplicate_query"
     brain.observation = before
-    brain.query_descriptor = describe(
-        next(e for e in before.elements if e.role == "edit"), before.elements
+    target = next(e for e in before.elements if e.role == "edit")
+    decision = Decision(
+        screen_kind="query",
+        operation="act",
+        intent="fill",
+        subgoal="enter identifier",
+        reason="user input",
+        action=Choice(type="set_text", ref=target.ref, source="hbl_no"),
     )
-    brain.query_window_handle = before.active_window.handle
-    brain.query_submitted = brain.query_value_verified = True
-    if mode.startswith(("renamed", "resized")):
-        brain.query_input_anchor = (
-            before,
-            next(e.ref for e in before.elements if e.role == "edit"),
-        )
+    brain.pending = {
+        "decision": decision,
+        "choice": decision.action,
+        "descriptor": describe(target, before.elements),
+        "before_observation": before,
+    }
     required = required_verification(brain)
     if mode in {"changed_value", "renamed_wrong_value", "resized_wrong_value"}:
         blocks[-1] = blocks[-1].model_copy(update={"text": "DIFFERENT-NOW"})
@@ -1625,11 +1592,11 @@ def test_query_verification_omission_is_repaired_without_reusing_old_value(tmp_p
     }
     matched = ScreenMatch(
         screen_kind="query",
-        procedure_step="check-duplicate",
+        procedure_step="task-action",
         controls=[table, field]
         if mode == "present" or mode.startswith(("renamed", "resized"))
         else [table],
-        operation="duplicate_clear",
+        operation="stop",
         grid=table_id,
         evidence=[{"field": "hbl_no", "target": field_id}],
     )
@@ -1644,15 +1611,10 @@ def test_query_verification_omission_is_repaired_without_reusing_old_value(tmp_p
     )
     assert repaired.operation == matched.operation and repaired.steps == matched.steps
     brain.observation = bind_scene(current_wire, blocks, ground_meanings(repaired, markers, blocks))
-    if mode in {"changed_value", "renamed_wrong_value", "resized_wrong_value"}:
-        assert not brain._current_query_matches()
-    else:
-        assert brain._current_query_matches()
-        decision = compile_match(repaired, brain.observation, DecisionResponse).to_decision()
-        assert not decision.evidence
-        assert repaired.evidence  # Retained as observations, not final completion proof.
-        assert brain._check_duplicate(decision) == {"next": "observe"}
-        assert brain.phase == "enter" and brain.duplicate_clear
+    current_input = next(e for e in brain.observation.elements if e.role == "edit")
+    accepted = brain._record_verified_field("hbl_no", current_input)
+    assert accepted is (mode not in {"changed_value", "renamed_wrong_value", "resized_wrong_value"})
+    assert ("hbl_no" in brain.verified) is accepted
 
 
 def test_model_only_review_delegates_required_verification_without_repair_call(tmp_path, record):
@@ -1969,24 +1931,9 @@ def test_save_matching_receives_same_action_contract_as_validator(tmp_path, reco
 
 @pytest.mark.parametrize("phase", ["duplicate_query", "final_query"])
 def test_pending_query_input_proposes_search_without_claiming_verification(tmp_path, record, phase):
-    import json
-
-    from brain.graph.matching import TASK_RULES, match_screen
     from brain.graph.schemas import Choice, Decision
 
-    brain, model, _, _, _, _ = setup_brain(
-        tmp_path,
-        record,
-        [
-            response(
-                fixture()[-1],
-                screen_kind="query",
-                procedure_step="search-duplicate" if phase == "duplicate_query" else "search-final",
-                steps=[],
-                operation="stop",
-            )
-        ],
-    )
+    brain, *_ = setup_brain(tmp_path, record, [])
     brain.phase = phase
     brain.decision = Decision(
         screen_kind="query",
@@ -1997,42 +1944,21 @@ def test_pending_query_input_proposes_search_without_claiming_verification(tmp_p
         action=Choice(type="set_text", ref="e1", source="hbl_no"),
     )
     brain.pending = {"decision": brain.decision}
-    match_screen(
-        brain,
-        {
-            "ocr": [b.model_dump() for b in fixture()[0]],
-            "markers": [m.model_dump() for m in fixture()[2]],
-        },
-        None,
-    )
-    state = json.loads(model.prompts[-1][len(TASK_RULES) :])
-    assert state["notebook"]["query_value_verified"] is False
-    assert state["proposal_after_verification"]["checkpoint"] == "search"
-    assert "search" in state["execution"]["allowed_intents"]
-    assert "query_input" not in state["execution"]["allowed_intents"]
-    assert "procedure" not in state
-    assert "search" in state["capabilities"][0]["actions"]
-    assert "query_input" not in state["capabilities"][0]["actions"]
-    assert brain.query_value_verified is False
+    from brain.graph.context import execution_context
+
+    brain.settings = brain.settings.model_copy(update={"screen_matching": False})
+    brain.task_instruction = None
+    contract = execution_context(brain, anticipate=True)
+    assert contract["checkpoint"] == "search" and contract["conditional"]
+    assert "search" in contract["allowed_intents"]
+    assert "query_input" not in contract["allowed_intents"]
+    assert not brain.query_value_verified
 
 
 def test_delivered_final_search_exposes_only_evidence_step(tmp_path, record):
-    from brain.graph.matching import TASK_RULES, match_screen
     from brain.graph.schemas import Choice, Decision
 
-    brain, model, _, _, _, _ = setup_brain(
-        tmp_path,
-        record,
-        [
-            response(
-                fixture()[-1],
-                screen_kind="query",
-                procedure_step="verify-final",
-                steps=[],
-                operation="stop",
-            )
-        ],
-    )
+    brain, *_ = setup_brain(tmp_path, record, [])
     brain.phase = "final_query"
     brain.duplicate_clear = brain.save_issued = True
     brain.query_value_verified = brain.query_submitted = True
@@ -2046,21 +1972,13 @@ def test_delivered_final_search_exposes_only_evidence_step(tmp_path, record):
     )
     brain.pending = {"decision": brain.decision}
 
-    match_screen(
-        brain,
-        {
-            "ocr": [block.model_dump() for block in fixture()[0]],
-            "markers": [marker.model_dump() for marker in fixture()[2]],
-        },
-        None,
-    )
+    from brain.graph.context import execution_context
 
-    state = json.loads(model.prompts[-1][len(TASK_RULES) :])
-    capability = state["capabilities"][0]
-    assert capability["capability_id"] == "task-action"
-    assert "complete" in capability["actions"]
-    assert not {"query_input", "search"} & set(capability["actions"])
-    assert state["execution"]["checkpoint"] == "final_row_evidence"
+    brain.settings = brain.settings.model_copy(update={"screen_matching": False})
+    brain.task_instruction = None
+    contract = execution_context(brain, anticipate=True)
+    assert contract["checkpoint"] == "final_row_evidence"
+    assert not {"query_input", "search"} & set(contract["allowed_intents"])
 
 
 @pytest.mark.parametrize("pending", [False, True])
@@ -2185,37 +2103,18 @@ def test_input_outside_explicit_capability_scope_is_rejected(tmp_path, record):
 
 
 def test_final_row_matching_receives_visibility_and_action_contract(tmp_path, record):
-    import json
 
-    from brain.graph.matching import TASK_RULES, match_screen
-
-    brain, model, _, _, _, _ = setup_brain(
-        tmp_path,
-        record,
-        [
-            response(
-                fixture()[-1],
-                screen_kind="query",
-                procedure_step="verify-final",
-                steps=[],
-                operation="stop",
-            )
-        ],
-    )
+    brain, *_ = setup_brain(tmp_path, record, [])
     brain.phase = "final_query"
     brain.query_value_verified = brain.query_submitted = True
-    match_screen(
-        brain,
-        {
-            "ocr": [b.model_dump() for b in fixture()[0]],
-            "markers": [m.model_dump() for m in fixture()[2]],
-        },
-        None,
-    )
-    state = json.loads(model.prompts[-1][len(TASK_RULES) :])
-    assert "search" not in state["execution"]["allowed_intents"]
-    assert "window expansion" in state["execution"]["guidance"]
-    assert "reuse earlier refs" in state["execution"]["guidance"]
+    from brain.graph.context import execution_context
+
+    brain.settings = brain.settings.model_copy(update={"screen_matching": False})
+    brain.task_instruction = None
+    contract = execution_context(brain, anticipate=True)
+    assert "search" not in contract["allowed_intents"]
+    assert "window expansion" in contract["guidance"]
+    assert "reuse earlier refs" in contract["guidance"]
 
 
 @pytest.mark.parametrize(
@@ -2396,20 +2295,3 @@ def test_control_cleanup_preserves_current_evidence_regardless_of_prior_verifica
     assert "unbound_action_evidence_omitted" not in checks
     assert "stale_verified_evidence_omitted" not in checks
     assert ("hbl_no" in brain.verified) is verified
-
-
-@pytest.mark.parametrize(
-    ("phase", "submitted", "required"),
-    [("final_query", True, False), ("final_query", False, True), ("duplicate_query", True, True)],
-)
-def test_query_input_requirement_ends_only_after_final_search(
-    tmp_path, record, phase, submitted, required
-):
-    from brain.graph.matching import required_verification
-
-    brain, *_ = setup_brain(tmp_path, record, [])
-    brain.phase = phase
-    brain.query_submitted = submitted
-    brain.query_value_verified = True
-    brain.query_descriptor = {"role": "edit", "name": "Identifier"}
-    assert bool(required_verification(brain)) is required

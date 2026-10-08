@@ -20,7 +20,7 @@ def remember(brain: Brain) -> dict:
         "goal": brain.goal,
         "plan": brain.plan,
         "phase": brain.phase,
-        "task_path": ("task-instruction.json" if brain.task_instruction else None),
+        "task_path": "task-instruction.json",
         "recent_feedback": brain.feedback[-max_history:],
         "recent_turns": (
             [t.model_dump(mode="json") for t in rolling.recent_turns] if rolling is not None else []
@@ -33,31 +33,16 @@ def remember(brain: Brain) -> dict:
         "result": brain.result.model_dump(mode="json") if brain.result else None,
     }
 
-    if brain.task_instruction is not None:
-        memo.update(
-            {
-                "inputs_path": "record.json",
-                "proposed_capability": brain.procedure_step,
-                "available_inputs": sorted(brain.values),
-                "verified_inputs": sorted(brain.verified),
-                "remaining_inputs": sorted(set(brain.values) - set(brain.verified)),
-            }
-        )
-        methods = brain.methods
-        if methods.enabled:
-            memo["method_progress"] = methods.context()
-    else:
-        memo.update(
-            {
-                "record_path": "record.json",
-                "proposed_procedure_step": brain.procedure_step,
-                "verified_fields": sorted(brain.verified),
-                "remaining_fields": sorted(set(brain.values) - set(brain.verified)),
-                "query_value_verified": brain.query_value_verified,
-                "query_submitted": brain.query_submitted,
-                "duplicate_clear": brain.duplicate_clear,
-                "save_issued": brain.save_issued,
-            }
-        )
+    memo.update(
+        {
+            "inputs_path": "record.json",
+            "proposed_capability": brain.procedure_step,
+            "available_inputs": sorted(brain.values),
+            "verified_inputs": sorted(brain.verified),
+            "remaining_inputs": sorted(set(brain.values) - set(brain.verified)),
+        }
+    )
+    if brain.methods.enabled:
+        memo["method_progress"] = brain.methods.context()
     atomic_write_json(brain.case_dir / "task-notebook.json", memo)
     return memo

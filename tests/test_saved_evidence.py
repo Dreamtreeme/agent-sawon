@@ -501,37 +501,6 @@ def test_linked_read_only_detail_accepts_exact_current_value_text(record):
     assert result.status == "ready"
 
 
-def test_graph_review_completes_from_unambiguous_current_inputs_without_rematch(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [])
-    brain.phase = "final_query"
-    brain.save_issued = brain.duplicate_clear = True
-    brain.query_submitted = brain.query_value_verified = True
-    brain.saved_evidence.begin()
-    values = brain.values
-    q = query(values, omit=("description", "container_no"))
-    brain.observation = q
-    brain.review = None
-    assert brain._review_node({}) == {"next": "select"}
-    brain.saved_evidence.after_action(action(q), q)
-    d = detail({"hbl_no": values["hbl_no"], "description": values["description"]})
-    brain.observation = d
-    brain.review = None
-    brain.saved_bindings = (
-        str(d.obs_id),
-        {"hbl_no": ref("hbl_no"), "description": ref("description")},
-    )
-    assert brain._review_node({}) == {"next": "select"}
-    brain.saved_evidence.after_action(action(d, "select_tab", "tab"), d)
-    last = detail({"container_no": values["container_no"]})
-    brain.observation = last
-    brain.review = None
-    assert brain._review_node({}) == {"next": "finish"}
-    assert brain.result.status == "success"
-    assert brain.query_descriptor is None
-    assert (tmp_path / "saved-evidence.json").exists()
-    assert not brain.model.prompts
-
-
 def test_generic_task_review_joins_post_save_query_and_detail_tabs(tmp_path, record):
     task_instruction = TaskInstruction(
         name="Register shipment",
@@ -566,6 +535,9 @@ def test_generic_task_review_joins_post_save_query_and_detail_tabs(tmp_path, rec
     assert brain._review_node({}) == {"next": "finish"}
     assert brain.result.status == "success"
     assert brain.result.reason == "saved_and_verified_awaiting_approval"
+    assert brain.query_descriptor is None
+    assert (tmp_path / "saved-evidence.json").exists()
+    assert not brain.model.prompts
 
 
 def test_generic_visual_task_starts_saved_evidence_after_save_review(tmp_path, record):

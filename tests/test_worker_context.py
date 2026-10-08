@@ -18,9 +18,7 @@ from brain.visual.scene import bind_scene
 @pytest.mark.parametrize(
     "phase,step,verified,submitted",
     [
-        ("duplicate_query", "enter-duplicate-key", False, False),
-        ("final_query", "search-final", True, False),
-        ("final_query", "verify-final", True, True),
+        ("task", "task-action", False, False),
         ("save_result", "inspect-save", False, False),
     ],
 )
@@ -226,7 +224,7 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
         ],
     )
     brain, model, *_ = setup_brain(tmp_path, record, [combined])
-    brain.phase = "enter"
+    brain.phase = "task"
     brain.duplicate_clear = True
     basics = {"hbl_no", "mbl_no", "packages.count", "packages.unit", "pol"}
     brain.verified = {field: f"ref-{field}" for field in basics}
@@ -256,7 +254,7 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
     state = json.loads(model.prompts[-1][len(TASK_RULES) :])
     assert matched.procedure_step == "task-action"
     assert "select_tab" in state["capabilities"][0]["actions"]
-    assert state["execution"]["conditional"]
+    assert state["execution"]["pending_actions"] == [{"intent": "select_option", "source": None}]
     assert "shipper" not in brain.verified
     assert state["execution"]["pending_actions"][0]["intent"] == "select_option"
 

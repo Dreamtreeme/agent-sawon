@@ -506,20 +506,6 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
 def required_verification(brain) -> list[dict]:
     """Carry identities and transient input regions, never previously read values."""
     required = []
-    if (
-        brain.query_value_verified
-        and brain.query_descriptor is not None
-        and not (brain.phase == "final_query" and brain.query_submitted)
-    ):
-        required.append(
-            {"source": "hbl_no", "screen": "query", "descriptor": brain.query_descriptor}
-        )
-    if required and getattr(brain, "query_input_anchor", None) is not None:
-        before, ref = brain.query_input_anchor
-        target = next((e for e in before.elements if e.ref == ref), None)
-        if target is not None:
-            required[-1]["input_region"] = list(target.bbox)
-            required[-1]["input_image_size"] = [before.screenshot.width, before.screenshot.height]
     if brain.pending is not None:
         execution = brain.pending.get("execution")
         delivered = execution.delivered if execution else [brain.pending]
@@ -537,6 +523,10 @@ def required_verification(brain) -> list[dict]:
                     target = next((e for e in before.elements if e.ref == item["choice"].ref), None)
                     if target is not None:
                         entry["input_region"] = list(target.bbox)
+                        entry["input_image_size"] = [
+                            before.screenshot.width,
+                            before.screenshot.height,
+                        ]
                 if entry not in required:
                     required.append(entry)
     return required
@@ -1084,10 +1074,6 @@ def task_action_contract(brain, contract: dict, active_fields: set[str]) -> Proc
     if "credential" in actions:
         actions.remove("credential")
         actions.add("login")
-    if brain.phase == "duplicate_query" and contract["checkpoint"] == "duplicate_result_evidence":
-        actions.update({"duplicate_clear", "duplicate_found"})
-    if brain.phase == "final_query" and contract["checkpoint"] == "final_row_evidence":
-        actions.add("complete")
     if brain.phase == "task":
         actions.add("complete")
     instruction = brain.task_instruction
@@ -1143,7 +1129,6 @@ def match_screen(
             if item["intent"] == "fill" and item["source"] in brain.values
         }
     )
-    remaining_inputs = contract.get("remaining_inputs", contract.get("remaining_fields", []))
     # Generic input keys are reusable across screens. Keep action eligibility
     # broad while exposing a separate, model-owned coverage ledger. Calling
     # every source "remaining" forever made matching values look unfinished
@@ -1160,18 +1145,9 @@ def match_screen(
     # Re-adding them to action eligibility lets a fallback plan repeat work
     # that the executor has already delivered.
     active_fields = set(available_inputs)
-    verification_fields = set(pending_verification_fields)
     verified_fields = set(brain.verified)
-    if contract["conditional"] and brain.phase == "enter":
-        verified_fields |= set(brain.values) - set(remaining_inputs)
     candidates = [task_action_contract(brain, contract, active_fields)]
     record = brain.values
-    if brain.phase == "enter":
-        procedure_fields = {
-            field for step in candidates for field in step.field_scope if field in active_fields
-        }
-        exposed_fields = (procedure_fields or active_fields) | verification_fields
-        record = {field: brain.values[field] for field in sorted(exposed_fields)}
     # [수정] 3계층 컨텍스트 매니저로부터 스크래치패드(Layer 1)와 롤링 버퍼(Layer 2) 추출
     context_layers = brain.rolling_context.export_prompt_context(
         current_goal=brain.goal,
@@ -1225,9 +1201,7 @@ def match_screen(
                 "query_value_verified": brain.query_value_verified,
                 "query_submitted": brain.query_submitted,
                 "save_issued": brain.save_issued,
-                "record": record
-                if brain.phase in {"enter", "save_result", "final_query"}
-                else {"hbl_no": brain.values["hbl_no"]},
+                "record": record,
             }
         )
     state = {
