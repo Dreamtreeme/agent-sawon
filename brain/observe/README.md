@@ -1,5 +1,12 @@
 # Observation summaries (M1 stage 2)
 
+This module documents the retained non-screen-matching/UIA summary path. The primary
+`visual_only` worker does not send these summaries to the model; it captures the
+allowlisted ERP window and uses PaddleOCR, OmniParser and the visual marker contract
+described in [brain/visual/README.md](../visual/README.md). The deterministic
+same-row completion rule below therefore applies to the retained non-screen path,
+not to Luna's model-led visual evidence policy.
+
 `flat_fields` lists visible interactive elements with refs, role, name, value,
 label hint and parent ref. `label_grouped` additionally derives a nearby label
 and an ordered region/ancestor chain; this is the configurable default (D3 proposed).

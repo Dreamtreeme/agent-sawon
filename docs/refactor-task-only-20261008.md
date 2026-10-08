@@ -1,5 +1,10 @@
 # 리팩토링 1단계: 화면 작업자 task 진입 경로 통합
 
+> **후속 상태:** 이 문서는 1단계 완료 시점의 기록이다. 이후 공유 `ProcedureStep`
+> 후보 계약은 한 개의 `ActionCapability`로 교체됐다. 사용자 교육
+> `TaskInstruction.procedure`와 응답·캐시의 `procedure_step` 직렬화 필드는 유지한다.
+> 현재 계약과 검증은 [잔여 계약 정리](runtime-residual-fixes-20261008.md)를 따른다.
+
 2026-10-08 사용자 승인 계획의 1단계 완료 기록. 실행 기준선은 로컬 커밋 `fcc78dd`이며, 이전에 검증한 미커밋 정리 작업을 이번 삭제와 분리해 보존했다.
 
 ## 제거한 코드
@@ -16,7 +21,8 @@
 ## 유지한 계약
 
 - `TaskInstruction.procedure`: 사용자가 가르친 화면별 순서·행동·완료 조건.
-- 현재 capability 생성에 쓰는 `ProcedureStep`, 응답/캐시의 `procedure_step` 직렬화 필드. 구형 로더와 다른 공유 계약이며 이번에 이름 변경·캐시 변환을 수행하지 않았다.
+- 당시 capability 생성에 쓰던 `ProcedureStep`과 응답/캐시의 `procedure_step`
+  직렬화 필드. 전자는 후속 단계에서 `ActionCapability`로 교체됐고 후자는 유지됐다.
 - task 교육 해시, 현재 화면과 대상 연결, 캐시·방법 실행, 증거 기록, 비용·relay 계약.
 - 비 화면 매칭 작업자의 기존 policy phase. 이 경로까지 제거한 것은 아니다.
 

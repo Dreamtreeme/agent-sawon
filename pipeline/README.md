@@ -7,7 +7,7 @@ truth sidecars, ERP internals, or unrelated sibling files.
 
 ```powershell
 python -m pip install -e '.[pipeline,ocr]'
-python -m pipeline.run --manifest ../agent-sawon-bench/cases/example/input/manifest.json --case-dir cases/document-example --model-config config/models.lite.toml --env .env
+python -m pipeline.run --manifest ../agent-sawon-bench/cases/example/input/manifest.json --case-dir cases/document-example --model-config config/models.toml --env .env
 ```
 
 Alternatively pass `--hbl`, `--invoice` and `--packing-list` explicitly. Missing
@@ -126,7 +126,7 @@ older evidence remains unchanged rather than being silently rescored.
 Repeated measured development campaigns run through the same bounded pipeline:
 
 ```powershell
-python -m pipeline.measure --evaluation-manifest cases/evaluation-manifest.json --output cases/document-repeat-run --config config/pipeline.toml --model-config config/models.lite.toml --env .env --repeats 3 --max-cost-usd 1
+python -m pipeline.measure --evaluation-manifest cases/evaluation-manifest.json --output cases/document-repeat-run --config config/pipeline.toml --model-config config/models.toml --env .env --repeats 3 --max-cost-usd 1
 ```
 
 The manifest contains `scenario`, explicit input `manifest`, and evaluation-only

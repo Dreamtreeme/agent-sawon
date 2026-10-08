@@ -1,7 +1,7 @@
 # Worker runtime
 
 `python -m brain.run` loads the record and user task, then runs the four-node
-`Observation → Decision → Execution → Review` graph. Screen matching requires
+`Observation → Decision → Review → Execution` graph. Screen matching requires
 `--task`/`task_path`; `TaskInstruction.procedure` preserves user-taught steps.
 There is no separate legacy Procedure loader.
 
@@ -18,15 +18,15 @@ There is no separate legacy Procedure loader.
   grounding and plan validation. Action and evidence targets must both be bound.
   Current evidence is recorded before the execution review gate. Missing semantic
   definitions are repaired without silently deleting current evidence.
-- Execution prepares policy-checked actions, then calls `execute_plan` with an
-  `ExecutionRequest`, relay and log. The transport returns an `ExecutionResult`;
-  it never receives Brain. The worker applies the acknowledged prefix once.
-  Sequential actions renew captures lazily; direct fill batches share one capture.
-  Delivery is not proof of input correctness, authentication or persistence.
 - Review owns the configured evidence policy and the one-use execution permission.
   `visual_model_only_review` delegates semantic business evidence to the model;
   other profiles retain deterministic field/save/query checks. No mode treats a
   successful relay response alone as business completion.
+- Execution consumes that permission, prepares policy-checked actions, then calls `execute_plan` with an
+  `ExecutionRequest`, relay and log. The transport returns an `ExecutionResult`;
+  it never receives Brain. The worker applies the acknowledged prefix once.
+  Sequential actions renew captures lazily; direct fill batches share one capture.
+  Delivery is not proof of input correctness, authentication or persistence.
 
 `MethodRuntime` receives explicit task/input context, `WorkerState.methods`, and
 library/output services. It proposes a `ScreenMatch`; it cannot dispatch actions.
@@ -38,7 +38,10 @@ its reuse provenance; an adapted plan enters the normal learning path.
 
 `ScreenMatch` and `ScreenPlan` share their action/evidence fields; only ScreenMatch
 adds semantic controls and the image-request flag. Serialized field names remain
-compatible. `ProcedureStep` is the shared capability envelope, not a fixed ERP route.
+compatible. Generic task mode exposes exactly one `ActionCapability` in the model
+state as `capability`; it contains the current input scope, allowed actions, goal and
+completion condition. `TaskInstruction.procedure` remains user education, while the
+serialized `procedure_step` field remains only for response/cache compatibility.
 
 The graph still supports non-screen-matching policy phases. Those paths were not
 removed by the task-only visual refactor. Same-image catalog reuse and separately
@@ -50,4 +53,5 @@ measured ModelClient and existing cost budgets. Secrets resolve only when wiring
 relay action and are redacted from action logs. Logs remain append-only, status
 writes atomic, and success leaves the case awaiting human approval.
 
-Validation and stage commits: [2026-10-08 runtime refactor](../../docs/refactor-runtime-stages-20261008.md).
+Validation and stage commits: [2026-10-08 runtime refactor](../../docs/refactor-runtime-stages-20261008.md)
+and [residual contract cleanup](../../docs/runtime-residual-fixes-20261008.md).

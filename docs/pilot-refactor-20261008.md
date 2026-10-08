@@ -54,11 +54,11 @@
 
 ## 증거와 실행 조건
 
-[최종 상세 검증 영상36초](C:/Users/psg/Desktop/개발/agent-sawon-bench/evidence/recordings/core-pilot-20261008-141420-refactor/erp-final-review.mp4)
-
-[전체 녹화](C:/Users/psg/Desktop/개발/agent-sawon-bench/evidence/recordings/core-pilot-20261008-141420-refactor/screen.mp4) · [상세 측정 JSON](C:/Users/psg/Desktop/개발/agent-sawon-bench/evidence/runs/core-pilot-20261008-141420-refactor/pilot-metrics.json)
-
-[작업자 결과](C:/Users/psg/Desktop/개발/agent-sawon/cases/core-pilot-20261008-141420-refactor/b924f21eb8c93ee36d70/case-b924679b8f3d4656bdf420f8fdf3354e/case/result.json)
+당시 로컬 전용 증거는 bench의
+`evidence/recordings/core-pilot-20261008-141420-refactor/`와
+`evidence/runs/core-pilot-20261008-141420-refactor/`, 코어의
+`cases/core-pilot-20261008-141420-refactor/` 아래에 보관했다. 이 경로들은 Git 추적
+대상이 아니므로 현재 checkout에 없을 수 있다. 측정 요약과 판정은 이 문서에 보존한다.
 
 원본 녹화180–216초 구간을 관찰의 실제 창 영역으로 잘라 최종 상세 검증 영상을 만들었다.
 전체 녹화는 로컬에만 보관한다. 하네스와 녹화 프로세스는 정상 종료했고 실행 관련 잔류 프로세스가 없다.
