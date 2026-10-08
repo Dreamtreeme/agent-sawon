@@ -37,6 +37,7 @@ class DetectorSettings(BaseModel):
     python: str | None = None
     device: str = "cpu"
     confidence: float = Field(default=0.15, gt=0, le=1, allow_inf_nan=False)
+    image_size: int = Field(default=640, ge=320, le=1920)
     max_dimension: int = Field(default=1920, ge=640, le=4096)
     timeout_seconds: float = Field(default=120, gt=0, le=300, allow_inf_nan=False)
     refinement_enabled: bool = True
@@ -131,6 +132,7 @@ class OmniParserDetector(MeasuredModelClient):
                 "caption_batch_size": self.settings.caption_batch_size,
                 "device": self.settings.device,
                 "confidence": self.settings.confidence,
+                "image_size": self.settings.image_size,
                 "max_dimension": self.settings.max_dimension,
                 "regions": json.loads(prompt)["regions"],
                 "ocr_boxes": json.loads(prompt)["ocr_boxes"],

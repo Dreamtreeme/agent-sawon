@@ -22,6 +22,7 @@ use_v2 = true
 weights = "../data/models/omniparser-v2/icon_detect/model.pt"
 caption_weights = "../data/models/omniparser-v2/icon_caption"
 caption_batch_size = 16
+image_size = 640
 python = "C:/Users/psg/Desktop/개발/agent-sawon/.tools/vision-venv/Scripts/python.exe"
 
 [visual_match_cache]

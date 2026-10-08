@@ -182,7 +182,7 @@ class DetectorSession:
                 conf=request["confidence"],
                 verbose=False,
                 device=device,
-                imgsz=1280 if regions or request.get("use_v2") else 640,
+                imgsz=1280 if regions else request.get("image_size", 640),
             )
 
             for result in results:

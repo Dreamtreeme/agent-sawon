@@ -239,7 +239,7 @@ def test_detector_full_and_refinement_share_model(monkeypatch, tmp_path, caption
 
         def __call__(self, image, **kwargs):
             assert kwargs["device"] == "cuda:0"
-            assert kwargs["imgsz"] == (1280 if captions or len(inferred) == 2 else 640)
+            assert kwargs["imgsz"] == (1280 if len(inferred) == 2 else 960)
             inferred.append((image.size, image.getpixel((0, 0))))
             box = SimpleNamespace(
                 xyxy=[SimpleNamespace(cpu=lambda: SimpleNamespace(tolist=lambda: [2, 2, 10, 10]))],
@@ -268,6 +268,7 @@ def test_detector_full_and_refinement_share_model(monkeypatch, tmp_path, caption
         device="cuda:0",
         image=str(first),
         confidence=0.15,
+        image_size=960,
         max_dimension=640,
         refinement_scale=2,
         regions=[],
