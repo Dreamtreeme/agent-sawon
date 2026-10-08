@@ -2259,16 +2259,7 @@ class Brain:
                 failed = self.unproductive_navigation.setdefault(observed_state, [])
                 if target not in failed:
                     failed.append(target)
-            if "exploration_action_key" in pending:
-                attempt = ExplorationAttempt(
-                    state_key=pending["source_navigation_state"],
-                    goal_key=pending["exploration_goal_key"],
-                    action_key=pending["exploration_action_key"],
-                    action=pending["exploration_action"],
-                    outcome="no_change",
-                )
-                self.exploration.record(attempt)
-                self._last_exploration_failure_key = attempt.action_key
+            self._record_exploration_failure(pending, "no_change")
             return self._fail("navigation_no_progress"), False
         if self.navigation_history.observe(
             pending["source_navigation_state"],
@@ -2281,16 +2272,7 @@ class Brain:
             ):
                 self.execution_authorized = True
                 return "execution", True
-            if "exploration_action_key" in pending:
-                attempt = ExplorationAttempt(
-                    state_key=pending["source_navigation_state"],
-                    goal_key=pending["exploration_goal_key"],
-                    action_key=pending["exploration_action_key"],
-                    action=pending["exploration_action"],
-                    outcome="cycle",
-                )
-                self.exploration.record(attempt)
-                self._last_exploration_failure_key = attempt.action_key
+            self._record_exploration_failure(pending, "cycle")
             return self._fail("navigation_cycle"), True
         self._record_progress("navigation_state:" + observed_state, business=False)
         self.log.append(
@@ -2303,6 +2285,21 @@ class Brain:
             },
         )
         return None, True
+
+    def _record_exploration_failure(
+        self, pending: PendingAction, outcome: Literal["no_change", "cycle"]
+    ) -> None:
+        if "exploration_action_key" not in pending:
+            return
+        attempt = ExplorationAttempt(
+            state_key=pending["source_navigation_state"],
+            goal_key=pending["exploration_goal_key"],
+            action_key=pending["exploration_action_key"],
+            action=pending["exploration_action"],
+            outcome=outcome,
+        )
+        self.exploration.record(attempt)
+        self._last_exploration_failure_key = attempt.action_key
 
     def _verify_selected_option(
         self,

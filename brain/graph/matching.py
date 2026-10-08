@@ -276,6 +276,10 @@ class MatchSelection:
     used_image: bool
 
 
+def write_match_artifact(services: MatchServices, kind: str, value: BaseModel) -> None:
+    atomic_write_json(services.case_dir / "matching" / f"{uuid4().hex}-{kind}.json", value)
+
+
 SCREEN_BOUNDARY_BATCH_RULES = """
 Return exactly one CURRENT-screen action boundary. A login boundary is one atomic batch: fill
 every remaining credential source into its grounded input, then click the grounded login command
@@ -747,9 +751,7 @@ def retain_action_targets(
     )
     if repaired.steps != original_steps:
         raise AssertionError("action_target_grounding_changed_plan")
-    atomic_write_json(
-        services.case_dir / "matching" / f"{uuid4().hex}-target-grounding.json", repaired
-    )
+    write_match_artifact(services, "target-grounding", repaired)
     services.log.append(
         "verify",
         payload={
@@ -1331,7 +1333,7 @@ def select_match_response(
         grounded = request.grounded_interpretation
         plan_state = {
             **prepared.state,
-            "screen": model_screen(screen),
+            "screen": prepared.state["screen"],
             "grounded_interpretation": {
                 "screen_kind": grounded.screen_kind,
                 "controls": model_controls(grounded.controls, screen),
@@ -1347,9 +1349,7 @@ def select_match_response(
             page=page,
         )
         response = ScreenMatch.model_validate({**grounded.model_dump(), **plan.model_dump()})
-        atomic_write_json(
-            services.case_dir / "matching" / f"{uuid4().hex}-cached-plan.json", response
-        )
+        write_match_artifact(services, "cached-plan", response)
         services.log.append(
             "verify",
             payload={
@@ -1359,12 +1359,12 @@ def select_match_response(
         )
     else:
         response = services.call(prepared.prompt, ScreenMatch, page=page)
-        atomic_write_json(services.case_dir / "matching" / f"{uuid4().hex}-markers.json", response)
+        write_match_artifact(services, "markers", response)
         response = local_response(response, screen)
     response = omit_nonblocking_image_request(services, response, screen)
     used_image = cache_hit is None and method_proposal is None
     if response.needs_image:
-        image_state = {**prepared.state, "screen": model_screen(screen)}
+        image_state = {**prepared.state, "screen": prepared.state["screen"]}
         response = services.call(
             TASK_RULES
             + prepared.taught_rules
@@ -1374,7 +1374,7 @@ def select_match_response(
             ScreenMatch,
             page=page,
         )
-        atomic_write_json(services.case_dir / "matching" / f"{uuid4().hex}-image.json", response)
+        write_match_artifact(services, "image", response)
         response = local_response(response, screen)
         response = omit_nonblocking_image_request(services, response, screen)
         if response.needs_image:
@@ -1399,7 +1399,7 @@ def validate_or_replan(
         interpretation = response.interpretation()
         correction_state = {
             **prepared.state,
-            "screen": model_screen(request.screen),
+            "screen": prepared.state["screen"],
             "grounded_interpretation": {
                 "screen_kind": interpretation.screen_kind,
                 "controls": model_controls(interpretation.controls, request.screen),
@@ -1425,10 +1425,7 @@ def validate_or_replan(
         corrected = prepare_match_plan(
             request, services, corrected, prepared.capability, active_fields
         )
-        atomic_write_json(
-            services.case_dir / "matching" / f"{uuid4().hex}-action-correction.json",
-            corrected,
-        )
+        write_match_artifact(services, "action-correction", corrected)
         services.log.append(
             "verify",
             payload={
@@ -1475,7 +1472,7 @@ def ground_match_response(
                         "capability": prepared.capability.model_dump(),
                         "notebook": prepared.notebook,
                         "execution": prepared.contract,
-                        "screen": model_screen(screen),
+                        "screen": prepared.state["screen"],
                         "controls": model_controls(response.controls, screen),
                     },
                     ensure_ascii=False,
