@@ -264,7 +264,8 @@ def test_generic_search_does_not_require_or_mutate_legacy_query_state(tmp_path):
     brain.decision = search
     from brain.graph.execution import ActionPlan
 
-    assert brain._execute_plan(ActionPlan.single(search)) == {"next": "verify"}
+    assert brain._execute_plan(ActionPlan.single(search)) == "observation"
+    assert brain.pending is not None
 
     assert not brain.query_value_verified
     assert not brain.query_submitted
@@ -306,7 +307,7 @@ def test_model_only_review_accepts_model_bound_completion_without_value_recheck(
         }
     ).to_decision()
 
-    assert brain._check_complete(complete) == {"next": "finish"}
+    assert brain._check_complete(complete) == "finish"
     assert brain.result.status == "success"
     event = next(
         event
@@ -465,7 +466,7 @@ def test_surface_conflict_during_plan_preflight_reobserves_for_recovery(tmp_path
     ).to_decision()
     brain.execution_authorized = True
 
-    assert brain._act_node({}) == {"next": "observe"}
+    assert brain._act_node() == "observation"
     assert brain.result is None
     assert brain.feedback[-1]["reason"] == "input_surface_claimed_by_other_field"
     assert "key/navigation/scroll" in brain.feedback[-1]["required_response"]

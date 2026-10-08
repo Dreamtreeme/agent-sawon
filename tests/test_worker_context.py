@@ -253,7 +253,7 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
 
     state = json.loads(model.prompts[-1][len(TASK_RULES) :])
     assert matched.procedure_step == "task-action"
-    assert "select_tab" in state["capabilities"][0]["actions"]
+    assert "select_tab" in state["capability"]["actions"]
     assert state["execution"]["pending_actions"] == [{"intent": "select_option", "source": None}]
     assert "shipper" not in brain.verified
     assert state["execution"]["pending_actions"][0]["intent"] == "select_option"

@@ -59,7 +59,8 @@ def test_nested_handoff_and_returned_node_state_are_isolated():
     brain._adopt_worker_state(state)
     brain.action_plan.audit["fields"].append("internal")
     assert state["decision"]["action_plan"].audit == {"fields": ["original"]}
-    output = brain._complete_responsibility({"next": "observe"})
+    output = brain._complete_responsibility("observation")
+    assert output["lifecycle"]["route"] == "observation"
     output["progress"].verified["input"]["effects"].append("external")
     output["progress"].rolling_context.mark_milestone("external")
     output["lifecycle"]["steps"] = 100
@@ -67,7 +68,7 @@ def test_nested_handoff_and_returned_node_state_are_isolated():
     assert brain.verified == {"input": {"effects": ["before"]}}
     assert brain.rolling_context.completed_milestones == ["saved"]
     resumed = Brain.__new__(Brain)
-    resumed._adopt_worker_state(brain._complete_responsibility({"next": "observe"}))
+    resumed._adopt_worker_state(brain._complete_responsibility("observation"))
     output["methods"].history.clear()
     assert resumed._worker_state["methods"].history == [{"status": "delivered"}]
     assert resumed.verified == brain.verified

@@ -514,7 +514,7 @@ def test_generic_task_review_joins_post_save_query_and_detail_tabs(tmp_path, rec
     q = query(values, omit=("description", "container_no"))
     brain.observation = q
     brain.review = None
-    assert brain._review_node({}) == {"next": "select"}
+    assert brain._review_node() == "decision"
     brain.saved_evidence.after_action(action(q), q)
     d = detail({"hbl_no": values["hbl_no"], "description": values["description"]})
     brain.observation = d
@@ -523,7 +523,7 @@ def test_generic_task_review_joins_post_save_query_and_detail_tabs(tmp_path, rec
         str(d.obs_id),
         {"hbl_no": ref("hbl_no"), "description": ref("description")},
     )
-    assert brain._review_node({}) == {"next": "select"}
+    assert brain._review_node() == "decision"
     brain.saved_evidence.after_action(action(d, "select_tab", "tab"), d)
     last = detail({"container_no": values["container_no"]})
     brain.observation = last
@@ -532,7 +532,7 @@ def test_generic_task_review_joins_post_save_query_and_detail_tabs(tmp_path, rec
     final_review = brain._current_review()
     assert final_review.missing_fields == ()
     assert final_review.status == "ready"
-    assert brain._review_node({}) == {"next": "finish"}
+    assert brain._review_node() == "finish"
     assert brain.result.status == "success"
     assert brain.result.reason == "saved_and_verified_awaiting_approval"
     assert brain.query_descriptor is None

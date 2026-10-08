@@ -132,7 +132,9 @@ def test_relay_diagnostic_redacts_untrusted_error_text(tmp_path, record):
     assert "PRIVATE" not in (tmp_path / "run_log.jsonl").read_text()
 
 
-@pytest.mark.parametrize("after_blur", ["correct", "wrong_value", "still_focused", "disabled"])
+@pytest.mark.parametrize(
+    "after_blur", ["correct", "wrong_value", "still_focused", "disabled", "relay_failure"]
+)
 def test_caret_recheck_uses_fresh_evidence_without_cleaning_values(tmp_path, record, after_blur):
     class CaretRelay(VisualFixture):
         focused_ref = None
@@ -144,6 +146,8 @@ def test_caret_recheck_uses_fresh_evidence_without_cleaning_values(tmp_path, rec
                 self.focused_ref = "e20"
             elif action.root.type == "key":
                 assert action.root.keys == "tab"
+                if after_blur == "relay_failure":
+                    return result.model_copy(update={"ok": False, "error_code": "input_failed"})
                 self.blurred = True
                 if after_blur != "still_focused":
                     self.focused_ref = None
@@ -192,3 +196,8 @@ def test_caret_recheck_uses_fresh_evidence_without_cleaning_values(tmp_path, rec
     else:
         assert result.status != "success"
         assert not relay.saved
+    if after_blur == "relay_failure":
+        assert any(
+            item["reason"] == "relay_action_failed" for item in brain.feedback if not item["ok"]
+        )
+        assert not relay.blurred

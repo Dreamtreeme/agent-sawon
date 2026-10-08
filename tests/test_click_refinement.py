@@ -121,7 +121,7 @@ def test_execution_rejects_a_decision_that_review_did_not_authorize(tmp_path, re
     before = len(relay.actions)
     brain.execution_authorized = False
 
-    assert brain._act_node({}) == {"next": "finish"}
+    assert brain._act_node() == "finish"
     assert brain.result.reason == "execution_review_required"
     assert len(relay.actions) == before
 
@@ -134,16 +134,18 @@ def test_failed_center_click_refines_once_then_uses_shared_execution_and_verific
         record,
         {"outcome": "retry", "x": 160, "y": 35, "explanation": "Second caption is on the right"},
     )
-    assert brain._act_node({}) == {"next": "verify"}
+    assert brain._act_node() == "observation"
+    assert brain.pending is not None
     assert not model.prompts  # No image request before a failed attempt.
     assert relay.actions[0].root.target.image_point == (110, 35)
-    assert brain._verify_node({}) == {"next": "act"}
+    assert brain._verify_node() == "execution"
     assert len(model.prompts) == 1
-    assert brain._act_node({}) == {"next": "verify"}
+    assert brain._act_node() == "observation"
+    assert brain.pending is not None
     assert relay.actions[1].root.target.image_point == (160, 35)
     assert relay.actions[1].root.target.evidence.startswith("image_refined:")
     assert brain.click_refinement.bound is None
-    assert brain._verify_node({}) == {"next": "review"}
+    assert brain._verify_node() == "review"
     assert relay.changed and len(model.prompts) == 1
     assert any(e.payload.get("check") == "navigation_observed_change" for e in brain.log.read_all())
 
@@ -163,13 +165,13 @@ def test_no_blind_repeated_click_or_repeated_image_request(tmp_path, record, mod
     if mode == "replan":
         answer = {"outcome": "replan", "explanation": "Already selected; do not click again"}
     brain, relay, model = setup(tmp_path, record, answer, success=False, enabled=mode != "disabled")
-    brain._act_node({})
-    outcome = brain._verify_node({})
+    brain._act_node()
+    outcome = brain._verify_node()
     if mode == "still_no_change":
-        assert outcome == {"next": "act"}
-        brain._act_node({})
-        outcome = brain._verify_node({})
-    assert outcome == {"next": "observe"}
+        assert outcome == "execution"
+        brain._act_node()
+        outcome = brain._verify_node()
+    assert outcome == "observation"
     assert len(model.prompts) == (0 if mode == "disabled" else 1)
     assert len(relay.actions) == (2 if mode == "still_no_change" else 1)
     assert brain.feedback[-1]["reason"] == "navigation_no_progress"
@@ -179,10 +181,10 @@ def test_refined_point_still_requires_fresh_unchanged_capture(tmp_path, record):
     brain, relay, model = setup(
         tmp_path, record, {"outcome": "retry", "x": 160, "y": 35, "explanation": "Correct caption"}
     )
-    brain._act_node({})
-    assert brain._verify_node({}) == {"next": "act"}
+    brain._act_node()
+    assert brain._verify_node() == "execution"
     relay.stale = True
-    assert brain._act_node({}) == {"next": "observe"}
+    assert brain._act_node() == "observation"
     assert len(relay.actions) == 1
     assert brain.click_refinement.bound is None
 
@@ -194,7 +196,8 @@ def test_navigation_cycle_requests_detailed_coordinate_inside_merged_tab(tmp_pat
         {"outcome": "retry", "x": 160, "y": 35, "explanation": "Use the right caption"},
         expected_failure="navigation_cycle",
     )
-    assert brain._act_node({}) == {"next": "verify"}
+    assert brain._act_node() == "observation"
+    assert brain.pending is not None
     pending = brain.pending
     assert pending is not None
     target = brain.observation.elements[0]
@@ -232,12 +235,13 @@ def test_repeated_semantic_click_target_requests_detail_despite_changed_ocr_stat
         intent="navigate",
         target_role="button",
     )
-    assert brain._act_node({}) == {"next": "verify"}
+    assert brain._act_node() == "observation"
+    assert brain.pending is not None
     assert brain.pending is not None
     scope = brain.pending["progress_scope"]
     assert not brain.click_refinement.repeated_target(brain.pending, scope)
     relay.changed = True
-    assert brain._verify_node({}) == {"next": "act"}
+    assert brain._verify_node() == "execution"
     assert len(model.prompts) == 1
     assert brain.click_refinement.bound.point == (160, 35)
     assert brain.feedback[-1]["reason"] == "semantic_target_repeated"
@@ -245,9 +249,9 @@ def test_repeated_semantic_click_target_requests_detail_despite_changed_ocr_stat
 
 def test_successful_first_click_has_no_coordinate_model_call(tmp_path, record):
     brain, relay, model = setup(tmp_path, record, {})
-    brain._act_node({})
+    brain._act_node()
     relay.changed = True
-    assert brain._verify_node({}) == {"next": "review"}
+    assert brain._verify_node() == "review"
     assert not model.prompts
 
 
@@ -255,20 +259,20 @@ def test_outside_target_coordinate_is_not_dispatched(tmp_path, record):
     brain, relay, _ = setup(
         tmp_path, record, {"outcome": "retry", "x": 350, "y": 150, "explanation": "Invalid target"}
     )
-    brain._act_node({})
-    assert brain._verify_node({}) == {"next": "finish"}
+    brain._act_node()
+    assert brain._verify_node() == "finish"
     assert brain.result.reason == "refined_click_outside_target"
     assert len(relay.actions) == 1
 
 
 def test_exhausted_grounding_repair_does_not_restart_from_outer_verification(tmp_path, record):
     brain, relay, model = setup(tmp_path, record, {})
-    brain._act_node({})
+    brain._act_node()
 
     def exhausted():
         raise VisualGroundingError("ocr_marker_text_mismatch")
 
     brain._observe = exhausted
-    assert brain._verify_node({}) == {"next": "finish"}
+    assert brain._verify_node() == "finish"
     assert brain.result.reason == "visual_grounding:ocr_marker_text_mismatch"
     assert len(relay.actions) == 1 and not model.prompts

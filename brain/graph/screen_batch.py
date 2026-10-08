@@ -18,6 +18,7 @@ from .schemas import Choice, Decision, DecisionResponse, FieldName, StrictModel
 
 if TYPE_CHECKING:
     from .engine import Brain
+    from .state import WorkerNode
 
 
 SCREEN_FILL_GUIDANCE = """
@@ -188,7 +189,9 @@ def prepare_screen_fill(scene: Observation, plan: ScreenFillPlan) -> ActionPlan:
     )
 
 
-def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Observation) -> dict:
+def verify_screen_fields(
+    brain: Brain, execution: PlanExecution, observation: Observation
+) -> WorkerNode:
     """Evaluate a batch after observation has published the current model evidence."""
     delivered_fields = [
         delivered for delivered in execution.delivered if delivered["choice"].source is not None
@@ -218,9 +221,9 @@ def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Ob
         brain.visual_match_candidate = None
         if mismatched:
             outcome = brain._fail("screen_fill_evidence_missing")
-            if outcome["next"] == "finish":
+            if outcome == "finish":
                 return outcome
-        return {"next": "review"}
+        return "review"
 
     matched, mismatched, mismatched_refs = [], [], []
     source_counts = Counter(item["choice"].source for item in delivered_fields)
@@ -273,6 +276,6 @@ def verify_screen_fields(brain: Brain, execution: PlanExecution, observation: Ob
             if a.decision.action.ref == mismatched_refs[0]
         )
         outcome = brain._fail("screen_fill_value_mismatch")
-        if outcome["next"] == "finish":
+        if outcome == "finish":
             return outcome
-    return {"next": "review"}
+    return "review"

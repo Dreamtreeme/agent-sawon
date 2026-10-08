@@ -209,12 +209,13 @@ def test_learned_method_uses_current_scene_and_executor_without_model(
     if observe_again:
         brain._observe()
         assert brain.observation.obs_id != first_id
-    assert brain._select_node({}) == {"next": "review"}
+    assert brain._select_node() == "review"
     assert brain.action_plan is not None
     assert len(brain.action_plan.actions) == 2
     assert brain.action_plan.actions[0].decision.subgoal == "Enter customer and reference"
-    assert brain._review_node({}) == {"next": "act"}
-    assert brain._act_node({}) == {"next": "verify"}
+    assert brain._review_node() == "execution"
+    assert brain._act_node() == "observation"
+    assert brain.pending is not None
     assert relay.entered == ["New customer B", "ORDER-B"]
     assert [list(action.root.target.image_point) for action in relay.actions[:2]] == [
         [175, 55],
@@ -256,17 +257,19 @@ def test_model_adaptation_is_retained_only_after_whole_batch_delivery(tmp_path, 
     brain._observe()
     assert len(model.prompts) == 1
     assert len(brain.methods.library.methods()[0].action_groups) == 1
-    assert brain._select_node({}) == {"next": "review"}
-    assert brain._review_node({}) == {"next": "act"}
-    outcome = brain._act_node({})
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    outcome = brain._act_node()
     groups = brain.methods.library.methods()[0].action_groups
     if fail_second:
-        assert outcome["next"] != "verify"
+        assert outcome in {"observation", "finish"}
+        assert brain.pending is None
         assert len(groups) == 1
         assert brain.methods.state.history[-1]["status"] == "interrupted"
         assert relay.entered == ["New customer B"]
     else:
-        assert outcome == {"next": "verify"}
+        assert outcome == "observation"
+        assert brain.pending is not None
         # A delivered local variant remains quarantined until the whole
         # business task succeeds.
         assert len(groups) == 1
@@ -328,9 +331,10 @@ def test_successful_candidate_installs_versioned_live_library(tmp_path, business
         promotion_path=live,
     )
     brain._observe()
-    assert brain._select_node({}) == {"next": "review"}
-    assert brain._review_node({}) == {"next": "act"}
-    assert brain._act_node({}) == {"next": "verify"}
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    assert brain._act_node() == "observation"
+    assert brain.pending is not None
     assert brain.methods.finish(success=business_success) == int(business_success)
     if not business_success:
         assert not live.exists()
@@ -426,7 +430,7 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
     brain._observe()
     brain.methods.remember(screen, learned)
     assert brain.methods.state.pending is not None
-    brain.methods.delivered({"next": "verify"})
+    brain.methods.delivered(complete=True)
     assert brain.methods.finish(success=True) == 1
 
     candidate_text = (brain.case_dir / "method-candidate.json").read_text(encoding="utf-8")
@@ -592,7 +596,7 @@ def test_generic_success_trace_becomes_model_free_execution_graph(tmp_path):
     for item in (first, second):
         brain.methods.remember(screen, item)
         assert brain.methods.state.pending is not None
-        brain.methods.delivered({"next": "verify"})
+        brain.methods.delivered(complete=True)
 
     assert len(brain.methods.state.staged) == 1
     assert brain.methods.finish(success=True) == 1
@@ -605,7 +609,7 @@ def test_generic_success_trace_becomes_model_free_execution_graph(tmp_path):
     first_replay = brain.methods.apply(screen)
     assert first_replay is not None
     assert first_replay.purpose == "Enter the visible customer"
-    brain.methods.delivered({"next": "verify"})
+    brain.methods.delivered(complete=True)
     second_replay = brain.methods.apply(screen)
     assert second_replay is not None
     assert second_replay.purpose == "Enter the visible reference"

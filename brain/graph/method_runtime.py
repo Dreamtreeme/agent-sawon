@@ -498,12 +498,12 @@ class MethodRuntime:
         )
         self.state.staged[method.id] = MethodDocument(methods=[merged])
 
-    def delivered(self, outcome: dict) -> None:
+    def delivered(self, *, complete: bool) -> None:
         pending, self.state.pending = self.state.pending, None
         if pending is None:
             return
         method, group_id = pending["method"], pending["group_id"]
-        status = "delivered" if outcome.get("next") == "verify" else "interrupted"
+        status = "delivered" if complete else "interrupted"
         event = {
             "method_id": method.id,
             "group_id": group_id,

@@ -513,7 +513,7 @@ class Brain:
             raise GuardStop("case_cost_cap")
         return result.response
 
-    def _finish(self, status: str, reason: str) -> dict:
+    def _finish(self, status: str, reason: str) -> WorkerNode:
         if self.result is None:
             self.result = Result(
                 status=status,
@@ -534,9 +534,9 @@ class Brain:
             from .notebook import remember
 
             remember(self)
-        return {"next": "finish"}
+        return "finish"
 
-    def _fail(self, reason: str, *, validation_errors: list[dict] | None = None) -> dict:
+    def _fail(self, reason: str, *, validation_errors: list[dict] | None = None) -> WorkerNode:
         decision = self.decision
         exploration_failure = (
             self.phase == "task"
@@ -672,7 +672,7 @@ class Brain:
             and self.phase_failures[self.phase] >= self.settings.max_subgoal_failures
         ):
             return self._finish("stopped", "repeated_phase_failure:" + self.phase)
-        return {"next": "observe"}
+        return "observation"
 
     def _record_progress(self, mark: str, *, business: bool = True) -> None:
         key = self.phase + ":" + mark
@@ -687,7 +687,7 @@ class Brain:
                 }
                 self.business_revision += 1
 
-    def _retry_input_target_selection(self, reason: str) -> dict:
+    def _retry_input_target_selection(self, reason: str) -> WorkerNode:
         """Retry only a rejected model choice, before any action was dispatched."""
         assert self.decision is not None and self.observation is not None
         choice = self.decision.action
@@ -882,7 +882,7 @@ class Brain:
             remember(self)
         return observation
 
-    def _plan_node(self, state: dict) -> dict:
+    def _plan_node(self) -> WorkerNode:
         try:
             if self.settings.screen_matching:
                 from .notebook import remember
@@ -901,7 +901,7 @@ class Brain:
                     },
                 )
                 remember(self)
-                return {"next": "observe"}
+                return "observation"
             plan = self._call(
                 POLICY + "\nProduce a short plan: duplicate query, field entry with verification, "
                 "save, and final query verification.\nTRUSTED_TASK="
@@ -916,19 +916,19 @@ class Brain:
             )
             self.plan = plan.subgoals
             self.log.append("plan", payload={"subgoals": self.plan})
-            return {"next": "observe"}
+            return "observation"
         except GuardStop as exc:
             return self._finish("stopped", str(exc))
         except Exception as exc:
             return self._finish("failed", "plan_error:" + type(exc).__name__)
 
-    def _observe_node(self, state: dict) -> dict:
+    def _observe_node(self) -> WorkerNode:
         try:
             if self.steps >= self.settings.max_steps:
                 return self._finish("stopped", "max_steps")
             self._budget()
             self._observe()
-            return {"next": "review"}
+            return "review"
         except VisualGroundingError as exc:
             return self._finish("failed", "visual_grounding:" + str(exc))
         except GuardStop as exc:
@@ -1000,7 +1000,7 @@ class Brain:
             )
         return self.review
 
-    def _review_node(self, state: dict) -> dict:
+    def _review_node(self) -> WorkerNode:
         """Own result proof, separately from selecting and dispatching an action."""
         try:
             if self.review_decision:
@@ -1047,8 +1047,8 @@ class Brain:
             if self.review_execution:
                 self.review_execution = False
                 self.execution_authorized = True
-                return {"next": "act"}
-            return {"next": "select"}
+                return "execution"
+            return "decision"
         except GuardStop as exc:
             self.review_execution = False
             self.execution_authorized = False
@@ -1269,7 +1269,7 @@ class Brain:
                 prompt, schema, model=self.recovery_model, call_budget=self.recovery_budget
             ).to_decision()
 
-    def _select_node(self, state: dict) -> dict:
+    def _select_node(self) -> WorkerNode:
         if self.steps >= self.settings.max_steps:
             return self._finish("stopped", "max_steps")
         self.steps += 1
@@ -1325,7 +1325,7 @@ class Brain:
                             "obs_id": str(self.observation.obs_id),
                         },
                     )
-                    return {"next": "select"}
+                    return "decision"
                 self.decision = proposed
             elif login_batch:
                 schema = LoginScreenPlan
@@ -1333,7 +1333,7 @@ class Brain:
                 if plan.fields:
                     self.action_plan = prepare_login_plan(self.observation, plan, policy)
                     self.review_execution = True
-                    return {"next": "review"}
+                    return "review"
                 self.decision = plan.next_decision.to_decision()
             elif screen_fill:
                 schema = ScreenFillPlan
@@ -1341,7 +1341,7 @@ class Brain:
                 if plan.fields:
                     self.action_plan = prepare_screen_fill(self.observation, plan)
                     self.review_execution = True
-                    return {"next": "review"}
+                    return "review"
                 self.decision = plan.next_decision.to_decision()
             else:
                 self.decision = self._choose_decision(prompt, schema)
@@ -1365,13 +1365,13 @@ class Brain:
                 return self._finish("stopped", "model_requested_stop")
             if decision.operation in {"duplicate_clear", "duplicate_found", "complete"}:
                 self.review_decision = True
-                return {"next": "review"}
+                return "review"
             if self.phase == "task" or (decision.screen_kind == "editor" and self.phase == "enter"):
                 self._collect_editor_evidence(decision)
                 policy = self._decision_policy()
             self._guard_action(decision, policy)
             self.review_execution = True
-            return {"next": "review"}
+            return "review"
         except GuardStop as exc:
             if (
                 str(exc) == "target_not_text_input"
@@ -1435,7 +1435,7 @@ class Brain:
             raise GuardStop("visual_query_evidence_uncertain")
         return subtree(self.observation, grid.ref)
 
-    def _check_duplicate(self, decision: Decision) -> dict:
+    def _check_duplicate(self, decision: Decision) -> WorkerNode:
         if (
             self.phase != "duplicate_query"
             or not self.query_submitted
@@ -1471,7 +1471,7 @@ class Brain:
             },
         )
         self.feedback.append({"ok": True, "phase": self.phase, "check": "duplicate_clear"})
-        return {"next": "observe"}
+        return "observation"
 
     def _invalidate_editor_evidence(self) -> None:
         assert self.observation is not None
@@ -1976,7 +1976,7 @@ class Brain:
             self.query_window_handle = None
         return pending
 
-    def _act_node(self, state: dict) -> dict:
+    def _act_node(self) -> WorkerNode:
         assert self.decision is not None or self.action_plan is not None
         if not self.execution_authorized:
             return self._finish("stopped", "execution_review_required")
@@ -1986,7 +1986,7 @@ class Brain:
         visual_candidate, self.visual_match_candidate = self.visual_match_candidate, None
         try:
             outcome = self._execute_plan(plan)
-            self.methods.delivered(outcome)
+            self.methods.delivered(complete=self.pending is not None)
             if visual_candidate is not None and self.pending is not None:
                 self.pending["visual_match_candidate"] = visual_candidate
             return outcome
@@ -2027,7 +2027,7 @@ class Brain:
             finally:
                 self.click_refinement.bound = None
 
-    def _execute_plan(self, plan: ActionPlan) -> dict:
+    def _execute_plan(self, plan: ActionPlan) -> WorkerNode:
         assert self.observation is not None
         plan = self._reconcile_action_plan(plan)
         if not plan.actions:
@@ -2039,7 +2039,7 @@ class Brain:
                     **plan.audit,
                 },
             )
-            return {"next": "review"}
+            return "review"
         if self.steps + len(plan.actions) - 1 > self.settings.max_steps:
             raise GuardStop("max_steps")
         for action in plan.actions:
@@ -2099,9 +2099,9 @@ class Brain:
                     "window_handle": scene.active_window.handle,
                     "descriptor": delivered["descriptor"],
                 }
-        return {"next": "verify"}
+        return "observation"
 
-    def _blur_visual_input(self, element: UIElement, decision: Decision) -> dict:
+    def _blur_visual_input(self, element: UIElement, decision: Decision) -> WorkerNode | None:
         """One guarded focus move; never infer the next control or modify its value."""
         if self.steps >= self.settings.max_steps:
             raise GuardStop("max_steps")
@@ -2122,9 +2122,10 @@ class Brain:
         try:
             self.decision = blur
             outcome = self._execute_plan(ActionPlan.single(blur))
-            if outcome["next"] == "verify":
-                log_transition(self.log, self.pending)
-            return outcome
+            if self.pending is None:
+                return outcome
+            log_transition(self.log, self.pending)
+            return None
         finally:
             self.pending, self.decision = original_pending, original_decision
 
@@ -2144,7 +2145,7 @@ class Brain:
             "confirm_save": ExpectedEffect.SAVE_ACKNOWLEDGEMENT,
         }.get(decision.intent, ExpectedEffect.OBSERVATION_ONLY)
 
-    def _verify_node(self, state: dict) -> dict:
+    def _verify_node(self) -> WorkerNode:
         assert self.pending is not None
         pending = self.pending
         observation: Observation | None = None
@@ -2183,7 +2184,7 @@ class Brain:
                     self.pending = None
                     if self.click_refinement.prepare(self, pending, observation):
                         self.execution_authorized = True
-                        return {"next": "act"}
+                        return "execution"
                     target = pending.get("navigation_target")
                     if target is not None:
                         failed = self.unproductive_navigation.setdefault(observed_state, [])
@@ -2213,7 +2214,7 @@ class Brain:
                         failure="navigation_cycle",
                     ):
                         self.execution_authorized = True
-                        return {"next": "act"}
+                        return "execution"
                     if "exploration_action_key" in pending:
                         attempt = ExplorationAttempt(
                             state_key=pending["source_navigation_state"],
@@ -2269,7 +2270,7 @@ class Brain:
                     failure="semantic_target_repeated",
                 ):
                     self.execution_authorized = True
-                    return {"next": "act"}
+                    return "execution"
                 return self._fail("semantic_target_repeated")
             if choice.type in {"set_text", "type_text"}:
                 descriptor = self.pending["descriptor"]
@@ -2293,7 +2294,7 @@ class Brain:
                 ):
                     before_window = observation.active_window
                     result = self._blur_visual_input(element, decision)
-                    if result.get("next") != "verify":
+                    if result is not None:
                         return result
                     pending["blur_recheck"] = True
                     observation = self._observe()
@@ -2404,7 +2405,7 @@ class Brain:
             self.pending = None
             # Reuse an already interpreted visual scene for every visual action.
             # UIA keeps its cheap fresh-state read before the next selection.
-            return {"next": "review" if isinstance(observation, SceneObservation) else "observe"}
+            return "review" if isinstance(observation, SceneObservation) else "observation"
         except VisualGroundingError as exc:
             return self._finish("failed", "visual_grounding:" + str(exc))
         except GuardStop as exc:
@@ -2458,7 +2459,7 @@ class Brain:
         if pending is None:
             self.visual_match_candidate = None
 
-    def _apply_save_review(self, review: SaveReviewResponse) -> dict | None:
+    def _apply_save_review(self, review: SaveReviewResponse) -> WorkerNode | None:
         assert self.observation is not None
         validate_save_review(review, self.observation)
         self.log.append(
@@ -2494,11 +2495,11 @@ class Brain:
             if not review.repair_fields:
                 return self._finish("stopped", "save_rejected_without_record_repair")
             outcome = self._fail("save_rejected")
-            if outcome["next"] == "finish":
+            if outcome == "finish":
                 return outcome
         return None
 
-    def _complete_saved_evidence(self) -> dict:
+    def _complete_saved_evidence(self) -> WorkerNode:
         review = self._current_review()
         task_review_ready = self.phase == "task" and self.task_instruction is not None
         if not (
@@ -2518,7 +2519,7 @@ class Brain:
         )
         return self._finish("success", "saved_and_verified_awaiting_approval")
 
-    def _check_complete(self, decision: Decision) -> dict:
+    def _check_complete(self, decision: Decision) -> WorkerNode:
         assert self.observation is not None
         if self.phase == "task":
             by_ref = {item.ref: item for item in self.observation.elements}
@@ -2628,25 +2629,10 @@ class Brain:
         )
         return self._finish("success", "saved_and_verified_awaiting_approval")
 
-    @staticmethod
-    def _responsibility_route(legacy_route: str) -> WorkerNode:
-        try:
-            return {
-                "observe": "observation",
-                "verify": "observation",
-                "select": "decision",
-                "act": "execution",
-                "review": "review",
-                "finish": "finish",
-            }[legacy_route]
-        except KeyError as exc:
-            raise RuntimeError("unknown_worker_route:" + legacy_route) from exc
-
     def _adopt_worker_state(self, state: WorkerState) -> None:
         self._worker_state = copy_worker_state(state)
 
-    def _complete_responsibility(self, outcome: dict) -> WorkerState:
-        route = self._responsibility_route(str(outcome["next"]))
+    def _complete_responsibility(self, route: WorkerNode) -> WorkerState:
         self._worker_state["lifecycle"]["route"] = route
         return copy_worker_state(self._worker_state)
 
@@ -2654,26 +2640,26 @@ class Brain:
         """Capture a screen or observe and verify a delivered action's effect."""
 
         self._adopt_worker_state(state)
-        outcome = self._verify_node({}) if self.pending is not None else self._observe_node({})
+        outcome = self._verify_node() if self.pending is not None else self._observe_node()
         return self._complete_responsibility(outcome)
 
     def decision_node(self, state: WorkerState) -> WorkerState:
         """Select one policy-valid decision from the current observation."""
 
         self._adopt_worker_state(state)
-        return self._complete_responsibility(self._select_node({}))
+        return self._complete_responsibility(self._select_node())
 
     def execution_node(self, state: WorkerState) -> WorkerState:
         """Dispatch the selected action plan without deciding its success."""
 
         self._adopt_worker_state(state)
-        return self._complete_responsibility(self._act_node({}))
+        return self._complete_responsibility(self._act_node())
 
     def review_node(self, state: WorkerState) -> WorkerState:
         """Classify current evidence and accept only deterministic completion proof."""
 
         self._adopt_worker_state(state)
-        return self._complete_responsibility(self._review_node({}))
+        return self._complete_responsibility(self._review_node())
 
     def run(self) -> Result:
         try:
@@ -2711,8 +2697,8 @@ class Brain:
         self.state_store.transition(CaseStatus.ENTERING, expected=CaseStatus.READY)
         try:
             self.relay.health()
-            planned = self._plan_node({})
-            if planned["next"] != "finish":
+            planned = self._plan_node()
+            if planned != "finish":
                 self._worker_state["lifecycle"]["route"] = "observation"
                 build_worker_graph(self).invoke(
                     copy_worker_state(self._worker_state),
