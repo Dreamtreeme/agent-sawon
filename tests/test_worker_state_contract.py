@@ -23,7 +23,7 @@ def test_worker_graph_and_state_have_four_explicit_responsibilities():
     copied = copy_worker_state(state)
     copied["decision"]["task_plan"].append("step")
 
-    assert set(state) == {"observation", "decision", "execution", "review", "lifecycle"}
+    assert set(state) == {"observation", "decision", "execution", "review", "lifecycle", "progress"}
     assert state["decision"]["task_plan"] == []
     assert state["execution"] == {"pending": None, "authorized": False}
     assert state["review"] == {
@@ -44,13 +44,20 @@ def test_nested_handoff_and_returned_node_state_are_isolated():
 
     state = create_worker_state()
     state["decision"]["action_plan"] = ActionPlan((), audit={"fields": ["original"]})
-    state["observation"]["rolling_turns"] = [{"effects": ["before"]}]
+    state["progress"].verified["input"] = {"effects": ["before"]}
+    state["progress"].rolling_context.mark_milestone("saved")
     brain = Brain.__new__(Brain)
     brain._adopt_worker_state(state)
     brain.action_plan.audit["fields"].append("internal")
     assert state["decision"]["action_plan"].audit == {"fields": ["original"]}
     output = brain._complete_responsibility({"next": "observe"})
-    output["observation"]["rolling_turns"][0]["effects"].append("external")
+    output["progress"].verified["input"]["effects"].append("external")
+    output["progress"].rolling_context.mark_milestone("external")
     output["lifecycle"]["steps"] = 100
     assert brain.steps == 0
-    assert brain._worker_state["observation"]["rolling_turns"] == [{"effects": ["before"]}]
+    assert brain.verified == {"input": {"effects": ["before"]}}
+    assert brain.rolling_context.completed_milestones == ["saved"]
+    resumed = Brain.__new__(Brain)
+    resumed._adopt_worker_state(brain._complete_responsibility({"next": "observe"}))
+    assert resumed.verified == brain.verified
+    assert resumed.rolling_context.completed_milestones == ["saved"]

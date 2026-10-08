@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Literal, TypedDict
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal, TypedDict
+from uuid import UUID
 
 from sawon_interfaces import Observation
 
+from .click_refinement import ClickRefinement
 from .execution import ActionPlan, PendingAction
 from .reconciliation import ReconciledObservation
 from .review import EvidenceReview
+from .saved_evidence import SavedEvidence
 from .schemas import Decision
+from .scratchpad import RollingContextManager
+from .transitions import EvidenceLedger, ExplorationLedger, NavigationHistory
+from .visual_points import VisualPointBindings
+
+if TYPE_CHECKING:
+    from .engine import Result
+    from .matching import ScreenMatch
 
 WorkerNode = Literal["observation", "decision", "execution", "review", "finish"]
 
@@ -21,7 +32,6 @@ class ObservationState(TypedDict):
     current: Observation | None
     sequence: int
     reconciled: ReconciledObservation | None
-    rolling_turns: list[dict]  # [추가] 직전 N턴의 실행 델타 요약 목록
 
 
 class DecisionState(TypedDict):
@@ -55,6 +65,61 @@ class LifecycleState(TypedDict):
     steps: int
 
 
+@dataclass
+class ProgressState:
+    """Run-local facts and histories; credentials, clients and files stay outside."""
+
+    credential_submissions: dict[str, dict] = field(default_factory=dict)
+    rolling_context: RollingContextManager = field(default_factory=RollingContextManager)
+    verified: dict[str, dict] = field(default_factory=dict)
+    evidence_ledger: EvidenceLedger = field(default_factory=EvidenceLedger)
+    query_value_verified: bool = False
+    query_submitted: bool = False
+    query_descriptor: dict | None = None
+    query_input_anchor: tuple[Observation, str] | None = None
+    query_window_handle: int | None = None
+    duplicate_clear: bool = False
+    save_issued: bool = False
+    saved_evidence: SavedEvidence = field(default_factory=SavedEvidence)
+    saved_bindings: tuple[str, dict[str, str]] | None = None
+    saved_row_binding: tuple[str, str] | None = None
+    click_refinement: ClickRefinement = field(default_factory=ClickRefinement)
+    visual_points: VisualPointBindings = field(default_factory=VisualPointBindings)
+    failures: dict[str, int] = field(default_factory=dict)
+    phase_failures: dict[str, int] = field(default_factory=dict)
+    progress_marks: set[str] = field(default_factory=set)
+    business_revision: int = 0
+    navigation_history: NavigationHistory = field(default_factory=NavigationHistory)
+    unproductive_navigation: dict[str, list[dict]] = field(default_factory=dict)
+    exploration: ExplorationLedger = field(default_factory=ExplorationLedger)
+    _last_exploration_failure_key: str | None = None
+    _last_surface_conflict: dict[str, str] | None = None
+    feedback: list[dict] = field(default_factory=list)
+    result: Result | None = None
+    started: float = 0.0
+    visual_match_candidate: tuple[str, dict] | None = None
+    input_target_retries: int = 0
+    deferred_field_checks: dict[str, dict] = field(default_factory=dict)
+    visual_proposal: ScreenMatch | None = None
+    visual_proposal_obs_id: UUID | None = None
+    procedure_step: str | None = None
+
+
+def state_property(section: str, key: str) -> property:
+    """Compatibility accessors address the state; no second copy is stored."""
+    return property(
+        lambda owner: owner._worker_state[section][key],
+        lambda owner, value: owner._worker_state[section].__setitem__(key, value),
+    )
+
+
+def progress_property(key: str) -> property:
+    return property(
+        lambda owner: getattr(owner._worker_state["progress"], key),
+        lambda owner, value: setattr(owner._worker_state["progress"], key, value),
+    )
+
+
 class WorkerState(TypedDict):
     """작업자 책임 노드 간 데이터 스냅샷 계약. 실행 중 서비스 객체는 포함하지 않는다."""
 
@@ -63,17 +128,23 @@ class WorkerState(TypedDict):
     execution: ExecutionState
     review: ReviewState
     lifecycle: LifecycleState
+    progress: ProgressState
 
 
-def create_worker_state() -> WorkerState:
+def create_worker_state(
+    *, rolling_buffer_size: int = 3, navigation_history_size: int = 8
+) -> WorkerState:
     """초기 런타임 상태 생성."""
     return {
         "observation": {
             "current": None,
             "sequence": 0,
             "reconciled": None,
-            "rolling_turns": [],  # [추가] 빈 롤링 버퍼로 초기화
         },
+        "progress": ProgressState(
+            rolling_context=RollingContextManager(rolling_buffer_size),
+            navigation_history=NavigationHistory(navigation_history_size),
+        ),
         "decision": {"current": None, "action_plan": None, "task_plan": []},
         "execution": {"pending": None, "authorized": False},
         "review": {

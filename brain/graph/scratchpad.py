@@ -60,6 +60,10 @@ class RollingContextManager:
         """최근 N턴의 실행 기록 반환."""
         return list(self._turns)
 
+    @property
+    def completed_milestones(self) -> list[str]:
+        return list(self._completed_milestones)
+
     def record_turn(
         self,
         *,

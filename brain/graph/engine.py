@@ -40,22 +40,19 @@ from models.validation import safe_validation_errors
 from pipeline.ocr import OcrEngine
 from pipeline.schemas import RenderedPage
 
-from .click_refinement import ClickRefinement
 from .context import DUPLICATE_EVIDENCE_GUIDANCE, execution_context
 from .execution import ActionPlan, PendingAction, execute_plan, log_transition
 from .execution import GuardStop as GuardStop
 from .method_runtime import MethodRuntime
 from .policy import DecisionPolicy, ExecutionFacts
-from .reconciliation import ReconciledObservation, reconcile_observation
+from .reconciliation import reconcile_observation
 from .review import EvidenceReview, review_final
 from .save_review import SaveReviewResponse, validate_save_review
-from .saved_evidence import SavedEvidence
 from .schemas import (
     Choice,
     Decision,
     Plan,
 )
-from .scratchpad import RollingContextManager
 from .screen_batch import (
     LOGIN_GUIDANCE,
     SCREEN_FILL_GUIDANCE,
@@ -65,19 +62,22 @@ from .screen_batch import (
     prepare_screen_fill,
     verify_screen_fields,
 )
-from .state import WorkerNode, WorkerState, copy_worker_state, create_worker_state
+from .state import (
+    WorkerNode,
+    WorkerState,
+    copy_worker_state,
+    create_worker_state,
+    progress_property,
+    state_property,
+)
 from .transitions import (
     ActionTransition,
-    EvidenceLedger,
     ExpectedEffect,
     ExplorationAttempt,
-    ExplorationLedger,
-    NavigationHistory,
     ObservedEffect,
     TransitionFact,
     exploration_action_key,
 )
-from .visual_points import VisualPointBindings
 from .workflow import build_worker_graph
 
 
@@ -143,109 +143,53 @@ repair feedback; do not repeat a navigation that had no observable effect.
 
 
 class Brain:
-    @property
-    def observation(self) -> Observation | None:
-        return self._worker_state["observation"]["current"]
-
-    @observation.setter
-    def observation(self, value: Observation | None) -> None:
-        self._worker_state["observation"]["current"] = value
-
-    @property
-    def observation_number(self) -> int:
-        return self._worker_state["observation"]["sequence"]
-
-    @observation_number.setter
-    def observation_number(self, value: int) -> None:
-        self._worker_state["observation"]["sequence"] = value
-
-    @property
-    def reconciled_observation(self) -> ReconciledObservation | None:
-        return self._worker_state["observation"]["reconciled"]
-
-    @reconciled_observation.setter
-    def reconciled_observation(self, value: ReconciledObservation | None) -> None:
-        self._worker_state["observation"]["reconciled"] = value
-
-    @property
-    def decision(self) -> Decision | None:
-        return self._worker_state["decision"]["current"]
-
-    @decision.setter
-    def decision(self, value: Decision | None) -> None:
-        self._worker_state["decision"]["current"] = value
-
-    @property
-    def action_plan(self) -> ActionPlan | None:
-        return self._worker_state["decision"]["action_plan"]
-
-    @action_plan.setter
-    def action_plan(self, value: ActionPlan | None) -> None:
-        self._worker_state["decision"]["action_plan"] = value
-
-    @property
-    def plan(self) -> list[str]:
-        return self._worker_state["decision"]["task_plan"]
-
-    @plan.setter
-    def plan(self, value: list[str]) -> None:
-        self._worker_state["decision"]["task_plan"] = value
-
-    @property
-    def pending(self) -> PendingAction | None:
-        return self._worker_state["execution"]["pending"]
-
-    @pending.setter
-    def pending(self, value: PendingAction | None) -> None:
-        self._worker_state["execution"]["pending"] = value
-
-    @property
-    def execution_authorized(self) -> bool:
-        return self._worker_state["execution"]["authorized"]
-
-    @execution_authorized.setter
-    def execution_authorized(self, value: bool) -> None:
-        self._worker_state["execution"]["authorized"] = value
-
-    @property
-    def review(self) -> EvidenceReview | None:
-        return self._worker_state["review"]["current"]
-
-    @review.setter
-    def review(self, value: EvidenceReview | None) -> None:
-        self._worker_state["review"]["current"] = value
-
-    @property
-    def review_decision(self) -> bool:
-        return self._worker_state["review"]["decision_pending"]
-
-    @review_decision.setter
-    def review_decision(self, value: bool) -> None:
-        self._worker_state["review"]["decision_pending"] = value
-
-    @property
-    def review_execution(self) -> bool:
-        return self._worker_state["review"]["execution_pending"]
-
-    @review_execution.setter
-    def review_execution(self, value: bool) -> None:
-        self._worker_state["review"]["execution_pending"] = value
-
-    @property
-    def phase(self) -> str:
-        return self._worker_state["lifecycle"]["phase"]
-
-    @phase.setter
-    def phase(self, value: str) -> None:
-        self._worker_state["lifecycle"]["phase"] = value
-
-    @property
-    def steps(self) -> int:
-        return self._worker_state["lifecycle"]["steps"]
-
-    @steps.setter
-    def steps(self, value: int) -> None:
-        self._worker_state["lifecycle"]["steps"] = value
+    observation = state_property("observation", "current")
+    observation_number = state_property("observation", "sequence")
+    reconciled_observation = state_property("observation", "reconciled")
+    decision = state_property("decision", "current")
+    action_plan = state_property("decision", "action_plan")
+    plan = state_property("decision", "task_plan")
+    pending = state_property("execution", "pending")
+    execution_authorized = state_property("execution", "authorized")
+    review = state_property("review", "current")
+    review_decision = state_property("review", "decision_pending")
+    review_execution = state_property("review", "execution_pending")
+    phase = state_property("lifecycle", "phase")
+    steps = state_property("lifecycle", "steps")
+    credential_submissions = progress_property("credential_submissions")
+    rolling_context = progress_property("rolling_context")
+    verified = progress_property("verified")
+    evidence_ledger = progress_property("evidence_ledger")
+    query_value_verified = progress_property("query_value_verified")
+    query_submitted = progress_property("query_submitted")
+    query_descriptor = progress_property("query_descriptor")
+    query_input_anchor = progress_property("query_input_anchor")
+    query_window_handle = progress_property("query_window_handle")
+    duplicate_clear = progress_property("duplicate_clear")
+    save_issued = progress_property("save_issued")
+    saved_evidence = progress_property("saved_evidence")
+    saved_bindings = progress_property("saved_bindings")
+    saved_row_binding = progress_property("saved_row_binding")
+    click_refinement = progress_property("click_refinement")
+    visual_points = progress_property("visual_points")
+    failures = progress_property("failures")
+    phase_failures = progress_property("phase_failures")
+    progress_marks = progress_property("progress_marks")
+    business_revision = progress_property("business_revision")
+    navigation_history = progress_property("navigation_history")
+    unproductive_navigation = progress_property("unproductive_navigation")
+    exploration = progress_property("exploration")
+    _last_exploration_failure_key = progress_property("_last_exploration_failure_key")
+    _last_surface_conflict = progress_property("_last_surface_conflict")
+    feedback = progress_property("feedback")
+    result = progress_property("result")
+    started = progress_property("started")
+    visual_match_candidate = progress_property("visual_match_candidate")
+    input_target_retries = progress_property("input_target_retries")
+    deferred_field_checks = progress_property("deferred_field_checks")
+    visual_proposal = progress_property("visual_proposal")
+    visual_proposal_obs_id = progress_property("visual_proposal_obs_id")
+    procedure_step = progress_property("procedure_step")
 
     def __init__(
         self,
@@ -265,52 +209,16 @@ class Brain:
         prepared_case: bool = False,
         visual_ocr: OcrEngine | None = None,
     ) -> None:
-        self._worker_state = create_worker_state()
+        self._worker_state = create_worker_state(
+            rolling_buffer_size=settings.visual_rolling_buffer_size,
+            navigation_history_size=settings.navigation_history_size,
+        )
         self.record, self.goal, self.relay, self.model = record, goal, relay, model
         self.settings, self.case_dir, self.log = settings, Path(case_dir), run_log
         self.credentials = {"credential.username": username, "credential.password": password}
-        self.credential_submissions: dict[str, dict] = {}
         self.secrets = (password,) if password else ()
         self.values = values_for(record)
         self.state_store = StateStore(case_dir, case_id=record.case_id)
-        self.rolling_context = RollingContextManager(
-            buffer_size=settings.visual_rolling_buffer_size
-        )
-        self.steps = 0
-        self.phase = "duplicate_query"
-        self.observation: Observation | None = None
-        self.decision: Decision | None = None
-        self.plan: list[str] = []
-        self.verified: dict[str, dict] = {}
-        self.evidence_ledger = EvidenceLedger()
-        self.query_value_verified = False
-        self.query_submitted = False
-        self.query_descriptor: dict | None = None
-        self.query_input_anchor: tuple[Observation, str] | None = None
-        self.query_window_handle: int | None = None
-        self.duplicate_clear = False
-        self.save_issued = False
-        self.saved_evidence = SavedEvidence()
-        self.saved_bindings: tuple[str, dict[str, str]] | None = None
-        self.saved_row_binding: tuple[str, str] | None = None
-        self.pending: PendingAction | None = None
-        self.execution_authorized = False
-        self.click_refinement = ClickRefinement()
-        self.visual_points = VisualPointBindings()
-        self.action_plan: ActionPlan | None = None
-        self.failures: dict[str, int] = {}
-        self.phase_failures: dict[str, int] = {}
-        self.progress_marks: set[str] = set()
-        self.business_revision = 0
-        self.navigation_history = NavigationHistory(settings.navigation_history_size)
-        self.unproductive_navigation: dict[str, list[dict]] = {}
-        self.exploration = ExplorationLedger()
-        self._last_exploration_failure_key: str | None = None
-        self._last_surface_conflict: dict[str, str] | None = None
-        self.feedback: list[dict] = []
-        self.result: Result | None = None
-        self.started = 0.0
-        self.observation_number = 0
         self.call_budget = call_budget
         self.recovery_model, self.recovery_budget = recovery_model, recovery_budget
         self.prepared_case = prepared_case
@@ -318,18 +226,9 @@ class Brain:
             settings.visual_match_cache.path,
             enabled=settings.visual_match_cache.enabled,
         )
-        self.visual_match_candidate: tuple[str, dict] | None = None
-        self.input_target_retries = 0
-        self.deferred_field_checks: dict[str, dict] = {}
-        self.review: EvidenceReview | None = None
-        self.review_decision = False
-        self.review_execution = False
-        self.visual_proposal = None
-        self.visual_proposal_obs_id = None
         self.visual_perception = None
         self.task_instruction = None
         self.task_instruction_sha256: str | None = None
-        self.procedure_step = None
         if settings.screen_matching:
             from brain.task_instruction import TaskInstruction
 

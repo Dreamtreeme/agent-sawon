@@ -29,9 +29,7 @@ def remember(brain: Brain) -> dict:
         "recent_turns": (
             [t.model_dump(mode="json") for t in rolling.recent_turns] if rolling is not None else []
         ),
-        "completed_milestones": (
-            list(rolling._completed_milestones) if rolling is not None else []
-        ),
+        "completed_milestones": (rolling.completed_milestones if rolling is not None else []),
         "observation_id": str(scene.obs_id) if scene else None,
         "observation_path": (
             f"observations/{brain.observation_number:04d}.json" if scene else None
