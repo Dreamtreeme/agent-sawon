@@ -51,7 +51,7 @@ from .execution import (
     log_transition,
 )
 from .execution import GuardStop as GuardStop
-from .method_runtime import MethodRuntime
+from .method_runtime import MethodContext, MethodRuntime, open_method_library
 from .policy import DecisionPolicy, ExecutionFacts
 from .reconciliation import reconcile_observation
 from .review import EvidenceReview, review_final
@@ -256,9 +256,9 @@ class Brain:
                 },
             )
             self.phase = "task"
-        self.methods = MethodRuntime(
-            self,
+        self.method_library = open_method_library(
             settings.methods.path,
+            self.case_dir,
             enabled=settings.methods.enabled,
             promotion_path=settings.methods.promotion_path,
         )
@@ -279,24 +279,38 @@ class Brain:
                 model_led_semantics=settings.visual_model_led_semantics,
             )
 
+    @property
+    def methods(self) -> MethodRuntime:
+        # Rebind to the adopted state at access; never keep a pre-handoff state
+        # or the whole Brain inside the method/cache service.
+        return MethodRuntime(
+            MethodContext(
+                self.task_instruction,
+                self.task_instruction_sha256,
+                self.values,
+                self.credentials,
+                str(self.observation.obs_id) if self.observation else None,
+            ),
+            self._worker_state["methods"],
+            self.method_library,
+            case_dir=self.case_dir,
+            log=self.log,
+            promotion_path=self.settings.methods.promotion_path,
+        )
+
     def _match_visual(self, screen: dict, page, *, interpretation=None):
         from .matching import match_screen
 
-        response = self.methods.apply(screen) if "correction" not in screen else None
-        if response is None:
-            return match_screen(self, screen, page, grounded_interpretation=interpretation)
-        self.visual_match_candidate = None
-        return response
+        return match_screen(self, screen, page, grounded_interpretation=interpretation)
 
     def _detect_visual(self, request: SemanticRequest) -> SemanticDetection:
         if self.settings.screen_matching and self.settings.separate_observation_decision:
             screen = dict(request.screen)
-            response = self.methods.apply(screen) if "correction" not in screen else None
+            response = self.methods.apply(screen) if request.correction is None else None
             if response is not None:
-                # Reusable methods already carry grounded CURRENT-scene meaning and
-                # an action batch. Preserve them for selection instead of paying for
-                # a semantic pass that the method would immediately supersede.
-                self.visual_match_candidate = None
+                from .matching import match_screen
+
+                response = match_screen(self, screen, request.page, proposal=response)
                 self.visual_proposal = response
                 atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
                 return SemanticDetection.model_validate(

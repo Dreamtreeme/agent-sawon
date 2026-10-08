@@ -1140,7 +1140,9 @@ def prepare_match_plan(brain, response, screen, candidates, policy, active_field
     return validate_match_plan(response, candidates, policy, brain, active_fields)
 
 
-def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
+def match_screen(
+    brain, screen: dict, page, *, grounded_interpretation=None, proposal: ScreenMatch | None = None
+):
     pending_execution = None if brain.pending is None else brain.pending.get("execution")
     post_action_review = (
         pending_execution is not None and pending_execution.plan.verification == "fields"
@@ -1280,8 +1282,18 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         + (POST_ACTION_REVIEW_RULES if post_action_review else "")
         + json.dumps(state, ensure_ascii=False)
     )
-    cache_hit = None if post_action_review else brain.visual_match_cache.lookup(state)
-    if cache_hit is not None:
+    method_proposal = proposal
+    if method_proposal is None and not post_action_review and "correction" not in screen:
+        method_proposal = methods.apply(screen)
+    cache_hit = (
+        brain.visual_match_cache.lookup(state)
+        if method_proposal is None and not post_action_review
+        else None
+    )
+    used_image = False
+    if method_proposal is not None:
+        response = method_proposal
+    elif cache_hit is not None:
         _, cached = cache_hit
         response = ScreenMatch.model_validate(cached)
         used_image = False
@@ -1327,7 +1339,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         atomic_write_json(brain.case_dir / "matching" / f"{uuid4().hex}-markers.json", response)
         response = local_response(response, screen)
     response = omit_nonblocking_image_request(brain, response, screen)
-    if cache_hit is None:
+    if cache_hit is None and method_proposal is None:
         used_image = True
     if response.needs_image:
         image_state = {**state, "screen": model_screen(screen)}
@@ -1478,8 +1490,12 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
         response = sanitize_unused_controls(brain, response, screen, required)
     brain.procedure_step = step.id
     brain.visual_match_candidate = (
-        cache_hit[0] if cache_hit is not None else visual_match_key(state),
-        response.model_dump(mode="json"),
+        (
+            cache_hit[0] if cache_hit is not None else visual_match_key(state),
+            response.model_dump(mode="json"),
+        )
+        if method_proposal is None
+        else None
     )
     brain.log.append(
         "select",
@@ -1494,7 +1510,7 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
             "prompt_chars": len(prompt),
         },
     )
-    if methods is not None and methods.enabled:
+    if methods is not None and methods.enabled and response != method_proposal:
         methods.remember(screen, response)
     return response
 

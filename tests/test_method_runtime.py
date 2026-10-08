@@ -199,6 +199,13 @@ def test_learned_method_uses_current_scene_and_executor_without_model(
     )
     brain._observe()
     first_id = brain.observation.obs_id
+    from brain.graph.state import copy_worker_state
+
+    snapshot = copy_worker_state(brain._worker_state)
+    brain._adopt_worker_state(snapshot)
+    snapshot["methods"].pending = None
+    assert brain.methods.state.pending is not None
+    assert any(event.payload.get("check") == "screen_mapping" for event in brain.log.read_all())
     if observe_again:
         brain._observe()
         assert brain.observation.obs_id != first_id
@@ -225,9 +232,9 @@ def test_learned_method_uses_current_scene_and_executor_without_model(
     assert education.payload["procedure_step_ids"] == [
         step.id for step in brain.task_instruction.procedure
     ]
-    assert brain.methods.history[-1]["origin"] == "reuse"
-    assert brain.methods.history[-1]["status"] == "delivered"
-    assert brain.methods.used
+    assert brain.methods.state.history[-1]["origin"] == "reuse"
+    assert brain.methods.state.history[-1]["status"] == "delivered"
+    assert brain.methods.state.used
     # A rejected new source mapping must not reactivate the previous valid one.
     _, _, current, response = catalog(shift=20)
     brain.methods.remember(
@@ -239,7 +246,7 @@ def test_learned_method_uses_current_scene_and_executor_without_model(
             }
         ),
     )
-    assert brain.methods.active_method_id is None
+    assert brain.methods.state.active_method_id is None
     assert brain.methods.apply(current) is None
 
 
@@ -256,14 +263,14 @@ def test_model_adaptation_is_retained_only_after_whole_batch_delivery(tmp_path, 
     if fail_second:
         assert outcome["next"] != "verify"
         assert len(groups) == 1
-        assert brain.methods.history[-1]["status"] == "interrupted"
+        assert brain.methods.state.history[-1]["status"] == "interrupted"
         assert relay.entered == ["New customer B"]
     else:
         assert outcome == {"next": "verify"}
         # A delivered local variant remains quarantined until the whole
         # business task succeeds.
         assert len(groups) == 1
-        assert brain.methods.history[-1]["origin"] == "adaptation"
+        assert brain.methods.state.history[-1]["origin"] == "adaptation"
         assert brain.methods.finish(success=True) == 1
         groups = brain.methods.library.methods()[0].action_groups
         assert len(groups) == 2
@@ -294,7 +301,7 @@ def test_final_model_proof_is_promoted_only_after_business_success(tmp_path, bus
         return
 
     assert method.completion is not None
-    brain.methods.used.update((method.id, group.id) for group in method.action_groups)
+    brain.methods.state.used.update((method.id, group.id) for group in method.action_groups)
     response = brain.methods.apply(
         completion_scene(customer="New customer B", reference="ORDER-B", ids=100)
     )
@@ -302,7 +309,7 @@ def test_final_model_proof_is_promoted_only_after_business_success(tmp_path, bus
     assert response.operation == "complete"
     assert response.steps == []
     assert {item.field for item in response.evidence} == {"customer", "reference"}
-    assert brain.methods.history == []
+    assert brain.methods.state.history == []
     events = brain.log.read_all()
     assert any(
         event.kind == "cache_hit" and event.payload.get("check") == "method_completion_bound"
@@ -312,9 +319,7 @@ def test_final_model_proof_is_promoted_only_after_business_success(tmp_path, bus
 
 @pytest.mark.parametrize("business_success", [False, True])
 def test_successful_candidate_installs_versioned_live_library(tmp_path, business_success):
-    from types import SimpleNamespace
-
-    from brain.graph.method_runtime import MethodRuntime
+    from brain.graph.method_runtime import open_method_library
 
     live = tmp_path / "live" / "methods.json"
     brain, _, _ = setup(
@@ -339,14 +344,13 @@ def test_successful_candidate_installs_versioned_live_library(tmp_path, business
     ).methods == [installed]
 
     # The next task prefers the successful live revision over the immutable seed.
-    next_brain = SimpleNamespace(case_dir=tmp_path / "next-case")
-    runtime = MethodRuntime(
-        next_brain,
-        brain.methods.seed_path,
+    library = open_method_library(
+        brain.settings.methods.path,
+        tmp_path / "next-case",
         enabled=True,
         promotion_path=live,
     )
-    assert runtime.library.methods() == [installed]
+    assert library.methods() == [installed]
 
 
 def test_login_structure_replays_credentials_by_source_without_storing_values(tmp_path):
@@ -421,7 +425,7 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
     )
     brain._observe()
     brain.methods.remember(screen, learned)
-    assert brain.methods.pending is not None
+    assert brain.methods.state.pending is not None
     brain.methods.delivered({"next": "verify"})
     assert brain.methods.finish(success=True) == 1
 
@@ -463,10 +467,10 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
             ]
         ),
     )
-    brain.methods.used.clear()
+    brain.methods.state.used.clear()
     replay = brain.methods.apply(screen)
     assert replay is not None
-    assert brain.methods.pending["group_id"] == login_group.id
+    assert brain.methods.state.pending["group_id"] == login_group.id
     assert [step.source for step in replay.steps] == [
         "credential.username",
         "credential.password",
@@ -504,8 +508,8 @@ def test_prompt_context_keeps_only_current_method_and_procedure_window(tmp_path)
             ],
         }
     )
-    brain.methods.used.add((method.id, first.id))
-    brain.methods.history.extend(
+    brain.methods.state.used.add((method.id, first.id))
+    brain.methods.state.history.extend(
         [
             {
                 "taught_step_id": "step-1",
@@ -552,7 +556,7 @@ def test_delivered_batch_does_not_complete_a_multi_action_taught_step(tmp_path):
             ],
         }
     )
-    brain.methods.history.append(
+    brain.methods.state.history.append(
         {
             "taught_step_id": "step-2",
             "purpose": "first batch within step 2",
@@ -587,17 +591,17 @@ def test_generic_success_trace_becomes_model_free_execution_graph(tmp_path):
     brain.observation = wire()
     for item in (first, second):
         brain.methods.remember(screen, item)
-        assert brain.methods.pending is not None
+        assert brain.methods.state.pending is not None
         brain.methods.delivered({"next": "verify"})
 
-    assert len(brain.methods.staged) == 1
+    assert len(brain.methods.state.staged) == 1
     assert brain.methods.finish(success=True) == 1
     method = brain.methods.library.methods()[0]
     assert [group.trace_index for group in method.action_groups] == [0, 1]
     assert method.action_groups[0].predecessor_group_ids == []
     assert method.action_groups[1].predecessor_group_ids == [method.action_groups[0].id]
 
-    brain.methods.used.clear()
+    brain.methods.state.used.clear()
     first_replay = brain.methods.apply(screen)
     assert first_replay is not None
     assert first_replay.purpose == "Enter the visible customer"

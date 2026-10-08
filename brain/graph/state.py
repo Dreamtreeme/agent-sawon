@@ -11,6 +11,7 @@ from sawon_interfaces import Observation
 
 from .click_refinement import ClickRefinement
 from .execution import ActionPlan, PendingAction
+from .method_runtime import MethodState
 from .reconciliation import ReconciledObservation
 from .review import EvidenceReview
 from .saved_evidence import SavedEvidence
@@ -129,6 +130,7 @@ class WorkerState(TypedDict):
     review: ReviewState
     lifecycle: LifecycleState
     progress: ProgressState
+    methods: MethodState
 
 
 def create_worker_state(
@@ -141,6 +143,7 @@ def create_worker_state(
             "sequence": 0,
             "reconciled": None,
         },
+        "methods": MethodState(),
         "progress": ProgressState(
             rolling_context=RollingContextManager(rolling_buffer_size),
             navigation_history=NavigationHistory(navigation_history_size),

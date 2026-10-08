@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,51 +18,72 @@ from brain.cache.methods import (
     method_completion_from_match,
     method_from_match,
 )
-from brain.runtime.storage import atomic_write_json
+from brain.runtime.storage import RunLog, atomic_write_json
+from brain.task_instruction import TaskInstruction
 
 if TYPE_CHECKING:
-    from .engine import Brain
     from .matching import ScreenMatch
 
 
+@dataclass(frozen=True)
+class MethodContext:
+    task: TaskInstruction | None
+    task_sha256: str | None
+    inputs: Mapping[str, str]
+    credentials: Mapping[str, str | None]
+    observation_id: str | None
+
+
+@dataclass
+class MethodState:
+    bindings: dict[str, dict[str, str]] = field(default_factory=dict)
+    active_method_id: str | None = None
+    used: set[tuple[str, str]] = field(default_factory=set)
+    purpose: str = ""
+    history: list[dict] = field(default_factory=list)
+    pending: dict | None = None
+    staged: dict[str, MethodDocument] = field(default_factory=dict)
+    staged_completions: dict[str, MethodCompletion] = field(default_factory=dict)
+
+
+def open_method_library(
+    path: Path, case_dir: Path, *, enabled: bool, promotion_path: Path | None = None
+) -> MethodLibrary:
+    library = MethodLibrary(case_dir / "methods-working.json", enabled=enabled)
+    if enabled:
+        selected = (
+            promotion_path if promotion_path is not None and promotion_path.exists() else path
+        )
+        source = MethodLibrary(selected, enabled=True)
+        atomic_write_json(library.path, MethodDocument(methods=source.methods()))
+    return library
+
+
 class MethodRuntime:
+    """A short-lived view of explicit task data, run state and a persistent library."""
+
     def __init__(
         self,
-        brain: Brain,
-        path: Path,
+        context: MethodContext,
+        state: MethodState,
+        library: MethodLibrary,
         *,
-        enabled: bool,
+        case_dir: Path,
+        log: RunLog,
         promotion_path: Path | None = None,
-    ):
-        self.brain = brain
-        self.enabled = enabled
-        self.seed_path = Path(path)
-        self.promotion_path = Path(promotion_path) if promotion_path is not None else None
-        self.library = MethodLibrary(brain.case_dir / "methods-working.json", enabled=enabled)
-        if enabled:
-            selected = (
-                self.promotion_path
-                if self.promotion_path is not None and self.promotion_path.exists()
-                else self.seed_path
-            )
-            source = MethodLibrary(selected, enabled=True)
-            atomic_write_json(self.library.path, MethodDocument(methods=source.methods()))
-        self.bindings: dict[str, dict[str, str]] = {}
-        self.active_method_id: str | None = None
-        self.used: set[tuple[str, str]] = set()
-        self.purpose = ""
-        self.history: list[dict] = []
-        self.pending: dict | None = None
-        self.staged: dict[str, MethodDocument] = {}
-        self.staged_completions: dict[str, MethodCompletion] = {}
+    ) -> None:
+        self.task_context, self.state, self.library = context, state, library
+        self.case_dir, self.log = case_dir, log
+        self.enabled = library.enabled
+        self.promotion_path = promotion_path
 
     def _matches_current_task(self, method: LearnedMethod) -> bool:
         """Keep learned execution inside one exact user-education contract."""
 
-        task = self.brain.task_instruction
+        task = self.task_context.task
         if task is None or method.task_objective != task.objective:
             return False
-        digest = self.brain.task_instruction_sha256
+        digest = self.task_context.task_sha256
         return digest is not None and method.task_contract_sha256 == digest
 
     def _ordered_groups(self, method: LearnedMethod) -> list:
@@ -71,7 +94,7 @@ class MethodRuntime:
         cannot be the execution contract.
         """
 
-        task = self.brain.task_instruction
+        task = self.task_context.task
         procedure_order = (
             {step.id: index for index, step in enumerate(task.procedure)} if task else {}
         )
@@ -81,7 +104,7 @@ class MethodRuntime:
             return list(method.action_groups)
         delivered_order = {
             item["group_id"]: index
-            for index, item in enumerate(self.history)
+            for index, item in enumerate(self.state.history)
             if item.get("method_id") == method.id
             and item.get("status") == "delivered"
             and item.get("group_id")
@@ -108,7 +131,7 @@ class MethodRuntime:
         delivered = list(
             dict.fromkeys(
                 item["group_id"]
-                for item in self.history
+                for item in self.state.history
                 if item.get("method_id") == method.id
                 and item.get("status") == "delivered"
                 and item.get("group_id")
@@ -139,21 +162,25 @@ class MethodRuntime:
     def _binding_values(self) -> dict[str, str]:
         """Expose credential source availability without exposing credential values."""
         return {
-            **self.brain.values,
-            **{source: "[CREDENTIAL]" for source, value in self.brain.credentials.items() if value},
+            **self.task_context.inputs,
+            **{
+                source: "[CREDENTIAL]"
+                for source, value in self.task_context.credentials.items()
+                if value
+            },
         }
 
     def _redact_credentials(self, text: str) -> str:
         result = text
         for source, value in sorted(
-            self.brain.credentials.items(), key=lambda item: len(item[1] or ""), reverse=True
+            self.task_context.credentials.items(), key=lambda item: len(item[1] or ""), reverse=True
         ):
             if value:
                 result = result.replace(value, "{" + source + "}")
         return result
 
     def procedure_context(self) -> dict:
-        task = self.brain.task_instruction
+        task = self.task_context.task
         steps = [] if task is None else [item.model_dump(mode="json") for item in task.procedure]
         return {
             "steps": steps,
@@ -163,14 +190,14 @@ class MethodRuntime:
                     "purpose": item.get("purpose"),
                     "status": item.get("status"),
                 }
-                for item in self.history
+                for item in self.state.history
                 if item.get("taught_step_id")
             ],
         }
 
     def procedure_prompt_context(self) -> dict:
         """Return the current taught step window instead of the whole procedure."""
-        task = self.brain.task_instruction
+        task = self.task_context.task
         if task is None or not task.procedure:
             return {"steps": [], "completed_step_ids": [], "recent_results": []}
         order = {step.id: index for index, step in enumerate(task.procedure)}
@@ -181,11 +208,11 @@ class MethodRuntime:
             remaining_ids.extend(
                 group.taught_step_id
                 for group in self._ordered_groups(method)
-                if (method.id, group.id) not in self.used and group.taught_step_id in order
+                if (method.id, group.id) not in self.state.used and group.taught_step_id in order
             )
         delivered = {
             item.get("taught_step_id")
-            for item in self.history
+            for item in self.state.history
             if item.get("status") == "delivered" and item.get("taught_step_id") in order
         }
         if remaining_ids:
@@ -211,7 +238,7 @@ class MethodRuntime:
                     "purpose": item.get("purpose"),
                     "status": item.get("status"),
                 }
-                for item in self.history[-2:]
+                for item in self.state.history[-2:]
                 if item.get("taught_step_id")
             ],
         }
@@ -219,15 +246,15 @@ class MethodRuntime:
     def context(self) -> dict:
         return {
             "methods": self.library.catalog(),
-            "current_purpose": self.purpose,
-            "active_method_id": self.active_method_id,
-            "slot_bindings": self.bindings,
-            "recent_executions": self.history[-6:],
+            "current_purpose": self.state.purpose,
+            "active_method_id": self.state.active_method_id,
+            "slot_bindings": self.state.bindings,
+            "recent_executions": self.state.history[-6:],
         }
 
     def prompt_context(self) -> dict:
         """Expose only reusable groups that can affect the next decisions."""
-        task = self.brain.task_instruction
+        task = self.task_context.task
         objective = None if task is None else task.objective
         methods = []
         for method in self.library.methods():
@@ -236,7 +263,7 @@ class MethodRuntime:
             remaining = [
                 group
                 for group in self._ordered_groups(method)
-                if (method.id, group.id) not in self.used
+                if (method.id, group.id) not in self.state.used
             ][:2]
             relevant_slots = {
                 action.slot for group in remaining for action in group.actions if action.slot
@@ -264,21 +291,21 @@ class MethodRuntime:
             )
         return {
             "methods": methods,
-            "current_purpose": self.purpose,
-            "active_method_id": self.active_method_id,
+            "current_purpose": self.state.purpose,
+            "active_method_id": self.state.active_method_id,
             "slot_bindings": {
                 method_id: bindings
-                for method_id, bindings in self.bindings.items()
+                for method_id, bindings in self.state.bindings.items()
                 if any(method["id"] == method_id and method["groups"] for method in methods)
             },
-            "recent_executions": self.history[-2:],
+            "recent_executions": self.state.history[-2:],
         }
 
     def apply(self, screen: dict) -> ScreenMatch | None:
         from .matching import ScreenMatch
 
-        self.pending = None
-        task = self.brain.task_instruction
+        self.state.pending = None
+        task = self.task_context.task
         if not self.enabled or task is None:
             return None
         candidates = []
@@ -287,9 +314,9 @@ class MethodRuntime:
             taught_replay = bool(task.procedure) and self._matches_current_task(method)
             trace_replay = self._has_trace_graph(method) and self._matches_current_task(method)
             auto_replay = taught_replay or trace_replay
-            if method.id != self.active_method_id and not auto_replay:
+            if method.id != self.state.active_method_id and not auto_replay:
                 continue
-            mapping = self.bindings.get(method.id)
+            mapping = self.state.bindings.get(method.id)
             if mapping is None:
                 if not self._matches_current_task(method):
                     continue
@@ -297,7 +324,7 @@ class MethodRuntime:
             remaining = [
                 group
                 for group in self._ordered_groups(method)
-                if (method.id, group.id) not in self.used
+                if (method.id, group.id) not in self.state.used
             ]
             # A compiled procedure is ordered. Never skip an unbindable step and
             # accidentally execute a later screen's action.
@@ -308,14 +335,14 @@ class MethodRuntime:
                     group
                     for group in remaining
                     if all(
-                        (method.id, predecessor) in self.used
+                        (method.id, predecessor) in self.state.used
                         for predecessor in group.predecessor_group_ids
                     )
                 ]
             else:
                 groups = remaining
             for group in groups:
-                if (method.id, group.id) in self.used:
+                if (method.id, group.id) in self.state.used:
                     continue
                 bound = self.library.bind_with_context(
                     method.id, mapping, screen, self._binding_values(), group_id=group.id
@@ -324,7 +351,7 @@ class MethodRuntime:
                     candidates.append((method, mapping, bound))
             if not remaining and method.completion is not None:
                 completion = self.library.bind_completion_with_context(
-                    method.id, mapping, screen, self.brain.values
+                    method.id, mapping, screen, self.task_context.inputs
                 )
                 if completion is not None:
                     completion_candidates.append((method, mapping, completion))
@@ -339,14 +366,14 @@ class MethodRuntime:
                     ],
                 }
             )
-            self.purpose = response.purpose
-            self.bindings[method.id] = mapping
-            self.brain.log.append(
+            self.state.purpose = response.purpose
+            self.state.bindings[method.id] = mapping
+            self.log.append(
                 "cache_hit",
                 payload={
                     "check": "method_completion_bound",
                     "method_id": method.id,
-                    "purpose": self.purpose,
+                    "purpose": self.state.purpose,
                     "slot_map": mapping,
                     "evidence_fields": [item.field for item in response.evidence],
                 },
@@ -367,16 +394,16 @@ class MethodRuntime:
                 ],
             }
         )
-        self.purpose = response.purpose
-        self.bindings[method.id] = mapping
-        self.pending = {"method": method, "group_id": bound.group_id, "origin": "reuse"}
-        self.brain.log.append(
+        self.state.purpose = response.purpose
+        self.state.bindings[method.id] = mapping
+        self.state.pending = {"method": method, "group_id": bound.group_id, "origin": "reuse"}
+        self.log.append(
             "cache_hit",
             payload={
                 "check": "method_bound",
                 "method_id": method.id,
                 "group_id": bound.group_id,
-                "purpose": self.purpose,
+                "purpose": self.state.purpose,
                 "slot_map": mapping,
                 "steps": [step.model_dump(mode="json") for step in response.steps],
             },
@@ -384,11 +411,11 @@ class MethodRuntime:
         return response
 
     def remember(self, screen: dict, response: ScreenMatch) -> None:
-        self.pending = None
+        self.state.pending = None
         if not self.enabled:
             return
-        task = self.brain.task_instruction
-        self.purpose = self._redact_credentials(response.purpose[:160])
+        task = self.task_context.task
+        self.state.purpose = self._redact_credentials(response.purpose[:160])
         known = {method.id: method for method in self.library.methods()}
         previous = known.get(response.method_id)
         if previous is not None and task is not None and not self._matches_current_task(previous):
@@ -396,7 +423,8 @@ class MethodRuntime:
         if response.operation == "complete":
             available = dict(known)
             available.update(
-                (method_id, document.methods[0]) for method_id, document in self.staged.items()
+                (method_id, document.methods[0])
+                for method_id, document in self.state.staged.items()
             )
             if previous is None and task is not None:
                 matches = [
@@ -409,28 +437,26 @@ class MethodRuntime:
                 screen, response.model_dump(mode="json"), previous
             )
             if learned is not None and learned.completion is not None:
-                self.staged_completions[learned.id] = learned.completion
+                self.state.staged_completions[learned.id] = learned.completion
             return
-        self.active_method_id = None
+        self.state.active_method_id = None
         mapping = {item.slot: item.source for item in response.method_bindings}
         if previous is not None:
             mapping = (
                 mapping
-                or self.bindings.get(previous.id)
+                or self.state.bindings.get(previous.id)
                 or {slot.name: slot.source_key for slot in previous.slots}
             )
             if any(source not in self._binding_values() for source in mapping.values()):
                 return
-            self.bindings[previous.id] = mapping
-            self.active_method_id = previous.id
+            self.state.bindings[previous.id] = mapping
+            self.state.active_method_id = previous.id
         if not response.steps:
             return
-        purpose = self.purpose or response.expected_result
+        purpose = self.state.purpose or response.expected_result
         if previous is None:
             identity = (
-                task.objective + ":" + (self.brain.task_instruction_sha256 or "")
-                if task
-                else purpose
+                task.objective + ":" + (self.task_context.task_sha256 or "") if task else purpose
             )
             method_id = "method-" + hashlib.sha256(identity.encode()).hexdigest()[:16]
             slots = [
@@ -459,10 +485,10 @@ class MethodRuntime:
             purpose=previous.purpose if previous else purpose,
             slots=slots,
             task_objective=task.objective if task else "",
-            task_contract_sha256=(self.brain.task_instruction_sha256 or "") if task else "",
+            task_contract_sha256=(self.task_context.task_sha256 or "") if task else "",
         )
         if method is not None:
-            self.pending = {
+            self.state.pending = {
                 "method": method,
                 "group_id": method.action_groups[0].id,
                 "origin": "adaptation" if previous else "learned",
@@ -470,9 +496,9 @@ class MethodRuntime:
             }
 
     def _stage(self, method) -> None:
-        document = self.staged.get(method.id)
+        document = self.state.staged.get(method.id)
         if document is None:
-            self.staged[method.id] = MethodDocument(methods=[method])
+            self.state.staged[method.id] = MethodDocument(methods=[method])
             return
         previous = document.methods[0]
         groups = {item.id: item for item in previous.action_groups}
@@ -486,10 +512,10 @@ class MethodRuntime:
                 "completion": method.completion or previous.completion,
             }
         )
-        self.staged[method.id] = MethodDocument(methods=[merged])
+        self.state.staged[method.id] = MethodDocument(methods=[merged])
 
     def delivered(self, outcome: dict) -> None:
-        pending, self.pending = self.pending, None
+        pending, self.state.pending = self.state.pending, None
         if pending is None:
             return
         method, group_id = pending["method"], pending["group_id"]
@@ -497,7 +523,7 @@ class MethodRuntime:
         event = {
             "method_id": method.id,
             "group_id": group_id,
-            "purpose": self.purpose or method.purpose,
+            "purpose": self.state.purpose or method.purpose,
             "origin": pending["origin"],
             "taught_step_id": pending.get("taught_step_id")
             or next(
@@ -505,22 +531,24 @@ class MethodRuntime:
                 None,
             ),
             "status": status,
-            "observation_id": str(self.brain.observation.obs_id),
+            "observation_id": self.task_context.observation_id,
         }
         if status == "delivered":
-            self.used.add((method.id, group_id))
-            self.active_method_id = None
+            self.state.used.add((method.id, group_id))
+            self.state.active_method_id = None
             if pending["origin"] != "reuse":
                 method = method.model_copy(update={"source_transitions": [event["observation_id"]]})
                 self._stage(method)
-        self.history.append(event)
-        self.brain.log.append("verify", payload={"check": "method_execution", **event})
-        atomic_write_json(self.brain.case_dir / "method-progress.json", self.context())
+        self.state.history.append(event)
+        self.log.append("verify", payload={"check": "method_execution", **event})
+        atomic_write_json(self.case_dir / "method-progress.json", self.context())
 
     def finish(self, *, success: bool) -> int:
-        candidates = {method_id: document.methods[0] for method_id, document in self.staged.items()}
+        candidates = {
+            method_id: document.methods[0] for method_id, document in self.state.staged.items()
+        }
         known = {method.id: method for method in self.library.methods()}
-        for method_id, completion in self.staged_completions.items():
+        for method_id, completion in self.state.staged_completions.items():
             method = candidates.get(method_id) or known.get(method_id)
             if method is not None:
                 candidates[method_id] = method.model_copy(update={"completion": completion})
@@ -546,11 +574,15 @@ class MethodRuntime:
             compiled = compile_method_candidate(
                 method,
                 {
-                    **self.brain.values,
-                    **{source: value for source, value in self.brain.credentials.items() if value},
+                    **self.task_context.inputs,
+                    **{
+                        source: value
+                        for source, value in self.task_context.credentials.items()
+                        if value
+                    },
                 },
             )
-            if self.brain.task_instruction and not self.brain.task_instruction.procedure:
+            if self.task_context.task and not self.task_context.task.procedure:
                 compiled = self._compile_trace_graph(compiled)
             methods.append(compiled)
         promoted = 0
@@ -566,14 +598,14 @@ class MethodRuntime:
                     destination = MethodLibrary(self.promotion_path, enabled=True)
                     installed_methods = [destination.upsert(method) for method in promoted_methods]
                 atomic_write_json(
-                    self.brain.case_dir / "method-candidate.json",
+                    self.case_dir / "method-candidate.json",
                     # Export the full merged method. A warm run often learns only
                     # the suffix that required model fallback; that suffix alone
                     # is not a replayable business procedure.
                     MethodDocument(methods=installed_methods),
                 )
         atomic_write_json(
-            self.brain.case_dir / "method-learning-result.json",
+            self.case_dir / "method-learning-result.json",
             {
                 "status": "candidate" if success and methods else "incomplete",
                 "business_success": success,

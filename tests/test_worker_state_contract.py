@@ -23,7 +23,15 @@ def test_worker_graph_and_state_have_four_explicit_responsibilities():
     copied = copy_worker_state(state)
     copied["decision"]["task_plan"].append("step")
 
-    assert set(state) == {"observation", "decision", "execution", "review", "lifecycle", "progress"}
+    assert set(state) == {
+        "observation",
+        "decision",
+        "execution",
+        "review",
+        "lifecycle",
+        "progress",
+        "methods",
+    }
     assert state["decision"]["task_plan"] == []
     assert state["execution"] == {"pending": None, "authorized": False}
     assert state["review"] == {
@@ -46,6 +54,7 @@ def test_nested_handoff_and_returned_node_state_are_isolated():
     state["decision"]["action_plan"] = ActionPlan((), audit={"fields": ["original"]})
     state["progress"].verified["input"] = {"effects": ["before"]}
     state["progress"].rolling_context.mark_milestone("saved")
+    state["methods"].history.append({"status": "delivered"})
     brain = Brain.__new__(Brain)
     brain._adopt_worker_state(state)
     brain.action_plan.audit["fields"].append("internal")
@@ -59,5 +68,7 @@ def test_nested_handoff_and_returned_node_state_are_isolated():
     assert brain.rolling_context.completed_milestones == ["saved"]
     resumed = Brain.__new__(Brain)
     resumed._adopt_worker_state(brain._complete_responsibility({"next": "observe"}))
+    output["methods"].history.clear()
+    assert resumed._worker_state["methods"].history == [{"status": "delivered"}]
     assert resumed.verified == brain.verified
     assert resumed.rolling_context.completed_milestones == ["saved"]
