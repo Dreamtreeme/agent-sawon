@@ -329,37 +329,26 @@ class Brain:
         self.visual_perception = None
         self.task_instruction = None
         self.task_instruction_sha256: str | None = None
-        self.procedure = None
         self.procedure_step = None
         if settings.screen_matching:
             from brain.task_instruction import TaskInstruction
 
-            from .matching import Procedure
-
-            # [수정] visual_only 대신 is_visual 검사
-            if not settings.is_visual or (
-                settings.task_path is None and settings.procedure_path is None
-            ):
-                raise ValueError("screen_matching_requires_visual_procedure")
-            if settings.task_path is not None:
-                task_bytes = settings.task_path.read_bytes()
-                self.task_instruction = TaskInstruction.model_validate_json(task_bytes)
-                self.task_instruction_sha256 = sha256(task_bytes).hexdigest()
-                atomic_write_json(self.case_dir / "task-instruction.json", self.task_instruction)
-                self.log.append(
-                    "verify",
-                    payload={
-                        "check": "user_education_loaded",
-                        "name": self.task_instruction.name,
-                        "sha256": self.task_instruction_sha256,
-                        "procedure_step_ids": [step.id for step in self.task_instruction.procedure],
-                    },
-                )
-                self.phase = "task"
-
-            else:
-                self.procedure = Procedure.model_validate_json(settings.procedure_path.read_bytes())
-                atomic_write_json(self.case_dir / "procedure.json", self.procedure)
+            if not settings.is_visual or settings.task_path is None:
+                raise ValueError("screen_matching_requires_visual_task")
+            task_bytes = settings.task_path.read_bytes()
+            self.task_instruction = TaskInstruction.model_validate_json(task_bytes)
+            self.task_instruction_sha256 = sha256(task_bytes).hexdigest()
+            atomic_write_json(self.case_dir / "task-instruction.json", self.task_instruction)
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "user_education_loaded",
+                    "name": self.task_instruction.name,
+                    "sha256": self.task_instruction_sha256,
+                    "procedure_step_ids": [step.id for step in self.task_instruction.procedure],
+                },
+            )
+            self.phase = "task"
         self.methods = MethodRuntime(
             self,
             settings.methods.path,
@@ -987,31 +976,19 @@ class Brain:
             if self.settings.screen_matching:
                 from .notebook import remember
 
-                if self.task_instruction is not None:
-                    self.plan = [
-                        self.task_instruction.objective,
-                        *self.task_instruction.requirements,
-                        *self.task_instruction.completion_conditions,
-                    ]
-                    self.log.append(
-                        "plan",
-                        payload={
-                            "source": "task-instruction.json",
-                            "requirements": len(self.task_instruction.requirements),
-                            "completion_conditions": len(
-                                self.task_instruction.completion_conditions
-                            ),
-                        },
-                    )
-                else:
-                    self.plan = [s.goal for s in self.procedure.steps]
-                    self.log.append(
-                        "plan",
-                        payload={
-                            "source": "procedure.json",
-                            "steps": [s.id for s in self.procedure.steps],
-                        },
-                    )
+                self.plan = [
+                    self.task_instruction.objective,
+                    *self.task_instruction.requirements,
+                    *self.task_instruction.completion_conditions,
+                ]
+                self.log.append(
+                    "plan",
+                    payload={
+                        "source": "task-instruction.json",
+                        "requirements": len(self.task_instruction.requirements),
+                        "completion_conditions": len(self.task_instruction.completion_conditions),
+                    },
+                )
                 remember(self)
                 return {"next": "observe"}
             plan = self._call(

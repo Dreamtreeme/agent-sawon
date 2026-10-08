@@ -162,11 +162,6 @@ class ClickRefinement:
             width=shot.width,
             height=shot.height,
         )
-        step = (
-            next((s for s in brain.procedure.steps if s.id == decision.subgoal), None)
-            if brain.procedure
-            else None
-        )
         prompt = (
             "The previous point action was delivered, but its intended task goal did not "
             "advance or the same semantic target was selected again. "
@@ -182,7 +177,6 @@ class ClickRefinement:
             + json.dumps(
                 {
                     "task_goal": brain.goal,
-                    "procedure": step.model_dump() if step else None,
                     "previous_expectation": decision.reason,
                     "failure": failure,
                     "target_binding": target_binding,

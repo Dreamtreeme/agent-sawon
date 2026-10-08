@@ -33,3 +33,7 @@ Gemini/replay 어댑터는 유지하지만 비교용 운영 프리셋은 제공�
 `hybrid_assist_scroll`, `jev_request_max_bytes` 설정을 제거했습니다.
 과거 설정을 가져올 때 이 키들은 제거해야 합니다. 알 수 없는 키를 무시하는 호환 처리는
 추가하지 않았으며, 실제 relay의 전경 복원·IME·스크롤 동작은 변경하지 않았습니다.
+
+화면 매칭은 `--task` 또는 `task_path`를 요구합니다. 구형 `--procedure`와 `procedure_path`는
+제거했습니다. 과거 고정 Procedure JSON은 직접 로드할 수 없으며 사용자 교육을
+TaskInstruction 형식으로 옮겨야 합니다. TaskInstruction.procedure의 교육 순서는 유지됩니다.

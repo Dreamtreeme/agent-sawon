@@ -8,7 +8,7 @@ from test_screen_matching import fixture, response, setup_brain
 from test_visual_scene import wire
 
 from brain.graph.context import execution_context
-from brain.graph.matching import RULES, match_screen
+from brain.graph.matching import TASK_RULES, match_screen
 from brain.graph.schemas import Choice, Decision
 from brain.task_instruction import TaskInstruction
 from brain.visual.markers import build_markers, ground_meanings
@@ -33,7 +33,6 @@ def test_direct_and_screen_matching_receive_identical_execution_context(
         tmp_path,
         record,
         [response(meanings, procedure_step=step, steps=[], operation="stop")],
-        task_instruction=None,
     )
     brain.observation = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
     brain.phase = phase
@@ -57,12 +56,16 @@ def test_direct_and_screen_matching_receive_identical_execution_context(
         },
         None,
     )
-    matched = json.loads(model.prompts[-1][len(RULES) :])
+    matched = json.loads(model.prompts[-1][len(TASK_RULES) :])
+    expected.update(
+        available_inputs=sorted(brain.values),
+        remaining_inputs=sorted(set(brain.values) - set(brain.verified)),
+    )
     assert matched["execution"] == expected
 
 
 def test_pending_proposal_does_not_mutate_actual_facts_or_runtime_policy(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=None)
+    brain, *_ = setup_brain(tmp_path, record, [])
     brain.phase = "final_query"
     brain.decision = Decision(
         screen_kind="query",
@@ -101,7 +104,7 @@ def test_generic_task_context_has_no_legacy_query_input_gate(tmp_path, record):
 
 
 def test_saved_review_context_excludes_run_local_provenance(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=None)
+    brain, *_ = setup_brain(tmp_path, record, [])
     brain.phase = "final_query"
     brain.saved_evidence.begin("origin-a")
     brain.saved_evidence.query_row_seen = True
@@ -138,7 +141,7 @@ def test_saved_review_context_excludes_run_local_provenance(tmp_path, record):
 
 
 def test_pending_last_record_fill_proposes_save_without_mutating_verified_fields(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=None)
+    brain, *_ = setup_brain(tmp_path, record, [])
     brain.phase = "enter"
     brain.duplicate_clear = True
     last_field = "consignee"
@@ -174,7 +177,7 @@ def test_pending_last_record_fill_proposes_save_without_mutating_verified_fields
 
 
 def test_pending_external_selection_anticipates_its_verified_field(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=None)
+    brain, *_ = setup_brain(tmp_path, record, [])
     brain.phase = "enter"
     brain.duplicate_clear = True
     selected_field = "shipper"
@@ -222,7 +225,7 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
             }
         ],
     )
-    brain, model, *_ = setup_brain(tmp_path, record, [combined], task_instruction=None)
+    brain, model, *_ = setup_brain(tmp_path, record, [combined])
     brain.phase = "enter"
     brain.duplicate_clear = True
     basics = {"hbl_no", "mbl_no", "packages.count", "packages.unit", "pol"}
@@ -250,18 +253,18 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
         None,
     )
 
-    state = json.loads(model.prompts[-1][len(RULES) :])
-    step_ids = {step["id"] for step in state["procedure"]}
-    assert matched.procedure_step == "open-additional-entry"
-    assert "open-additional-entry" in step_ids
-    assert "open-shipper-lookup" not in step_ids
-    assert state["notebook"]["anticipated_verified_fields"] == sorted(basics | {"shipper"})
+    state = json.loads(model.prompts[-1][len(TASK_RULES) :])
+    assert matched.procedure_step == "task-action"
+    assert "select_tab" in state["capabilities"][0]["actions"]
+    assert state["execution"]["conditional"]
+    assert "shipper" not in brain.verified
+    assert state["execution"]["pending_actions"][0]["intent"] == "select_option"
 
 
 def test_pending_login_proposes_post_authentication_work_without_resubmitting_credentials(
     tmp_path, record
 ):
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=None)
+    brain, *_ = setup_brain(tmp_path, record, [])
     brain.credentials = {
         "credential.username": "fixture-user",
         "credential.password": "fixture-password",
@@ -283,5 +286,5 @@ def test_pending_login_proposes_post_authentication_work_without_resubmitting_cr
     assert proposed["conditional"]
     assert "credential" not in proposed["allowed_intents"]
     assert "login" not in proposed["allowed_intents"]
-    assert "Check for an existing record" in proposed["guidance"]
+    assert "Use the user task description" in proposed["guidance"]
     assert brain._decision_policy().facts.available_credential_sources

@@ -27,7 +27,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--relay-url", required=True)
     parser.add_argument("--goal", required=True)
     parser.add_argument("--task", type=Path, help="User-authored task description JSON")
-    parser.add_argument("--procedure", type=Path, help="User-supplied ordered workflow JSON")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--model-config", type=Path, required=True)
     parser.add_argument("--env-path", type=Path)
@@ -66,16 +65,8 @@ def main(argv: list[str] | None = None) -> int:
 
         settings = BrainSettings.load(args.config)
 
-        if args.task is not None and args.procedure is not None:
-            parser.error("--task cannot be combined with --procedure")
         if args.task is not None:
-            settings = settings.model_copy(
-                update={"task_path": args.task.resolve(), "procedure_path": None}
-            )
-        if args.procedure is not None:
-            settings = settings.model_copy(
-                update={"procedure_path": args.procedure.resolve(), "task_path": None}
-            )
+            settings = settings.model_copy(update={"task_path": args.task.resolve()})
 
         if args.max_cost_usd is not None:
             if args.max_cost_usd > settings.max_cost_usd:

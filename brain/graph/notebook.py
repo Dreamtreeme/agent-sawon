@@ -23,7 +23,6 @@ def remember(brain: Brain) -> dict:
         "task_path": (
             "task-instruction.json" if getattr(brain, "task_instruction", None) else None
         ),
-        "procedure_path": "procedure.json" if getattr(brain, "procedure", None) else None,
         # [수정] 12개 누적 대신 설정된 제한(기본 3개)만큼만 피드백 유지
         "recent_feedback": brain.feedback[-max_history:],
         # [추가] 롤링 컨텍스트 매니저로부터 최근 턴 및 완료된 마일스톤 주입

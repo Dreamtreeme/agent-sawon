@@ -68,7 +68,6 @@ class BrainSettings(BaseModel):
     screen_matching: bool = False
     separate_observation_decision: bool = True
     task_path: Path | None = None
-    procedure_path: Path | None = None
     visual_detector: DetectorSettings = Field(default_factory=DetectorSettings)
     visual_merge: MergeSettings = Field(default_factory=MergeSettings)
 
@@ -83,10 +82,6 @@ class BrainSettings(BaseModel):
             settings = cls.model_validate(tomllib.load(stream))
 
         # 설정 파일 위치 기준 상대 경로들을 절대 경로로 변환
-        if settings.procedure_path is not None and not settings.procedure_path.is_absolute():
-            settings = settings.model_copy(
-                update={"procedure_path": (path.parent / settings.procedure_path).resolve()}
-            )
         if settings.task_path is not None and not settings.task_path.is_absolute():
             settings = settings.model_copy(
                 update={"task_path": (path.parent / settings.task_path).resolve()}

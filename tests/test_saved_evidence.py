@@ -286,7 +286,7 @@ def test_unique_selected_row_links_to_exact_submitted_query_when_input_is_not_de
 
 
 def test_screen_binding_promotes_a_clicked_result_cell_to_its_parent_row(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=None)
+    brain, *_ = setup_brain(tmp_path, record, [])
     observation = scene("query", [])
     prefix = "e" + str(observation.obs_id.int) + "0"
     brain.observation = observation.model_copy(
@@ -502,7 +502,7 @@ def test_linked_read_only_detail_accepts_exact_current_value_text(record):
 
 
 def test_graph_review_completes_from_unambiguous_current_inputs_without_rematch(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=None)
+    brain, *_ = setup_brain(tmp_path, record, [])
     brain.phase = "final_query"
     brain.save_issued = brain.duplicate_clear = True
     brain.query_submitted = brain.query_value_verified = True
