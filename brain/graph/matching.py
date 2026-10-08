@@ -406,35 +406,6 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
     """Discard unrelated role mistakes and impossible parent links before grounding."""
     markers = {m["id"]: m for m in screen.get("markers", [])}
     controls = {c.id: c for c in response.controls}
-    stale_verified_evidence = []
-    if response.operation == "act" and brain.task_instruction is None:
-        stale_verified_evidence = [
-            evidence
-            for evidence in response.evidence
-            if evidence.target not in controls and evidence.field in brain.verified
-        ]
-    # An act turn may mention visible row values as helpful context while omitting
-    # their semantic control definitions. They are not executable or reviewable
-    # evidence. Drop them instead of issuing a second paid grounding call. Required
-    # pending-input verification is recovered independently by retain_verification.
-    unbound_action_evidence = (
-        [evidence for evidence in response.evidence if evidence.target not in controls]
-        if response.operation == "act"
-        else []
-    )
-    omitted_evidence = [
-        evidence
-        for evidence in response.evidence
-        if evidence in stale_verified_evidence or evidence in unbound_action_evidence
-    ]
-    if omitted_evidence:
-        response = response.model_copy(
-            update={
-                "evidence": [
-                    evidence for evidence in response.evidence if evidence not in omitted_evidence
-                ]
-            }
-        )
     ignored_save_result = brain.phase != "save_result" and response.save_result is not None
     if ignored_save_result:
         response = response.model_copy(update={"save_result": None, "message_targets": []})
@@ -522,23 +493,6 @@ def sanitize_unused_controls(brain, response: ScreenMatch, screen: dict, require
         brain.log.append(
             "verify",
             payload={"check": "unused_invalid_roles_omitted", "marker_ids": sorted(removed)},
-        )
-    if stale_verified_evidence:
-        brain.log.append(
-            "verify",
-            payload={
-                "check": "stale_verified_evidence_omitted",
-                "fields": sorted(evidence.field for evidence in stale_verified_evidence),
-            },
-        )
-    if unbound_action_evidence:
-        brain.log.append(
-            "verify",
-            payload={
-                "check": "unbound_action_evidence_omitted",
-                "fields": sorted({evidence.field for evidence in unbound_action_evidence}),
-                "marker_ids": sorted({evidence.target for evidence in unbound_action_evidence}),
-            },
         )
     if ignored_save_result:
         brain.log.append(
@@ -1178,6 +1132,14 @@ def normalize_task_capability(
     )
 
 
+def prepare_match_plan(brain, response, screen, candidates, policy, active_fields):
+    """Compile every proposal through the same task and write-surface contract."""
+    response = normalize_task_capability(brain, response, candidates)
+    response = enforce_taught_input_surfaces(brain, response, screen)
+    response = defer_unwritable_fill_targets(brain, response, screen)
+    return validate_match_plan(response, candidates, policy, brain, active_fields)
+
+
 def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     pending_execution = None if brain.pending is None else brain.pending.get("execution")
     post_action_review = (
@@ -1401,11 +1363,10 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     # There is exactly one synthetic capability envelope in generic task mode.
     # Its internal ID is compiler metadata, not a business decision the model
     # should have to echo instead of a human-readable subgoal.
-    response = normalize_task_capability(brain, response, candidates)
     try:
-        response = enforce_taught_input_surfaces(brain, response, screen)
-        response = defer_unwritable_fill_targets(brain, response, screen)
-        response, step = validate_match_plan(response, candidates, policy, brain, active_fields)
+        response, step = prepare_match_plan(
+            brain, response, screen, candidates, policy, active_fields
+        )
     except ValueError as error:
         # A novel combined response can have sound screen semantics but choose an
         # ineligible task step. Preserve the grounded controls and correct only the
@@ -1444,10 +1405,9 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
             page=page,
         )
         response = ScreenMatch.model_validate({**interpretation.model_dump(), **plan.model_dump()})
-        response = normalize_task_capability(brain, response, candidates)
-        response = enforce_taught_input_surfaces(brain, response, screen)
-        response = defer_unwritable_fill_targets(brain, response, screen)
-        response, step = validate_match_plan(response, candidates, policy, brain, active_fields)
+        response, step = prepare_match_plan(
+            brain, response, screen, candidates, policy, active_fields
+        )
         atomic_write_json(
             brain.case_dir / "matching" / f"{uuid4().hex}-action-correction.json", response
         )
@@ -1512,7 +1472,10 @@ def match_screen(brain, screen: dict, page, *, grounded_interpretation=None):
     # Action completion and target repair are later model boundaries and can
     # introduce a fill after the first check above. Enforce the write-surface
     # contract on the final response as well.
-    response = defer_unwritable_fill_targets(brain, response, screen)
+    response, step = prepare_match_plan(brain, response, screen, candidates, policy, active_fields)
+    if not response.needs_refinement:
+        response = retain_action_targets(brain, response, screen, page)
+        response = sanitize_unused_controls(brain, response, screen, required)
     brain.procedure_step = step.id
     brain.visual_match_candidate = (
         cache_hit[0] if cache_hit is not None else visual_match_key(state),

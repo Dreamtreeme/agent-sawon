@@ -273,9 +273,7 @@ def test_separate_planning_corrects_only_the_plan_from_the_same_observation(tmp_
     )
 
 
-def test_act_omits_unbound_incidental_evidence_without_paid_grounding(
-    tmp_path, record, task_instruction
-):
+def test_act_grounds_current_evidence_before_recording_the_plan(tmp_path, record, task_instruction):
     meaning = fixture()[-1]
     data = response(meaning)
     incidental_marker = next(
@@ -286,25 +284,34 @@ def test_act_omits_unbound_incidental_evidence_without_paid_grounding(
         {"field": "shipper", "target": incidental_marker},
     ]
     brain, model, _, ocr, detector, _ = setup_brain(
-        tmp_path, record, [data], task_instruction=task_instruction
+        tmp_path,
+        record,
+        [
+            data,
+            {
+                "screen_kind": meaning.screen_kind,
+                "controls": [{"id": incidental_marker, "role": "text", "confidence": 1}],
+            },
+        ],
+        task_instruction=task_instruction,
     )
 
     brain._observe()
 
-    assert len(model.prompts) == 1
-    assert not brain.visual_proposal.evidence
+    assert len(model.prompts) == 2
+    assert [item.field for item in brain.visual_proposal.evidence] == ["mbl_no", "shipper"]
     assert brain.visual_proposal.steps[0].target == meaning.controls[0].id
     assert ocr.calls == detector.calls == 1
     event = next(
         event
         for event in brain.log.read_all()
-        if event.payload.get("check") == "unbound_action_evidence_omitted"
+        if event.payload.get("check") == "action_targets_grounded"
     )
-    assert event.payload["fields"] == ["mbl_no", "shipper"]
     assert event.payload["marker_ids"] == [incidental_marker]
-    assert not any(
-        event.payload.get("check") == "action_targets_grounded" for event in brain.log.read_all()
-    )
+    assert brain.saved_bindings[1]["mbl_no"] in {
+        element.ref for element in brain.observation.elements
+    }
+    assert "mbl_no" not in brain.verified  # A binding is not a verified value.
 
 
 def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(
@@ -2344,7 +2351,7 @@ def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, depend
 
 
 @pytest.mark.parametrize("verified", [False, True])
-def test_unbound_act_evidence_is_omitted_regardless_of_prior_verification(
+def test_control_cleanup_preserves_current_evidence_regardless_of_prior_verification(
     tmp_path, record, verified
 ):
     from brain.graph.matching import sanitize_unused_controls
@@ -2374,7 +2381,7 @@ def test_unbound_act_evidence_is_omitted_regardless_of_prior_verification(
         [],
     )
     assert response.save_result is None
-    assert not response.evidence
+    assert response.evidence[0].target == 31
     meanings = SemanticDetection.model_validate(
         {
             key: value
@@ -2383,10 +2390,10 @@ def test_unbound_act_evidence_is_omitted_regardless_of_prior_verification(
         }
     )
     scene = bind_scene(wire(), [], ground_meanings(meanings, markers, []))
-    decision = compile_match(response, scene, DecisionResponse).to_decision()
-    assert decision.intent == "save"
+    with pytest.raises(ValueError, match="visual_proposal_unknown_marker"):
+        compile_match(response, scene, DecisionResponse)
     checks = {event.payload.get("check") for event in brain.log.read_all()}
-    assert "unbound_action_evidence_omitted" in checks
+    assert "unbound_action_evidence_omitted" not in checks
     assert "stale_verified_evidence_omitted" not in checks
     assert ("hbl_no" in brain.verified) is verified
 

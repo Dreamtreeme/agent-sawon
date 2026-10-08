@@ -373,10 +373,13 @@ class Brain:
             assert isinstance(self.observation, SceneObservation)
             prefix = "e" + str(self.observation.obs_id.int) + "0"
             grounded_refs = {element.ref for element in self.observation.elements}
+            required_targets = (
+                {step.target for step in response.steps}
+                | {item.target for item in response.evidence}
+                | {item.target for item in response.completion_evidence}
+            )
             missing_targets = {
-                step.target
-                for step in response.steps
-                if prefix + str(step.target) not in grounded_refs
+                target for target in required_targets if prefix + str(target) not in grounded_refs
             }
             if missing_targets:
                 request, _ = self.visual_perception.planning_context()
