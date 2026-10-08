@@ -42,6 +42,18 @@ def restore_region_box(
     return [ox + x, oy + y, w, h]
 
 
+def overlaps_ocr(box: list[int], text_boxes: list) -> bool:
+    """OCR already supplies text, including glyph fragments inside a text line."""
+    x, y, width, height = box
+    for a, b, w, h in text_boxes:
+        intersection = max(0, min(x + width, a + w) - max(x, a)) * max(
+            0, min(y + height, b + h) - max(y, b)
+        )
+        if intersection / min(width * height, w * h) >= 0.8:
+            return True
+    return False
+
+
 class DetectorSession:
     def __init__(self):
         self.model = None
@@ -51,49 +63,70 @@ class DetectorSession:
         self.caption_weights = None
         self.metrics = {}
 
-    def _init_caption_model(self, caption_path: str | None, device: str) -> None:
-        """Florence-2 캡셔닝 모델 초기화 (실패 시 안전 폴백)."""
-        if not caption_path or not Path(caption_path).exists():
-            return
-        if self.caption_model is not None and self.caption_weights == caption_path:
-            return
-        try:
-            from transformers import AutoModelForCausalLM, AutoProcessor
+    def _init_caption_model(self, caption_path: str | None, device: str) -> bool:
+        """Load the configured local Florence model once; never silently omit v2 captions."""
+        if not caption_path or not Path(caption_path).is_dir():
+            raise ValueError("omniparser_caption_weights_missing")
+        key = (str(Path(caption_path).resolve()), device)
+        if self.caption_model is not None and self.caption_weights == key:
+            return False
+        import torch
+        from transformers import AutoModelForCausalLM, AutoProcessor
 
-            self.caption_model = (
-                AutoModelForCausalLM.from_pretrained(caption_path, trust_remote_code=True)
-                .to(device)
-                .eval()
+        processor = AutoProcessor.from_pretrained(
+            caption_path, trust_remote_code=True, local_files_only=True
+        )
+        model = (
+            AutoModelForCausalLM.from_pretrained(
+                caption_path,
+                trust_remote_code=True,
+                local_files_only=True,
+                torch_dtype=torch.float16 if device.startswith("cuda") else torch.float32,
+                attn_implementation="eager",
             )
-            self.caption_processor = AutoProcessor.from_pretrained(
-                caption_path, trust_remote_code=True
-            )
-            self.caption_weights = caption_path
-        except Exception as exc:
-            # 캡셔닝 의존성 오류 시 워커를 죽이지 않고 감지만 수행
-            sys.stderr.write(f"Florence-2 초기화 생략 (폴백 유지): {type(exc).__name__}\n")
-            self.caption_model = None
-            self.caption_processor = None
+            .to(device)
+            .eval()
+        )
+        self.caption_processor, self.caption_model = processor, model
+        self.caption_weights = key
+        return True
 
-    def _caption_crop(self, crop, device: str) -> str:
-        """아이콘 영역 이미지 조각에 대한 기능 설명(예: 'search button') 생성."""
-        if self.caption_model is None or self.caption_processor is None:
-            return ""
-        try:
-            prompt = "<CAPTION>"
-            inputs = self.caption_processor(text=prompt, images=crop, return_tensors="pt").to(
-                device
-            )
-            generated_ids = self.caption_model.generate(
-                input_ids=inputs["input_ids"],
-                pixel_values=inputs["pixel_values"],
-                max_new_tokens=30,
-                num_beams=2,
-            )
-            decoded = self.caption_processor.batch_decode(generated_ids, skip_special_tokens=True)
-            return decoded[0].strip()
-        except Exception:
-            return ""
+    def _caption_boxes(self, image, boxes: list[dict], batch_size: int) -> None:
+        """Batch the official v2 64px icon crops on the persistent GPU model."""
+        import torch
+        from PIL import Image
+
+        with torch.inference_mode():
+            for offset in range(0, len(boxes), batch_size):
+                batch = boxes[offset : offset + batch_size]
+                crops = []
+                for box in batch:
+                    x, y, width, height = box["bbox"]
+                    crops.append(
+                        image.crop((x, y, x + width, y + height)).resize(
+                            (64, 64), Image.Resampling.BILINEAR
+                        )
+                    )
+                inputs = self.caption_processor(
+                    text=["<CAPTION>"] * len(crops),
+                    images=crops,
+                    return_tensors="pt",
+                    do_resize=False,
+                ).to(device=self.caption_model.device, dtype=self.caption_model.dtype)
+                generated = self.caption_model.generate(
+                    # Florence builds the mask after adding visual tokens. The
+                    # processor's text-only mask does not cover that sequence.
+                    input_ids=inputs["input_ids"],
+                    pixel_values=inputs["pixel_values"],
+                    max_new_tokens=20,
+                    num_beams=1,
+                    do_sample=False,
+                )
+                descriptions = self.caption_processor.batch_decode(
+                    generated, skip_special_tokens=True
+                )
+                for box, description in zip(batch, descriptions, strict=True):
+                    box["functional_description"] = description.strip()[:160] or None
 
     def __call__(self, request):
         from PIL import Image
@@ -112,11 +145,11 @@ class DetectorSession:
             self.model = YOLO(str(weights))
             self.weights = weights
 
-        # v2 모드 요청 시 캡셔닝 모델 초기화 시도
-        if request.get("use_v2") and request.get("caption_weights"):
-            self._init_caption_model(request["caption_weights"], device)
+        caption_initialized = False
+        if request.get("use_v2"):
+            caption_initialized = self._init_caption_model(request.get("caption_weights"), device)
 
-        initialization_ms = (perf_counter() - started) * 1000 if initialized else 0
+        initialization_ms = (perf_counter() - started) * 1000
         started = perf_counter()
 
         with Image.open(request["image"]) as source:
@@ -149,7 +182,7 @@ class DetectorSession:
                 conf=request["confidence"],
                 verbose=False,
                 device=device,
-                imgsz=1280 if regions else 640,
+                imgsz=1280 if regions or request.get("use_v2") else 640,
             )
 
             for result in results:
@@ -158,28 +191,35 @@ class DetectorSession:
                         box.xyxy[0].cpu().tolist(), region, view.size, full_size
                     )
                     if bbox is not None:
-                        func_desc = None
-                        # v2 모드이고 캡셔닝 모델이 준비되었으면 아이콘 설명 생성
-                        if request.get("use_v2") and self.caption_model is not None:
-                            x, y, w, h = bbox
-                            crop = image.crop((x, y, x + w, y + h))
-                            func_desc = self._caption_crop(crop, device) or None
-
                         boxes.append(
                             {
                                 "id": len(boxes),
                                 "source": "omniparser",
                                 "bbox": bbox,
                                 "confidence": float(box.conf.item()),
-                                "functional_description": func_desc,
+                                "functional_description": None,
                             }
                         )
 
+        detection_ms = (perf_counter() - started) * 1000
+        started = perf_counter()
+        caption_targets = [
+            box for box in boxes if not overlaps_ocr(box["bbox"], request.get("ocr_boxes", []))
+        ]
+        if request.get("use_v2") and caption_targets:
+            self._caption_boxes(image, caption_targets, request.get("caption_batch_size", 16))
+        caption_ms = (perf_counter() - started) * 1000 if request.get("use_v2") else 0
         self.metrics = {
             "device": str(getattr(getattr(self.model, "predictor", None), "device", device)),
             "model_initialized": initialized,
-            "model_init_ms": initialization_ms,
-            "inference_ms": (perf_counter() - started) * 1000,
+            "model_init_ms": initialization_ms if initialized or caption_initialized else 0,
+            "caption_initialized": caption_initialized,
+            "caption_enabled": bool(request.get("use_v2")),
+            "ocr_caption_skipped": len(boxes) - len(caption_targets),
+            "captioned_boxes": sum(bool(box["functional_description"]) for box in boxes),
+            "detection_ms": detection_ms,
+            "caption_ms": caption_ms,
+            "inference_ms": detection_ms + caption_ms,
         }
         return boxes
 

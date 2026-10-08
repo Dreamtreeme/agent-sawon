@@ -296,8 +296,9 @@ def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_pat
             return blocks
 
     class Detector:
-        def read(self, page):
+        def read(self, page, *, ocr_boxes=()):
             assert page.image_path.name == "capture.png"
+            assert ocr_boxes == tuple(block.bbox for block in blocks)
             return boxes
 
     calls = []
@@ -443,12 +444,12 @@ def test_perception_refines_only_after_basic_detection_reports_failure(
     monkeypatch.setattr("brain.visual.perception.perf_counter", lambda: clock[0])
 
     class Detector(OmniParserDetector):
-        def read(self, page):
+        def read(self, page, *, ocr_boxes=()):
             calls.append("full")
             clock[0] += 2
             return boxes
 
-        def refine(self, page, regions):
+        def refine(self, page, regions, *, ocr_boxes=()):
             assert 1 <= len(regions) <= self.settings.refinement_max_regions
             calls.append("refine")
             clock[0] += 10
@@ -496,11 +497,11 @@ def test_failed_refinement_returns_navigation_semantics_to_decision_graph(tmp_pa
     calls = []
 
     class Detector(OmniParserDetector):
-        def read(self, page):
+        def read(self, page, *, ocr_boxes=()):
             calls.append("full")
             return boxes
 
-        def refine(self, page, regions):
+        def refine(self, page, regions, *, ocr_boxes=()):
             calls.append("refine")
             return []
 
@@ -571,7 +572,7 @@ def test_same_screen_rematch_corrects_and_updates_cached_meaning_without_new_ocr
             return blocks
 
     class Detector:
-        def read(self, page):
+        def read(self, page, *, ocr_boxes=()):
             calls["detector"] += 1
             return boxes
 

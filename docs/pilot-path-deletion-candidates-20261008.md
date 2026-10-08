@@ -67,7 +67,7 @@ core 및 bench의 Python 소스에서 이름 참조를 검색하고 core 설정 
 | 영역 | 현재 판단과 이유 |
 |---|---|
 | separate_observation_decision=true 경로 | 이번 false 설정과 달리 현재 config/brain.visual.toml 기본값은 true. 유지 |
-| OmniParser v2/캡션 경로 | 파일럿은 v1 weights와 use_v2 기본 false, 현재 기본 설정은 v2. 유지 |
+| OmniParser v2/캡션 경로 | 파일럿은 use_v2=false로 캡션 비활성. 후속 해시 확인에서 탐지 가중치는 공식 v2 icon_detect와 동일하여 기존 v1 표기를 정정한다. 캡션 경로 유지 |
 | models/gemini.py | 다른 공급자/비교 기능이며 명시적인 factory 경로 존재. Luna 파일럿 미사용만으로 삭제 불가 |
 | models/replay.py | 네트워크 없는 회귀 테스트 경로. 유지 |
 | pipeline/run, runner, extract, normalize, checks, render, evaluate, measure, workflow, handoff | 이미 만든 record를 전달했으므로 문서 추출/준비 검증은 이번 명령 경로 밖. M2 문서 기능과 독립 CLI이므로 제품 범위 폐기 전 보류 |

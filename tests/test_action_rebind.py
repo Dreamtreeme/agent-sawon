@@ -157,7 +157,7 @@ def test_perception_reuses_one_local_catalog_and_never_calls_semantic_model(tmp_
             return [OcrBlock(id=0, text="사용자", confidence=1, bbox=(15, 48, 105, 24))]
 
     class Detector:
-        def read(self, page):
+        def read(self, page, *, ocr_boxes=()):
             calls["detector"] += 1
             return [Marker(id=0, bbox=(150, 48, 300, 36), source="omniparser", confidence=1)]
 

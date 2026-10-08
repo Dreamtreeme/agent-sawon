@@ -26,12 +26,13 @@ class DetectorSettings(BaseModel):
     # [신규 추가] OmniParser v2 파이프라인 옵션
     use_v2: bool = Field(
         default=False,
-        description="YOLOv9-E + Florence-2 기반 OmniParser v2 파이프라인 활성화 여부",
+        description="OmniParser v2 icon_detect + Florence-2 캡셔닝 활성화 여부",
     )
     caption_weights: Path | None = Field(
         default=None,
         description="아이콘 기능 캡셔닝 모델(Florence-2 등) 디렉터리 경로",
     )
+    caption_batch_size: int = Field(default=16, ge=1, le=128)
 
     python: str | None = None
     device: str = "cpu"
@@ -44,7 +45,9 @@ class DetectorSettings(BaseModel):
 
 
 class ControlDetector(Protocol):
-    def read(self, page: RenderedPage) -> list[Marker]: ...
+    def read(
+        self, page: RenderedPage, *, ocr_boxes: tuple[tuple[int, int, int, int], ...] = ()
+    ) -> list[Marker]: ...
 
 
 class MarkerBatch(BaseModel):
@@ -53,24 +56,42 @@ class MarkerBatch(BaseModel):
 
 class OmniParserDetector(MeasuredModelClient):
     def __init__(self, settings: DetectorSettings, run_log: EventSink):
-        super().__init__(provider="local", model="omniparser-icon-detect", run_log=run_log)
+        super().__init__(
+            provider="local",
+            model="omniparser-v2" if settings.use_v2 else "omniparser-icon-detect",
+            run_log=run_log,
+        )
         self.settings = settings
         self._worker = None
         self.last_metrics = {}
 
-    def read(self, page: RenderedPage) -> list[Marker]:
-        return self._read(page, [])
+    def read(
+        self, page: RenderedPage, *, ocr_boxes: tuple[tuple[int, int, int, int], ...] = ()
+    ) -> list[Marker]:
+        return self._read(page, [], ocr_boxes)
 
-    def refine(self, page: RenderedPage, regions: list[tuple[int, int, int, int]]) -> list[Marker]:
+    def refine(
+        self,
+        page: RenderedPage,
+        regions: list[tuple[int, int, int, int]],
+        *,
+        ocr_boxes: tuple[tuple[int, int, int, int], ...] = (),
+    ) -> list[Marker]:
         if not self.settings.refinement_enabled or not regions:
             return []
         if len(regions) > self.settings.refinement_max_regions:
             raise ValueError("refinement_region_limit")
-        return self._read(page, regions)
+        return self._read(page, regions, ocr_boxes)
 
-    def _read(self, page: RenderedPage, regions: list[tuple[int, int, int, int]]) -> list[Marker]:
+    def _read(self, page: RenderedPage, regions: list, ocr_boxes: tuple) -> list[Marker]:
         return self.complete_json(
-            json.dumps({"settings": self.settings.model_dump(mode="json"), "regions": regions}),
+            json.dumps(
+                {
+                    "settings": self.settings.model_dump(mode="json"),
+                    "regions": regions,
+                    "ocr_boxes": ocr_boxes,
+                }
+            ),
             MarkerBatch,
             images=[page.image_path],
         ).response.markers
@@ -107,10 +128,12 @@ class OmniParserDetector(MeasuredModelClient):
                     else None
                 ),
                 "use_v2": self.settings.use_v2,
+                "caption_batch_size": self.settings.caption_batch_size,
                 "device": self.settings.device,
                 "confidence": self.settings.confidence,
                 "max_dimension": self.settings.max_dimension,
                 "regions": json.loads(prompt)["regions"],
+                "ocr_boxes": json.loads(prompt)["ocr_boxes"],
                 "refinement_scale": self.settings.refinement_scale,
             },
             timeout=self.settings.timeout_seconds,

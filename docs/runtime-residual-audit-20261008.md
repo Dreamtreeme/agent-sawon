@@ -2,7 +2,8 @@
 
 기준: `194000c`의 소스(직전 실제 실행 코드는 `564e27c`로 동일).
 대상 실행: `core-pilot-20261008-141420-refactor`, seed19, 회사별 TaskInstruction,
-Luna, visual_only, combined matching, OmniParser v1, model-only review.
+Luna, visual_only, combined matching, OmniParser icon_detect(캡션 비활성), model-only review.
+추가 해시 검증에서 기존 가중치가 공식 v2 icon_detect와 동일함을 확인했다. 이전 v1 표기는 정정한다.
 
 요청 범위는 재추적과 삭제 후보 탐색이다. 이번에는 생산 코드·테스트를 수정하거나 삭제하지 않았다.
 이전 보고서에서 완료한 설정4개·Procedure 로더 삭제는 신규 후보로 다시 세지 않는다.
@@ -25,7 +26,7 @@ OCR/GPU 워커, 방법 학습, 현재 기본 설정의 분리 판단·v2 경로�
 - 직접 참조가 없는 함수는 `getattr`, Pydantic validator, HTTP handler/표준 라이브러리 override를 확인했다. 이 예외를 확인하기 전에는 미사용으로 확정하지 않았다.
 - 실제 로그414개 이벤트, 설정, 현재 마커 산출물을 대조했다. 함수/라인 실행 커버리지를 새로 수집한 것은 아니므로 이벤트 개수를 함수 호출 횟수로 해석하지 않는다.
 - 합성 데이터로 증거 원장 중복 저장과 탐지 출처별 영역 판별을 로컬 재현했다. ERP 실행·유료 호출·네트워크 의존 측정은 하지 않았다.
-- 기본 프로필은 `separate_observation_decision=true`, OmniParser v2다. 이번 성공 파일럿의 false/v1과 다르므로 미실행 경로 전체를 삭제하지 않는다.
+- 기본 프로필은 `separate_observation_decision=true`, v2 캡션 활성 설정이다. 이번 성공 파일럿의 false/캡션 비활성과 다르므로 미실행 경로 전체를 삭제하지 않는다. 당시 기본 프로필의 가중치 폴더는 존재하지 않아 실제 준비도 별도로 필요했다.
 
 ## 실제 실행 순서와 소스 연결
 

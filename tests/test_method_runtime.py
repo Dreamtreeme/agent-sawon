@@ -125,7 +125,7 @@ def setup(
             return blocks
 
     class Detector:
-        def read(self, page):
+        def read(self, page, *, ocr_boxes=()):
             return boxes
 
     relay = Relay()

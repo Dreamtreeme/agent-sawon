@@ -2,6 +2,7 @@
 
 import sys
 import threading
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -182,8 +183,54 @@ def test_ocr_session_loads_once_until_configuration_changes(monkeypatch):
     assert len(loaded) == 2 and session.metrics["model_initialized"]
 
 
-def test_detector_full_and_refinement_share_model(monkeypatch, tmp_path):
-    loaded, inferred = [], []
+@pytest.mark.parametrize("captions", [False, True])
+def test_detector_full_and_refinement_share_model(monkeypatch, tmp_path, captions):
+    loaded, inferred, caption_loads, caption_batches = [], [], [], []
+
+    class Inputs(dict):
+        def to(self, *, device, dtype):
+            assert device == "cuda:0" and dtype == "half"
+            return self
+
+    class CaptionProcessor:
+        @classmethod
+        def from_pretrained(cls, path, **kwargs):
+            assert kwargs == {"trust_remote_code": True, "local_files_only": True}
+            return cls()
+
+        def __call__(self, *, text, images, return_tensors, do_resize):
+            assert text == ["<CAPTION>"] * len(images)
+            assert all(image.size == (64, 64) for image in images)
+            assert return_tensors == "pt" and not do_resize
+            caption_batches.append(len(images))
+            return Inputs(
+                input_ids=list(range(len(images))), pixel_values=images, attention_mask="text-only"
+            )
+
+        def batch_decode(self, generated, *, skip_special_tokens):
+            assert skip_special_tokens
+            return [f" icon {index} " for index in generated]
+
+    class CaptionModel:
+        device, dtype = "cuda:0", "half"
+
+        @classmethod
+        def from_pretrained(cls, path, **kwargs):
+            assert kwargs["local_files_only"] and kwargs["torch_dtype"] == "half"
+            caption_loads.append(path)
+            return cls()
+
+        def to(self, device):
+            assert device == self.device
+            return self
+
+        def eval(self):
+            return self
+
+        def generate(self, **kwargs):
+            assert kwargs["num_beams"] == 1 and not kwargs["do_sample"]
+            assert "attention_mask" not in kwargs  # Florence adds image tokens itself.
+            return kwargs["input_ids"]
 
     class Model:
         def __init__(self, weights):
@@ -192,10 +239,25 @@ def test_detector_full_and_refinement_share_model(monkeypatch, tmp_path):
 
         def __call__(self, image, **kwargs):
             assert kwargs["device"] == "cuda:0"
+            assert kwargs["imgsz"] == (1280 if captions or len(inferred) == 2 else 640)
             inferred.append((image.size, image.getpixel((0, 0))))
-            return []
+            box = SimpleNamespace(
+                xyxy=[SimpleNamespace(cpu=lambda: SimpleNamespace(tolist=lambda: [2, 2, 10, 10]))],
+                conf=SimpleNamespace(item=lambda: 0.9),
+            )
+            return [SimpleNamespace(boxes=[box, box, box])]
 
     monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=Model))
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(float16="half", float32="float", inference_mode=nullcontext),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(AutoProcessor=CaptionProcessor, AutoModelForCausalLM=CaptionModel),
+    )
     weights = tmp_path / "model.pt"
     weights.write_bytes(b"fake")
     first, second = tmp_path / "first.png", tmp_path / "second.png"
@@ -209,14 +271,40 @@ def test_detector_full_and_refinement_share_model(monkeypatch, tmp_path):
         max_dimension=640,
         refinement_scale=2,
         regions=[],
+        use_v2=captions,
+        caption_weights=str(tmp_path),
+        caption_batch_size=2,
     )
     session = DetectorSession()
-    session(request)
+    boxes = session(request)
+    assert [box["functional_description"] for box in boxes] == (
+        ["icon 0", "icon 1", "icon 0"] if captions else [None, None, None]
+    )
     session({**request, "image": str(second)})
     session({**request, "image": str(second), "regions": [(0, 0, 20, 20)]})
     assert len(loaded) == 1 and len(inferred) == 3
     assert inferred[0][1] != inferred[1][1]
     assert not session.metrics["model_initialized"]
+    assert not session.metrics["caption_initialized"]
+    assert session.metrics["caption_enabled"] == captions
+    assert session.metrics["captioned_boxes"] == (3 if captions else 0)
+    assert len(caption_loads) == int(captions)
+    assert caption_batches == ([2, 1] * 3 if captions else [])
+
+    if captions:
+        text_boxes = session({**request, "ocr_boxes": [[0, 0, 20, 20]]})
+        assert all(box["functional_description"] is None for box in text_boxes)
+        assert session.metrics["ocr_caption_skipped"] == 3
+        assert caption_batches == [2, 1] * 3
+
+        def failed_generate(**kwargs):
+            raise RuntimeError("caption_inference_failed")
+
+        session.caption_model.generate = failed_generate
+        with pytest.raises(RuntimeError, match="caption_inference_failed"):
+            session(request)
+        with pytest.raises(ValueError, match="caption_weights_missing"):
+            session({**request, "caption_weights": None})
 
 
 def test_gpu_ocr_registers_isolated_cuda_libraries_once(monkeypatch, tmp_path):

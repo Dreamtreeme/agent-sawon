@@ -112,7 +112,7 @@ def setup_brain(
     class Detector:
         calls = 0
 
-        def read(self, page):
+        def read(self, page, *, ocr_boxes=()):
             self.calls += 1
             return boxes
 

@@ -207,7 +207,7 @@ class VisualPerception:
             },
         )
         local_started = perf_counter()
-        boxes = self.detector.read(page)
+        boxes = self.detector.read(page, ocr_boxes=tuple(block.bbox for block in blocks))
         atomic_write_json(
             folder / "local-detections.json",
             {
@@ -317,7 +317,7 @@ class VisualPerception:
                         block.model_copy(update={"text": block.text.replace(secret, "[REDACTED]")})
                         for block in blocks
                     ]
-            boxes = self.detector.read(page)
+            boxes = self.detector.read(page, ocr_boxes=tuple(block.bbox for block in blocks))
             markers = build_markers(
                 blocks, boxes, shot.width, shot.height, settings=self.merge_settings
             )
@@ -428,7 +428,9 @@ class VisualPerception:
                     raise VisualGroundingError("visual_required_control_missing")
                 refinement_attempted = True
                 refined_at = perf_counter()
-                refined = self.detector.refine(page, regions)
+                refined = self.detector.refine(
+                    page, regions, ocr_boxes=tuple(block.bbox for block in blocks)
+                )
                 elapsed = (perf_counter() - refined_at) * 1000
                 detector_ms += elapsed
                 atomic_write_json(
