@@ -16,6 +16,7 @@ from .schemas import Decision
 class SavedEvidence:
     """Contains observed values only; input-time facts never enter this ledger."""
 
+    identity_field: str = "hbl_no"
     session_id: str | None = None
     origin_obs_id: str | None = None
     query_row_seen: bool = False
@@ -35,7 +36,7 @@ class SavedEvidence:
     last_review: EvidenceReview | None = None
 
     def reset(self) -> None:
-        self.__dict__.update(SavedEvidence().__dict__)
+        self.__dict__.update(SavedEvidence(identity_field=self.identity_field).__dict__)
 
     def begin(self, origin_obs_id: str | None = None) -> None:
         self.reset()
@@ -152,7 +153,8 @@ class SavedEvidence:
     def snapshot(self, values: dict[str, str]) -> dict:
         return {
             "session_id": self.session_id,
-            "record_id": values.get("hbl_no"),
+            "identity_field": self.identity_field,
+            "record_id": values.get(self.identity_field),
             "query_row_seen": self.query_row_seen,
             "confirmed_fields": sorted(self.fields),
             "missing_fields": sorted(set(values) - self.fields.keys()),
@@ -193,7 +195,7 @@ class SavedEvidence:
             "ref": element.ref,
             "bbox": list(element.bbox),
             "window": observation.active_window.handle,
-            "record_id": values["hbl_no"],
+            "record_id": values[self.identity_field],
             "session_id": self.session_id,
             "screen_kind": observation.screen_kind,
             "identity_obs_id": (self.detail_identity or self.query_identity or {}).get("obs_id"),
@@ -223,23 +225,23 @@ class SavedEvidence:
         current_link = False
         by_ref = {e.ref: e for e in observation.elements if e.enabled}
         if observation.screen_kind == "query":
-            row = review_final(observation, values, matches)
+            row = review_final(observation, values, matches, self.identity_field)
             if row.status == "blocked":
                 self.conflict = row.reason
             row_ref = row.row_ref
             matching_rows = row.matching_rows
-            identity_input = by_ref.get(bindings.get("hbl_no"))
+            identity_input = by_ref.get(bindings.get(self.identity_field))
             bound_identity_valid = bool(
                 identity_input is not None
                 and identity_input.role.casefold() == "edit"
-                and matches("hbl_no", identity_input.value, values)
+                and matches(self.identity_field, identity_input.value, values)
             )
             if not bound_identity_valid:
                 exact_query_inputs = [
                     element
                     for element in by_ref.values()
                     if element.role.casefold() == "edit"
-                    and matches("hbl_no", element.value, values)
+                    and matches(self.identity_field, element.value, values)
                 ]
                 if len(exact_query_inputs) == 1:
                     identity_input = exact_query_inputs[0]
@@ -252,7 +254,7 @@ class SavedEvidence:
                 identity_input
                 if identity_input is not None
                 and identity_input.role.casefold() == "edit"
-                and matches("hbl_no", identity_input.value, values)
+                and matches(self.identity_field, identity_input.value, values)
                 else None
             )
             if self.query_row_seen and len(candidate_rows) == 1:
@@ -261,7 +263,7 @@ class SavedEvidence:
                     element
                     for element in by_ref.values()
                     if element.role.casefold() in {"edit", "text"}
-                    and matches("hbl_no", element.value or element.name, values)
+                    and matches(self.identity_field, element.value or element.name, values)
                     and not _within(element, current_row.ref, observation)
                 ]
                 if len(exact_visible_query_values) == 1:
@@ -293,7 +295,7 @@ class SavedEvidence:
                 prior_row_fields = {
                     name
                     for name, evidence in self.fields.items()
-                    if name != "hbl_no"
+                    if name != self.identity_field
                     and evidence.get("screen_kind") == "query"
                     and evidence.get("session_id") == self.session_id
                 }
@@ -313,11 +315,12 @@ class SavedEvidence:
                     (
                         identity_input is not None
                         and identity_input.role.casefold() == "edit"
-                        and matches("hbl_no", identity_input.value, values)
+                        and matches(self.identity_field, identity_input.value, values)
                     )
                     or (
                         self.submitted_query_identity is not None
-                        and self.submitted_query_identity.get("record_id") == values["hbl_no"]
+                        and self.submitted_query_identity.get("record_id")
+                        == values[self.identity_field]
                     )
                 )
             )
@@ -326,7 +329,12 @@ class SavedEvidence:
                 matching_rows = 1
                 if identity_input is not None and identity_input.role.casefold() == "edit":
                     self._store(
-                        "hbl_no", identity_input, observation, values, matches, explicit=True
+                        self.identity_field,
+                        identity_input,
+                        observation,
+                        values,
+                        matches,
+                        explicit=True,
                     )
             if row_ref and matching_rows == 1:
                 current_link = self.query_row_seen = True
@@ -339,7 +347,9 @@ class SavedEvidence:
                 assignment = assign_result_fields(candidates)
                 for name, ref in assignment.items():
                     self._store(name, by_ref[ref], observation, values, matches, explicit=False)
-                self.query_identity = self.fields.get("hbl_no") or self.submitted_query_identity
+                self.query_identity = (
+                    self.fields.get(self.identity_field) or self.submitted_query_identity
+                )
                 owners: dict[str, list[str]] = {}
                 for name, ref in bindings.items():
                     if name in values:
@@ -358,7 +368,7 @@ class SavedEvidence:
                             # while the grid preview clips it with arbitrary punctuation.
                             # The preview cannot overwrite that established identity.
                             if (
-                                name == "hbl_no"
+                                name == self.identity_field
                                 and query_identity_anchor is not None
                                 and ref != query_identity_anchor.ref
                             ):
@@ -385,19 +395,26 @@ class SavedEvidence:
                     and any(matches(name, element.value or element.name, values) for name in values)
                 )
             }
-            identity = inputs.get(bindings.get("hbl_no"))
-            if identity is None or not matches("hbl_no", identity.value, values):
+            identity = inputs.get(bindings.get(self.identity_field))
+            if identity is None or not matches(self.identity_field, identity.value, values):
                 exact_identities = [
                     element
                     for element in inputs.values()
-                    if matches("hbl_no", element.value, values)
+                    if matches(self.identity_field, element.value, values)
                 ]
                 identity = exact_identities[0] if len(exact_identities) == 1 else identity
             if identity is not None:
-                if matches("hbl_no", identity.value, values):
+                if matches(self.identity_field, identity.value, values):
                     self.detail_window = observation.active_window.handle
-                    self._store("hbl_no", identity, observation, values, matches, explicit=True)
-                    self.detail_identity = self.fields.get("hbl_no")
+                    self._store(
+                        self.identity_field,
+                        identity,
+                        observation,
+                        values,
+                        matches,
+                        explicit=True,
+                    )
+                    self.detail_identity = self.fields.get(self.identity_field)
                     current_link = True
                 else:
                     self.conflict = "saved_record_identity_changed"

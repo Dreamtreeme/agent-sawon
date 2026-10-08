@@ -75,7 +75,10 @@ def assign_result_fields(candidates: dict[str, set[str]]) -> dict[str, str]:
 
 
 def review_final(
-    observation: Observation, values: dict[str, str], matches: Matcher
+    observation: Observation,
+    values: dict[str, str],
+    matches: Matcher,
+    identity_field: str = "hbl_no",
 ) -> EvidenceReview:
     """Require one current identified row; missing visibility is recoverable."""
     base = {"obs_id": str(observation.obs_id)}
@@ -94,7 +97,11 @@ def review_final(
             for row in rows
             if any(
                 _within(cell, row, observation)
-                and matches("hbl_no", cell.value if cell.value is not None else cell.name, values)
+                and matches(
+                    identity_field,
+                    cell.value if cell.value is not None else cell.name,
+                    values,
+                )
                 for cell in observation.elements
             )
         ]
@@ -146,7 +153,7 @@ def review_final(
             status="needs_more",
             reason="row_identifier_not_visible" if grids else "query_grid_not_observed",
             grid_ref=grid_ref,
-            missing_fields=tuple(sorted(set(missing) | {"hbl_no"})),
+            missing_fields=tuple(sorted(set(missing) | {identity_field})),
         )
     return EvidenceReview(
         **base,

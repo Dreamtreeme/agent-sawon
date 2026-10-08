@@ -39,6 +39,15 @@ def test_unique_current_query_input_is_a_fact_but_result_cells_are_not(record):
     )
     assert reconcile_observation(ambiguous, values).query_input is None
 
+    invoice = scene("query", [raw_element("e9", "edit", value="INV-17")])
+    generic = reconcile_observation(
+        invoice,
+        {"invoice.number": "INV-17"},
+        "invoice.number",
+    )
+    assert generic.query_input is not None
+    assert generic.query_input.source == "invoice.number"
+
 
 def test_observed_query_value_advances_policy_directly_to_search(tmp_path, record):
     brain, _, _, _, _, _ = setup_brain(tmp_path, record, [])

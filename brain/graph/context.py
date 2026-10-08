@@ -232,6 +232,7 @@ def execution_context(
         contract["saved_record_review"] = {
             key: proof[key]
             for key in (
+                "identity_field",
                 "record_id",
                 "query_row_seen",
                 "confirmed_fields",
@@ -243,7 +244,8 @@ def execution_context(
         contract["guidance"] = (
             "Verify the saved record using CURRENT query-row and linked detail-screen values. "
             "Identify the matching query row, then the same record in its detail form. "
-            "Map visible input values to field evidence, including hbl_no when visible. "
+            f"Map visible input values to field evidence, including {saved.identity_field} "
+            "when visible. "
             "Use observed navigation/tabs to expose missing values. Do not fill, save, transmit "
             "or approve. Code joins validated observations and determines completion. "
             "Truncated values and the original record are not proof of persisted values."

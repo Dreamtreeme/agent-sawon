@@ -34,7 +34,7 @@ from brain.observe.values import values_for as values_for
 from brain.relay import Relay
 from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from brain.settings import BrainSettings
-from brain.task_instruction import TaskInputRecord
+from brain.task_instruction import TaskInputRecord, TaskInstruction
 from brain.visual.detector import OmniParserDetector
 from brain.visual.perception import SemanticRequest, VisualGroundingError, VisualPerception
 from brain.visual.scene import SceneObservation, SemanticDetection
@@ -243,12 +243,15 @@ class Brain:
         self.task_instruction = None
         self.task_instruction_sha256: str | None = None
         if settings.screen_matching:
-            from brain.task_instruction import TaskInstruction
-
             if not settings.is_visual or settings.task_path is None:
                 raise ValueError("screen_matching_requires_visual_task")
             task_bytes = settings.task_path.read_bytes()
             self.task_instruction = TaskInstruction.model_validate_json(task_bytes)
+            identity_field = self.task_instruction.identity_input_key
+            if identity_field is not None and identity_field not in self.values:
+                raise ValueError("task_identity_input_missing")
+            if identity_field is not None:
+                self.saved_evidence.identity_field = identity_field
             self.task_instruction_sha256 = sha256(task_bytes).hexdigest()
             atomic_write_json(self.case_dir / "task-instruction.json", self.task_instruction)
             self.log.append(
@@ -283,6 +286,14 @@ class Brain:
                 reuse_identical=settings.screen_matching,
                 model_led_semantics=settings.visual_model_led_semantics,
             )
+
+    @property
+    def identity_input_key(self) -> str | None:
+        """Business identifier used to link a saved record across screens."""
+
+        if self.task_instruction is not None:
+            return self.task_instruction.identity_input_key
+        return "hbl_no" if "hbl_no" in self.values else None
 
     @property
     def methods(self) -> MethodRuntime:
@@ -717,8 +728,11 @@ class Brain:
 
     def _current_query_matches(self) -> bool:
         observation = self.observation
+        identity_field = self.identity_input_key
         if (
-            observation is None
+            identity_field is None
+            or identity_field not in self.values
+            or observation is None
             or observation.active_window is None
             or observation.active_window.handle != self.query_window_handle
             or self.query_descriptor is None
@@ -743,7 +757,7 @@ class Brain:
         return (
             len(matches) == 1
             and matches[0].enabled
-            and field_matches("hbl_no", matches[0].value, self.values)
+            and field_matches(identity_field, matches[0].value, self.values)
         )
 
     def _duplicate_checkpoint_pending(self) -> bool:
@@ -752,7 +766,7 @@ class Brain:
     def _apply_observation_reconciliation(self, observation: Observation) -> None:
         """Promote current visible facts before policy or planning runs."""
 
-        reconciled = reconcile_observation(observation, self.values)
+        reconciled = reconcile_observation(observation, self.values, self.identity_input_key)
         self.reconciled_observation = reconciled
         if not isinstance(observation, SceneObservation):
             # Legacy UIA observations have no trusted screen-kind contract here;
@@ -991,7 +1005,10 @@ class Brain:
                 reason="task_completion_requires_current_model_evidence",
             )
         elif self._workflow_facts().final_query_workflow_ready:
-            self.review = review_final(self.observation, self.values, field_matches)
+            identity_field = self.identity_input_key
+            if identity_field is None:
+                raise GuardStop("identity_input_not_configured")
+            self.review = review_final(self.observation, self.values, field_matches, identity_field)
         else:
             self.review = EvidenceReview(
                 obs_id=str(self.observation.obs_id),
@@ -1436,6 +1453,9 @@ class Brain:
         return subtree(self.observation, grid.ref)
 
     def _check_duplicate(self, decision: Decision) -> WorkerNode:
+        identity_field = self.identity_input_key
+        if identity_field is None:
+            raise GuardStop("identity_input_not_configured")
         if (
             self.phase != "duplicate_query"
             or not self.query_submitted
@@ -1446,7 +1466,7 @@ class Brain:
             raise GuardStop("query_value_changed")
         grid = self._grid(decision)
         matching = [
-            item for item in grid if field_matches("hbl_no", element_value(item), self.values)
+            item for item in grid if field_matches(identity_field, element_value(item), self.values)
         ]
         if matching:
             return self._finish("stopped", "duplicate_record")
@@ -2360,14 +2380,21 @@ class Brain:
                         "descriptor": descriptor,
                     }
                     new_facts.append(source + "_submitted")
-            if self.phase == "task" and self.save_issued and decision.intent == "search":
+            if (
+                self.phase == "task"
+                and self.save_issued
+                and decision.intent == "search"
+                and self.identity_input_key is not None
+            ):
                 # A query input/search invalidates earlier saved evidence before
                 # dispatch. The observed result starts a fresh post-save proof
                 # session, anchored to the pre-search frame.
+                identity_field = self.identity_input_key
+                assert identity_field is not None
                 self.saved_evidence.begin(str(pending["before_observation"].obs_id))
                 if isinstance(pending["before_observation"], SceneObservation):
                     self.saved_evidence.remember_submitted_query(
-                        pending["before_observation"], self.values["hbl_no"]
+                        pending["before_observation"], self.values[identity_field]
                     )
                 self.review = None
             self.feedback.append(
@@ -2477,7 +2504,11 @@ class Brain:
         if review.result == "ready_for_query":
             # Permission to verify persistence, never evidence that saving succeeded.
             self.phase = "task" if self.task_instruction is not None else "final_query"
-            if self.phase == "task" and self.settings.screen_matching:
+            if (
+                self.phase == "task"
+                and self.settings.screen_matching
+                and self.identity_input_key is not None
+            ):
                 self.saved_evidence.begin(str(self.observation.obs_id))
                 self.review = None
             if self.phase == "final_query":
@@ -2576,6 +2607,9 @@ class Brain:
             return self._complete_saved_evidence()
         if not self._current_query_matches():
             raise GuardStop("query_value_changed")
+        identity_field = self.identity_input_key
+        if identity_field is None:
+            raise GuardStop("identity_input_not_configured")
         grid = self._grid(decision)
         by_ref = {item.ref: item for item in grid}
         row = by_ref.get(decision.row_ref)
@@ -2586,7 +2620,7 @@ class Brain:
         # child value may both contain the identifier in the same displayed row.
         matching_rows: set[str] = set()
         for item in grid:
-            if not field_matches("hbl_no", element_value(item), self.values):
+            if not field_matches(identity_field, element_value(item), self.values):
                 continue
             chain = [*ancestors(item, self.observation.elements), item]
             below_grid = False

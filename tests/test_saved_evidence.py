@@ -505,6 +505,7 @@ def test_generic_task_review_joins_post_save_query_and_detail_tabs(tmp_path, rec
     task_instruction = TaskInstruction(
         name="Register shipment",
         objective="Save and requery the supplied shipment.",
+        identity_input_key="hbl_no",
         completion_conditions=["The saved shipment values match after requery."],
     )
     brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
@@ -544,6 +545,7 @@ def test_generic_visual_task_starts_saved_evidence_after_save_review(tmp_path, r
     task_instruction = TaskInstruction(
         name="Register shipment",
         objective="Save and requery the supplied shipment.",
+        identity_input_key="hbl_no",
         completion_conditions=["The saved shipment values match after requery."],
     )
     brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)

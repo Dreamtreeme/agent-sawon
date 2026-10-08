@@ -39,6 +39,7 @@ class ReconciledObservation:
 def reconcile_observation(
     observation: Observation,
     values: Mapping[str, object],
+    identity_field: str | None = "hbl_no",
 ) -> ReconciledObservation:
     """Read conservative facts without using an intended or previous action.
 
@@ -51,7 +52,7 @@ def reconcile_observation(
     obs_id = str(observation.obs_id)
     if not isinstance(observation, SceneObservation) or observation.screen_kind != "query":
         return ReconciledObservation(obs_id=obs_id)
-    if "hbl_no" not in values:
+    if identity_field is None or identity_field not in values:
         return ReconciledObservation(obs_id=obs_id)
 
     matches = [
@@ -59,14 +60,14 @@ def reconcile_observation(
         for element in observation.elements
         if element.enabled
         and element.role.casefold() in _TEXT_INPUT_ROLES
-        and field_matches("hbl_no", element.value, values)
+        and field_matches(identity_field, element.value, values)
     ]
     if len(matches) != 1:
         return ReconciledObservation(obs_id=obs_id)
     return ReconciledObservation(
         obs_id=obs_id,
         query_input=ObservedValueFact(
-            source="hbl_no",
+            source=identity_field,
             ref=matches[0].ref,
             obs_id=obs_id,
             screen_kind=observation.screen_kind,

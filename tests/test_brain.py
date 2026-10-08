@@ -20,6 +20,7 @@ from brain.relay import HttpRelay
 from brain.run import main
 from brain.runtime.storage import RunLog, StateStore
 from brain.settings import BrainSettings
+from brain.task_instruction import TaskInstruction
 from models.base import MeasuredModelClient, ProviderReply, TokenUsage
 from models.budget import CallBudget
 from models.pricing import PriceRate
@@ -238,7 +239,15 @@ def test_save_review_returns_to_the_owning_workflow(tmp_path, record, generic_ta
         run_log=log,
     )
     brain.phase = "save_result"
-    brain.task_instruction = object() if generic_task else None
+    brain.task_instruction = (
+        TaskInstruction(
+            name="Register shipment",
+            objective="Register the supplied shipment.",
+            completion_conditions=["The shipment is saved."],
+        )
+        if generic_task
+        else None
+    )
     brain.observation = relay.observe()
     evidence_ref = next(item.ref for item in brain.observation.elements if item.name)
     review = SaveReviewResponse.model_validate(

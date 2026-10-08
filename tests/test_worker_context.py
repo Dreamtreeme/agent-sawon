@@ -129,6 +129,7 @@ def test_saved_review_context_excludes_run_local_provenance(tmp_path, record):
 
     assert first == second
     assert first == {
+        "identity_field": "hbl_no",
         "record_id": brain.values["hbl_no"],
         "query_row_seen": True,
         "confirmed_fields": ["hbl_no"],

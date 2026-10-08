@@ -23,6 +23,7 @@ def test_user_taught_actions_preserve_ui_labels_without_coordinates():
         {
             "name": "Enter invoice",
             "objective": "Enter and save an invoice.",
+            "identity_input_key": "invoice.number",
             "completion_conditions": ["The saved invoice is visible."],
             "procedure": [
                 {
@@ -43,6 +44,7 @@ def test_user_taught_actions_preserve_ui_labels_without_coordinates():
     )
 
     actions = task.procedure[0].actions
+    assert task.identity_input_key == "invoice.number"
     assert [(item.verb, item.target, item.input_key) for item in actions] == [
         ("activate", "Additional information tab", None),
         ("fill", "Amount field", "amount"),
