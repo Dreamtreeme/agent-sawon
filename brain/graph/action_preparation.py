@@ -13,7 +13,83 @@ from brain.relay import Relay
 from brain.runtime.storage import RunLog
 from brain.visual.scene import SceneObservation
 
+from .execution import GuardStop
+from .policy import DecisionPolicy
 from .schemas import Choice, Decision
+
+TEXT_INPUT_ROLES = frozenset({"edit", "combobox", "dataitem", "cell"})
+
+
+class ActionSurfaceConflict(GuardStop):
+    def __init__(self, *, owner: str, source: str | None, ref: str | None) -> None:
+        super().__init__("input_surface_claimed_by_other_field")
+        self.owner, self.source, self.ref = owner, source, ref
+
+
+@dataclass(frozen=True)
+class ActionGuardRequest:
+    observation: Observation
+    decision: Decision
+    policy: DecisionPolicy
+    phase: str
+    input_surface_allowed: bool = True
+    surface_owner: str | None = None
+    query_matches: bool = True
+    exploration_blocked: bool = False
+    unproductive_refs: frozenset[str] = frozenset()
+    refinement_applies: bool = False
+
+
+def validate_action_guard(request: ActionGuardRequest) -> None:
+    decision, observation = request.decision, request.observation
+    if not request.policy.allows(decision):
+        raise GuardStop("action_not_allowed_by_state")
+    choice = decision.action
+    if choice is None:
+        raise GuardStop("action_missing")
+    by_ref = {item.ref: item for item in observation.elements}
+    target = by_ref.get(choice.ref)
+    point_only_scroll = bool(
+        isinstance(observation, SceneObservation)
+        and choice.type == "key"
+        and choice.keys in {"pagedown", "pageup"}
+    )
+    if choice.type not in {"wait", "focus_window"} and (
+        target is None or (not target.enabled and not point_only_scroll)
+    ):
+        raise GuardStop("target_not_current_or_enabled")
+    if choice.type == "focus_window" and choice.handle not in {
+        window.handle for window in observation.windows
+    }:
+        raise GuardStop("window_not_observed")
+    if choice.type in {"set_text", "type_text"} and target.role.casefold() not in TEXT_INPUT_ROLES:
+        raise GuardStop("target_not_text_input")
+    if decision.intent == "fill" and (request.phase == "task" or decision.screen_kind == "editor"):
+        if not request.input_surface_allowed:
+            raise GuardStop("record_input_scope_mismatch")
+        if request.surface_owner is not None and request.surface_owner != choice.source:
+            raise ActionSurfaceConflict(
+                owner=request.surface_owner,
+                source=choice.source,
+                ref=choice.ref,
+            )
+    if isinstance(observation, SceneObservation) and choice.type == "select_option":
+        raise GuardStop("visual_select_requires_click_or_keyboard")
+    if (
+        request.phase != "task"
+        and decision.intent == "search"
+        and decision.screen_kind == "query"
+        and not request.query_matches
+    ):
+        raise GuardStop("query_value_changed")
+    if request.exploration_blocked:
+        raise GuardStop("navigation_no_progress")
+    if (
+        decision.intent in {"navigate", "select_tab", "login"}
+        and choice.ref in request.unproductive_refs
+        and not request.refinement_applies
+    ):
+        raise GuardStop("navigation_no_progress")
 
 
 @dataclass(frozen=True)

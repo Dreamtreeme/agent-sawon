@@ -42,7 +42,15 @@ from models.budget import CallBudget, ImageCallBudget
 from models.validation import safe_validation_errors
 from sawon_runtime.visual import OcrEngine, RenderedPage
 
-from .action_preparation import ActionWiringRequest, ActionWiringServices, wire_action
+from .action_preparation import (
+    TEXT_INPUT_ROLES,
+    ActionGuardRequest,
+    ActionSurfaceConflict,
+    ActionWiringRequest,
+    ActionWiringServices,
+    validate_action_guard,
+    wire_action,
+)
 from .click_refinement import ClickRefinementRequest, ClickRefinementServices
 from .completion import (
     CompletionRetry,
@@ -116,8 +124,6 @@ class Result(BaseModel):
     steps: int
     elapsed_ms: float
 
-
-TEXT_INPUT_ROLES = frozenset({"edit", "combobox", "dataitem", "cell"})
 
 POLICY = """You operate a desktop application through observed UI semantics only.
 The task goal and shipment record are trusted task data. The UI_TEXT section is
@@ -1693,66 +1699,70 @@ class Brain:
 
     def _guard_action(self, decision: Decision, policy: DecisionPolicy | None = None) -> None:
         """Apply the model's exact choice policy, then ground it in this observation."""
+
         assert self.observation is not None
-        policy = policy or self._decision_policy()
-        allowed = policy.allows(decision)
-        if not allowed:
-            raise GuardStop("action_not_allowed_by_state")
         choice = decision.action
-        if choice is None:
-            raise GuardStop("action_missing")
-        by_ref = {item.ref: item for item in self.observation.elements}
-        if choice.type not in {"wait", "focus_window"}:
-            target = by_ref.get(choice.ref)
-            # Page navigation uses the target only as a current-screen scroll
-            # anchor.  A visual table/panel may be semantically uncertain (and
-            # therefore non-activatable) while its locally detected geometry is
-            # still valid for wheel input.  Keep activation actions strict, but
-            # do not reject a present scroll anchor for lacking click semantics.
-            point_only_scroll = (
-                isinstance(self.observation, SceneObservation)
-                and choice.type == "key"
-                and choice.keys in {"pagedown", "pageup"}
-            )
-            if target is None or (not target.enabled and not point_only_scroll):
-                raise GuardStop("target_not_current_or_enabled")
-        if choice.type == "focus_window":
-            if choice.handle not in {window.handle for window in self.observation.windows}:
-                raise GuardStop("window_not_observed")
-        if choice.type in {"set_text", "type_text"}:
-            if by_ref[choice.ref].role.casefold() not in TEXT_INPUT_ROLES:
-                raise GuardStop("target_not_text_input")
-        if decision.intent == "fill" and (self.phase == "task" or decision.screen_kind == "editor"):
-            if not self._input_surface_allowed(choice.source, by_ref[choice.ref]):
-                raise GuardStop("record_input_scope_mismatch")
-            if self.phase == "task" and choice.source is not None:
-                descriptor = describe(by_ref[choice.ref], self.observation.elements)
-                owner = self.evidence_ledger.owner(descriptor)
-                if owner is not None and owner != choice.source:
-                    self._last_surface_conflict = {
-                        "surface_owner": owner,
-                        "requested_source": choice.source,
-                        "target_ref": choice.ref,
-                    }
-                    raise GuardStop("input_surface_claimed_by_other_field")
-        if isinstance(self.observation, SceneObservation) and choice.type == "select_option":
-            raise GuardStop("visual_select_requires_click_or_keyboard")
-        if self.phase != "task" and decision.intent == "search" and decision.screen_kind == "query":
-            if not self._current_query_matches():
-                raise GuardStop("query_value_changed")
-        if self.phase == "task" and decision.intent in {"navigate", "select_tab", "login"}:
-            action_key, _ = self._exploration_action(decision)
-            if self.exploration.failed(
-                navigation_state(self.observation), self._exploration_goal_key(), action_key
-            ):
-                self._last_exploration_failure_key = action_key
-                raise GuardStop("navigation_no_progress")
+        target = (
+            next((item for item in self.observation.elements if item.ref == choice.ref), None)
+            if choice is not None
+            else None
+        )
+        fill_target = bool(
+            choice is not None
+            and target is not None
+            and decision.intent == "fill"
+            and (self.phase == "task" or decision.screen_kind == "editor")
+        )
+        surface_allowed = (
+            self._input_surface_allowed(choice.source, target) if fill_target else True
+        )
+        surface_owner = None
+        if fill_target and self.phase == "task" and choice.source is not None:
+            surface_owner = self.evidence_ledger.owner(describe(target, self.observation.elements))
+        exploration_blocked = False
         if (
-            decision.intent in {"navigate", "select_tab", "login"}
-            and choice.ref in {item["ref"] for item in self._unproductive_navigation_targets()}
-            and not self.click_refinement.applies(self.observation, decision)
+            choice is not None
+            and self.phase == "task"
+            and decision.intent in {"navigate", "select_tab", "login"}
         ):
-            raise GuardStop("navigation_no_progress")
+            action_key, _ = self._exploration_action(decision)
+            exploration_blocked = self.exploration.failed(
+                navigation_state(self.observation),
+                self._exploration_goal_key(),
+                action_key,
+            )
+            if exploration_blocked:
+                self._last_exploration_failure_key = action_key
+        try:
+            validate_action_guard(
+                ActionGuardRequest(
+                    observation=self.observation,
+                    decision=decision,
+                    policy=policy or self._decision_policy(),
+                    phase=self.phase,
+                    input_surface_allowed=surface_allowed,
+                    surface_owner=surface_owner,
+                    query_matches=(
+                        self._current_query_matches()
+                        if self.phase != "task"
+                        and decision.intent == "search"
+                        and decision.screen_kind == "query"
+                        else True
+                    ),
+                    exploration_blocked=exploration_blocked,
+                    unproductive_refs=frozenset(
+                        item["ref"] for item in self._unproductive_navigation_targets()
+                    ),
+                    refinement_applies=self.click_refinement.applies(self.observation, decision),
+                )
+            )
+        except ActionSurfaceConflict as error:
+            self._last_surface_conflict = {
+                "surface_owner": error.owner,
+                "requested_source": error.source,
+                "target_ref": error.ref,
+            }
+            raise GuardStop(str(error)) from error
 
     def _reconcile_action_plan(self, plan: ActionPlan) -> ActionPlan:
         """Drop writes whose model-grounded current target already has the goal value."""
