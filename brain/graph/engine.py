@@ -56,6 +56,12 @@ from .execution import (
     log_transition,
 )
 from .execution import GuardStop as GuardStop
+from .input_verification import (
+    InputValueRequest,
+    delivered_input_element,
+    evaluate_input_value,
+    needs_blur_recheck,
+)
 from .method_runtime import MethodContext, MethodRuntime, open_method_library
 from .policy import DecisionPolicy, ExecutionFacts
 from .reconciliation import reconcile_observation
@@ -2414,23 +2420,19 @@ class Brain:
         if choice.type not in {"set_text", "type_text"}:
             return None, observation, observed_effect
         descriptor = pending["descriptor"]
-        matches = matching_delivered_input(
-            observation,
-            pending["before_observation"],
-            choice.ref,
-            descriptor,
-            allowed_surfaces=self._input_surfaces(choice.source),
+        element = delivered_input_element(
+            pending, observation, choice, self._input_surfaces(choice.source)
         )
-        if len(matches) != 1:
+        if element is None:
             return self._fail("input_target_ambiguous_after_action"), observation, observed_effect
-        element = matches[0]
         source = choice.source
-        if (
-            isinstance(observation, SceneObservation)
-            and self.settings.visual_input_blur_recheck
-            and source not in self.credentials
-            and element.focused
-            and not field_matches(source, element.value, self.values)
+        if needs_blur_recheck(
+            observation,
+            element,
+            source,
+            enabled=self.settings.visual_input_blur_recheck,
+            credentials=self.credentials,
+            values=self.values,
         ):
             before_window = observation.active_window
             outcome = self._blur_visual_input(element, decision)
@@ -2438,63 +2440,56 @@ class Brain:
                 return outcome, observation, observed_effect
             pending["blur_recheck"] = True
             observation = self._observe()
-            matches = matching_delivered_input(
-                observation,
-                pending["before_observation"],
-                choice.ref,
-                descriptor,
-                allowed_surfaces=self._input_surfaces(choice.source),
+            element = delivered_input_element(
+                pending, observation, choice, self._input_surfaces(choice.source)
             )
-            if observation.active_window != before_window or len(matches) != 1:
+            if observation.active_window != before_window or element is None:
                 return self._fail("input_target_ambiguous_after_blur"), observation, observed_effect
-            element = matches[0]
             if element.focused:
                 return self._fail("input_focus_not_moved"), observation, observed_effect
-        if source == "credential.password":
-            check = "protected_input_reread"
-            observed_effect = ObservedEffect.PROTECTED_INPUT_REREAD
-        elif source == "credential.username":
-            if element.value != self.credentials[source]:
-                return self._fail("credential_input_mismatch"), observation, observed_effect
-            check = "input_value_matches"
-            observed_effect = ObservedEffect.INPUT_VALUE_MATCHES
-            self._record_progress(source)
-        elif not field_matches(source, element.value, self.values):
-            return self._fail("input_value_mismatch"), observation, observed_effect
-        else:
-            check = "input_value_matches"
-            observed_effect = ObservedEffect.INPUT_VALUE_MATCHES
-            if decision.intent == "query_input":
-                self.query_value_verified = True
-                self.query_submitted = False
-                self.query_descriptor = describe(element, observation.elements)
-                self.query_input_anchor = (observation, element.ref)
-                self.query_window_handle = observation.active_window.handle
-                self._record_progress("query_input")
-                new_facts.append("query_input_verified")
-            if decision.intent == "fill" and (
-                self.phase == "task" or decision.screen_kind == "editor"
-            ):
-                if not self._record_verified_field(source, element):
-                    return self._fail("record_input_scope_mismatch"), observation, observed_effect
-                new_facts.append(source)
+        result = evaluate_input_value(
+            InputValueRequest(
+                observation=observation,
+                element=element,
+                choice=choice,
+                decision=decision,
+                phase=self.phase,
+                values=self.values,
+                credentials=self.credentials,
+            )
+        )
+        if result.failure is not None:
+            return self._fail(result.failure), observation, observed_effect
+        observed_effect = result.observed_effect
+        if result.progress is not None:
+            self._record_progress(result.progress)
+        if result.query_verified:
+            self.query_value_verified = True
+            self.query_submitted = False
+            self.query_descriptor = describe(element, observation.elements)
+            self.query_input_anchor = (observation, element.ref)
+            self.query_window_handle = observation.active_window.handle
+        if result.verify_field is not None and not self._record_verified_field(
+            result.verify_field, element
+        ):
+            return self._fail("record_input_scope_mismatch"), observation, observed_effect
+        new_facts.extend(result.new_facts)
         self.log.append(
             "verify",
             payload={
                 "ok": True,
-                "check": check,
+                "check": result.check,
                 "field": source,
                 "ref": element.ref,
                 "obs_id": str(observation.obs_id),
                 "descriptor": descriptor,
             },
         )
-        if source in self.credentials:
+        if result.credential_submitted:
             self.credential_submissions[source] = {
                 "window_handle": observation.active_window.handle,
                 "descriptor": descriptor,
             }
-            new_facts.append(source + "_submitted")
         return None, observation, observed_effect
 
     def _begin_saved_query_proof(self, pending: PendingAction, decision: Decision) -> None:
