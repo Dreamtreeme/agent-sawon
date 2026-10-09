@@ -4,6 +4,7 @@ import json
 from decimal import Decimal
 
 import pytest
+from case_labels import labeled_case
 from pydantic import ValidationError
 from test_brain import (
     FakeRelay,
@@ -44,42 +45,43 @@ def test_rejected_query_and_editor_targets_use_the_same_bounded_rediscovery(tmp_
         ("duplicate_query", "query", "e2"),
         ("enter", "editor", "e7"),
     ):
-        case_dir = tmp_path / phase
-        relay = FakeRelay(record)
-        relay.mode = kind
-        log = RunLog(case_dir, case_id=record.case_id, agent_id="target-recovery-test")
-        brain = Brain(
-            record=record,
-            goal="Enter the synthetic record",
-            relay=relay,
-            model=ScriptedModel(log, []),
-            settings=BrainSettings(max_input_target_retries=2),
-            case_dir=case_dir,
-            run_log=log,
-        )
-        brain.phase = phase
-        brain.duplicate_clear = phase == "enter"
-        brain.observation = relay.observe()
-        brain.decision = Decision.model_validate(bad_input(kind=kind, ref=ref))
+        with labeled_case(phase):
+            case_dir = tmp_path / phase
+            relay = FakeRelay(record)
+            relay.mode = kind
+            log = RunLog(case_dir, case_id=record.case_id, agent_id="target-recovery-test")
+            brain = Brain(
+                record=record,
+                goal="Enter the synthetic record",
+                relay=relay,
+                model=ScriptedModel(log, []),
+                settings=BrainSettings(max_input_target_retries=2),
+                case_dir=case_dir,
+                run_log=log,
+            )
+            brain.phase = phase
+            brain.duplicate_clear = phase == "enter"
+            brain.observation = relay.observe()
+            brain.decision = Decision.model_validate(bad_input(kind=kind, ref=ref))
 
-        assert brain._retry_input_target_selection("target_not_text_input") == "observation"
-        assert brain.input_target_retries == 1
-        assert brain.phase_failures[phase] == 1
-        assert relay.actions == []
-        assert repairs(brain) == [
-            {
-                "check": "input_target_reselection",
-                "ok": False,
-                "reason": "target_not_text_input",
-                "obs_id": str(brain.observation.obs_id),
-                "ref": ref,
-                "source": "hbl_no",
-                "action_dispatched": False,
-                "retries_used": 0,
-                "max_retries": 2,
-                "retry_available": True,
-            }
-        ]
+            assert brain._retry_input_target_selection("target_not_text_input") == "observation"
+            assert brain.input_target_retries == 1
+            assert brain.phase_failures[phase] == 1
+            assert relay.actions == []
+            assert repairs(brain) == [
+                {
+                    "check": "input_target_reselection",
+                    "ok": False,
+                    "reason": "target_not_text_input",
+                    "obs_id": str(brain.observation.obs_id),
+                    "ref": ref,
+                    "source": "hbl_no",
+                    "action_dispatched": False,
+                    "retries_used": 0,
+                    "max_retries": 2,
+                    "retry_available": True,
+                }
+            ]
 
 
 def test_retry_uses_new_observation_refs_and_explicit_non_dispatch_feedback(tmp_path, record):
@@ -310,6 +312,7 @@ def test_reselection_honors_existing_step_limit(tmp_path, record):
 
 def test_retry_limit_has_both_lower_and_upper_bounds():
     for limit in (-1, 4):
-        with pytest.raises(ValidationError) as raised:
-            BrainSettings(max_input_target_retries=limit)
-        assert raised.value.errors(), limit
+        with labeled_case(limit):
+            with pytest.raises(ValidationError) as raised:
+                BrainSettings(max_input_target_retries=limit)
+            assert raised.value.errors()

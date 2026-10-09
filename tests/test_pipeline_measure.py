@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from case_labels import labeled_case
 from sawon_interfaces import ShipmentRecord
 
 from models.base import MeasuredModelClient, ProviderReply, TokenUsage
@@ -417,18 +418,20 @@ def test_invalid_repeat_count_rejected_before_output_creation(campaign):
     args, _ = campaign
     # One value per independent guard: lower bound, bool-is-int, non-int and upper bound.
     for repeats in (0, True, 1.5, 101):
-        with pytest.raises(ValueError, match="repeats_must"):
-            measure.run_campaign(**args, repeats=repeats)
-        assert not args["output"].exists(), repeats
+        with labeled_case(repr(repeats)):
+            with pytest.raises(ValueError, match="repeats_must"):
+                measure.run_campaign(**args, repeats=repeats)
+            assert not args["output"].exists()
 
 
 def test_invalid_budget_rejected_before_output_creation(campaign):
     args, _ = campaign
     # Zero kills the strict lower bound, 11 the upper bound, and inf the finiteness guard.
     for budget in (0, 11, float("inf")):
-        with pytest.raises(ValueError, match="campaign_budget"):
-            measure.run_campaign(**args, max_cost_usd=budget)
-        assert not args["output"].exists(), budget
+        with labeled_case(repr(budget)):
+            with pytest.raises(ValueError, match="campaign_budget"):
+                measure.run_campaign(**args, max_cost_usd=budget)
+            assert not args["output"].exists()
 
 
 def test_cli_repeat_option_and_cancellation_exit_code(campaign):

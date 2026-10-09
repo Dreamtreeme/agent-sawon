@@ -6,6 +6,7 @@ import json
 import re
 
 import pytest
+from case_labels import labeled_case
 from pydantic import ValidationError
 
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
@@ -158,15 +159,16 @@ def test_wire_schema_accepts_every_supported_action_and_result_branch():
     ]
     schema = DecisionResponse.model_json_schema()
     for case, payload in cases:
-        envelope = {"decision": payload}
-        assert schema_accepts(envelope, schema), case
-        response = DecisionResponse.model_validate_json(json.dumps(envelope))
-        internal = response.to_decision()
-        assert internal.operation == payload["operation"], case
-        assert internal.intent == payload["intent"], case
-        assert (internal.action is None) == (payload["action"] is None), case
-        if internal.action is not None:
-            assert internal.action.type == payload["action"]["type"], case
+        with labeled_case(case):
+            envelope = {"decision": payload}
+            assert schema_accepts(envelope, schema)
+            response = DecisionResponse.model_validate_json(json.dumps(envelope))
+            internal = response.to_decision()
+            assert internal.operation == payload["operation"]
+            assert internal.intent == payload["intent"]
+            assert (internal.action is None) == (payload["action"] is None)
+            if internal.action is not None:
+                assert internal.action.type == payload["action"]["type"]
 
 
 def test_wire_schema_and_local_validation_reject_each_invalid_contract_shape():
@@ -196,11 +198,12 @@ def test_wire_schema_and_local_validation_reject_each_invalid_contract_shape():
     ]
     schema = DecisionResponse.model_json_schema()
     for case, payload in cases:
-        envelope = {"decision": payload}
-        assert not schema_accepts(envelope, schema), case
-        with pytest.raises(ValidationError) as raised:
-            DecisionResponse.model_validate_json(json.dumps(envelope))
-        assert raised.value.errors(), case
+        with labeled_case(case):
+            envelope = {"decision": payload}
+            assert not schema_accepts(envelope, schema)
+            with pytest.raises(ValidationError) as raised:
+                DecisionResponse.model_validate_json(json.dumps(envelope))
+            assert raised.value.errors()
 
 
 def test_provider_schema_does_not_accept_raw_unwrapped_response():
@@ -217,15 +220,17 @@ def test_unrelated_operations_do_not_offer_nullable_grid_fields():
     ).response_schema()
     schema = response.model_json_schema()
     for operation, intent in (("act", "navigate"), ("stop", "stop")):
-        action = {"type": "click", "ref": "e1"} if operation == "act" else None
-        payload = decision(operation, intent, action)
-        internal = response.model_validate({"decision": payload}).to_decision()
-        assert internal.grid_ref is None and internal.row_ref is None
-        for field in ("grid_ref", "row_ref"):
-            incompatible = {"decision": {**payload, field: None}}
-            assert not schema_accepts(incompatible, schema), (operation, field)
-            with pytest.raises(ValidationError):
-                response.model_validate(incompatible)
+        with labeled_case(operation):
+            action = {"type": "click", "ref": "e1"} if operation == "act" else None
+            payload = decision(operation, intent, action)
+            internal = response.model_validate({"decision": payload}).to_decision()
+            assert internal.grid_ref is None and internal.row_ref is None
+            for field in ("grid_ref", "row_ref"):
+                with labeled_case(f"{operation}:{field}"):
+                    incompatible = {"decision": {**payload, field: None}}
+                    assert not schema_accepts(incompatible, schema)
+                    with pytest.raises(ValidationError):
+                        response.model_validate(incompatible)
 
 
 def test_provider_schema_uses_documented_enum_for_single_literal_branches():

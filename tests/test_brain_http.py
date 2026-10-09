@@ -8,6 +8,7 @@ from threading import Thread
 from uuid import uuid4
 
 import pytest
+from case_labels import labeled_case
 from sawon_interfaces import Action, ActionBatch
 
 from brain.relay import HttpRelay, RelayError
@@ -159,8 +160,9 @@ def test_http_error_never_exposes_body_or_authentication_token():
     with server() as (url, requests):
         relay = HttpRelay(url, "fixture-token")
         for path, status in (("/denied", 403), ("/redirect", 302)):
-            with pytest.raises(RelayError, match=f"^relay_http_{status}$"):
-                relay._request(path)
+            with labeled_case(f"{path}:{status}"):
+                with pytest.raises(RelayError, match=f"^relay_http_{status}$"):
+                    relay._request(path)
         assert requests == [
             ("/denied", "Bearer fixture-token"),
             ("/redirect", "Bearer fixture-token"),
@@ -169,5 +171,6 @@ def test_http_error_never_exposes_body_or_authentication_token():
 
 def test_token_required_without_header_injection():
     for token in ("", "invalid\r\nheader"):
-        with pytest.raises(ValueError):
-            HttpRelay("http://localhost:1234", token)
+        with labeled_case(repr(token)):
+            with pytest.raises(ValueError):
+                HttpRelay("http://localhost:1234", token)

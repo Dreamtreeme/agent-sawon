@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import pytest
+from case_labels import labeled_case
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model, model_validator
 from pydantic_core import PydanticCustomError
 
@@ -43,12 +44,13 @@ def test_nested_schema_fields_and_indices_survive_without_input():
 
 def test_extra_field_names_do_not_enter_locations():
     for private_key in ("PRIVATE_API_KEY", "https://host/?key=SECRET", "PRIVATE\nRESPONSE"):
-        with pytest.raises(ValidationError) as raised:
-            Item.model_validate({"value": 1, private_key: "PRIVATE_VALUE"})
-        result = safe_validation_errors(raised.value, Item)
-        assert result == [{"type": "extra_forbidden", "loc": []}], private_key
-        assert private_key not in json.dumps(result)
-        assert "PRIVATE_VALUE" not in json.dumps(result)
+        with labeled_case(repr(private_key)):
+            with pytest.raises(ValidationError) as raised:
+                Item.model_validate({"value": 1, private_key: "PRIVATE_VALUE"})
+            result = safe_validation_errors(raised.value, Item)
+            assert result == [{"type": "extra_forbidden", "loc": []}]
+            assert private_key not in json.dumps(result)
+            assert "PRIVATE_VALUE" not in json.dumps(result)
 
 
 def test_schema_examples_do_not_add_allowed_field_names():
@@ -103,24 +105,23 @@ def test_property_names_take_precedence_over_definition_names():
 
 def test_schema_annotation_values_do_not_authorize_union_branches():
     for metadata_key in ("title", "examples", "default"):
-        metadata = create_model(
-            "Metadata",
-            value=(int, ...),
-            __config__=ConfigDict(json_schema_extra={metadata_key: {"$defs": {"PRIVATE": {}}}}),
-        )
-        error = ValidationError.from_exception_data(
-            "Metadata",
-            [
-                {
-                    "type": "int_parsing",
-                    "loc": ("PRIVATE", "value"),
-                    "input": "SECRET",
-                }
-            ],
-        )
-        assert safe_validation_errors(error, metadata) == [{"type": "int_parsing", "loc": []}], (
-            metadata_key
-        )
+        with labeled_case(metadata_key):
+            metadata = create_model(
+                "Metadata",
+                value=(int, ...),
+                __config__=ConfigDict(json_schema_extra={metadata_key: {"$defs": {"PRIVATE": {}}}}),
+            )
+            error = ValidationError.from_exception_data(
+                "Metadata",
+                [
+                    {
+                        "type": "int_parsing",
+                        "loc": ("PRIVATE", "value"),
+                        "input": "SECRET",
+                    }
+                ],
+            )
+            assert safe_validation_errors(error, metadata) == [{"type": "int_parsing", "loc": []}]
 
 
 def test_actual_wire_union_preserves_decision_intent_path(final_search_schema):

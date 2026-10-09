@@ -4,6 +4,7 @@ import json
 from dataclasses import FrozenInstanceError, replace
 
 import pytest
+from case_labels import labeled_case
 from pydantic import ValidationError
 from test_wire_contract import schema_accepts
 
@@ -98,11 +99,12 @@ def test_credential_input_is_never_offered_on_other_claimed_screens():
         ExecutionFacts("duplicate_query", available_credential_sources=("credential.password",))
     )
     for screen in ("menu", "query", "editor", "partner", "dialog", "unknown"):
-        assert_contract(
-            policy,
-            action("credential", screen=screen, kind="set_text", source="credential.password"),
-            False,
-        )
+        with labeled_case(screen):
+            assert_contract(
+                policy,
+                action("credential", screen=screen, kind="set_text", source="credential.password"),
+                False,
+            )
 
 
 def test_absent_credentials_do_not_offer_a_login_command_or_credential_input():
@@ -118,20 +120,23 @@ def test_absent_credentials_do_not_offer_a_login_command_or_credential_input():
 
 def test_query_input_then_search_have_disjoint_preconditions():
     for phase in ("duplicate_query", "final_query"):
-        facts = ExecutionFacts(
-            phase, duplicate_clear=phase == "final_query", save_issued=phase == "final_query"
-        )
-        text = action("query_input", kind="set_text", source="hbl_no")
-        search = action("search")
-        assert_contract(DecisionPolicy(facts), text, True)
-        assert_contract(DecisionPolicy(facts), search, False)
-        verified = replace(facts, query_value_verified=True)
-        assert_contract(DecisionPolicy(verified), text, False)
-        assert_contract(DecisionPolicy(verified), search, True)
-        assert_contract(DecisionPolicy(verified), action("search", kind="key", keys="enter"), True)
-        searched = replace(verified, query_submitted=True)
-        assert_contract(DecisionPolicy(searched), text, False)
-        assert_contract(DecisionPolicy(searched), search, False)
+        with labeled_case(phase):
+            facts = ExecutionFacts(
+                phase, duplicate_clear=phase == "final_query", save_issued=phase == "final_query"
+            )
+            text = action("query_input", kind="set_text", source="hbl_no")
+            search = action("search")
+            assert_contract(DecisionPolicy(facts), text, True)
+            assert_contract(DecisionPolicy(facts), search, False)
+            verified = replace(facts, query_value_verified=True)
+            assert_contract(DecisionPolicy(verified), text, False)
+            assert_contract(DecisionPolicy(verified), search, True)
+            assert_contract(
+                DecisionPolicy(verified), action("search", kind="key", keys="enter"), True
+            )
+            searched = replace(verified, query_submitted=True)
+            assert_contract(DecisionPolicy(searched), text, False)
+            assert_contract(DecisionPolicy(searched), search, False)
 
 
 def test_duplicate_checkpoint_freezes_ui_until_result_evidence_or_stop():
@@ -208,11 +213,12 @@ def test_final_completion_requires_all_prior_runtime_facts():
         ("query_submitted", False, False),
         ("final_evidence_ready", False, True),
     ):
-        incomplete = replace(ready, **{missing: value})
-        assert incomplete.final_query_workflow_ready is workflow_ready, missing
-        assert_contract(DecisionPolicy(ready), proof("complete"), True)
-        assert_contract(DecisionPolicy(incomplete), proof("complete"), False)
-        assert_contract(DecisionPolicy(ready), proof("duplicate_clear"), False)
+        with labeled_case(missing):
+            incomplete = replace(ready, **{missing: value})
+            assert incomplete.final_query_workflow_ready is workflow_ready
+            assert_contract(DecisionPolicy(ready), proof("complete"), True)
+            assert_contract(DecisionPolicy(incomplete), proof("complete"), False)
+            assert_contract(DecisionPolicy(ready), proof("duplicate_clear"), False)
 
 
 def test_final_proof_can_reveal_current_controls_without_repeating_input_or_search():
@@ -303,7 +309,7 @@ def test_broad_action_types_cannot_bypass_intent_or_source_contract():
         ),
     ]
     for case_id, payload, facts, valid in cases:
-        try:
+        with labeled_case(case_id):
             if facts is not None:
                 policy = DecisionPolicy(facts)
                 assert_contract(policy, valid, True)
@@ -320,9 +326,6 @@ def test_broad_action_types_cannot_bypass_intent_or_source_contract():
                 ),
             ):
                 assert_contract(DecisionPolicy(current), payload, False)
-        except AssertionError as error:
-            error.add_note("contract case: " + case_id)
-            raise
 
 
 def test_assert_contract_fails_for_a_contradictory_oracle_expectation():

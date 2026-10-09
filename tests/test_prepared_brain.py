@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from case_labels import labeled_case
 from test_brain import FakeRelay, ScriptedModel, success_steps
 from test_pipeline_evaluate import record as extracted_record
 from test_pipeline_evaluate import report as checked_report
@@ -114,14 +115,15 @@ def test_prepared_cli_finishes_and_appends_to_existing_log(tmp_path, monkeypatch
 
 def test_prepared_validator_rejects_each_invalid_handoff_without_mutation(tmp_path):
     for mutation in ("value", "source", "missing_hash", "blocking", "not_ready"):
-        case_dir, record, state, log = prepare(tmp_path / mutation, mutation=mutation)
-        before_state, before_log = state.read(), log.path.read_bytes()
-        with pytest.raises(ValueError) as raised:
-            validate_prepared_case(case_dir, record)
-        assert str(raised.value), mutation
-        assert state.read() == before_state
-        assert log.path.read_bytes() == before_log
-        assert not (case_dir / "result.json").exists()
+        with labeled_case(mutation):
+            case_dir, record, state, log = prepare(tmp_path / mutation, mutation=mutation)
+            before_state, before_log = state.read(), log.path.read_bytes()
+            with pytest.raises(ValueError) as raised:
+                validate_prepared_case(case_dir, record)
+            assert str(raised.value)
+            assert state.read() == before_state
+            assert log.path.read_bytes() == before_log
+            assert not (case_dir / "result.json").exists()
 
 
 def test_prepared_cli_calls_validator_before_environment_or_model_access(tmp_path, monkeypatch):
@@ -148,14 +150,15 @@ def test_brain_rechecks_each_independent_prepared_handoff_gate(tmp_path, monkeyp
     # Direct Brain users bypass the CLI validator. Cover its three own branches:
     # state readiness, saved-record equality and can_enter(report).
     for mutation in ("not_ready", "value", "blocking"):
-        case_dir, record, state, log = prepare(tmp_path / mutation, mutation=mutation)
-        before_state, before_log = state.read(), log.path.read_bytes()
-        call, relay, models = execute("engine", case_dir, record, log, monkeypatch)
-        with pytest.raises(ValueError) as raised:
-            call()
-        assert str(raised.value), mutation
-        assert state.read() == before_state
-        assert relay.health_calls == relay.calls == 0 and relay.actions == []
-        assert all(model.prompts == [] for model in models)
-        assert log.path.read_bytes() == before_log
-        assert not (case_dir / "result.json").exists()
+        with labeled_case(mutation):
+            case_dir, record, state, log = prepare(tmp_path / mutation, mutation=mutation)
+            before_state, before_log = state.read(), log.path.read_bytes()
+            call, relay, models = execute("engine", case_dir, record, log, monkeypatch)
+            with pytest.raises(ValueError) as raised:
+                call()
+            assert str(raised.value)
+            assert state.read() == before_state
+            assert relay.health_calls == relay.calls == 0 and relay.actions == []
+            assert all(model.prompts == [] for model in models)
+            assert log.path.read_bytes() == before_log
+            assert not (case_dir / "result.json").exists()

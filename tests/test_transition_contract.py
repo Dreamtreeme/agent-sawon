@@ -1,6 +1,7 @@
 """Action delivery is distinct from verified effects and business progress."""
 
 import pytest
+from case_labels import labeled_case
 from pydantic import ValidationError
 
 from brain.graph.transitions import (
@@ -61,9 +62,10 @@ def test_transition_rejects_each_unverified_or_secret_data_channel():
         "unknown-secret-field": {"password": "actual-secret-value"},
     }
     for case, overrides in cases.items():
-        with pytest.raises(ValidationError) as raised:
-            pending_transition(**overrides)
-        assert raised.value.errors(), case
+        with labeled_case(case):
+            with pytest.raises(ValidationError) as raised:
+                pending_transition(**overrides)
+            assert raised.value.errors()
 
 
 def test_transition_accepts_a_valid_runtime_task_key():
