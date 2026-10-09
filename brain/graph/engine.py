@@ -12,7 +12,7 @@ from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from time import perf_counter
-from typing import Literal
+from typing import Literal, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -114,6 +114,8 @@ from .transitions import (
     exploration_action_key,
 )
 from .workflow import build_worker_graph
+
+ModelResponseT = TypeVar("ModelResponseT", bound=BaseModel)
 
 
 class Result(BaseModel):
@@ -565,12 +567,12 @@ class Brain:
     def _call(
         self,
         prompt: str,
-        schema: type[BaseModel],
+        schema: type[ModelResponseT],
         *,
         model: ModelClient | None = None,
         call_budget: CallBudget | None = None,
         page: RenderedPage | None = None,
-    ):
+    ) -> ModelResponseT:
         budget = call_budget if model is not None else self.call_budget
         reservation = (
             ImageCallBudget(budget)(prompt, schema, page)

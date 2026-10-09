@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -27,7 +27,7 @@ from brain.visual.scene import SemanticDetection, contains, overlap
 from sawon_runtime.storage import RunLog, atomic_write_json
 
 from .execution import GuardStop, PendingAction
-from .method_runtime import MethodRuntime
+from .model_call import ScreenModelCall
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision, FieldName
 from .visual_turn import adapt_proposal, bind_proposal
@@ -208,6 +208,20 @@ class ScreenMatch(SemanticDetection, ScreenPlan):
         )
 
 
+class MatchMethodRuntime(Protocol):
+    """Method operations required by matching, independent of their implementation."""
+
+    enabled: bool
+
+    def procedure_prompt_context(self) -> dict: ...
+
+    def prompt_context(self) -> dict: ...
+
+    def apply(self, screen: dict) -> ScreenMatch | None: ...
+
+    def remember(self, screen: dict, response: ScreenMatch) -> None: ...
+
+
 @dataclass(frozen=True)
 class MatchRequest:
     """Immutable state needed to choose one action boundary for one screen."""
@@ -241,10 +255,10 @@ class MatchServices:
 
     settings: BrainSettings
     log: RunLog
-    call: Callable[..., BaseModel]
+    call: ScreenModelCall
     case_dir: Path
     cache: VisualMatchCache
-    methods: MethodRuntime
+    methods: MatchMethodRuntime
 
 
 @dataclass(frozen=True)

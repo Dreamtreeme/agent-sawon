@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -20,6 +19,7 @@ from sawon_runtime.storage import RunLog, atomic_write_json
 from sawon_runtime.visual import RenderedPage
 
 from .execution import GuardStop, PendingAction
+from .model_call import ScreenModelCall
 from .schemas import Decision
 
 
@@ -67,7 +67,7 @@ class ClickRefinementServices:
     case_dir: Path
     relay: Relay
     log: RunLog
-    call: Callable[..., BaseModel]
+    call: ScreenModelCall
 
 
 @dataclass(frozen=True)

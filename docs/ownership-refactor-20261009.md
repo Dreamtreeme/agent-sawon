@@ -66,3 +66,25 @@
 
 실행 시간은 한 번의 로컬 실행이며 성능 개선 근거로 사용하지 않는다. 실제 ERP 화면 성공,
 OmniParser 의미 정확도 개선, 마일스톤 종료도 이 결과로 주장하지 않는다.
+
+## 누락 항목 후속 점검
+
+1. `examples/shipment-task.json`에는 `identity_input_key`가 `hbl_no`로 선언되어 있다.
+   예제 로더가 이 값을 보존하는지 `test_shipment_task_declares_duplicate_identity_input`에서
+   직접 단언한다.
+2. `brain/visual/markers.py`는 현재 10,310바이트의 유효한 UTF-8 Python 텍스트다. NUL과
+   기타 비텍스트 제어 바이트가 없고 Git 속성도 이 파일을 binary로 지정하지 않으며,
+   `git grep -I`도 텍스트로 읽는다. 업로드 덤프의 binary 표시는 저장소 파일이나 과거
+   `.gitattributes`에서 재현되지 않아 덤프 생성기의 문자 판별 오분류로 판단한다. 원본 덤프
+   생성기가 보존되지 않아 그 도구 내부의 정확한 판정식까지는 확정하지 않는다.
+3. `MatchServices.call: Callable[..., BaseModel]`은 요청한 Pydantic schema와 반환 타입의
+   관계를 지워 `ScreenMatch`, `ScreenPlan`, `SemanticDetection`의 멤버 접근을 mypy가
+   거부하게 했다. 이를 schema 타입을 그대로 반환하는 제네릭 `ScreenModelCall` Protocol로
+   교체하고 `Brain._call`도 같은 타입 관계를 선언했다. 보고된 `BaseModel` 반환 오류군은
+   사라졌다. 현재 저장소에는 mypy 설정이 없으며, 일회성 mypy 1.20.2 점검에서 이 오류와
+   무관한 기존 오류가 `matching.py` 19건, `engine.py` 25건 남아 있으므로 전체 type-check
+   통과로 보고하지 않는다.
+4. `matching.py`가 `MethodRuntime`을 import하고 `method_runtime.py`가 `ScreenMatch`를
+   지연 import하던 양방향 의존을 제거했다. matching은 이제 필요한 `enabled`, context,
+   `apply`, `remember` 계약만 `MatchMethodRuntime` Protocol로 받는다. AST import 점검 결과
+   `matching -> method_runtime`은 0건이고 `method_runtime -> matching`만 남아 단방향이다.

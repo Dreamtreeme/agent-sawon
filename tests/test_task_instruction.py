@@ -1,6 +1,7 @@
 """Generic task contracts do not encode one ERP's fields or screen route."""
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -16,6 +17,14 @@ from brain.observe.values import values_for
 from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
+
+
+def test_shipment_task_declares_duplicate_identity_input():
+    task = TaskInstruction.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_bytes()
+    )
+
+    assert task.identity_input_key == "hbl_no"
 
 
 def test_user_taught_actions_preserve_ui_labels_without_coordinates():
