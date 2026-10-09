@@ -522,7 +522,6 @@ def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
     from brain.graph.execution import ActionPlan, PlanExecution
     from brain.graph.matching import ScreenMatch
     from brain.graph.schemas import Choice, Decision
-    from brain.graph.screen_batch import verify_screen_fields
     from brain.task_instruction import TaskInstruction
 
     relay = ChangingPixelsRelay(record)
@@ -584,7 +583,7 @@ def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
     claims = brain.evidence_ledger.history
     assert len(claims) == 1
 
-    assert verify_screen_fields(brain, execution, current) == "review"
+    assert brain._verify_screen_batch(execution, current) == "review"
     assert brain.evidence_ledger.history == claims
     recorded = [
         event

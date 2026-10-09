@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import replace
-from typing import TYPE_CHECKING, Literal
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from typing import Any, Literal
 
 from pydantic import Field, model_validator
 from sawon_interfaces import Observation
@@ -15,11 +16,6 @@ from brain.visual.scene import SceneObservation
 from .execution import ActionPlan, GuardStop, PlanExecution, PlannedAction
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision, DecisionResponse, FieldName, StrictModel
-
-if TYPE_CHECKING:
-    from .engine import Brain
-    from .state import WorkerNode
-
 
 SCREEN_FILL_GUIDANCE = """
 SCREEN INPUT MODE overrides the single-action instruction for field entry.
@@ -189,19 +185,46 @@ def prepare_screen_fill(scene: Observation, plan: ScreenFillPlan) -> ActionPlan:
     )
 
 
+@dataclass(frozen=True)
+class ScreenFieldVerificationRequest:
+    execution: PlanExecution
+    observation: Observation
+    model_only_review: bool
+    verified_fields: frozenset[str]
+    visual_proposal: Any | None
+
+
+@dataclass(frozen=True)
+class ScreenFieldVerificationServices:
+    input_surfaces: Callable[[str | None], set[str]]
+    record_verified_field: Callable[[str, Any], bool]
+
+
+@dataclass(frozen=True)
+class ScreenFieldVerificationResult:
+    payload: dict
+    matched_refs: tuple[str, ...]
+    clear_verified: tuple[str, ...]
+    failed_decision: Decision | None = None
+    failure_reason: str | None = None
+    clear_visual_proposal: bool = False
+
+
 def verify_screen_fields(
-    brain: Brain, execution: PlanExecution, observation: Observation
-) -> WorkerNode:
-    """Evaluate a batch after observation has published the current model evidence."""
+    request: ScreenFieldVerificationRequest,
+    services: ScreenFieldVerificationServices,
+) -> ScreenFieldVerificationResult:
+    """Evaluate one observed batch without reaching into mutable worker state."""
+
+    execution, observation = request.execution, request.observation
     delivered_fields = [
         delivered for delivered in execution.delivered if delivered["choice"].source is not None
     ]
-    if brain.settings.visual_model_only_review:
+    if request.model_only_review:
         matched, mismatched = [], []
         for delivered in delivered_fields:
             source = delivered["choice"].source
-            if source in brain.verified:
-                execution.matched_refs.add(delivered["choice"].ref)
+            if source in request.verified_fields:
                 matched.append(source)
             else:
                 mismatched.append(source)
@@ -213,22 +236,22 @@ def verify_screen_fields(
             "delegated": [delivered["choice"].source for delivered in delivered_fields],
             "reviewer": "screen_model",
         }
-        brain.log.append("verify", payload={**payload, "obs_id": str(observation.obs_id)})
-        brain.feedback.append(payload)
-        # This proposal belonged only to post-action evidence review. The next
-        # Decision must be planned from the updated notebook instead of reusing it.
-        brain.visual_proposal = None
-        brain.visual_match_candidate = None
-        if mismatched:
-            outcome = brain._fail("screen_fill_evidence_missing")
-            if outcome == "finish":
-                return outcome
-        return "review"
+        return ScreenFieldVerificationResult(
+            payload=payload,
+            matched_refs=tuple(
+                delivered["choice"].ref
+                for delivered in delivered_fields
+                if delivered["choice"].source in request.verified_fields
+            ),
+            clear_verified=(),
+            failure_reason="screen_fill_evidence_missing" if mismatched else None,
+            clear_visual_proposal=True,
+        )
 
-    matched, mismatched, mismatched_refs = [], [], []
+    matched, matched_refs, mismatched, mismatched_refs = [], [], [], []
     source_counts = Counter(item["choice"].source for item in delivered_fields)
     explicit_evidence = {}
-    proposal = brain.visual_proposal
+    proposal = request.visual_proposal
     if proposal is not None and isinstance(observation, SceneObservation):
         prefix = "e" + str(observation.obs_id.int) + "0"
         explicit_evidence = {item.field: prefix + str(item.target) for item in proposal.evidence}
@@ -244,22 +267,20 @@ def verify_screen_fields(
                 execution.before,
                 delivered["choice"].ref,
                 delivered["descriptor"],
-                allowed_surfaces=brain._input_surfaces(source),
+                allowed_surfaces=services.input_surfaces(source),
             )
         )
         ok = (
             observation.active_window == execution.before.active_window
             and len(candidates) == 1
-            and brain._record_verified_field(source, candidates[0])
+            and services.record_verified_field(source, candidates[0])
         )
         if ok:
-            execution.matched_refs.add(delivered["choice"].ref)
+            matched_refs.append(delivered["choice"].ref)
             matched.append(source)
         else:
             mismatched.append(source)
             mismatched_refs.append(delivered["choice"].ref)
-    for source in mismatched:
-        brain.verified.pop(source, None)
     payload = {
         "check": "screen_fill_values",
         "ok": not mismatched,
@@ -267,15 +288,17 @@ def verify_screen_fields(
         "mismatched": mismatched,
         "reviewer": "runtime_value_check",
     }
-    brain.log.append("verify", payload={**payload, "obs_id": str(observation.obs_id)})
-    brain.feedback.append(payload)
-    if mismatched:
-        brain.decision = next(
+    failed_decision = None
+    if mismatched_refs:
+        failed_decision = next(
             a.decision
             for a in execution.plan.actions
             if a.decision.action.ref == mismatched_refs[0]
         )
-        outcome = brain._fail("screen_fill_value_mismatch")
-        if outcome == "finish":
-            return outcome
-    return "review"
+    return ScreenFieldVerificationResult(
+        payload=payload,
+        matched_refs=tuple(matched_refs),
+        clear_verified=tuple(mismatched),
+        failed_decision=failed_decision,
+        failure_reason="screen_fill_value_mismatch" if mismatched else None,
+    )

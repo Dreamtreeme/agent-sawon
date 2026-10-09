@@ -71,6 +71,8 @@ from .screen_batch import (
     LOGIN_GUIDANCE,
     SCREEN_FILL_GUIDANCE,
     LoginScreenPlan,
+    ScreenFieldVerificationRequest,
+    ScreenFieldVerificationServices,
     ScreenFillPlan,
     prepare_login_plan,
     prepare_screen_fill,
@@ -2578,6 +2580,40 @@ class Brain:
                 log_transition(self.log, delivered)
         log_transition(self.log, pending, observation, observed_effect, tuple(new_facts))
 
+    def _verify_screen_batch(
+        self, execution: PlanExecution, observation: Observation
+    ) -> WorkerNode:
+        result = verify_screen_fields(
+            ScreenFieldVerificationRequest(
+                execution=execution,
+                observation=observation,
+                model_only_review=self.settings.visual_model_only_review,
+                verified_fields=frozenset(self.verified),
+                visual_proposal=self.visual_proposal,
+            ),
+            ScreenFieldVerificationServices(
+                input_surfaces=self._input_surfaces,
+                record_verified_field=self._record_verified_field,
+            ),
+        )
+        execution.matched_refs.update(result.matched_refs)
+        for source in result.clear_verified:
+            self.verified.pop(source, None)
+        self.log.append("verify", payload={**result.payload, "obs_id": str(observation.obs_id)})
+        self.feedback.append(result.payload)
+        if result.clear_visual_proposal:
+            # Post-action evidence belongs to the delivered batch only.  The next
+            # decision is planned from the updated notebook.
+            self.visual_proposal = None
+            self.visual_match_candidate = None
+        if result.failed_decision is not None:
+            self.decision = result.failed_decision
+        if result.failure_reason is not None:
+            outcome = self._fail(result.failure_reason)
+            if outcome == "finish":
+                return outcome
+        return "review"
+
     def _verify_node(self) -> WorkerNode:
         assert self.pending is not None
         pending = self.pending
@@ -2588,7 +2624,7 @@ class Brain:
             observation = self._observe()
             execution = pending.get("execution")
             if execution is not None and execution.plan.verification == "fields":
-                outcome = verify_screen_fields(self, execution, observation)
+                outcome = self._verify_screen_batch(execution, observation)
                 if len(execution.matched_refs) == len(execution.delivered):
                     self._stage_visual_match_candidate(pending)
                 return outcome
