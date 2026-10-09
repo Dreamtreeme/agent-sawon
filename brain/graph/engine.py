@@ -78,15 +78,15 @@ from .schemas import (
     Plan,
 )
 from .screen_batch import (
-    LOGIN_GUIDANCE,
-    SCREEN_FILL_GUIDANCE,
-    LoginScreenPlan,
     ScreenFieldVerificationRequest,
     ScreenFieldVerificationServices,
-    ScreenFillPlan,
-    prepare_login_plan,
-    prepare_screen_fill,
     verify_screen_fields,
+)
+from .selection import (
+    SelectionRequest,
+    SelectionServices,
+    select_candidate,
+    selection_mode,
 )
 from .state import (
     WorkerNode,
@@ -1397,33 +1397,32 @@ class Brain:
             self.decision = None
             self.action_plan = None
             self.execution_authorized = False
-            schema = policy.response_schema()
-            screen_fill = (
-                self.settings.visual_screen_fill
-                and isinstance(self.observation, SceneObservation)
-                and self.observation.screen_kind != "login"
-                and self.phase in {"task", "enter"}
-                and (self.phase == "task" or self.observation.screen_kind == "editor")
-                and (self.phase == "task" or self.duplicate_clear)
-                and bool(policy.facts.remaining_fields)
-            )
-            login_batch = (
-                self.settings.visual_screen_fill
-                and isinstance(self.observation, SceneObservation)
-                and self.observation.screen_kind == "login"
-                and self.phase in {"task", "duplicate_query"}
-                and not self.query_submitted
-                and bool(policy.facts.remaining_credentials)
-            )
             prompt = "" if self.settings.screen_matching else self._decision_prompt(policy)
-            if self.phase == "save_result":
-                schema = SaveReviewResponse
-                review = self._selection_call(prompt, schema)
-                outcome = self._apply_save_review(review)
+            request = SelectionRequest(
+                observation=self.observation,
+                phase=self.phase,
+                duplicate_clear=self.duplicate_clear,
+                query_submitted=self.query_submitted,
+                visual_screen_fill=self.settings.visual_screen_fill,
+                policy=policy,
+                prompt=prompt,
+            )
+            mode = selection_mode(request)
+            schema = mode.schema
+            selected = select_candidate(
+                request,
+                mode,
+                SelectionServices(
+                    selection_call=self._selection_call,
+                    choose_decision=self._choose_decision,
+                ),
+            )
+            if selected.save_review is not None:
+                outcome = self._apply_save_review(selected.save_review)
                 if outcome is not None:
                     return outcome
                 policy = self._decision_policy()
-                proposed = review.next_decision.to_decision()
+                proposed = selected.save_review.next_decision.to_decision()
                 if not policy.allows(proposed):
                     self.log.append(
                         "verify",
@@ -1436,25 +1435,14 @@ class Brain:
                     )
                     return "decision"
                 self.decision = proposed
-            elif login_batch:
-                schema = LoginScreenPlan
-                plan = self._selection_call(prompt + LOGIN_GUIDANCE, schema)
-                if plan.fields:
-                    self.action_plan = prepare_login_plan(self.observation, plan, policy)
-                    self.review_execution = True
-                    return "review"
-                self.decision = plan.next_decision.to_decision()
-            elif screen_fill:
-                schema = ScreenFillPlan
-                plan = self._selection_call(prompt + SCREEN_FILL_GUIDANCE, schema)
-                if plan.fields:
-                    self.action_plan = prepare_screen_fill(self.observation, plan)
-                    self.review_execution = True
-                    return "review"
-                self.decision = plan.next_decision.to_decision()
             else:
-                self.decision = self._choose_decision(prompt, schema)
+                self.action_plan = selected.action_plan
+                self.decision = selected.decision
+                if self.action_plan is not None:
+                    self.review_execution = True
+                    return "review"
             decision = self.decision
+            assert decision is not None
             self.log.append(
                 "select",
                 payload={
