@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .schemas import ExecutableIntent, FieldName, TextSource
+from .schemas import Decision, ExecutableIntent, FieldName, TextSource
 
 TransitionFact = (
     FieldName
@@ -28,6 +28,24 @@ TransitionFact = (
         "credential.password_submitted",
     ]
 )
+
+
+def expected_effect(decision: Decision) -> "ExpectedEffect":
+    """Return the observable effect required for a delivered decision."""
+
+    assert decision.action is not None
+    if decision.action.type in {"set_text", "type_text"}:
+        if decision.action.source == "credential.password":
+            return ExpectedEffect.PROTECTED_INPUT_REREAD
+        return ExpectedEffect.INPUT_VALUE_MATCHES
+    return {
+        "navigate": ExpectedEffect.NAVIGATION_CHANGE,
+        "select_tab": ExpectedEffect.NAVIGATION_CHANGE,
+        "login": ExpectedEffect.LOGIN_RESULT_OBSERVATION,
+        "search": ExpectedEffect.SEARCH_RESULT_OBSERVATION,
+        "save": ExpectedEffect.SAVE_ACKNOWLEDGEMENT,
+        "confirm_save": ExpectedEffect.SAVE_ACKNOWLEDGEMENT,
+    }.get(decision.intent, ExpectedEffect.OBSERVATION_ONLY)
 
 
 class EvidenceClaim(BaseModel):

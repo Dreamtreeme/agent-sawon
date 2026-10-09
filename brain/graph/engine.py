@@ -107,10 +107,10 @@ from .state import (
 )
 from .transitions import (
     ActionTransition,
-    ExpectedEffect,
     ExplorationAttempt,
     ObservedEffect,
     TransitionFact,
+    expected_effect,
     exploration_action_key,
 )
 from .workflow import build_worker_graph
@@ -391,20 +391,8 @@ class Brain:
             )
         )
 
-    def _screen_match_services(self):
-        from .matching import MatchServices
-
-        return MatchServices(
-            settings=self.settings,
-            log=self.log,
-            call=self._call,
-            case_dir=self.case_dir,
-            cache=self.visual_match_cache,
-            methods=self.methods,
-        )
-
     def _match_visual(self, screen: dict, page, *, interpretation=None, proposal=None):
-        from .matching import match_screen
+        from .matching import MatchServices, match_screen
 
         request = self._screen_match_request(
             screen,
@@ -414,7 +402,14 @@ class Brain:
         )
         result = match_screen(
             request,
-            self._screen_match_services(),
+            MatchServices(
+                settings=self.settings,
+                log=self.log,
+                call=self._call,
+                case_dir=self.case_dir,
+                cache=self.visual_match_cache,
+                methods=self.methods,
+            ),
         )
         self.procedure_step = result.procedure_step
         self.visual_match_candidate = result.visual_match_candidate
@@ -1589,7 +1584,8 @@ class Brain:
             if len(matches) > 1 or (
                 matches
                 and (
-                    not self._input_surface_allowed(field, matches[0])
+                    observed_input_surface(matches[0], self.observation)
+                    not in self._input_surfaces(field)
                     or not field_matches(field, matches[0].value, self.values)
                 )
             ):
@@ -1613,15 +1609,12 @@ class Brain:
             return allowed_input_surfaces(self.task_instruction, source, self.values)
         return {"direct_input"}
 
-    def _input_surface_allowed(self, source: str | None, element: UIElement) -> bool:
-        assert self.observation is not None
-        return observed_input_surface(element, self.observation) in self._input_surfaces(source)
-
     def _record_verified_field(self, source: str, element: UIElement) -> bool:
         assert self.observation is not None
-        if not self._input_surface_allowed(source, element) or not field_matches(
-            source, element.value, self.values
-        ):
+        surface_allowed = observed_input_surface(element, self.observation) in self._input_surfaces(
+            source
+        )
+        if not surface_allowed or not field_matches(source, element.value, self.values):
             return False
         self.verified[source] = describe(element, self.observation.elements)
         self._record_progress("field:" + source)
@@ -1714,7 +1707,9 @@ class Brain:
             and (self.phase == "task" or decision.screen_kind == "editor")
         )
         surface_allowed = (
-            self._input_surface_allowed(choice.source, target) if fill_target else True
+            observed_input_surface(target, self.observation) in self._input_surfaces(choice.source)
+            if fill_target
+            else True
         )
         surface_owner = None
         if fill_target and self.phase == "task" and choice.source is not None:
@@ -1894,7 +1889,7 @@ class Brain:
                 before_obs_id=str(self.observation.obs_id),
                 intent=decision.intent,
                 source=choice.source,
-                expected_effect=self._expected_effect(decision),
+                expected_effect=expected_effect(decision),
             ),
         }
         delivered_point = getattr(getattr(action.root, "target", None), "image_point", None)
@@ -1911,7 +1906,9 @@ class Brain:
             by_ref = {item.ref: item for item in self.observation.elements}
             for evidence in decision.evidence:
                 target = by_ref.get(evidence.ref)
-                if target is not None and self._input_surface_allowed(evidence.field, target):
+                if target is not None and observed_input_surface(
+                    target, self.observation
+                ) in self._input_surfaces(evidence.field):
                     self.deferred_field_checks[evidence.field] = describe(
                         target, self.observation.elements
                     )
@@ -2119,22 +2116,6 @@ class Brain:
             return None
         finally:
             self.pending, self.decision = original_pending, original_decision
-
-    @staticmethod
-    def _expected_effect(decision: Decision) -> ExpectedEffect:
-        assert decision.action is not None
-        if decision.action.type in {"set_text", "type_text"}:
-            if decision.action.source == "credential.password":
-                return ExpectedEffect.PROTECTED_INPUT_REREAD
-            return ExpectedEffect.INPUT_VALUE_MATCHES
-        return {
-            "navigate": ExpectedEffect.NAVIGATION_CHANGE,
-            "select_tab": ExpectedEffect.NAVIGATION_CHANGE,
-            "login": ExpectedEffect.LOGIN_RESULT_OBSERVATION,
-            "search": ExpectedEffect.SEARCH_RESULT_OBSERVATION,
-            "save": ExpectedEffect.SAVE_ACKNOWLEDGEMENT,
-            "confirm_save": ExpectedEffect.SAVE_ACKNOWLEDGEMENT,
-        }.get(decision.intent, ExpectedEffect.OBSERVATION_ONLY)
 
     def _verify_navigation(
         self,

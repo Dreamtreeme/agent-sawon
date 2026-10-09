@@ -19,6 +19,7 @@ from brain.graph.matching import (
     TASK_PLAN_RULES,
     TASK_RULES,
     ActionCapability,
+    MatchServices,
     ScreenMatch,
     ScreenPlan,
     compile_match,
@@ -159,7 +160,15 @@ def setup_brain(
 
 def matching_contract(brain, screen=None):
     screen = screen or {"ocr": [], "markers": []}
-    return brain._screen_match_request(screen, None), brain._screen_match_services()
+    services = MatchServices(
+        settings=brain.settings,
+        log=brain.log,
+        call=brain._call,
+        case_dir=brain.case_dir,
+        cache=brain.visual_match_cache,
+        methods=brain.methods,
+    )
+    return brain._screen_match_request(screen, None), services
 
 
 def response(meaning, **kwargs):
@@ -1600,7 +1609,7 @@ def test_delivered_input_verification_omission_is_repaired_without_reusing_old_v
         "before_observation": before,
     }
     required = required_verification(brain.pending)
-    services = brain._screen_match_services()
+    services = matching_contract(brain)[1]
     if mode in {"changed_value", "renamed_wrong_value", "resized_wrong_value"}:
         blocks[-1] = blocks[-1].model_copy(update={"text": "DIFFERENT-NOW"})
     if mode.startswith("renamed"):
@@ -1668,7 +1677,7 @@ def test_model_only_review_delegates_required_verification_without_repair_call(t
 
     assert (
         retain_verification(
-            brain._screen_match_services(), matched, {"ocr": [], "markers": []}, required
+            matching_contract(brain)[1], matched, {"ocr": [], "markers": []}, required
         )
         == matched
     )
@@ -2186,7 +2195,7 @@ def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
         required = [{"screen": "query", "descriptor": {"role": "edit", "name": "Other"}}]
     response = ScreenMatch.model_validate(payload)
     cleaned = sanitize_unused_controls(
-        brain._screen_match_services(),
+        matching_contract(brain)[1],
         brain.phase,
         response,
         {"markers": [m.model_dump() for m in markers], "ocr": [b.model_dump() for b in blocks]},
@@ -2259,7 +2268,7 @@ def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, depend
         payload["controls"][1]["parent_id"] = 16
         payload["controls"] = [payload["controls"][1], payload["controls"][2]]
     response = sanitize_unused_controls(
-        brain._screen_match_services(),
+        matching_contract(brain)[1],
         brain.phase,
         ScreenMatch.model_validate(payload),
         {
@@ -2296,7 +2305,7 @@ def test_control_cleanup_preserves_current_evidence_regardless_of_prior_verifica
         Marker(id=34, bbox=(120, 10, 80, 25), source="omniparser", confidence=1),
     ]
     response = sanitize_unused_controls(
-        brain._screen_match_services(),
+        matching_contract(brain)[1],
         brain.phase,
         ScreenMatch.model_validate(
             {
