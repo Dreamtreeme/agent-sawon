@@ -13,8 +13,7 @@ from sawon_interfaces import Observation, UIElement
 
 from brain.relay import HttpRelay
 from brain.runtime.storage import RunLog, atomic_write_json
-from pipeline.ocr import OcrEngine
-from pipeline.schemas import OcrBlock, RenderedPage
+from sawon_runtime.visual import OcrBlock, OcrEngine, RenderedPage
 
 from .action_rebind import (
     ActionTargetBinding,

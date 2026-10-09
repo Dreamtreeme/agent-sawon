@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pipeline.schemas import OcrBlock
+from sawon_runtime.visual import OcrBlock
 
 from .scene import contains
 

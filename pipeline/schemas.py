@@ -6,10 +6,13 @@ import tomllib
 from pathlib import Path
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 from sawon_interfaces import PackageCount, SourceLocation
 
 from models.schema import compact_provider_schema
+from sawon_runtime.visual import DocumentKind, FrozenModel, OcrBlock, RenderedPage
+
+__all__ = ["DocumentKind", "FrozenModel", "OcrBlock", "RenderedPage"]
 
 FieldName = Literal[
     "hbl_no",
@@ -35,11 +38,6 @@ FIELD_NAMES: tuple[FieldName, ...] = (
     "pol",
     "pod",
 )
-DocumentKind = Literal["hbl", "invoice", "packing_list"]
-
-
-class FrozenModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class DocumentInput(FrozenModel):
@@ -106,31 +104,6 @@ class PipelineSettings(FrozenModel):
     def load(cls, path: Path) -> PipelineSettings:
         with path.open("rb") as stream:
             return cls.model_validate(tomllib.load(stream))
-
-
-class OcrBlock(FrozenModel):
-    id: int = Field(ge=0)
-    text: str = Field(min_length=1)
-    confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
-    # Pixel coordinates on the rendered page: x, y, width, height.
-    bbox: tuple[int, int, int, int]
-    input_variant: Literal["unspecified", "original", "median"] = "unspecified"
-
-    @model_validator(mode="after")
-    def valid_bbox(self) -> Self:
-        x, y, width, height = self.bbox
-        if min(x, y) < 0 or min(width, height) <= 0:
-            raise ValueError("OCR bounds must have nonnegative origin and positive size")
-        return self
-
-
-class RenderedPage(FrozenModel):
-    document: str
-    kind: DocumentKind
-    page: int = Field(ge=1)
-    image_path: Path
-    width: int = Field(gt=0)
-    height: int = Field(gt=0)
 
 
 class VisionField(FrozenModel):

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sawon_interfaces import Observation, UIElement
 
 from models.schema import compact_provider_schema
-from pipeline.schemas import OcrBlock
+from sawon_runtime.visual import OcrBlock
 
 
 class ControlMeaning(BaseModel):

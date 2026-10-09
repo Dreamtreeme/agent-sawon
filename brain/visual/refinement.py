@@ -1,6 +1,6 @@
 """Bounded search regions from unmatched OCR, never inferred click targets."""
 
-from pipeline.schemas import OcrBlock
+from sawon_runtime.visual import OcrBlock
 
 from .markers import Marker, intersection
 from .scene import contains

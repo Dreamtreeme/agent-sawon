@@ -42,8 +42,7 @@ from models.accounting import read_model_accounting
 from models.base import ModelClient
 from models.budget import CallBudget, ImageCallBudget
 from models.validation import safe_validation_errors
-from pipeline.ocr import OcrEngine
-from pipeline.schemas import RenderedPage
+from sawon_runtime.visual import OcrEngine, RenderedPage
 
 from .click_refinement import ClickRefinementRequest, ClickRefinementServices
 from .context import DUPLICATE_EVIDENCE_GUIDANCE, ExecutionContextRequest, execution_context

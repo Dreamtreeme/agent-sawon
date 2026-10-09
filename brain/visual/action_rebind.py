@@ -9,7 +9,7 @@ from pathlib import Path
 from PIL import Image
 from sawon_interfaces import UIElement
 
-from pipeline.schemas import OcrBlock
+from sawon_runtime.visual import OcrBlock
 
 from .markers import Marker
 from .scene import SceneObservation

@@ -5,7 +5,8 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-from typing import Protocol
+
+from sawon_runtime.visual import OcrEngine
 
 from .ocr_validation import validate_ocr_blocks, validate_ocr_limits
 from .ocr_worker import create_engine, recognize
@@ -13,9 +14,7 @@ from .persistent_worker import PersistentWorker, WorkerError
 from .render import PipelineDependencyError
 from .schemas import OcrBlock, PipelineSettings, RenderedPage
 
-
-class OcrEngine(Protocol):
-    def read(self, page: RenderedPage) -> list[OcrBlock]: ...
+__all__ = ["OcrEngine", "PaddleOcrEngine"]
 
 
 class PaddleOcrEngine:

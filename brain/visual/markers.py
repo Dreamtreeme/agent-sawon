@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from pipeline.schemas import OcrBlock
+from sawon_runtime.visual import OcrBlock
 
 from .row_candidates import row_candidates
 from .scene import Detection, SemanticDetection, VisualControl, contains, overlap

@@ -17,7 +17,7 @@ from brain.relay import Relay
 from brain.runtime.storage import RunLog, atomic_write_json
 from brain.visual.markers import Marker, render_markers
 from brain.visual.scene import SceneObservation
-from pipeline.schemas import RenderedPage
+from sawon_runtime.visual import RenderedPage
 
 from .execution import GuardStop, PendingAction
 from .schemas import Decision
