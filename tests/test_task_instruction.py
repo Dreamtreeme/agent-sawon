@@ -352,15 +352,26 @@ def test_model_owned_generic_evidence_is_not_invalidated_by_later_screens(tmp_pa
     )
 
     brain._observe()
+    recorded = []
+    original_record = brain._record_model_evidence
+
+    def record_evidence(field, element):
+        recorded.append((field, element.ref))
+        return original_record(field, element)
+
+    brain._record_model_evidence = record_evidence
     passive = DecisionResponse.model_validate(
         {
             "decision": decision(
                 intent="navigate",
                 action={"type": "click", "ref": "e2"},
+                evidence=[{"field": "invoice.number", "ref": "e1"}],
             )
         }
     ).to_decision()
     brain._collect_editor_evidence(passive)
+    assert recorded == [("invoice.number", "e1")]
+    assert "invoice.number" in brain.verified
 
 
 def test_model_evidence_surface_has_one_active_field_owner(tmp_path):

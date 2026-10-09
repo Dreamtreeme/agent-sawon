@@ -49,28 +49,21 @@ def test_changed_observation_does_not_create_business_proof():
     assert complete.new_facts == ()
 
 
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"observed_effect": ObservedEffect.CHANGED},
-        {"after_obs_id": "observation-2"},
-        {"new_facts": ("save_issued",)},
-        {"source": "actual secret value"},
-        {"new_facts": ("actual-secret-value",)},
-        {"password": "actual-secret-value"},
-    ],
-    ids=[
-        "effect-before-observation",
-        "after-observation-before-completion",
-        "facts-before-completion",
-        "secret-source",
-        "secret-fact",
-        "unknown-secret-field",
-    ],
-)
-def test_transition_rejects_unverified_effects_and_arbitrary_data(overrides):
-    with pytest.raises(ValidationError):
-        pending_transition(**overrides)
+def test_transition_rejects_each_unverified_or_secret_data_channel():
+    # These hit separate guards: effect/observation ordering, fact ordering,
+    # source/fact vocabularies, and the extra-field boundary.
+    cases = {
+        "effect-before-observation": {"observed_effect": ObservedEffect.CHANGED},
+        "after-observation-before-completion": {"after_obs_id": "observation-2"},
+        "facts-before-completion": {"new_facts": ("save_issued",)},
+        "secret-source": {"source": "actual secret value"},
+        "secret-fact": {"new_facts": ("actual-secret-value",)},
+        "unknown-secret-field": {"password": "actual-secret-value"},
+    }
+    for case, overrides in cases.items():
+        with pytest.raises(ValidationError) as raised:
+            pending_transition(**overrides)
+        assert raised.value.errors(), case
 
 
 def test_transition_accepts_a_valid_runtime_task_key():

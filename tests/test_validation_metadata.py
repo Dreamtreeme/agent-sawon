@@ -41,16 +41,14 @@ def test_nested_schema_fields_and_indices_survive_without_input():
     ]
 
 
-@pytest.mark.parametrize(
-    "private_key", ["PRIVATE_API_KEY", "https://host/?key=SECRET", "PRIVATE\nRESPONSE"]
-)
-def test_extra_field_names_do_not_enter_locations(private_key: str):
-    with pytest.raises(ValidationError) as raised:
-        Item.model_validate({"value": 1, private_key: "PRIVATE_VALUE"})
-    result = safe_validation_errors(raised.value, Item)
-    assert result == [{"type": "extra_forbidden", "loc": []}]
-    assert private_key not in json.dumps(result)
-    assert "PRIVATE_VALUE" not in json.dumps(result)
+def test_extra_field_names_do_not_enter_locations():
+    for private_key in ("PRIVATE_API_KEY", "https://host/?key=SECRET", "PRIVATE\nRESPONSE"):
+        with pytest.raises(ValidationError) as raised:
+            Item.model_validate({"value": 1, private_key: "PRIVATE_VALUE"})
+        result = safe_validation_errors(raised.value, Item)
+        assert result == [{"type": "extra_forbidden", "loc": []}], private_key
+        assert private_key not in json.dumps(result)
+        assert "PRIVATE_VALUE" not in json.dumps(result)
 
 
 def test_schema_examples_do_not_add_allowed_field_names():
@@ -103,16 +101,26 @@ def test_property_names_take_precedence_over_definition_names():
     ]
 
 
-@pytest.mark.parametrize("metadata_key", ["title", "examples", "default"])
-def test_schema_annotation_values_do_not_authorize_union_branches(metadata_key: str):
-    class Metadata(BaseModel):
-        model_config = ConfigDict(json_schema_extra={metadata_key: {"$defs": {"PRIVATE": {}}}})
-        value: int
-
-    error = ValidationError.from_exception_data(
-        "Metadata", [{"type": "int_parsing", "loc": ("PRIVATE", "value"), "input": "SECRET"}]
-    )
-    assert safe_validation_errors(error, Metadata) == [{"type": "int_parsing", "loc": []}]
+def test_schema_annotation_values_do_not_authorize_union_branches():
+    for metadata_key in ("title", "examples", "default"):
+        metadata = create_model(
+            "Metadata",
+            value=(int, ...),
+            __config__=ConfigDict(json_schema_extra={metadata_key: {"$defs": {"PRIVATE": {}}}}),
+        )
+        error = ValidationError.from_exception_data(
+            "Metadata",
+            [
+                {
+                    "type": "int_parsing",
+                    "loc": ("PRIVATE", "value"),
+                    "input": "SECRET",
+                }
+            ],
+        )
+        assert safe_validation_errors(error, metadata) == [{"type": "int_parsing", "loc": []}], (
+            metadata_key
+        )
 
 
 def test_actual_wire_union_preserves_decision_intent_path(final_search_schema):

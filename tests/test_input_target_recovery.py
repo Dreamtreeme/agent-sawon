@@ -15,8 +15,12 @@ from test_brain import (
 )
 from test_brain import record as record
 
-from brain.graph.engine import GuardStop
+from brain.graph.action_preparation import ActionGuardRequest, validate_action_guard
+from brain.graph.engine import Brain, GuardStop
+from brain.graph.policy import DecisionPolicy, ExecutionFacts
+from brain.graph.schemas import Decision
 from brain.settings import BrainSettings
+from sawon_runtime.storage import RunLog
 
 
 def bad_input(*, kind="query", source="hbl_no", ref="e2"):
@@ -35,24 +39,47 @@ def repairs(brain):
     ]
 
 
-def test_rejected_query_and_editor_targets_recover_in_one_full_workflow(tmp_path, record):
-    steps = success_steps(record)
-    steps.insert(0, bad_input())
-    steps.insert(5, bad_input(kind="editor", ref="e7"))
-    result, brain, relay, model = run_brain(
-        tmp_path,
-        record,
-        steps,
-        settings=BrainSettings(max_input_target_retries=2),
-    )
-    assert result.status == "success", result
-    assert relay.inputs == relay.values
-    assert brain.input_target_retries == 2
-    assert len(repairs(brain)) == 2
-    assert all(item["action_dispatched"] is False for item in repairs(brain))
-    assert len(model.prompts) == 22  # Original workflow plus two measured corrections.
-    assert len([e for e in brain.log.read_all() if e.kind == "model_call"]) == 22
-    assert len(relay.actions) == 17  # Rejected targets never reached the relay.
+def test_rejected_query_and_editor_targets_use_the_same_bounded_rediscovery(tmp_path, record):
+    for phase, kind, ref in (
+        ("duplicate_query", "query", "e2"),
+        ("enter", "editor", "e7"),
+    ):
+        case_dir = tmp_path / phase
+        relay = FakeRelay(record)
+        relay.mode = kind
+        log = RunLog(case_dir, case_id=record.case_id, agent_id="target-recovery-test")
+        brain = Brain(
+            record=record,
+            goal="Enter the synthetic record",
+            relay=relay,
+            model=ScriptedModel(log, []),
+            settings=BrainSettings(max_input_target_retries=2),
+            case_dir=case_dir,
+            run_log=log,
+        )
+        brain.phase = phase
+        brain.duplicate_clear = phase == "enter"
+        brain.observation = relay.observe()
+        brain.decision = Decision.model_validate(bad_input(kind=kind, ref=ref))
+
+        assert brain._retry_input_target_selection("target_not_text_input") == "observation"
+        assert brain.input_target_retries == 1
+        assert brain.phase_failures[phase] == 1
+        assert relay.actions == []
+        assert repairs(brain) == [
+            {
+                "check": "input_target_reselection",
+                "ok": False,
+                "reason": "target_not_text_input",
+                "obs_id": str(brain.observation.obs_id),
+                "ref": ref,
+                "source": "hbl_no",
+                "action_dispatched": False,
+                "retries_used": 0,
+                "max_retries": 2,
+                "retry_available": True,
+            }
+        ]
 
 
 def test_retry_uses_new_observation_refs_and_explicit_non_dispatch_feedback(tmp_path, record):
@@ -179,46 +206,65 @@ def test_retry_honors_cost_cap_before_next_measured_selection(tmp_path, record):
     assert len(model.prompts) == 2 and not relay.actions
 
 
-@pytest.mark.parametrize("scenario", ["query-missing", "query-disabled", "editor-disabled"])
-def test_missing_or_disabled_target_remains_a_hard_stop(tmp_path, record, scenario):
-    class DisabledInput(FakeRelay):
-        def observe(self):
-            observation = super().observe()
-            ref = self.field_refs["consignee"] if scenario == "editor-disabled" else "e1"
-            for item in observation.elements:
-                if item.ref == ref:
-                    item.enabled = False
-            return observation
-
-    steps = success_steps(record)
-    if scenario == "editor-disabled":
-        index = next(
-            i
-            for i, step in enumerate(steps)
-            if (step.get("action") or {}).get("source") == "consignee"
-        )
-        responses, delivered = steps[: index + 1], index - 1
-    else:
-        responses = [bad_input(ref="e999" if scenario == "query-missing" else "e1")]
-        delivered = 0
-    result, brain, relay, model = run_brain(
-        tmp_path, record, responses, relay=DisabledInput(record)
-    )
+def test_missing_target_is_a_hard_stop_without_reselection(tmp_path, record):
+    result, brain, relay, model = run_brain(tmp_path, record, [bad_input(ref="e999")])
     assert result.reason == "target_not_current_or_enabled"
     assert brain.input_target_retries == 0
-    assert len(model.prompts) == len(responses) + 1
-    assert len(relay.actions) == delivered
+    assert len(model.prompts) == 2
+    assert relay.actions == []
     assert not repairs(brain)
     assert not [
         e for e in brain.log.read_all() if e.kind == "verify" and e.payload.get("ok") is False
     ]
-    if scenario == "editor-disabled":
-        assert relay.inputs["consignee"] == ""
-        assert not any(
-            a.root.type in {"set_text", "type_text"}
-            and a.root.target.ref == relay.field_refs["consignee"]
-            for a in relay.actions
+
+
+def test_action_guard_rejects_disabled_query_and_editor_inputs(record):
+    relay = FakeRelay(record)
+    cases = []
+    query = relay.observe()
+    query.elements = [
+        item.model_copy(update={"enabled": False}) if item.ref == "e1" else item
+        for item in query.elements
+    ]
+    cases.append(
+        (
+            query,
+            Decision.model_validate(bad_input(ref="e1")),
+            DecisionPolicy(ExecutionFacts("duplicate_query")),
+            "duplicate_query",
         )
+    )
+    relay.mode = "editor"
+    editor = relay.observe()
+    ref = relay.field_refs["consignee"]
+    editor.elements = [
+        item.model_copy(update={"enabled": False}) if item.ref == ref else item
+        for item in editor.elements
+    ]
+    cases.append(
+        (
+            editor,
+            Decision.model_validate(bad_input(kind="editor", source="consignee", ref=ref)),
+            DecisionPolicy(
+                ExecutionFacts(
+                    "enter",
+                    field_names=("consignee",),
+                    duplicate_clear=True,
+                )
+            ),
+            "enter",
+        )
+    )
+    for observation, proposed, policy, phase in cases:
+        with pytest.raises(GuardStop, match="^target_not_current_or_enabled$"):
+            validate_action_guard(
+                ActionGuardRequest(
+                    observation=observation,
+                    decision=proposed,
+                    policy=policy,
+                    phase=phase,
+                )
+            )
 
 
 def test_dispatch_error_with_same_reason_never_uses_selection_retry(tmp_path, record):
@@ -262,7 +308,8 @@ def test_reselection_honors_existing_step_limit(tmp_path, record):
     assert len(model.prompts) == 2 and not relay.actions
 
 
-@pytest.mark.parametrize("limit", [-1, 4])
-def test_retry_limit_cannot_be_unbounded(limit):
-    with pytest.raises(ValidationError):
-        BrainSettings(max_input_target_retries=limit)
+def test_retry_limit_has_both_lower_and_upper_bounds():
+    for limit in (-1, 4):
+        with pytest.raises(ValidationError) as raised:
+            BrainSettings(max_input_target_retries=limit)
+        assert raised.value.errors(), limit

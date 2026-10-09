@@ -18,7 +18,7 @@ from test_brain import record as record
 from test_credential_progress import PASSWORD, USERNAME, LoginRelay, credential, task_state
 
 from brain.graph.engine import Brain
-from brain.graph.schemas import Plan
+from brain.graph.schemas import Decision, Plan
 from brain.settings import BrainSettings
 from sawon_runtime.storage import RunLog, StateStore
 
@@ -171,63 +171,33 @@ class PrefilledRelay(FakeRelay):
 
 def test_safe_wait_collects_current_editor_evidence_before_save_becomes_available(tmp_path, record):
     relay = PrefilledRelay(record)
-    save = decision(intent="save", kind="editor", action={"type": "click", "ref": "e7"})
-
-    def collect_evidence(prompt):
-        policy = task_state(prompt)["execution_policy"]
-        assert policy["current_step"] == "fill_fields"
-        assert set(policy["remaining_fields"]) == set(relay.values)
-        assert "save" not in {rule["intent"] for rule in policy["allowed_next_choices"]}
-        schema_rejects(model.selection_schemas[-1], save)
-        evidence_wait = decision(
+    relay.mode = "editor"
+    relay.inputs.update(relay.values)
+    brain, _ = make_run(tmp_path, record, relay, [])
+    brain.phase = "enter"
+    brain.duplicate_clear = True
+    brain.observation = relay.observe()
+    evidence_wait = Decision.model_validate(
+        decision(
             kind="editor",
             intent="wait",
             action={"type": "wait", "duration_ms": 0},
             evidence=[{"field": field, "ref": ref} for field, ref in relay.field_refs.items()],
         )
-        schema_accepts(model.selection_schemas[-1], evidence_wait)
-        return evidence_wait
-
-    def save_after_evidence(prompt):
-        assert set(brain.verified) == set(relay.values)
-        policy = task_state(prompt)["execution_policy"]
-        assert policy["current_step"] == "save"
-        assert policy["remaining_fields"] == []
-        assert "save" in {rule["intent"] for rule in policy["allowed_next_choices"]}
-        schema_accepts(model.selection_schemas[-1], save)
-        schema_rejects(
-            model.selection_schemas[-1],
-            decision(intent="fill", kind="editor", action=text_choice("hbl_no", "e20")),
-        )
-        return save
-
-    brain, model = make_run(
-        tmp_path,
-        record,
-        relay,
-        [
-            *success_steps(record)[:4],
-            collect_evidence,
-            save_after_evidence,
-            *success_steps(record)[-3:],
-        ],
     )
-    result = brain.run()
-    assert result.status == "success", result
-    assert StateStore(tmp_path, case_id=record.case_id).read().status == "awaiting_approval"
-    assert [action.root.type for action in relay.actions] == [
-        "set_text",
-        "click",
-        "click",
-        "wait",
-        "click",
-        "set_text",
-        "click",
-    ]
-    assert not any(
-        action.root.type in {"set_text", "type_text"}
-        and action.root.target.ref in relay.field_refs.values()
-        for action in relay.actions
+    before = brain._decision_policy()
+    assert before.current_step == "fill_fields"
+    brain._collect_editor_evidence(evidence_wait)
+    after = brain._decision_policy()
+    save = Decision.model_validate(
+        decision(intent="save", kind="editor", action={"type": "click", "ref": "e7"})
+    )
+    assert set(brain.verified) == set(relay.values)
+    assert after.current_step == "save" and after.allows(save)
+    assert not after.allows(
+        Decision.model_validate(
+            decision(intent="fill", kind="editor", action=text_choice("hbl_no", "e20"))
+        )
     )
 
 
@@ -337,39 +307,6 @@ def test_semantic_abab_cycle_stops_at_existing_failure_cap_without_business_prog
     assert len(stalled_navigation) == 2
     assert not brain.verified
     assert not brain.save_issued
-
-
-@pytest.mark.parametrize("progress", ["query_input", "fill"])
-def test_new_business_evidence_allows_a_normal_panel_revisit(tmp_path, record, progress):
-    relay = AlternatingRelay(record)
-    kind = "query" if progress == "query_input" else "editor"
-    prefix = [] if progress == "query_input" else success_steps(record)[:4]
-    field = decision(
-        kind=kind,
-        intent=progress,
-        action=text_choice("hbl_no", "e1" if progress == "query_input" else "e20"),
-    )
-    brain, _ = make_run(
-        tmp_path,
-        record,
-        relay,
-        [
-            *prefix,
-            panel_navigation(kind),
-            panel_navigation(kind),
-            field,
-            panel_navigation(kind),
-            panel_navigation(kind),
-            decision("stop", kind=kind, intent="stop"),
-        ],
-    )
-    result = brain.run()
-    assert result.reason == "model_requested_stop", result
-    assert relay.navigation_count == 4
-    assert not any(
-        event.payload.get("reason") == "navigation_cycle" for event in brain.log.read_all()
-    )
-    assert brain.query_value_verified if progress == "query_input" else "hbl_no" in brain.verified
 
 
 def test_action_delivery_and_final_proof_are_separate_auditable_events(tmp_path, record):

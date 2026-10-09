@@ -93,16 +93,16 @@ def test_credential_submission_removes_only_submitted_sources_and_then_offers_lo
     )
 
 
-@pytest.mark.parametrize("screen", ["menu", "query", "editor", "partner", "dialog", "unknown"])
-def test_credential_input_is_never_offered_on_other_claimed_screens(screen):
+def test_credential_input_is_never_offered_on_other_claimed_screens():
     policy = DecisionPolicy(
         ExecutionFacts("duplicate_query", available_credential_sources=("credential.password",))
     )
-    assert_contract(
-        policy,
-        action("credential", screen=screen, kind="set_text", source="credential.password"),
-        False,
-    )
+    for screen in ("menu", "query", "editor", "partner", "dialog", "unknown"):
+        assert_contract(
+            policy,
+            action("credential", screen=screen, kind="set_text", source="credential.password"),
+            False,
+        )
 
 
 def test_absent_credentials_do_not_offer_a_login_command_or_credential_input():
@@ -116,22 +116,22 @@ def test_absent_credentials_do_not_offer_a_login_command_or_credential_input():
     assert policy.as_prompt()["credential_action_if_login"] is None
 
 
-@pytest.mark.parametrize("phase", ["duplicate_query", "final_query"])
-def test_query_input_then_search_have_disjoint_preconditions(phase):
-    facts = ExecutionFacts(
-        phase, duplicate_clear=phase == "final_query", save_issued=phase == "final_query"
-    )
-    text = action("query_input", kind="set_text", source="hbl_no")
-    search = action("search")
-    assert_contract(DecisionPolicy(facts), text, True)
-    assert_contract(DecisionPolicy(facts), search, False)
-    verified = replace(facts, query_value_verified=True)
-    assert_contract(DecisionPolicy(verified), text, False)
-    assert_contract(DecisionPolicy(verified), search, True)
-    assert_contract(DecisionPolicy(verified), action("search", kind="key", keys="enter"), True)
-    searched = replace(verified, query_submitted=True)
-    assert_contract(DecisionPolicy(searched), text, False)
-    assert_contract(DecisionPolicy(searched), search, False)
+def test_query_input_then_search_have_disjoint_preconditions():
+    for phase in ("duplicate_query", "final_query"):
+        facts = ExecutionFacts(
+            phase, duplicate_clear=phase == "final_query", save_issued=phase == "final_query"
+        )
+        text = action("query_input", kind="set_text", source="hbl_no")
+        search = action("search")
+        assert_contract(DecisionPolicy(facts), text, True)
+        assert_contract(DecisionPolicy(facts), search, False)
+        verified = replace(facts, query_value_verified=True)
+        assert_contract(DecisionPolicy(verified), text, False)
+        assert_contract(DecisionPolicy(verified), search, True)
+        assert_contract(DecisionPolicy(verified), action("search", kind="key", keys="enter"), True)
+        searched = replace(verified, query_submitted=True)
+        assert_contract(DecisionPolicy(searched), text, False)
+        assert_contract(DecisionPolicy(searched), search, False)
 
 
 def test_duplicate_checkpoint_freezes_ui_until_result_evidence_or_stop():
@@ -190,18 +190,7 @@ def test_partner_selection_and_search_remain_available_during_unfinished_entry()
         )
 
 
-@pytest.mark.parametrize(
-    "missing,value,workflow_ready",
-    [
-        ("phase", "enter", False),
-        ("duplicate_clear", False, False),
-        ("save_issued", False, False),
-        ("query_value_verified", False, False),
-        ("query_submitted", False, False),
-        ("final_evidence_ready", False, True),
-    ],
-)
-def test_final_completion_requires_all_prior_runtime_facts(missing, value, workflow_ready):
+def test_final_completion_requires_all_prior_runtime_facts():
     ready = ExecutionFacts(
         "final_query",
         duplicate_clear=True,
@@ -211,11 +200,19 @@ def test_final_completion_requires_all_prior_runtime_facts(missing, value, workf
         final_evidence_ready=True,
     )
     assert ready.final_query_workflow_ready
-    incomplete = replace(ready, **{missing: value})
-    assert incomplete.final_query_workflow_ready is workflow_ready
-    assert_contract(DecisionPolicy(ready), proof("complete"), True)
-    assert_contract(DecisionPolicy(incomplete), proof("complete"), False)
-    assert_contract(DecisionPolicy(ready), proof("duplicate_clear"), False)
+    for missing, value, workflow_ready in (
+        ("phase", "enter", False),
+        ("duplicate_clear", False, False),
+        ("save_issued", False, False),
+        ("query_value_verified", False, False),
+        ("query_submitted", False, False),
+        ("final_evidence_ready", False, True),
+    ):
+        incomplete = replace(ready, **{missing: value})
+        assert incomplete.final_query_workflow_ready is workflow_ready, missing
+        assert_contract(DecisionPolicy(ready), proof("complete"), True)
+        assert_contract(DecisionPolicy(incomplete), proof("complete"), False)
+        assert_contract(DecisionPolicy(ready), proof("duplicate_clear"), False)
 
 
 def test_final_proof_can_reveal_current_controls_without_repeating_input_or_search():
@@ -253,11 +250,10 @@ def test_save_confirmation_requires_a_prior_save_and_a_dialog_activation():
     assert_contract(issued, action("confirm_save", screen="dialog", kind="double_click"), False)
 
 
-@pytest.mark.parametrize(
-    "payload,facts,valid",
-    [
-        pytest.param(payload, None, None, id=case_id)
-        for case_id, payload in [
+def test_broad_action_types_cannot_bypass_intent_or_source_contract():
+    cases = [
+        (case_id, payload, None, None)
+        for case_id, payload in (
             ("navigate-as-text", action("navigate", kind="set_text", source="hbl_no")),
             ("navigate-as-option", action("navigate", kind="select_option", source="hbl_no")),
             ("navigate-as-key", action("navigate", kind="key", keys="enter")),
@@ -270,16 +266,16 @@ def test_save_confirmation_requires_a_prior_save_and_a_dialog_activation():
             ("wait-as-click", action("wait", kind="click")),
             ("cancel-as-text", action("cancel", kind="set_text", source="hbl_no")),
             ("navigate-on-unknown-screen", action("navigate", screen="unknown")),
-        ]
-    ]
-    + [
-        pytest.param(
+        )
+    ] + [
+        (
+            "wait-as-eligible-search",
             action("search", kind="wait"),
             ExecutionFacts("duplicate_query", query_value_verified=True),
             action("search"),
-            id="wait-as-eligible-search",
         ),
-        pytest.param(
+        (
+            "wait-as-eligible-save",
             action("save", screen="editor", kind="wait"),
             ExecutionFacts(
                 "enter",
@@ -288,15 +284,15 @@ def test_save_confirmation_requires_a_prior_save_and_a_dialog_activation():
                 duplicate_clear=True,
             ),
             action("save", screen="editor"),
-            id="wait-as-eligible-save",
         ),
-        pytest.param(
+        (
+            "wait-as-eligible-confirm-save",
             action("confirm_save", screen="dialog", kind="wait"),
             ExecutionFacts("save_result", duplicate_clear=True, save_issued=True),
             action("confirm_save", screen="dialog"),
-            id="wait-as-eligible-confirm-save",
         ),
-        pytest.param(
+        (
+            "wait-as-eligible-login",
             action("login", screen="login", kind="wait"),
             ExecutionFacts(
                 "duplicate_query",
@@ -304,24 +300,39 @@ def test_save_confirmation_requires_a_prior_save_and_a_dialog_activation():
                 submitted_credentials=("credential.username", "credential.password"),
             ),
             action("login", screen="login"),
-            id="wait-as-eligible-login",
         ),
-    ],
-)
-def test_broad_action_types_cannot_bypass_intent_or_source_contract(payload, facts, valid):
-    if facts is not None:
-        policy = DecisionPolicy(facts)
-        assert_contract(policy, valid, True)
-        assert_contract(policy, payload, False)
-        return
-    for facts in (
-        ExecutionFacts("duplicate_query"),
-        ExecutionFacts("enter", field_names=("hbl_no", "mbl_no"), duplicate_clear=True),
-        ExecutionFacts(
-            "final_query", duplicate_clear=True, save_issued=True, query_value_verified=True
-        ),
-    ):
-        assert_contract(DecisionPolicy(facts), payload, False)
+    ]
+    for case_id, payload, facts, valid in cases:
+        try:
+            if facts is not None:
+                policy = DecisionPolicy(facts)
+                assert_contract(policy, valid, True)
+                assert_contract(policy, payload, False)
+                continue
+            for current in (
+                ExecutionFacts("duplicate_query"),
+                ExecutionFacts("enter", field_names=("hbl_no", "mbl_no"), duplicate_clear=True),
+                ExecutionFacts(
+                    "final_query",
+                    duplicate_clear=True,
+                    save_issued=True,
+                    query_value_verified=True,
+                ),
+            ):
+                assert_contract(DecisionPolicy(current), payload, False)
+        except AssertionError as error:
+            error.add_note("contract case: " + case_id)
+            raise
+
+
+def test_assert_contract_fails_for_a_contradictory_oracle_expectation():
+    policy = DecisionPolicy(ExecutionFacts("duplicate_query"))
+    valid = action("query_input", kind="set_text", source="hbl_no")
+    invalid = action("save", screen="editor")
+    with pytest.raises(AssertionError):
+        assert_contract(policy, valid, False)
+    with pytest.raises(AssertionError):
+        assert_contract(policy, invalid, True)
 
 
 def test_facts_are_canonical_immutable_and_cannot_contain_values_or_secret_names():

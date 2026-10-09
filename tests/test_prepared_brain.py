@@ -10,6 +10,7 @@ from test_pipeline_evaluate import report as checked_report
 import brain.run as runner
 from brain.graph import Brain
 from brain.settings import BrainSettings
+from pipeline.handoff import validate_prepared_case
 from pipeline.schemas import Check
 from sawon_runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 
@@ -111,22 +112,50 @@ def test_prepared_cli_finishes_and_appends_to_existing_log(tmp_path, monkeypatch
     assert json.loads((case_dir / "result.json").read_text())["status"] == "success"
 
 
-@pytest.mark.parametrize("mode", ["engine", "cli"])
-@pytest.mark.parametrize("mutation", ["value", "source", "missing_hash", "blocking", "not_ready"])
-def test_prepared_case_rejects_before_any_environment_or_model_access(
-    tmp_path, monkeypatch, mode, mutation
-):
-    case_dir, record, state, log = prepare(tmp_path, mutation=mutation)
+def test_prepared_validator_rejects_each_invalid_handoff_without_mutation(tmp_path):
+    for mutation in ("value", "source", "missing_hash", "blocking", "not_ready"):
+        case_dir, record, state, log = prepare(tmp_path / mutation, mutation=mutation)
+        before_state, before_log = state.read(), log.path.read_bytes()
+        with pytest.raises(ValueError) as raised:
+            validate_prepared_case(case_dir, record)
+        assert str(raised.value), mutation
+        assert state.read() == before_state
+        assert log.path.read_bytes() == before_log
+        assert not (case_dir / "result.json").exists()
+
+
+def test_prepared_cli_calls_validator_before_environment_or_model_access(tmp_path, monkeypatch):
+    case_dir, record, state, log = prepare(tmp_path)
     before_state, before_log = state.read(), log.path.read_bytes()
-    call, relay, models = execute(mode, case_dir, record, log, monkeypatch)
-    if mode == "engine":
-        with pytest.raises(ValueError):
-            call()
-    else:
-        assert call() == 2
+    validated = []
+
+    def reject_prepared(folder, supplied):
+        validated.append((folder, supplied))
+        raise ValueError("synthetic handoff rejection")
+
+    monkeypatch.setattr(runner, "validate_prepared_case", reject_prepared)
+    call, relay, models = execute("cli", case_dir, record, log, monkeypatch)
+    assert call() == 2
+    assert validated == [(case_dir, record)]
     assert state.read() == before_state
-    assert state.read().status != CaseStatus.ENTERING
-    assert relay.health_calls == 0 and relay.calls == 0 and relay.actions == []
-    assert all(model.prompts == [] for model in models)
+    assert relay.health_calls == relay.calls == 0 and relay.actions == []
+    assert models == []
     assert log.path.read_bytes() == before_log
     assert not (case_dir / "result.json").exists()
+
+
+def test_brain_rechecks_each_independent_prepared_handoff_gate(tmp_path, monkeypatch):
+    # Direct Brain users bypass the CLI validator. Cover its three own branches:
+    # state readiness, saved-record equality and can_enter(report).
+    for mutation in ("not_ready", "value", "blocking"):
+        case_dir, record, state, log = prepare(tmp_path / mutation, mutation=mutation)
+        before_state, before_log = state.read(), log.path.read_bytes()
+        call, relay, models = execute("engine", case_dir, record, log, monkeypatch)
+        with pytest.raises(ValueError) as raised:
+            call()
+        assert str(raised.value), mutation
+        assert state.read() == before_state
+        assert relay.health_calls == relay.calls == 0 and relay.actions == []
+        assert all(model.prompts == [] for model in models)
+        assert log.path.read_bytes() == before_log
+        assert not (case_dir / "result.json").exists()

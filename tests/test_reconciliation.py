@@ -62,6 +62,7 @@ def test_observed_query_value_advances_policy_directly_to_search(tmp_path, recor
     brain._apply_observation_reconciliation(observed)
 
     assert brain.query_value_verified
+    assert brain.business_revision == 1
     assert brain._decision_policy().current_step == "search"
     assert any(
         event.payload.get("check") == "observed_state_reconciled" for event in brain.log.read_all()
@@ -90,6 +91,7 @@ def test_matching_visible_fill_is_removed_before_dispatch(tmp_path, record):
 
     assert not reconciled.actions
     assert "hbl_no" in brain.verified
+    assert brain.business_revision == 1
     assert any(
         event.payload.get("check") == "observed_actions_already_satisfied"
         for event in brain.log.read_all()

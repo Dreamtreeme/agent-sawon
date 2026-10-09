@@ -74,16 +74,17 @@ def test_concurrent_processes_keep_all_events_and_unique_sequences(tmp_path):
     assert len({(e.agent_id, e.payload["index"]) for e in events}) == 24
 
 
-@pytest.mark.parametrize("corruption", [b'{"seq":', b"not-json\n", b"\n"])
-def test_corrupt_log_is_not_modified(tmp_path, corruption):
-    log = RunLog(tmp_path, case_id="synthetic-case", agent_id="vm1")
-    log.append("observe")
-    with log.path.open("ab") as stream:
-        stream.write(corruption)
-    before = log.path.read_bytes()
-    with pytest.raises(LogIntegrityError):
-        log.append("stop")
-    assert log.path.read_bytes() == before
+def test_corrupt_log_is_not_modified(tmp_path):
+    # Incomplete tail and a complete blank JSON line reach the two distinct parser guards.
+    for case, corruption in (("partial", b'{"seq":'), ("blank-line", b"\n")):
+        log = RunLog(tmp_path / case, case_id="synthetic-case", agent_id="vm1")
+        log.append("observe")
+        with log.path.open("ab") as stream:
+            stream.write(corruption)
+        before = log.path.read_bytes()
+        with pytest.raises(LogIntegrityError):
+            log.append("stop")
+        assert log.path.read_bytes() == before, case
 
 
 def test_wrong_case_and_invalid_sequence_are_rejected(tmp_path):

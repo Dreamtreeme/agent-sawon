@@ -155,16 +155,19 @@ def test_authenticated_direct_fill_batch():
         ]
 
 
-@pytest.mark.parametrize("path,status", [("/denied", 403), ("/redirect", 302)])
-def test_http_error_never_exposes_body_or_authentication_token(path, status):
+def test_http_error_never_exposes_body_or_authentication_token():
     with server() as (url, requests):
         relay = HttpRelay(url, "fixture-token")
-        with pytest.raises(RelayError, match=f"^relay_http_{status}$"):
-            relay._request(path)
-        assert requests == [(path, "Bearer fixture-token")]
+        for path, status in (("/denied", 403), ("/redirect", 302)):
+            with pytest.raises(RelayError, match=f"^relay_http_{status}$"):
+                relay._request(path)
+        assert requests == [
+            ("/denied", "Bearer fixture-token"),
+            ("/redirect", "Bearer fixture-token"),
+        ]
 
 
-@pytest.mark.parametrize("token", ["", "invalid\r\nheader"])
-def test_token_required_without_header_injection(token):
-    with pytest.raises(ValueError):
-        HttpRelay("http://localhost:1234", token)
+def test_token_required_without_header_injection():
+    for token in ("", "invalid\r\nheader"):
+        with pytest.raises(ValueError):
+            HttpRelay("http://localhost:1234", token)

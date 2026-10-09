@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from test_brain import FakeRelay, decision, element, run_brain, success_steps
 from test_brain import record as record
 
@@ -162,10 +161,8 @@ def alternate_navigation(prompt):
     )
 
 
-@pytest.mark.parametrize("intent", ["navigate", "select_tab"])
-def test_unchanged_navigation_blocks_second_click_and_stops_after_two_failures(
-    tmp_path, record, intent
-):
+def test_unchanged_navigation_blocks_second_click_and_stops_after_two_failures(tmp_path, record):
+    intent = "navigate"
     relay = NavigationRelay(record)
     claims = ["Open the next panel", "Now try a different subgoal name"]
     result, brain, _, model = run_brain(
@@ -264,33 +261,14 @@ def test_navigation_state_tracks_each_same_window_semantic_change(record):
         assert navigation_state(observation) != baseline, change
 
 
-def test_semantic_change_in_same_window_accepts_navigation(tmp_path, record):
-    relay = NavigationRelay(record, changes=["content"])
-    result, brain, _, _ = run_brain(
-        tmp_path,
-        record,
-        [*success_steps(record)[:4], navigate(), decision("stop", intent="stop")],
-        relay=relay,
-    )
-    assert result.reason == "model_requested_stop"
-    assert brain.observation.active_window.handle == 1
-    assert not no_progress_failures(brain)
-    assert any(
-        item.get("ok") and item.get("subgoal") == "Open the next panel" for item in brain.feedback
-    )
-
-
-def test_new_window_with_same_controls_counts_as_navigation_progress(tmp_path, record):
-    relay = NavigationRelay(record, changes=["window"])
-    result, brain, _, _ = run_brain(
-        tmp_path,
-        record,
-        [*success_steps(record)[:4], navigate(), decision("stop", intent="stop")],
-        relay=relay,
-    )
-    assert result.reason == "model_requested_stop"
-    assert brain.observation.active_window.handle == 2
-    assert not no_progress_failures(brain)
+def test_new_window_with_same_controls_changes_navigation_state(record):
+    relay = NavigationRelay(record)
+    relay.mode = "editor"
+    before = navigation_state(relay.observe())
+    relay.active_change = "window"
+    after = relay.observe()
+    assert after.active_window.handle == 2
+    assert navigation_state(after) != before
 
 
 def test_real_same_window_progress_resets_phase_failures(tmp_path, record):

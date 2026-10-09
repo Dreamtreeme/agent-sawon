@@ -123,102 +123,84 @@ def complete():
     )
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        decision(action={"type": "click", "ref": "e1"}),
-        decision(
-            intent="query_input", action={"type": "set_text", "ref": "e1", "source": "hbl_no"}
+def test_wire_schema_accepts_every_supported_action_and_result_branch():
+    cases = [
+        ("click", decision(action={"type": "click", "ref": "e1"})),
+        (
+            "text",
+            decision(
+                intent="query_input", action={"type": "set_text", "ref": "e1", "source": "hbl_no"}
+            ),
         ),
-        decision(intent="search", action={"type": "key", "ref": "e1", "keys": "enter"}),
-        decision(intent="wait", action={"type": "wait", "duration_ms": 0}),
-        decision(action={"type": "focus_window", "handle": 99}),
-        decision(
-            intent="select_option",
-            action={"type": "select_option", "ref": "e1", "source": "packages.unit"},
+        (
+            "key",
+            decision(intent="search", action={"type": "key", "ref": "e1", "keys": "enter"}),
         ),
-        decision(
-            intent="select_option", action={"type": "select_option", "ref": "e1", "option": "CT"}
+        ("wait", decision(intent="wait", action={"type": "wait", "duration_ms": 0})),
+        ("focus", decision(action={"type": "focus_window", "handle": 99})),
+        (
+            "option-source",
+            decision(
+                intent="select_option",
+                action={"type": "select_option", "ref": "e1", "source": "packages.unit"},
+            ),
         ),
-        decision("stop", "stop"),
-        decision("duplicate_clear", "verify", grid_ref="e2"),
-        complete(),
-    ],
-    ids=[
-        "click",
-        "text",
-        "key",
-        "wait",
-        "focus",
-        "option-source",
-        "option-name",
-        "stop",
-        "duplicate",
-        "complete",
-    ],
-)
-def test_wire_schema_accepts_valid_outputs_and_normalizes_to_internal_decision(payload):
-    envelope = {"decision": payload}
-    assert schema_accepts(envelope, DecisionResponse.model_json_schema())
-    response = DecisionResponse.model_validate_json(json.dumps(envelope))
-    internal = response.to_decision()
-    assert internal.operation == payload["operation"]
-    assert internal.intent == payload["intent"]
-    assert (internal.action is None) == (payload["action"] is None)
-    if internal.action is not None:
-        assert internal.action.type == payload["action"]["type"]
+        (
+            "option-name",
+            decision(
+                intent="select_option",
+                action={"type": "select_option", "ref": "e1", "option": "CT"},
+            ),
+        ),
+        ("stop", decision("stop", "stop")),
+        ("duplicate", decision("duplicate_clear", "verify", grid_ref="e2")),
+        ("complete", complete()),
+    ]
+    schema = DecisionResponse.model_json_schema()
+    for case, payload in cases:
+        envelope = {"decision": payload}
+        assert schema_accepts(envelope, schema), case
+        response = DecisionResponse.model_validate_json(json.dumps(envelope))
+        internal = response.to_decision()
+        assert internal.operation == payload["operation"], case
+        assert internal.intent == payload["intent"], case
+        assert (internal.action is None) == (payload["action"] is None), case
+        if internal.action is not None:
+            assert internal.action.type == payload["action"]["type"], case
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        decision("stop", "verify", evidence=[{"field": "hbl_no", "ref": "e4"}]),
-        decision(intent="verify"),
-        decision(intent="verify", action={"type": "click", "ref": "e1"}),
-        decision(intent="stop", action={"type": "click", "ref": "e1"}),
-        decision(),
-        decision(action={"type": "click"}),
-        decision(action={"type": "click", "ref": None}),
-        decision(action={"type": "click", "ref": "  "}),
-        decision(action={"type": "set_text", "ref": "e1"}),
-        decision(action={"type": "type_text", "ref": "e1", "source": None}),
-        decision(action={"type": "key", "ref": "e1"}),
-        decision(action={"type": "focus_window"}),
-        decision(action={"type": "select_option", "ref": "e1"}),
-        decision(intent="wait", action={"type": "wait", "duration_ms": 3001}),
-        decision("stop", "stop", action={"type": "click", "ref": "e1"}),
-        {**complete(), "action": {"type": "click", "ref": "e1"}},
-        {**complete(), "grid_ref": None},
-        {**complete(), "row_ref": " "},
-        decision("duplicate_clear", "verify"),
-    ],
-    ids=[
-        "observed-stop-verify",
-        "act-verify-null",
-        "act-verify-click",
-        "act-stop-click",
-        "act-null",
-        "missing-ref",
-        "null-ref",
-        "blank-ref",
-        "missing-source",
-        "null-source",
-        "missing-key",
-        "missing-handle",
-        "missing-option",
-        "wait-too-long",
-        "stop-with-action",
-        "complete-with-action",
-        "missing-grid",
-        "blank-row",
-        "duplicate-without-grid",
-    ],
-)
-def test_wire_schema_and_local_validation_both_reject_invalid_contracts(payload):
-    envelope = {"decision": payload}
-    assert not schema_accepts(envelope, DecisionResponse.model_json_schema())
-    with pytest.raises(ValidationError):
-        DecisionResponse.model_validate_json(json.dumps(envelope))
+def test_wire_schema_and_local_validation_reject_each_invalid_contract_shape():
+    cases = [
+        (
+            "observed-stop-verify",
+            decision("stop", "verify", evidence=[{"field": "hbl_no", "ref": "e4"}]),
+        ),
+        ("act-verify-null", decision(intent="verify")),
+        ("act-verify-click", decision(intent="verify", action={"type": "click", "ref": "e1"})),
+        ("act-stop-click", decision(intent="stop", action={"type": "click", "ref": "e1"})),
+        ("act-null", decision()),
+        ("missing-ref", decision(action={"type": "click"})),
+        ("null-ref", decision(action={"type": "click", "ref": None})),
+        ("blank-ref", decision(action={"type": "click", "ref": "  "})),
+        ("missing-source", decision(action={"type": "set_text", "ref": "e1"})),
+        ("null-source", decision(action={"type": "type_text", "ref": "e1", "source": None})),
+        ("missing-key", decision(action={"type": "key", "ref": "e1"})),
+        ("missing-handle", decision(action={"type": "focus_window"})),
+        ("missing-option", decision(action={"type": "select_option", "ref": "e1"})),
+        ("wait-too-long", decision(intent="wait", action={"type": "wait", "duration_ms": 3001})),
+        ("stop-with-action", decision("stop", "stop", action={"type": "click", "ref": "e1"})),
+        ("complete-with-action", {**complete(), "action": {"type": "click", "ref": "e1"}}),
+        ("missing-grid", {**complete(), "grid_ref": None}),
+        ("blank-row", {**complete(), "row_ref": " "}),
+        ("duplicate-without-grid", decision("duplicate_clear", "verify")),
+    ]
+    schema = DecisionResponse.model_json_schema()
+    for case, payload in cases:
+        envelope = {"decision": payload}
+        assert not schema_accepts(envelope, schema), case
+        with pytest.raises(ValidationError) as raised:
+            DecisionResponse.model_validate_json(json.dumps(envelope))
+        assert raised.value.errors(), case
 
 
 def test_provider_schema_does_not_accept_raw_unwrapped_response():
@@ -229,21 +211,21 @@ def test_provider_schema_does_not_accept_raw_unwrapped_response():
         schema.model_validate_json(json.dumps(payload))
 
 
-@pytest.mark.parametrize("operation,intent", [("act", "navigate"), ("stop", "stop")])
-def test_unrelated_operations_do_not_offer_nullable_grid_fields(operation, intent):
-    action = {"type": "click", "ref": "e1"} if operation == "act" else None
-    payload = decision(operation, intent, action)
+def test_unrelated_operations_do_not_offer_nullable_grid_fields():
     response = DecisionPolicy(
         ExecutionFacts("final_query", duplicate_clear=True, save_issued=True)
     ).response_schema()
     schema = response.model_json_schema()
-    internal = response.model_validate({"decision": payload}).to_decision()
-    assert internal.grid_ref is None and internal.row_ref is None
-    for field in ("grid_ref", "row_ref"):
-        incompatible = {"decision": {**payload, field: None}}
-        assert not schema_accepts(incompatible, schema)
-        with pytest.raises(ValidationError):
-            response.model_validate(incompatible)
+    for operation, intent in (("act", "navigate"), ("stop", "stop")):
+        action = {"type": "click", "ref": "e1"} if operation == "act" else None
+        payload = decision(operation, intent, action)
+        internal = response.model_validate({"decision": payload}).to_decision()
+        assert internal.grid_ref is None and internal.row_ref is None
+        for field in ("grid_ref", "row_ref"):
+            incompatible = {"decision": {**payload, field: None}}
+            assert not schema_accepts(incompatible, schema), (operation, field)
+            with pytest.raises(ValidationError):
+                response.model_validate(incompatible)
 
 
 def test_provider_schema_uses_documented_enum_for_single_literal_branches():

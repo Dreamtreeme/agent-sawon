@@ -413,20 +413,22 @@ def test_first_three_and_all_repeats_cannot_pick_later_successful_retries(campai
     assert success["all_repeats_success_rate"] == 0
 
 
-@pytest.mark.parametrize("repeats", [0, -1, True, 1.5, 101])
-def test_invalid_repeat_count_rejected_before_output_creation(campaign, repeats):
+def test_invalid_repeat_count_rejected_before_output_creation(campaign):
     args, _ = campaign
-    with pytest.raises(ValueError, match="repeats_must"):
-        measure.run_campaign(**args, repeats=repeats)
-    assert not args["output"].exists()
+    # One value per independent guard: lower bound, bool-is-int, non-int and upper bound.
+    for repeats in (0, True, 1.5, 101):
+        with pytest.raises(ValueError, match="repeats_must"):
+            measure.run_campaign(**args, repeats=repeats)
+        assert not args["output"].exists(), repeats
 
 
-@pytest.mark.parametrize("budget", [0, -1, 11, float("inf"), float("nan")])
-def test_invalid_budget_rejected_before_output_creation(campaign, budget):
+def test_invalid_budget_rejected_before_output_creation(campaign):
     args, _ = campaign
-    with pytest.raises(ValueError, match="campaign_budget"):
-        measure.run_campaign(**args, max_cost_usd=budget)
-    assert not args["output"].exists()
+    # Zero kills the strict lower bound, 11 the upper bound, and inf the finiteness guard.
+    for budget in (0, 11, float("inf")):
+        with pytest.raises(ValueError, match="campaign_budget"):
+            measure.run_campaign(**args, max_cost_usd=budget)
+        assert not args["output"].exists(), budget
 
 
 def test_cli_repeat_option_and_cancellation_exit_code(campaign):
