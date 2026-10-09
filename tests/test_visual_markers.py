@@ -151,6 +151,53 @@ def test_model_led_semantics_accepts_ocr_input_evidence():
     assert control.bbox == blocks[0].bbox
 
 
+def test_enclosing_detector_input_owns_writing_while_ocr_literal_remains_readable():
+    blocks = [
+        OcrBlock(id=8, text="DEMO-HBL-001", bbox=(30, 20, 100, 20), confidence=1),
+        OcrBlock(id=9, text="House B/L", bbox=(5, 55, 80, 20), confidence=1),
+    ]
+    markers = [
+        Marker(id=1, bbox=(10, 10, 200, 40), source="omniparser", confidence=1),
+        Marker(id=2, bbox=blocks[0].bbox, source="ocr", confidence=1, text_ids=(8,)),
+        Marker(id=3, bbox=blocks[1].bbox, source="ocr", confidence=1, text_ids=(9,)),
+    ]
+    meaning = SemanticDetection.model_validate(
+        {
+            "screen_kind": "query",
+            "controls": [
+                {
+                    "id": 1,
+                    "role": "edit",
+                    "label_ids": [9],
+                    "text_ids": [8],
+                    "confidence": 1,
+                },
+                {
+                    "id": 2,
+                    "role": "edit",
+                    "parent_id": 1,
+                    "label_ids": [9],
+                    "text_ids": [8],
+                    "confidence": 1,
+                },
+            ],
+        }
+    )
+
+    grounded = ground_meanings(meaning, markers, blocks, allow_ocr_inputs=True)
+    scene = bind_scene(wire(), blocks, grounded)
+
+    assert [element.role for element in scene.elements].count("edit") == 1
+    assert (
+        next(element for element in scene.elements if element.role == "edit").bbox
+        == markers[0].bbox
+    )
+    assert any(
+        element.role == "text" and element.value == "DEMO-HBL-001" for element in scene.elements
+    )
+    assert "redundant_ocr_input_omitted:2:1" in scene.uncertainties
+
+
 def test_model_led_semantics_accepts_ocr_text_as_clickable_result_row():
     blocks, _, markers, _ = fixture()
     value = next(marker for marker in markers if marker.source == "ocr")
@@ -333,8 +380,9 @@ def test_settings_resolve_method_promotion_path_relative_to_config(tmp_path):
 def test_ocr_tolerance_removes_tall_glyphs_but_preserves_larger_button():
     block = OcrBlock(id=0, text="Example", confidence=0.99, bbox=(20, 30, 100, 22))
     glyph = Marker(id=0, bbox=(40, 27, 24, 29), source="omniparser", confidence=0.7)
+    padded_label = Marker(id=2, bbox=(20, 25, 100, 32), source="omniparser", confidence=0.6)
     button = Marker(id=1, bbox=(10, 20, 125, 45), source="omniparser", confidence=0.3)
-    markers = build_markers([block], [glyph, button], 300, 200)
+    markers = build_markers([block], [glyph, padded_label, button], 300, 200)
     assert [m.bbox for m in markers if m.source == "omniparser"] == [button.bbox]
     # Weak OCR must not erase a legitimate detector candidate.
     markers = build_markers(

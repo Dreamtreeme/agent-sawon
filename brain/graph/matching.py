@@ -803,6 +803,8 @@ _REPLANNABLE_MATCH_ERRORS = {
     "screen_match_login_batch_incomplete",
     "screen_match_mixed_boundary_actions",
     "screen_match_task_surface_mismatch",
+    "screen_match_taught_final_step_required",
+    "screen_match_taught_step_required",
 }
 
 

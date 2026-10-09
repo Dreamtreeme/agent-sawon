@@ -2348,6 +2348,7 @@ class Brain:
         if not (
             self.phase == "task"
             and self.save_issued
+            and not self.settings.visual_model_only_review
             and decision.intent == "search"
             and identity_field is not None
         ):
@@ -2585,6 +2586,7 @@ class Brain:
             if (
                 self.phase == "task"
                 and self.settings.screen_matching
+                and not self.settings.visual_model_only_review
                 and self.identity_input_key is not None
             ):
                 self.saved_evidence.begin(str(self.observation.obs_id))

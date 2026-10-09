@@ -177,6 +177,39 @@ def test_no_blind_repeated_click_or_repeated_image_request(tmp_path, record, mod
     assert brain.feedback[-1]["reason"] == "navigation_no_progress"
 
 
+def test_merged_tab_refinement_rejects_another_point_in_the_same_region(tmp_path, record):
+    brain, relay, model = setup(
+        tmp_path,
+        record,
+        {"outcome": "retry", "x": 145, "y": 35, "explanation": "Still the right caption"},
+        success=False,
+    )
+    brain._act_node()
+    assert brain.pending is not None
+    brain.pending["delivered_point"] = (180, 35)
+
+    assert brain._verify_node() == "observation"
+    assert len(relay.actions) == 1 and len(model.prompts) == 1
+    assert any(
+        event.payload.get("check") == "refined_click_same_region" for event in brain.log.read_all()
+    )
+
+
+def test_merged_tab_repeat_key_distinguishes_left_and_right_subtargets(tmp_path, record):
+    brain, _, _ = setup(tmp_path, record, {})
+    brain._act_node()
+    assert brain.pending is not None
+    right = dict(brain.pending)
+    right["delivered_point"] = (180, 35)
+    left = dict(brain.pending)
+    left["delivered_point"] = (60, 35)
+    scope = brain.pending["progress_scope"]
+
+    assert not brain.click_refinement.repeated_target(right, scope)
+    assert not brain.click_refinement.repeated_target(left, scope)
+    assert brain.click_refinement.repeated_target(left, scope)
+
+
 def test_refined_point_still_requires_fresh_unchanged_capture(tmp_path, record):
     brain, relay, model = setup(
         tmp_path, record, {"outcome": "retry", "x": 160, "y": 35, "explanation": "Correct caption"}

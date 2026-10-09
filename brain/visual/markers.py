@@ -51,7 +51,11 @@ def is_text_fragment(box: Marker, block: OcrBlock, settings: MergeSettings) -> b
     a, b, c, d = block.bbox
     padding = min(settings.max_text_padding, round(d * settings.text_padding_ratio))
     area = intersection(box.bbox, (a - padding, b - padding, c + 2 * padding, d + 2 * padding))
-    return h <= d * 1.5 and w * h <= c * d * 1.2 and area / (w * h) >= settings.text_overlap
+    # Detector boxes that only pad an OCR glyph vertically are text fragments,
+    # not writable controls. Compare each axis: an area-only limit retained tall
+    # label boxes such as the Korean "수량" marker and let them masquerade as
+    # an adjacent input. Wider button/input extents remain available.
+    return h <= d * 1.5 and w <= c * 1.2 and area / (w * h) >= settings.text_overlap
 
 
 def duplicate_detection(left: Marker, right: Marker, settings: MergeSettings) -> bool:
@@ -181,11 +185,32 @@ def ground_meanings(
     used: set[int] = set()
     controls = []
     uncertainties = list(meanings.uncertainties)
+    redundant_ocr_inputs = {
+        meaning.id: enclosing.id
+        for meaning in meanings.controls
+        if meaning.id in by_id
+        and by_id[meaning.id].source == "ocr"
+        and meaning.role in {"edit", "combobox"}
+        and meaning.text_ids
+        for enclosing in meanings.controls
+        if enclosing.id != meaning.id
+        and enclosing.id in by_id
+        and by_id[enclosing.id].source == "omniparser"
+        and enclosing.role in {"edit", "combobox"}
+        and set(enclosing.text_ids) == set(meaning.text_ids)
+        and set(enclosing.label_ids) == set(meaning.label_ids)
+        and contains(by_id[enclosing.id].bbox, by_id[meaning.id].bbox)
+    }
     for meaning in meanings.controls:
         if meaning.id not in by_id or meaning.id in seen:
             raise ValueError("unknown_or_duplicate_marker_id")
         seen.add(meaning.id)
         marker = by_id[meaning.id]
+        if meaning.id in redundant_ocr_inputs:
+            uncertainties.append(
+                f"redundant_ocr_input_omitted:{meaning.id}:{redundant_ocr_inputs[meaning.id]}"
+            )
+            continue
         if meaning.id in omitted_structures:
             uncertainties.append(f"unsupported_structural_role_omitted:{meaning.id}:{meaning.role}")
             continue

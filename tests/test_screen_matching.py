@@ -1197,6 +1197,53 @@ def test_combined_match_keeps_grounding_and_corrects_only_invalid_action(tmp_pat
     )
 
 
+def test_premature_completion_is_replanned_at_the_same_observation(tmp_path, record):
+    meaning = fixture()[-1]
+    instruction = TaskInstruction.model_validate(
+        {
+            "name": "Taught task",
+            "objective": "Follow the taught route and verify the final screen.",
+            "completion_conditions": ["The final screen contains the supplied value."],
+            "procedure": [
+                {
+                    "id": "open-detail",
+                    "instruction": "Open the matching result.",
+                    "completion": "The detail screen is open.",
+                    "actions": [{"verb": "activate", "target": "matching result"}],
+                },
+                {
+                    "id": "verify-detail",
+                    "instruction": "Verify the detail values.",
+                    "completion": "All supplied values match.",
+                    "actions": [{"verb": "verify", "target": "detail values"}],
+                },
+            ],
+        }
+    )
+    premature = response(
+        meaning,
+        operation="complete",
+        steps=[],
+        taught_step_id="open-detail",
+        completion_evidence=[{"condition_index": 0, "target": meaning.controls[0].id}],
+    )
+    corrected = response(meaning, taught_step_id="open-detail")
+    brain, model, _, ocr, detector, _ = setup_brain(
+        tmp_path,
+        record,
+        [premature, corrected],
+        task_instruction=instruction,
+    )
+
+    brain._observe()
+
+    assert brain._select_node() == "review"
+    assert len(model.prompts) == 2
+    assert '"error": "screen_match_taught_final_step_required"' in model.prompts[1]
+    assert ocr.calls == detector.calls == 1
+    assert brain.action_plan.actions[0].decision.action.source == "hbl_no"
+
+
 def test_mixed_partner_work_is_corrected_to_current_selection_batch(tmp_path, record):
     meaning = fixture()[-1]
     mixed = response(

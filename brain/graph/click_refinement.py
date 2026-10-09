@@ -80,8 +80,35 @@ class ClickRefinementResult:
 class ClickRefinement:
     def __init__(self) -> None:
         self.attempted: set[str] = set()
-        self.target_attempts: set[tuple[str, str, str]] = set()
+        self.target_attempts: set[tuple[str, str, str, str]] = set()
         self.bound: BoundClick | None = None
+
+    @staticmethod
+    def _merged_target_region(pending: PendingAction) -> str:
+        """Distinguish subtargets inside one wide/tall OCR marker."""
+
+        point = pending.get("delivered_point")
+        choice = pending["choice"]
+        if point is None:
+            return ""
+        target = next(
+            (item for item in pending["before_observation"].elements if item.ref == choice.ref),
+            None,
+        )
+        if target is None or target.role.casefold() != "tabitem":
+            return ""
+        left, top, width, height = target.bbox
+        if width >= height * 2:
+            ratio = (point[0] - left) / width
+            return (
+                "x:center" if 0.45 <= ratio <= 0.55 else f"x:{'left' if ratio < 0.5 else 'right'}"
+            )
+        if height >= width * 2:
+            ratio = (point[1] - top) / height
+            return (
+                "y:center" if 0.45 <= ratio <= 0.55 else f"y:{'top' if ratio < 0.5 else 'bottom'}"
+            )
+        return ""
 
     def repeated_target(self, pending: PendingAction, current_scope: str) -> bool:
         """Detect the same semantic point target without relying on screen type."""
@@ -102,6 +129,7 @@ class ClickRefinement:
             current_scope,
             pending.get("source_navigation_state", ""),
             semantic_target_key(target),
+            self._merged_target_region(pending),
         )
         repeated = key in self.target_attempts
         self.target_attempts.add(key)
@@ -260,6 +288,22 @@ class ClickRefinement:
                 },
             )
             return ClickRefinementResult(False, decision, feedback)
+        prior_region = self._merged_target_region(pending)
+        if prior_region:
+            candidate = dict(pending)
+            candidate["delivered_point"] = (x, y)
+            refined_region = self._merged_target_region(candidate)
+            if refined_region == prior_region:
+                services.log.append(
+                    "verify",
+                    payload={
+                        "check": "refined_click_same_region",
+                        "obs_id": str(scene.obs_id),
+                        "ref": target.ref,
+                        "region": prior_region,
+                    },
+                )
+                return ClickRefinementResult(False, decision, feedback)
         self.bound = BoundClick(str(scene.obs_id), target.ref, decision.intent, (x, y))
         corrected = decision.model_copy(
             update={

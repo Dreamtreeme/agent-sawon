@@ -574,3 +574,39 @@ def test_generic_visual_task_starts_saved_evidence_after_save_review(tmp_path, r
     assert brain.phase == "task"
     assert brain.saved_evidence.session_id is not None
     assert brain.saved_evidence.origin_obs_id == str(brain.observation.obs_id)
+
+
+def test_model_only_task_keeps_post_save_review_with_the_screen_model(tmp_path, record):
+    task_instruction = TaskInstruction(
+        name="Register shipment",
+        objective="Save and requery the supplied shipment.",
+        identity_input_key="hbl_no",
+        completion_conditions=["The saved shipment values match after requery."],
+    )
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    brain.phase = "save_result"
+    message = element("saved", "text", name="Saved")
+    brain.observation = scene("dialog", [message])
+    review = SaveReviewResponse.model_validate(
+        {
+            "result": "ready_for_query",
+            "evidence_refs": [message.ref],
+            "repair_fields": [],
+            "next_decision": {
+                "decision": {
+                    "screen_kind": "dialog",
+                    "operation": "stop",
+                    "intent": "stop",
+                    "subgoal": "Review saved record",
+                    "reason": "Plan from the fresh query screen",
+                    "action": None,
+                }
+            },
+        }
+    )
+
+    assert brain._apply_save_review(review) is None
+    assert brain.phase == "task"
+    assert brain.saved_evidence.session_id is None
+    assert brain._current_review().reason == "task_completion_requires_current_model_evidence"
