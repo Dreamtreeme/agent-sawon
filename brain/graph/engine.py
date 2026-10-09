@@ -27,8 +27,6 @@ from brain.observe.evidence import (
     observed_input_surface,
 )
 from brain.observe.progress import navigation_state, navigation_target, semantic_target_key
-from brain.observe.rows import row_refs
-from brain.observe.summary import ancestors
 from brain.observe.values import field_matches as field_matches
 from brain.observe.values import values_for as values_for
 from brain.relay import Relay
@@ -45,6 +43,13 @@ from models.validation import safe_validation_errors
 from sawon_runtime.visual import OcrEngine, RenderedPage
 
 from .click_refinement import ClickRefinementRequest, ClickRefinementServices
+from .completion import (
+    CompletionRetry,
+    element_value,
+    evaluate_final_query_completion,
+    evaluate_task_completion,
+    subtree,
+)
 from .context import DUPLICATE_EVIDENCE_GUIDANCE, ExecutionContextRequest, execution_context
 from .execution import (
     ActionPlan,
@@ -109,19 +114,6 @@ class Result(BaseModel):
     reason: str
     steps: int
     elapsed_ms: float
-
-
-def element_value(element: UIElement) -> str:
-    return element.value if element.value is not None else element.name
-
-
-def subtree(observation: Observation, ref: str) -> list[UIElement]:
-    return [
-        element
-        for element in observation.elements
-        if element.ref == ref
-        or ref in {item.ref for item in ancestors(element, observation.elements)}
-    ]
 
 
 TEXT_INPUT_ROLES = frozenset({"edit", "combobox", "dataitem", "cell"})
@@ -2780,53 +2772,22 @@ class Brain:
     def _check_complete(self, decision: Decision) -> WorkerNode:
         assert self.observation is not None
         if self.phase == "task":
-            by_ref = {item.ref: item for item in self.observation.elements}
-            evidence = {item.field: item.ref for item in decision.evidence}
-            if len(evidence) != len(decision.evidence):
-                return self._fail("incomplete_task_field_evidence")
-            if len(set(evidence.values())) != len(evidence):
-                raise GuardStop("task_field_ref_reused")
-            model_only_review = self.settings.visual_model_only_review
-            for field, ref in evidence.items():
-                element = by_ref.get(ref)
-                actual = element.value if element is not None else None
-                if element is None or (
-                    not model_only_review and not field_matches(field, actual, self.values)
-                ):
-                    return self._fail("task_field_mismatch:" + field)
-                if not model_only_review:
-                    self._record_verified_field(field, element)
-            conditions = self.task_instruction.completion_conditions
-            condition_evidence: dict[int, list[str]] = {}
-            for item in decision.completion_evidence:
-                if item.condition_index >= len(conditions):
-                    raise GuardStop("task_completion_condition_unknown")
-                element = by_ref.get(item.ref)
-                if element is None or not any(
-                    value and str(value).strip()
-                    for value in (
-                        element.name,
-                        element.value,
-                        getattr(element, "help_text", None),
-                    )
-                ):
-                    raise GuardStop("task_completion_evidence_missing")
-                condition_evidence.setdefault(item.condition_index, []).append(item.ref)
-            if not condition_evidence:
-                return self._fail("task_completion_evidence_required")
-            self.log.append(
-                "verify",
-                payload={
-                    "ok": True,
-                    "check": "task_completion_fields",
-                    "reviewer": "screen_model" if model_only_review else "runtime_value_check",
-                    "fields": evidence,
-                    "conditions": {
-                        conditions[index]: refs for index, refs in condition_evidence.items()
-                    },
-                    "obs_id": str(self.observation.obs_id),
-                },
-            )
+            assert self.task_instruction is not None
+            try:
+                result = evaluate_task_completion(
+                    self.observation,
+                    decision,
+                    self.values,
+                    self.task_instruction.completion_conditions,
+                    model_only_review=self.settings.visual_model_only_review,
+                )
+            except CompletionRetry as error:
+                return self._fail(str(error))
+            if not self.settings.visual_model_only_review:
+                for field, element in result.fields:
+                    if not self._record_verified_field(field, element):
+                        return self._fail("record_input_scope_mismatch")
+            self.log.append("verify", payload=result.payload)
             return self._finish("success", "task_completed_with_verified_evidence")
         if not self._workflow_facts().final_query_workflow_ready:
             raise GuardStop("completion_without_required_workflow")
@@ -2837,57 +2798,17 @@ class Brain:
         identity_field = self.identity_input_key
         if identity_field is None:
             raise GuardStop("identity_input_not_configured")
-        grid = self._grid(decision)
-        by_ref = {item.ref: item for item in grid}
-        row = by_ref.get(decision.row_ref)
-        rows = row_refs(self.observation.elements, grid_ref=decision.grid_ref)
-        if row is None or row.ref not in rows:
-            raise GuardStop("missing_final_row_evidence")
-        # Count rows, not individual cells: a combined accessible name and its
-        # child value may both contain the identifier in the same displayed row.
-        matching_rows: set[str] = set()
-        for item in grid:
-            if not field_matches(identity_field, element_value(item), self.values):
-                continue
-            chain = [*ancestors(item, self.observation.elements), item]
-            below_grid = False
-            for parent in chain:
-                if parent.ref == decision.grid_ref:
-                    below_grid = True
-                elif below_grid and parent.ref in rows:
-                    matching_rows.add(parent.ref)
-                    break
-        if not matching_rows:
-            return self._fail("final_evidence_needs_more")
-        if matching_rows != {row.ref}:
-            raise GuardStop("final_query_not_one_matching_row")
-        row_elements = {item.ref: item for item in subtree(self.observation, row.ref)}
-        evidence = {item.field: item.ref for item in decision.evidence}
-        if set(evidence) != set(self.values) or len(evidence) != len(decision.evidence):
-            return self._fail("incomplete_final_field_evidence")
-        fields_by_ref: dict[str, set[str]] = {}
-        for field, ref in evidence.items():
-            fields_by_ref.setdefault(ref, set()).add(field)
-        if any(
-            len(fields) > 1 and fields != {"packages.count", "packages.unit"}
-            for fields in fields_by_ref.values()
-        ):
-            raise GuardStop("final_field_ref_reused")
-        for field, ref in evidence.items():
-            element = row_elements.get(ref)
-            if element is None or not field_matches(field, element_value(element), self.values):
-                return self._fail("final_field_mismatch:" + field)
-        self.log.append(
-            "verify",
-            payload={
-                "ok": True,
-                "check": "final_query_fields",
-                "fields": evidence,
-                "grid_ref": decision.grid_ref,
-                "row_ref": decision.row_ref,
-                "obs_id": str(self.observation.obs_id),
-            },
-        )
+        try:
+            payload = evaluate_final_query_completion(
+                self.observation,
+                decision,
+                self.values,
+                identity_field,
+                self._grid(decision),
+            )
+        except CompletionRetry as error:
+            return self._fail(str(error))
+        self.log.append("verify", payload=payload)
         return self._finish("success", "saved_and_verified_awaiting_approval")
 
     def _adopt_worker_state(self, state: WorkerState) -> None:
