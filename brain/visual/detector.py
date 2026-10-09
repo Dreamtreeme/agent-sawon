@@ -11,7 +11,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from models.base import EventSink, MeasuredModelClient, ProviderReply, TokenUsage
-from pipeline.persistent_worker import PersistentWorker
+from sawon_runtime.persistent_worker import PersistentWorker
 from sawon_runtime.visual import RenderedPage
 
 from .markers import Marker

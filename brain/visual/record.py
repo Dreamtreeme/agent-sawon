@@ -10,7 +10,6 @@ from decimal import Decimal
 from pathlib import Path
 
 from brain.relay import HttpRelay
-from brain.runtime.storage import RunLog, atomic_write_json
 from brain.settings import BrainSettings
 from brain.visual.detector import OmniParserDetector
 from brain.visual.perception import SemanticRequest, VisualPerception
@@ -20,6 +19,7 @@ from models.budget import ImageCallBudget
 from models.factory import create_model_client
 from pipeline.ocr import PaddleOcrEngine
 from pipeline.schemas import PipelineSettings
+from sawon_runtime.storage import RunLog, atomic_write_json
 
 
 def record_scenes(source, perception, output: Path, *, samples: int) -> int:

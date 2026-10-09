@@ -15,7 +15,7 @@ from uuid import uuid4
 from sawon_interfaces import Action, ActionBatch, ActionResult, Observation
 
 from brain.relay import Relay
-from brain.runtime.storage import RunLog
+from sawon_runtime.storage import RunLog
 
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision, FieldName

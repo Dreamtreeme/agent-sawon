@@ -30,7 +30,6 @@ from brain.observe.progress import navigation_state, navigation_target, semantic
 from brain.observe.values import field_matches as field_matches
 from brain.observe.values import values_for as values_for
 from brain.relay import Relay
-from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from brain.visual.detector import OmniParserDetector
@@ -40,6 +39,7 @@ from models.accounting import read_model_accounting
 from models.base import ModelClient
 from models.budget import CallBudget, ImageCallBudget
 from models.validation import safe_validation_errors
+from sawon_runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from sawon_runtime.visual import OcrEngine, RenderedPage
 
 from .action_preparation import (

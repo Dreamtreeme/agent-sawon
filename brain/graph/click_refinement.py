@@ -14,9 +14,9 @@ from brain.observe.evidence import matching_elements
 from brain.observe.progress import navigation_target, semantic_target_key
 from brain.observe.summary import describe
 from brain.relay import Relay
-from brain.runtime.storage import RunLog, atomic_write_json
 from brain.visual.markers import Marker, render_markers
 from brain.visual.scene import SceneObservation
+from sawon_runtime.storage import RunLog, atomic_write_json
 from sawon_runtime.visual import RenderedPage
 
 from .execution import GuardStop, PendingAction

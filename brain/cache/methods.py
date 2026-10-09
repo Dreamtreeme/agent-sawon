@@ -14,9 +14,9 @@ import portalocker
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from brain.observe.values import field_matches, normalize
-from brain.runtime.storage import atomic_write_json
 from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import ControlMeaning, contains
+from sawon_runtime.storage import atomic_write_json
 
 
 class MethodSlot(BaseModel):

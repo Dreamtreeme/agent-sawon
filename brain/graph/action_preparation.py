@@ -10,8 +10,8 @@ from uuid import uuid4
 from sawon_interfaces import Action, Observation
 
 from brain.relay import Relay
-from brain.runtime.storage import RunLog
 from brain.visual.scene import SceneObservation
+from sawon_runtime.storage import RunLog
 
 from .execution import GuardStop
 from .policy import DecisionPolicy

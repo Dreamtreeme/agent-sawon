@@ -11,9 +11,9 @@ from pathlib import Path
 from pydantic import Field
 from sawon_interfaces import ShipmentRecord
 
-from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from models.accounting import read_model_accounting
 from models.base import MeasuredModelClient
+from sawon_runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 
 from .checks import can_enter, cross_validate
 from .extract import Reservation, extract_page, extraction_prompt

@@ -19,12 +19,12 @@ from brain.input_binding import (
     resolve_input_key,
 )
 from brain.observe.evidence import input_surface
-from brain.runtime.storage import RunLog, atomic_write_json
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInstruction
 from brain.visual.marker_contract import local_response, model_controls, model_screen
 from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import SemanticDetection, contains, overlap
+from sawon_runtime.storage import RunLog, atomic_write_json
 
 from .execution import GuardStop, PendingAction
 from .method_runtime import MethodRuntime

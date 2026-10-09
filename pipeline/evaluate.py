@@ -120,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
         record, checks, json.loads(args.truth.read_text(encoding="utf-8")), extracted=extracted
     )
     if args.output:
-        from brain.runtime.storage import atomic_write_json
+        from sawon_runtime.storage import atomic_write_json
 
         atomic_write_json(args.output, metrics)
     print(json.dumps(metrics, ensure_ascii=False))

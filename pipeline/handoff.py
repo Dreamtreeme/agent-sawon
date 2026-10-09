@@ -4,7 +4,7 @@ from pathlib import Path
 
 from sawon_interfaces import ShipmentRecord
 
-from brain.runtime.storage import CaseState, CaseStatus, RunLog
+from sawon_runtime.storage import CaseState, CaseStatus, RunLog
 
 
 def validate_prepared_case(case_dir: Path, record: ShipmentRecord) -> None:

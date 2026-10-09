@@ -13,11 +13,11 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from brain.cache.methods import LearnedMethod, MethodLibrary, MethodSlot, method_from_match
-from brain.runtime.storage import RunLog, atomic_write_json
 from models.accounting import read_model_accounting
 from models.base import ModelClient
 from models.budget import CallBudget
 from models.factory import create_model_client
+from sawon_runtime.storage import RunLog, atomic_write_json
 
 
 class MethodMeaning(BaseModel):

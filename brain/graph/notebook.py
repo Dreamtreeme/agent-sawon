@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from brain.runtime.storage import atomic_write_json
+from sawon_runtime.storage import atomic_write_json
 
 if TYPE_CHECKING:
     from .engine import Brain

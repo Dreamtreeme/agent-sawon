@@ -31,6 +31,7 @@ class ExecutionContextRequest:
     saved_record_review: dict[str, Any] | None = None
     saved_identity_field: str | None = None
 
+
 FINAL_QUERY_INPUT_GUIDANCE = (
     "CURRENT STEP: Fresh query input is required. Saving ended record entry. "
     "Do not fill record fields or save again. If a save confirmation is visible, "
@@ -219,9 +220,7 @@ def execution_context(request: ExecutionContextRequest) -> dict:
             if d
         ],
         "conditional": proposal is not actual,
-        "final_required_fields": (
-            sorted(request.values) if request.phase == "final_query" else []
-        ),
+        "final_required_fields": (sorted(request.values) if request.phase == "final_query" else []),
     }
     if actual.facts.remaining_credentials:
         contract["allowed_action_batches"] = [

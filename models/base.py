@@ -60,7 +60,7 @@ class ModelClient(Protocol):
 
 
 class EventSink(Protocol):
-    """Implemented by brain.runtime.storage.RunLog; kept structurally typed."""
+    """Implemented by sawon_runtime.storage.RunLog; kept structurally typed."""
 
     def append(
         self,

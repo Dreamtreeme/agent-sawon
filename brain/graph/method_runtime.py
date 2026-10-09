@@ -18,8 +18,8 @@ from brain.cache.methods import (
     method_completion_from_match,
     method_from_match,
 )
-from brain.runtime.storage import RunLog, atomic_write_json
 from brain.task_instruction import TaskInstruction
+from sawon_runtime.storage import RunLog, atomic_write_json
 
 if TYPE_CHECKING:
     from .matching import ScreenMatch
