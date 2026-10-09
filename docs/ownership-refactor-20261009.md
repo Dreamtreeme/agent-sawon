@@ -60,7 +60,7 @@
 
 - Ruff lint 통과, format 170파일 통과
 - 전체 677개 테스트 통과
-- branch coverage 포함 실행 105.12초
+- branch coverage 포함 실행 105.28초
 - 종합 coverage 87.6093% (기준 기록 87.253% 대비 +0.3563%p)
 - statement coverage 90.2239%, branch coverage 79.6654%
 
