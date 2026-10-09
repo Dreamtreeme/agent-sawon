@@ -32,7 +32,7 @@ class WorkerBroker(ThreadingHTTPServer):
 class WorkerBrokerHandler(BaseHTTPRequestHandler):
     server: WorkerBroker
 
-    def log_message(self, format, *args):
+    def log_message(self, _format, *_args):
         return
 
     def _authorized(self) -> bool:

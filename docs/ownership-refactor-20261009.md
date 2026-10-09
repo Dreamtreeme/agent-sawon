@@ -103,5 +103,21 @@ OmniParser 의미 정확도 개선, 마일스톤 종료도 이 결과로 주장�
   남은 `pipeline.persistent_worker`, `pipeline.worker_process` 재수출을 삭제했다.
 - 직전 core `e59957b` 대비 프로덕션은 94파일/17,610줄에서 90파일/17,520줄로 줄었다.
   전체677개 테스트가 67.12초에 통과했고 Ruff lint/format도 통과했다. branch 계측은
-  종합89.0493%, statement91.8477%, branch80.6099%로 이전 기록보다 모두 높다. 실제 ERP와
-  유료 모델은 다시 실행하지 않았다.
+  당시 누적 coverage data에서 종합89.0493%로 보고했지만, 아래 `coverage erase` 재측정으로
+  대체한다. 실제 ERP와 유료 모델은 다시 실행하지 않았다.
+
+## 잔여 중복 2차 감사
+
+- production 90개 Python 파일을 고신뢰도 미사용 심볼과 함수 본문 중복 기준으로 다시
+  검사했다. 미사용 심볼은 0건이었고, 동일 구현은 navigation key와 visual rebinding에서
+  각각 정의한 공백 제거·casefold 정규화 한 쌍만 확인됐다.
+- 두 구현을 `brain.observe.values.compact_normalize`로 합쳐 화면 의미 키의 정규화 규칙을
+  한 곳에서 소유하게 했다. HTTP worker의 로그 억제 override도 실제로 사용하지 않는 인자임을
+  이름에 표시했다.
+- 남은 `model_copy()`는 불변 설정·응답·학습 메서드 갱신이고, `RunLog`의 비용 객체 복사는
+  append 뒤 호출자가 원본을 바꿔 로그 이벤트가 변하는 것을 막는다. 이들을 상태 스냅샷
+  중복으로 분류하지 않았다.
+- 프로덕션은 90파일/17,522줄이다. `coverage erase` 뒤 전체 677개 테스트가 80.32초에
+  통과했고 Ruff lint/format도 통과했다. 전체 production 종합 coverage는 87.6118%,
+  statement 90.2367%, branch 79.6503%다. 이 clean run이 앞서 누적 data에서 계산한
+  89.0493%를 대체한다. 시간은 단일 실행값이며 성능 개선 근거로 사용하지 않는다.

@@ -9,6 +9,7 @@ from pathlib import Path
 from PIL import Image
 from sawon_interfaces import UIElement
 
+from brain.observe.values import compact_normalize
 from sawon_runtime.visual import OcrBlock
 
 from .markers import Marker
@@ -51,10 +52,6 @@ def hash_distance(left: int, right: int) -> int:
     return (left ^ right).bit_count()
 
 
-def _normalized(value: str | None) -> str:
-    return "".join((value or "").split()).casefold()
-
-
 def _center(box: tuple[int, int, int, int]) -> tuple[float, float]:
     return box[0] + box[2] / 2, box[1] + box[3] / 2
 
@@ -65,13 +62,13 @@ def _old_label(scene: SceneObservation, target: UIElement, anchors: set[str]) ->
         for item in scene.elements
         if item.ref != target.ref
         and item.role.casefold() in {"text", "label", "cell", "header", "headeritem"}
-        and _normalized(item.name) in anchors
+        and compact_normalize(item.name) in anchors
     ]
     return matches[0] if len(matches) == 1 else None
 
 
 def _matching_text(blocks: list[OcrBlock], anchors: set[str]) -> list[OcrBlock]:
-    exact = [block for block in blocks if _normalized(block.text) in anchors]
+    exact = [block for block in blocks if compact_normalize(block.text) in anchors]
     if exact:
         return exact
     return [
@@ -79,7 +76,7 @@ def _matching_text(blocks: list[OcrBlock], anchors: set[str]) -> list[OcrBlock]:
         for block in blocks
         if any(
             len(anchor) >= 2
-            and (anchor in _normalized(block.text) or _normalized(block.text) in anchor)
+            and (anchor in compact_normalize(block.text) or compact_normalize(block.text) in anchor)
             for anchor in anchors
         )
     ]
@@ -114,7 +111,10 @@ def rebind_action_target(
     distance = hash_distance(perceptual_hash(old_capture), perceptual_hash(fresh_capture))
     if distance > max_phash_distance:
         raise ValueError("visual_scene_family_changed")
-    anchors = {_normalized(target.name), _normalized(target.label_hint)} - {"", "[redacted]"}
+    anchors = {
+        compact_normalize(target.name),
+        compact_normalize(target.label_hint),
+    } - {"", "[redacted]"}
     if not anchors:
         raise ValueError("visual_target_has_no_local_anchor")
     text_matches = _matching_text(blocks, anchors)

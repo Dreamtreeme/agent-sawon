@@ -18,6 +18,11 @@ def normalize(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).split()).upper()
 
 
+def compact_normalize(value: str | None) -> str:
+    """Normalize labels used as compact semantic keys."""
+    return "".join((value or "").split()).casefold()
+
+
 def values_for(record: RecordInput) -> dict[str, str]:
     if isinstance(record, TaskInputRecord):
         return dict(record.inputs)
