@@ -163,6 +163,17 @@ actual evidence, records `_record_model_evidence` calls, and asserts the field e
 state. If invalidation occurs, the callback fires; if neither callback nor recording occurs, the
 new call/verified assertions fail. The forced-invalidation mutation demonstrated the first path.
 
+### CI failure-label probe
+
+Consolidated loops use `labeled_case`, which retains the original exception and adds
+`consolidated-case=<label>` to its traceback. A one-time probe branch deliberately failed six
+representative loop members: `navigate-as-wait`, `blank-ref`, `winerror=32`, `blocking`, `inf`, and
+`/redirect:302`. GitHub Actions run `38001600048` printed every label in both Ubuntu and Windows
+pytest logs. The probe branch and its injected failures were deleted afterward.
+
+The permanent implementation then passed GitHub Actions run `38001588557`: Ubuntu unit, Windows
+unit, and Ubuntu `pytest-xdist -n 4` jobs all completed successfully.
+
 ## 5. Quantitative result
 
 | Item | Original | Final | Result |
