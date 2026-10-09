@@ -41,7 +41,7 @@ def setup(
                 self.current.screen_hash = "b" * 40
             return self.current
 
-        def screenshot(self, obs, path):
+        def screenshot(self, _obs, path):
             Image.new("RGB", (400, 200), "white").save(path)
 
         def act(self, action):

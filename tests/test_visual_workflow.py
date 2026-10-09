@@ -16,6 +16,8 @@ from test_brain import FakeRelay, ScriptedModel, success_steps
 from test_brain import record as record
 
 from brain.graph.engine import Brain
+from brain.graph.schemas import Choice, Decision
+from brain.graph.transitions import ObservedEffect
 from brain.settings import BrainSettings
 from brain.visual.scene import SceneObservation
 from sawon_runtime.storage import RunLog
@@ -132,9 +134,7 @@ def test_relay_diagnostic_redacts_untrusted_error_text(tmp_path, record):
     assert "PRIVATE" not in (tmp_path / "run_log.jsonl").read_text()
 
 
-@pytest.mark.parametrize(
-    "after_blur", ["correct", "wrong_value", "still_focused", "disabled", "relay_failure"]
-)
+@pytest.mark.parametrize("after_blur", ["correct", "relay_failure"])
 def test_caret_recheck_uses_fresh_evidence_without_cleaning_values(tmp_path, record, after_blur):
     class CaretRelay(VisualFixture):
         focused_ref = None
@@ -178,9 +178,7 @@ def test_caret_recheck_uses_fresh_evidence_without_cleaning_values(tmp_path, rec
         goal="Save for approval",
         relay=relay,
         model=ScriptedModel(log, success_steps(record)),
-        settings=BrainSettings(
-            perception_mode="visual_only", visual_input_blur_recheck=after_blur != "disabled"
-        ),
+        settings=BrainSettings(perception_mode="visual_only", visual_input_blur_recheck=True),
         case_dir=tmp_path,
         run_log=log,
         visual_ocr=object(),
@@ -188,7 +186,7 @@ def test_caret_recheck_uses_fresh_evidence_without_cleaning_values(tmp_path, rec
     brain.visual_perception = CaretPerception(relay)
     result = brain.run()
     keys = [action for action in relay.actions if action.root.type == "key"]
-    assert len(keys) == (0 if after_blur == "disabled" else 1)
+    assert len(keys) == 1
     if after_blur == "correct":
         assert result.status == "success", result
         assert relay.saved
@@ -201,3 +199,83 @@ def test_caret_recheck_uses_fresh_evidence_without_cleaning_values(tmp_path, rec
             item["reason"] == "relay_action_failed" for item in brain.feedback if not item["ok"]
         )
         assert not relay.blurred
+
+
+def test_caret_recheck_failure_rules_are_local_and_independent(tmp_path, monkeypatch, record):
+    """The three deterministic rejection branches do not need a full 18-action replay."""
+    choice = Choice(type="set_text", ref="e20", source="hbl_no")
+    decision = Decision.model_validate(
+        {
+            "screen_kind": "editor",
+            "operation": "act",
+            "intent": "fill",
+            "subgoal": "Fill the identifier",
+            "reason": "The visible field matches the requested input",
+            "action": choice,
+        }
+    )
+    expected = record.fields.hbl_no.value
+    cases = (
+        ("disabled", False, True, expected + "|", False, "input_value_mismatch"),
+        ("wrong_value", True, False, expected + "|", True, "input_value_mismatch"),
+        ("still_focused", True, True, expected + "|", True, "input_focus_not_moved"),
+    )
+    for name, enabled, after_focused, after_value, should_blur, failure in cases:
+        relay = VisualFixture(record)
+        relay.mode = "editor"
+        wire = relay.observe()
+        base = next(item for item in relay.items if item.ref == "e20")
+        root = next(item for item in relay.items if item.ref == "e0")
+        initial = base.model_copy(update={"focused": True, "value": expected + "|"})
+        scene = SceneObservation(wire=wire, elements=[root, initial])
+        after = SceneObservation(
+            wire=wire,
+            elements=[
+                root,
+                base.model_copy(update={"focused": after_focused, "value": after_value}),
+            ],
+        )
+        case_dir = tmp_path / name
+        log = RunLog(case_dir, case_id=record.case_id, agent_id="visual-test")
+        brain = Brain(
+            record=record,
+            goal="Save for approval",
+            relay=relay,
+            model=ScriptedModel(log, []),
+            settings=BrainSettings(
+                perception_mode="visual_only", visual_input_blur_recheck=enabled
+            ),
+            case_dir=case_dir,
+            run_log=log,
+            visual_ocr=object(),
+        )
+        brain.phase = "task"
+        brain.decision = decision
+        blurred = []
+        failures = []
+        monkeypatch.setattr(
+            "brain.graph.engine.delivered_input_element",
+            lambda _pending, observation, _choice, _surfaces: next(
+                item for item in observation.elements if item.ref == "e20"
+            ),
+        )
+        monkeypatch.setattr(
+            brain,
+            "_blur_visual_input",
+            lambda *_, _blurred=blurred, _name=name: _blurred.append(_name),
+        )
+        monkeypatch.setattr(brain, "_observe", lambda _after=after: _after)
+        monkeypatch.setattr(
+            brain,
+            "_fail",
+            lambda reason, _failures=failures: _failures.append(reason) or "observation",
+        )
+
+        outcome, returned, _effect = brain._verify_text_input(
+            {"descriptor": {}}, scene, choice, decision, [], ObservedEffect.NO_CHANGE
+        )
+
+        assert bool(blurred) is should_blur, name
+        assert failures == [failure], name
+        assert outcome == "observation", name
+        assert returned is (after if should_blur else scene), name

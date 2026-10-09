@@ -18,6 +18,7 @@ from brain.visual.markers import (
 from brain.visual.perception import VisualPerception
 from brain.visual.refinement import refinement_regions
 from brain.visual.scene import SemanticDetection, bind_scene
+from models.base import TokenUsage
 from pipeline.schemas import OcrBlock, RenderedPage
 from sawon_runtime.storage import RunLog
 
@@ -231,6 +232,7 @@ def test_missing_weights_fail_without_paid_fallback(tmp_path):
     Image.new("RGB", (400, 200)).save(page.image_path)
     log = RunLog(tmp_path, case_id="detector", agent_id="test")
     detector = OmniParserDetector(DetectorSettings(weights=tmp_path / "missing.pt"), log)
+    assert detector._cost(TokenUsage(input_tokens=0, response_tokens=0)) == 0
     with pytest.raises(ValueError, match="weights_missing"):
         detector.read(page)
     calls = [e for e in log.read_all() if e.kind == "model_call"]

@@ -10,10 +10,13 @@ import psutil
 import pytest
 from PIL import Image
 
+from brain.visual.detector import DetectorSettings, OmniParserDetector
 from brain.visual.detector_worker import DetectorSession
+from brain.visual.perception import VisualPerception
 from pipeline.ocr_worker import OcrSession
 from pipeline.worker_broker import WorkerBroker
 from sawon_runtime.persistent_worker import PersistentWorker, WorkerError
+from sawon_runtime.storage import RunLog
 
 
 @pytest.fixture
@@ -341,12 +344,24 @@ def test_gpu_ocr_registers_isolated_cuda_libraries_once(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("interrupt", [False, True])
-def test_brain_closes_local_workers_on_completion_and_interruption(monkeypatch, interrupt):
+def test_brain_closes_local_workers_on_completion_and_interruption(
+    tmp_path, monkeypatch, interrupt
+):
     from brain.graph.engine import Brain
 
     closed = []
     brain = object.__new__(Brain)
-    brain.visual_perception = SimpleNamespace(close=lambda: closed.append(True))
+    log = RunLog(tmp_path, case_id="worker-cleanup", agent_id="test")
+    detector = OmniParserDetector(DetectorSettings(), log)
+    detector._worker = SimpleNamespace(close=lambda: closed.append("detector"))
+    brain.visual_perception = VisualPerception(
+        relay=None,
+        ocr=SimpleNamespace(close=lambda: closed.append("ocr")),
+        case_dir=tmp_path,
+        log=log,
+        detect=lambda _request: None,
+        detector=detector,
+    )
 
     def run():
         if interrupt:
@@ -359,4 +374,4 @@ def test_brain_closes_local_workers_on_completion_and_interruption(monkeypatch, 
             brain.run()
     else:
         assert brain.run() == "completed"
-    assert closed == [True]
+    assert closed == ["ocr", "detector"]

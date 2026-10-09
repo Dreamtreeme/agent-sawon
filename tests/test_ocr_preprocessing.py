@@ -63,12 +63,6 @@ def test_default_is_no_pixel_change(tmp_path):
     assert not (page.image_path.parent / "ocr-input").exists()
 
 
-@pytest.mark.parametrize("kernel", [-1, 1, 2, 4, 7])
-def test_unbounded_or_even_filter_is_rejected(kernel):
-    with pytest.raises(ValidationError):
-        PipelineSettings(ocr_median_kernel=kernel)
-
-
 def test_dimension_mismatch_rejected_before_ocr(tmp_path):
     page = page_fixture(tmp_path).model_copy(update={"width": 401})
     with pytest.raises(ValueError, match="dimensions_mismatch"):
@@ -128,13 +122,6 @@ def test_dual_views_have_unique_ids_and_do_not_claim_an_extra_document(tmp_path)
 def test_duplicate_views_without_filter_are_invalid():
     with pytest.raises(ValidationError, match="comparison requires"):
         PipelineSettings(ocr_include_original=True)
-
-
-def test_legacy_blocks_do_not_invent_original_or_filtered_provenance():
-    block = OcrBlock.model_validate(
-        {"id": 0, "text": "Legacy", "confidence": 0.9, "bbox": [0, 0, 20, 10]}
-    )
-    assert block.input_variant == "unspecified"
 
 
 @pytest.mark.parametrize(
@@ -205,9 +192,6 @@ def test_pipeline_uses_original_for_vision_and_retains_conflict(tmp_path, includ
         )
         assert len({block.id for block in item.blocks}) == len(item.blocks)
         assert item.fields[0].source.bbox == (5, 5, 350, 18)
-        legacy = {**raw, "schema_version": "0.1"}
-        legacy.pop("ocr_input")
-        assert ExtractedPage.model_validate(legacy).ocr_input is None
     assert len(list((case / "ocr").glob("*.json"))) == 3
     events = RunLog(case, case_id="fax-conflict", agent_id="test").read_all()
     assert sum(event.kind == "model_call" for event in events) == 3

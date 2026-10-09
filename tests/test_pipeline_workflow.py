@@ -92,13 +92,13 @@ def fake_preparation(record, *, ready=True, crash=False):
     return prepare
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def no_provider(monkeypatch):
     monkeypatch.setattr(workflow.ImageCallBudget, "from_config", lambda path: lambda *a: Decimal(0))
 
 
 def test_only_extracted_record_is_given_to_brain_and_log_costs_continue(
-    tmp_path, record, monkeypatch, no_provider
+    tmp_path, record, monkeypatch
 ):
     argv = arguments(tmp_path)
     monkeypatch.setattr(workflow, "prepare_case", fake_preparation(record))
@@ -155,7 +155,7 @@ def test_only_extracted_record_is_given_to_brain_and_log_costs_continue(
 
 
 def test_rejected_extraction_never_invokes_brain_and_writes_harness_terminal_result(
-    tmp_path, record, monkeypatch, no_provider
+    tmp_path, record, monkeypatch
 ):
     argv = arguments(tmp_path)
     monkeypatch.setattr(workflow, "prepare_case", fake_preparation(record, ready=False))
@@ -171,7 +171,7 @@ def test_rejected_extraction_never_invokes_brain_and_writes_harness_terminal_res
 
 
 def test_preparation_exception_keeps_charged_evidence_and_retry_preserves_entire_case(
-    tmp_path, record, monkeypatch, no_provider, capsys
+    tmp_path, record, monkeypatch, capsys
 ):
     argv = arguments(tmp_path)
     monkeypatch.setattr(workflow, "prepare_case", fake_preparation(record, crash=True))
@@ -189,10 +189,12 @@ def test_preparation_exception_keeps_charged_evidence_and_retry_preserves_entire
     assert "SECRET-PROVIDER-BODY" not in capsys.readouterr().out
 
 
-def test_invalid_manifest_fails_before_extraction_or_erp(tmp_path, monkeypatch, no_provider):
+def test_invalid_manifest_fails_before_extraction_or_erp(tmp_path, monkeypatch):
     argv = arguments(tmp_path)
     (tmp_path / "inputs/manifest.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(workflow, "prepare_case", lambda *a, **kw: pytest.fail("No extraction"))
+    monkeypatch.setattr(
+        workflow, "prepare_case", lambda *args, **kwargs: pytest.fail("No extraction")
+    )
     monkeypatch.setattr(workflow, "run_brain", lambda args: pytest.fail("No ERP"))
     assert workflow.main(argv) == 2
     assert (
