@@ -7,12 +7,12 @@ import pytest
 from PIL import Image, ImageDraw
 from sawon_interfaces import CaptureGeometry, Observation, Screenshot, UIElement, WindowInfo
 
-from brain.runtime.storage import RunLog
 from brain.visual.action_rebind import hash_distance, perceptual_hash, rebind_action_target
 from brain.visual.markers import Marker
 from brain.visual.perception import VisualPerception
 from brain.visual.scene import SceneObservation
 from pipeline.schemas import OcrBlock
+from sawon_runtime.storage import RunLog
 
 
 def wire(width=400, height=200):

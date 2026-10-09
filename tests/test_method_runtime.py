@@ -13,13 +13,13 @@ from test_visual_scene import wire
 from brain.cache.methods import MethodDocument, MethodLibrary, method_from_match
 from brain.graph.engine import Brain
 from brain.graph.matching import MethodBinding, ScreenMatch
-from brain.runtime.storage import RunLog, atomic_write_json
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from brain.visual.marker_contract import model_controls
 from brain.visual.markers import Marker, build_markers
 from brain.visual.scene import ControlMeaning
 from pipeline.schemas import OcrBlock
+from sawon_runtime.storage import RunLog, atomic_write_json
 
 
 def catalog(label="Customer", shift=0):
@@ -199,12 +199,6 @@ def test_learned_method_uses_current_scene_and_executor_without_model(
     )
     brain._observe()
     first_id = brain.observation.obs_id
-    from brain.graph.state import copy_worker_state
-
-    snapshot = copy_worker_state(brain._worker_state)
-    brain._adopt_worker_state(snapshot)
-    snapshot["methods"].pending = None
-    assert brain.methods.state.pending is not None
     assert any(event.payload.get("check") == "screen_mapping" for event in brain.log.read_all())
     if observe_again:
         brain._observe()

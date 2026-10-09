@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from brain.runtime import storage
+from sawon_runtime import storage
 
 
 def _windows_error(code: int) -> OSError:

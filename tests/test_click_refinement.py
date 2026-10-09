@@ -11,12 +11,12 @@ from test_visual_scene import wire
 
 from brain.graph.engine import Brain
 from brain.graph.schemas import Choice, Decision
-from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
 from brain.visual.markers import Marker, ground_meanings
 from brain.visual.perception import VisualGroundingError
 from brain.visual.scene import SemanticDetection, bind_scene
 from pipeline.schemas import OcrBlock
+from sawon_runtime.storage import RunLog
 
 
 def setup(

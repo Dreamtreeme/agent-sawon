@@ -7,7 +7,6 @@ from PIL import Image
 from pydantic import ValidationError
 from test_visual_scene import wire
 
-from brain.runtime.storage import RunLog
 from brain.visual.detector import DetectorSettings, OmniParserDetector
 from brain.visual.detector_worker import original_box, restore_region_box
 from brain.visual.markers import (
@@ -20,6 +19,7 @@ from brain.visual.perception import VisualPerception
 from brain.visual.refinement import refinement_regions
 from brain.visual.scene import SemanticDetection, bind_scene
 from pipeline.schemas import OcrBlock, RenderedPage
+from sawon_runtime.storage import RunLog
 
 
 def fixture():

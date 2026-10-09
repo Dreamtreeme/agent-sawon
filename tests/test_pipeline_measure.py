@@ -10,11 +10,11 @@ from typing import Any
 import pytest
 from sawon_interfaces import ShipmentRecord
 
-from brain.runtime.storage import RunLog, atomic_write_json
 from models.base import MeasuredModelClient, ProviderReply, TokenUsage
 from pipeline import measure
 from pipeline.runner import PipelineResult
 from pipeline.schemas import Check, CheckReport, ExtractionBundle, PageExtraction
+from sawon_runtime.storage import RunLog, atomic_write_json
 
 
 class FakeMeasuredClient(MeasuredModelClient):

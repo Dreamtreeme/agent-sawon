@@ -10,12 +10,12 @@ from PIL import Image, ImageDraw
 from pydantic import ValidationError
 from test_pipeline import FakeMeasuredVision, FakeOcr
 
-from brain.runtime.storage import RunLog
 from pipeline.checks import equivalent
 from pipeline.normalize import normalize_value
 from pipeline.ocr_input import prepare_ocr_input, read_ocr_views
 from pipeline.runner import prepare_case
 from pipeline.schemas import DocumentInput, ExtractedPage, OcrBlock, PipelineSettings, RenderedPage
+from sawon_runtime.storage import RunLog
 
 
 def page_fixture(tmp_path):

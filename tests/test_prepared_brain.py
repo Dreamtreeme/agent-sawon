@@ -9,9 +9,9 @@ from test_pipeline_evaluate import report as checked_report
 
 import brain.run as runner
 from brain.graph import Brain
-from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from brain.settings import BrainSettings
 from pipeline.schemas import Check
+from sawon_runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 
 
 class TrackedRelay(FakeRelay):

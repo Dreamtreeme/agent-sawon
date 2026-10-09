@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 from sawon_interfaces import EventCost
 
-from brain.runtime import (
+from sawon_runtime.storage import (
     InvalidTransitionError,
     LogIntegrityError,
     RunLog,
@@ -168,7 +168,7 @@ def test_cached_append_revalidates_changed_file(tmp_path, change):
 
 
 def test_failed_fsync_revalidates_committed_bytes_before_retry(tmp_path, monkeypatch):
-    from brain.runtime import storage
+    from sawon_runtime import storage
 
     log = RunLog(tmp_path, case_id="synthetic-case", agent_id="vm1")
     log.append("observe")

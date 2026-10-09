@@ -54,7 +54,8 @@ notebook/모델 문맥은 이 상태에서 파생하며, 클라이언트·파일
 입력값 검증, 완료 근거 검증, editor 저장 증거 projection과 릴레이 행동 준비를 명시적인
 요청·서비스·결과 계약으로 분리했습니다. OCR/렌더링 계약, 로컬 지속 워커와 append-only
 저장소는 `brain`/`pipeline` 어느 쪽에도 속하지 않는 `sawon_runtime`이 소유합니다.
-이전 import 경로는 호환 재수출만 유지합니다.
+내부 사용자를 공용 경로로 이전한 뒤 사용되지 않던 `brain.runtime`,
+`pipeline.persistent_worker`, `pipeline.worker_process` 호환 재수출은 제거했습니다.
 
 기준 `7be7710` 대비 100줄 이상 함수는 20→17, 근사 복잡도40 이상은 7→4,
 `Brain`은 2,778줄/75메서드→2,635줄/75메서드, `SavedEvidence`는
@@ -62,6 +63,15 @@ notebook/모델 문맥은 이 상태에서 파생하며, 클라이언트·파일
 총 코드 축소로 해석하지 않습니다. 전체677개 통과, 종합 coverage87.6093%, branch79.6654%,
 Ruff lint/format 통과입니다. 실제 ERP·유료 모델은 실행하지 않았습니다.
 [상세 결과](docs/ownership-refactor-20261009.md)를 따릅니다.
+
+작업자 그래프는 한 실행에서 분기하지 않는 단일 `WorkerState`를 네 책임 노드가 순차로
+인계합니다. 입력 채택·출력 반환·최초 invoke마다 수행하던 전체 `deepcopy`를 제거하고 같은
+상태를 반환하도록 바꿨습니다. 복사 격리만 검증하던 테스트도 삭제했습니다. 선택 분기의
+일회성 `SelectionMode`, 사용하지 않는 요청·함수 인자, `MatchResult`와 prompt context의
+중복 필드 및 같은 매핑의 무효 재구성을 제거했습니다. 후속 결과는 프로덕션 Python
+94파일/17,610줄에서 90파일/17,520줄, `Brain` 2,631줄/73메서드, 전체677개 통과입니다.
+branch 계측 coverage는 종합89.0493%, statement91.8477%, branch80.6099%로 이전 기록보다
+하락하지 않았습니다.
 
 #### 2026-10-08 화면 작업자 구형 Procedure 진입 경로 제거
 

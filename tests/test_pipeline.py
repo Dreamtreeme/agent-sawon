@@ -10,12 +10,12 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from brain.runtime.storage import CaseStatus, RunLog, StateStore
 from models.base import MeasuredModelClient, ProviderReply, TokenUsage
 from pipeline.checks import can_enter
 from pipeline.normalize import container_is_valid, normalize_value
 from pipeline.runner import load_inputs, prepare_case
 from pipeline.schemas import DocumentInput, OcrBlock, PipelineSettings
+from sawon_runtime.storage import CaseStatus, RunLog, StateStore
 
 VALUES = {
     "hbl_no": ("TEST2600001", None),

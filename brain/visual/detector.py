@@ -97,11 +97,11 @@ class OmniParserDetector(MeasuredModelClient):
             images=[page.image_path],
         ).response.markers
 
-    def _cost(self, usage: TokenUsage) -> Decimal:
+    def _cost(self, _usage: TokenUsage) -> Decimal:
         return Decimal(0)
 
     def _generate(
-        self, prompt: str, schema: type[BaseModel], *, images: list[Path] | None
+        self, prompt: str, _schema: type[BaseModel], *, images: list[Path] | None
     ) -> ProviderReply:
         if not images or len(images) != 1:
             raise ValueError("detector_requires_one_image")

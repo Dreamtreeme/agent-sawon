@@ -8,7 +8,7 @@ USD 비용 추정치, 지연 시간을 반환한다. `GeminiClient`, `OpenAIClie
 ```python
 from pathlib import Path
 from pydantic import BaseModel
-from brain.runtime.storage import RunLog
+from sawon_runtime.storage import RunLog
 from models import create_model_client
 
 

@@ -16,9 +16,9 @@ from test_brain import FakeRelay, ScriptedModel, success_steps
 from test_brain import record as record
 
 from brain.graph.engine import Brain
-from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
 from brain.visual.scene import SceneObservation
+from sawon_runtime.storage import RunLog
 
 
 class VisualFixture(FakeRelay):

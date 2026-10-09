@@ -207,7 +207,6 @@ class SavedEvidence:
         values: dict[str, str],
         matches: Matcher,
         bindings: dict[str, str],
-        by_ref: dict,
     ) -> bool:
         projection = project_editor_evidence(
             EditorProjectionRequest(
@@ -517,7 +516,7 @@ class SavedEvidence:
                 selected_row_ref,
             )
         elif observation.screen_kind == "editor" and self.query_row_seen:
-            current_link = self._observe_editor(observation, values, matches, bindings, by_ref)
+            current_link = self._observe_editor(observation, values, matches, bindings)
         else:
             self.detail_window = None
             self.detail_identity = None

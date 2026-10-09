@@ -52,7 +52,6 @@ def needs_blur_recheck(
 
 @dataclass(frozen=True)
 class InputValueRequest:
-    observation: Observation
     element: UIElement
     choice: Choice
     decision: Decision

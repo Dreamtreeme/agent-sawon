@@ -95,12 +95,11 @@ from .selection import (
     SelectionRequest,
     SelectionServices,
     select_candidate,
-    selection_mode,
+    selection_schema,
 )
 from .state import (
     WorkerNode,
     WorkerState,
-    copy_worker_state,
     create_worker_state,
     progress_property,
     state_property,
@@ -413,13 +412,13 @@ class Brain:
                 methods=self.methods,
             ),
         )
-        self.procedure_step = result.procedure_step
+        self.procedure_step = result.response.procedure_step
         self.visual_match_candidate = result.visual_match_candidate
         return result.response
 
     def _detect_visual(self, request: SemanticRequest) -> SemanticDetection:
         if self.settings.screen_matching and self.settings.separate_observation_decision:
-            screen = dict(request.screen)
+            screen = request.screen
             response = self.methods.apply(screen) if request.correction is None else None
             if response is not None:
                 response = self._match_visual(screen, request.page, proposal=response)
@@ -1411,11 +1410,10 @@ class Brain:
                 policy=policy,
                 prompt=prompt,
             )
-            mode = selection_mode(request)
-            schema = mode.schema
+            schema = selection_schema(request)
             selected = select_candidate(
                 request,
-                mode,
+                schema,
                 SelectionServices(
                     selection_call=self._selection_call,
                     choose_decision=self._choose_decision,
@@ -2303,7 +2301,6 @@ class Brain:
                 return self._fail("input_focus_not_moved"), observation, observed_effect
         result = evaluate_input_value(
             InputValueRequest(
-                observation=observation,
                 element=element,
                 choice=choice,
                 decision=decision,
@@ -2673,37 +2670,35 @@ class Brain:
         self.log.append("verify", payload=payload)
         return self._finish("success", "saved_and_verified_awaiting_approval")
 
-    def _adopt_worker_state(self, state: WorkerState) -> None:
-        self._worker_state = copy_worker_state(state)
-
-    def _complete_responsibility(self, route: WorkerNode) -> WorkerState:
-        self._worker_state["lifecycle"]["route"] = route
-        return copy_worker_state(self._worker_state)
-
     def observation_node(self, state: WorkerState) -> WorkerState:
         """Capture a screen or observe and verify a delivered action's effect."""
 
-        self._adopt_worker_state(state)
-        outcome = self._verify_node() if self.pending is not None else self._observe_node()
-        return self._complete_responsibility(outcome)
+        self._worker_state = state
+        state["lifecycle"]["route"] = (
+            self._verify_node() if self.pending is not None else self._observe_node()
+        )
+        return state
 
     def decision_node(self, state: WorkerState) -> WorkerState:
         """Select one policy-valid decision from the current observation."""
 
-        self._adopt_worker_state(state)
-        return self._complete_responsibility(self._select_node())
+        self._worker_state = state
+        state["lifecycle"]["route"] = self._select_node()
+        return state
 
     def execution_node(self, state: WorkerState) -> WorkerState:
         """Dispatch the selected action plan without deciding its success."""
 
-        self._adopt_worker_state(state)
-        return self._complete_responsibility(self._act_node())
+        self._worker_state = state
+        state["lifecycle"]["route"] = self._act_node()
+        return state
 
     def review_node(self, state: WorkerState) -> WorkerState:
         """Classify current evidence and accept only deterministic completion proof."""
 
-        self._adopt_worker_state(state)
-        return self._complete_responsibility(self._review_node())
+        self._worker_state = state
+        state["lifecycle"]["route"] = self._review_node()
+        return state
 
     def run(self) -> Result:
         try:
@@ -2745,7 +2740,7 @@ class Brain:
             if planned != "finish":
                 self._worker_state["lifecycle"]["route"] = "observation"
                 build_worker_graph(self).invoke(
-                    copy_worker_state(self._worker_state),
+                    self._worker_state,
                     {
                         "recursion_limit": self.settings.max_steps * 8 + 20,
                     },

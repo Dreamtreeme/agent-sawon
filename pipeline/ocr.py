@@ -6,11 +6,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from sawon_runtime.persistent_worker import PersistentWorker, WorkerError
 from sawon_runtime.visual import OcrEngine
 
 from .ocr_validation import validate_ocr_blocks, validate_ocr_limits
 from .ocr_worker import create_engine, recognize
-from .persistent_worker import PersistentWorker, WorkerError
 from .render import PipelineDependencyError
 from .schemas import OcrBlock, PipelineSettings, RenderedPage
 

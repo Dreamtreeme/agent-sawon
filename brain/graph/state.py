@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, TypedDict
 from uuid import UUID
@@ -163,15 +162,6 @@ def create_worker_state(
     }
 
 
-def copy_worker_state(state: WorkerState) -> WorkerState:
-    """Detach nested mutable plans, pending executions and observations at handoff.
-
-    deepcopy preserves aliases and cycles within this snapshot while separating
-    it from the caller. WorkerState must contain data, never runtime services.
-    """
-    return deepcopy(state)
-
-
 __all__ = [
     "DecisionState",
     "ExecutionState",
@@ -180,6 +170,5 @@ __all__ = [
     "ReviewState",
     "WorkerNode",
     "WorkerState",
-    "copy_worker_state",
     "create_worker_state",
 ]

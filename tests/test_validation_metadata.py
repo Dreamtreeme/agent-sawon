@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 from pydantic_core import PydanticCustomError
 
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
-from brain.runtime.storage import RunLog
 from models.base import MeasuredModelClient, ProviderReply, TokenUsage, request_fingerprint
 from models.validation import safe_validation_errors
+from sawon_runtime.storage import RunLog
 
 
 class Item(BaseModel):

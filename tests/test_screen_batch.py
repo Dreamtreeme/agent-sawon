@@ -10,9 +10,9 @@ from test_brain import record as record
 from test_visual_workflow import SyntheticPerception, VisualFixture
 
 from brain.graph.engine import Brain
-from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
 from brain.visual.action_rebind import ActionTargetBinding
+from sawon_runtime.storage import RunLog
 
 
 class ChangingPixelsRelay(VisualFixture):

@@ -34,11 +34,11 @@ from brain.graph.matching import (
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
 from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
-from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInstruction
 from brain.visual.perception import DETECTION_RULES
 from brain.visual.scene import SceneObservation, SemanticDetection
+from sawon_runtime.storage import RunLog
 
 
 @pytest.fixture

@@ -9,8 +9,8 @@ from test_brain import FakeRelay, ScriptedModel, decision, element, text_choice
 from test_brain import record as record
 
 from brain.graph.engine import Brain
-from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
+from sawon_runtime.storage import RunLog
 
 USERNAME = "synthetic-account"
 PASSWORD = "fixture-password-never-observed-481"

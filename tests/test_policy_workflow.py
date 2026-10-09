@@ -19,8 +19,8 @@ from test_credential_progress import PASSWORD, USERNAME, LoginRelay, credential,
 
 from brain.graph.engine import Brain
 from brain.graph.schemas import Plan
-from brain.runtime.storage import RunLog, StateStore
 from brain.settings import BrainSettings
+from sawon_runtime.storage import RunLog, StateStore
 
 
 class PolicyModel(ScriptedModel):

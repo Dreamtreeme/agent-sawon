@@ -27,7 +27,7 @@ class Relay(Protocol):
 
 
 class _NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+    def redirect_request(self, _req, _fp, _code, _msg, _headers, _newurl):
         # A redirect must not forward the bearer credential to another service.
         return None
 

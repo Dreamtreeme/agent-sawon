@@ -14,9 +14,9 @@ from brain.graph.schemas import DecisionResponse
 from brain.input_binding import normalize_action_source, resolve_input_key
 from brain.observe import describe
 from brain.observe.values import values_for
-from brain.runtime.storage import RunLog
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
+from sawon_runtime.storage import RunLog
 
 
 def test_shipment_task_declares_duplicate_identity_input():

@@ -12,8 +12,8 @@ from PIL import Image
 
 from brain.visual.detector_worker import DetectorSession
 from pipeline.ocr_worker import OcrSession
-from pipeline.persistent_worker import PersistentWorker, WorkerError
 from pipeline.worker_broker import WorkerBroker
+from sawon_runtime.persistent_worker import PersistentWorker, WorkerError
 
 
 @pytest.fixture

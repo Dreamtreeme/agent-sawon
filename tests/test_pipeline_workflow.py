@@ -10,8 +10,8 @@ from sawon_interfaces import EventCost, ShipmentRecord
 from test_brain import record as record
 
 from brain.graph import Result
-from brain.runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 from pipeline import workflow
+from sawon_runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 
 
 def arguments(tmp_path):

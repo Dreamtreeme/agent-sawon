@@ -10,7 +10,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .persistent_worker import PersistentWorker
+from sawon_runtime.persistent_worker import PersistentWorker
 
 MAX_REQUEST_BYTES = 1_000_000
 

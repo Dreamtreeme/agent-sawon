@@ -10,12 +10,12 @@ from openai import BadRequestError
 from pydantic import BaseModel, ValidationError
 
 from brain.graph.matching import ScreenMatch
-from brain.runtime.storage import RunLog
 from models.base import TokenUsage, UsageUnavailableError
 from models.budget import CallBudget
 from models.factory import create_model_client
 from models.openai_client import OpenAIClient
 from models.pricing import PriceBook, PricingError
+from sawon_runtime.storage import RunLog
 
 
 class Answer(BaseModel):

@@ -13,9 +13,9 @@ from brain.demo_learning.methods import (
     method_from_draft,
     read_method_trace,
 )
-from brain.runtime.storage import RunLog, atomic_write_json
 from models.base import request_fingerprint
 from models.replay import ReplayClient, ReplayEntry
+from sawon_runtime.storage import RunLog, atomic_write_json
 
 
 def source_trace():

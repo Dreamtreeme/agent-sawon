@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
 
 from pydantic import BaseModel
 from sawon_interfaces import Observation
@@ -37,12 +36,6 @@ class SelectionRequest:
 
 
 @dataclass(frozen=True)
-class SelectionMode:
-    kind: Literal["save_review", "login_batch", "screen_fill", "decision"]
-    schema: type[BaseModel]
-
-
-@dataclass(frozen=True)
 class SelectionServices:
     selection_call: Callable[[str, type[BaseModel]], BaseModel]
     choose_decision: Callable[[str, type[BaseModel]], Decision]
@@ -55,9 +48,10 @@ class SelectionResult:
     save_review: SaveReviewResponse | None = None
 
 
-def selection_mode(request: SelectionRequest) -> SelectionMode:
+def selection_schema(request: SelectionRequest) -> type[BaseModel]:
     if request.phase == "save_result":
-        return SelectionMode("save_review", SaveReviewResponse)
+        return SaveReviewResponse
+
     scene = request.observation
     login_batch = bool(
         request.visual_screen_fill
@@ -68,7 +62,8 @@ def selection_mode(request: SelectionRequest) -> SelectionMode:
         and request.policy.facts.remaining_credentials
     )
     if login_batch:
-        return SelectionMode("login_batch", LoginScreenPlan)
+        return LoginScreenPlan
+
     screen_fill = bool(
         request.visual_screen_fill
         and isinstance(scene, SceneObservation)
@@ -78,29 +73,27 @@ def selection_mode(request: SelectionRequest) -> SelectionMode:
         and (request.phase == "task" or request.duplicate_clear)
         and request.policy.facts.remaining_fields
     )
-    if screen_fill:
-        return SelectionMode("screen_fill", ScreenFillPlan)
-    return SelectionMode("decision", request.policy.response_schema())
+    return ScreenFillPlan if screen_fill else request.policy.response_schema()
 
 
 def select_candidate(
     request: SelectionRequest,
-    mode: SelectionMode,
+    schema: type[BaseModel],
     services: SelectionServices,
 ) -> SelectionResult:
-    if mode.kind == "save_review":
-        review = services.selection_call(request.prompt, mode.schema)
+    if schema is SaveReviewResponse:
+        review = services.selection_call(request.prompt, schema)
         return SelectionResult(save_review=review)
-    if mode.kind == "login_batch":
-        plan = services.selection_call(request.prompt + LOGIN_GUIDANCE, mode.schema)
+    if schema is LoginScreenPlan:
+        plan = services.selection_call(request.prompt + LOGIN_GUIDANCE, schema)
         if plan.fields:
             return SelectionResult(
                 action_plan=prepare_login_plan(request.observation, plan, request.policy)
             )
         return SelectionResult(decision=plan.next_decision.to_decision())
-    if mode.kind == "screen_fill":
-        plan = services.selection_call(request.prompt + SCREEN_FILL_GUIDANCE, mode.schema)
+    if schema is ScreenFillPlan:
+        plan = services.selection_call(request.prompt + SCREEN_FILL_GUIDANCE, schema)
         if plan.fields:
             return SelectionResult(action_plan=prepare_screen_fill(request.observation, plan))
         return SelectionResult(decision=plan.next_decision.to_decision())
-    return SelectionResult(decision=services.choose_decision(request.prompt, mode.schema))
+    return SelectionResult(decision=services.choose_decision(request.prompt, schema))

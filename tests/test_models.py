@@ -10,7 +10,6 @@ import pytest
 from google.genai import errors, types
 from pydantic import BaseModel, ValidationError
 
-from brain.runtime.storage import RunLog
 from models import (
     GeminiClient,
     ReplayClient,
@@ -23,6 +22,7 @@ from models import (
 )
 from models.base import request_fingerprint
 from models.pricing import PriceBook, PriceRate, PricingError
+from sawon_runtime.storage import RunLog
 
 
 class Answer(BaseModel):

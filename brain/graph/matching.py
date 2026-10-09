@@ -266,15 +266,12 @@ class MatchResult:
     """Screen decision plus the two state updates owned by the graph runtime."""
 
     response: ScreenMatch
-    procedure_step: str
     visual_match_candidate: tuple[str, dict] | None
 
 
 @dataclass(frozen=True)
 class MatchPromptContext:
     state: dict
-    notebook: dict
-    contract: dict
     capability: ActionCapability
     active_fields: frozenset[str]
     prompt: str
@@ -1315,8 +1312,6 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
     )
     return MatchPromptContext(
         state=state,
-        notebook=notebook,
-        contract=contract,
         capability=capability,
         active_fields=frozenset(active_fields),
         prompt=prompt,
@@ -1358,7 +1353,6 @@ def select_match_response(
         grounded = request.grounded_interpretation
         plan_state = {
             **prepared.state,
-            "screen": prepared.state["screen"],
             "grounded_interpretation": {
                 "screen_kind": grounded.screen_kind,
                 "controls": model_controls(grounded.controls, screen),
@@ -1389,12 +1383,11 @@ def select_match_response(
     response = omit_nonblocking_image_request(services, response, screen)
     used_image = cache_hit is None and method_proposal is None
     if response.needs_image:
-        image_state = {**prepared.state, "screen": prepared.state["screen"]}
         response = services.call(
             TASK_RULES
             + prepared.taught_rules
             + prepared.method_rules
-            + json.dumps(image_state, ensure_ascii=False)
+            + json.dumps(prepared.state, ensure_ascii=False)
             + "\nResolve the reported ambiguity with this image.",
             ScreenMatch,
             page=page,
@@ -1424,7 +1417,6 @@ def validate_or_replan(
         interpretation = response.interpretation()
         correction_state = {
             **prepared.state,
-            "screen": prepared.state["screen"],
             "grounded_interpretation": {
                 "screen_kind": interpretation.screen_kind,
                 "controls": model_controls(interpretation.controls, request.screen),
@@ -1495,8 +1487,8 @@ def ground_match_response(
                 + json.dumps(
                     {
                         "capability": prepared.capability.model_dump(),
-                        "notebook": prepared.notebook,
-                        "execution": prepared.contract,
+                        "notebook": prepared.state["notebook"],
+                        "execution": prepared.state["execution"],
                         "screen": prepared.state["screen"],
                         "controls": model_controls(response.controls, screen),
                     },
@@ -1588,7 +1580,6 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
         services.methods.remember(screen, response)
     return MatchResult(
         response=response,
-        procedure_step=capability.capability_id,
         visual_match_candidate=visual_match_candidate,
     )
 

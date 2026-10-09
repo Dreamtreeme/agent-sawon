@@ -77,7 +77,8 @@ import하지 않습니다. 두 저장소는 로컬 Git과 GitHub 비공개 저�
 
 - `models/`: ModelClient, OpenAI/Luna, Gemini, Jev, replay, 성공/실패 호출 측정,
   토큰/추정 비용/지연 기록.
-- `brain/runtime/`: 덧붙이기 전용 실행 로그와 명시적 상태 전환, 원자적 상태 저장.
+- `sawon_runtime/`: 덧붙이기 전용 실행 로그, 원자적 상태 저장, OCR·화면 공용 계약과
+  지속 로컬 워커.
 - `brain/graph/`: `Observation → Decision → Review → Execution` 상태 계약, 현재 근거 검토와 실행 후 재관찰.
 - `brain/observe/`: `flat_fields` / `label_grouped` 관찰 요약.
 - `brain/relay.py`, `brain/run.py`: 인증 HTTP 중계 클라이언트와 건별 실행 CLI.
