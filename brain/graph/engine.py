@@ -42,6 +42,7 @@ from models.budget import CallBudget, ImageCallBudget
 from models.validation import safe_validation_errors
 from sawon_runtime.visual import OcrEngine, RenderedPage
 
+from .action_preparation import ActionWiringRequest, ActionWiringServices, wire_action
 from .click_refinement import ClickRefinementRequest, ClickRefinementServices
 from .completion import (
     CompletionRetry,
@@ -1828,157 +1829,37 @@ class Brain:
         log_renewal: bool = True,
     ) -> Action:
         assert self.observation is not None
-        data = {
-            "type": choice.type,
-            "action_id": str(uuid4()),
-            "obs_id": str(self.observation.obs_id),
-            "reason": decision.intent,
-        }
-        if choice.type not in {"wait", "focus_window"}:
-            data["target"] = {"ref": choice.ref}
-            if isinstance(self.observation, SceneObservation):
-                target = next(item for item in self.observation.elements if item.ref == choice.ref)
-                x, y, width, height = target.bbox
-                planned_point = self.visual_points.get(self.observation, decision)
-                refined = self.click_refinement.applies(self.observation, decision)
-                old_point = (
+        planned = (
+            self.visual_points.get(self.observation, decision)
+            if isinstance(self.observation, SceneObservation)
+            else None
+        )
+        refined = self.click_refinement.applies(self.observation, decision)
+        rebind = getattr(self.visual_perception, "rebind_action", None)
+        return wire_action(
+            ActionWiringRequest(
+                observation=self.observation,
+                choice=choice,
+                decision=decision,
+                credentials=self.credentials,
+                values=self.values,
+                planned_point=planned.point if planned is not None else None,
+                refined_point=(
                     self.click_refinement.bound.point
-                    if refined
-                    else planned_point.point
-                    if planned_point is not None
-                    else (x + width / 2, y + height / 2)
-                )
-                # OCR/model latency can exceed the capture TTL. Exact pixels keep the
-                # original image point. Otherwise renew the semantic target against a
-                # fresh local OCR/control catalog; old coordinates never survive reflow.
-                fresh = fresh_observation or self.relay.observe()
-                previous = self.observation.wire
-                old_shot, new_shot = previous.screenshot, fresh.screenshot
-                same_content = (
-                    old_shot.content_hash == new_shot.content_hash
-                    if old_shot is not None
-                    and new_shot is not None
-                    and old_shot.content_hash is not None
-                    and new_shot.content_hash is not None
-                    else fresh.screen_hash == previous.screen_hash
-                )
-                same_window = bool(
-                    fresh.active_window
-                    and previous.active_window
-                    and fresh.active_window.handle == previous.active_window.handle
-                    and fresh.active_window.process.casefold()
-                    == previous.active_window.process.casefold()
-                )
-                if (
-                    fresh.blocked_reason
-                    or fresh.observation_mode != "visual_only"
-                    or not same_window
-                    or new_shot is None
-                    or new_shot.geometry is None
-                    or old_shot is None
-                    or old_shot.geometry is None
-                ):
-                    self.log.append(
-                        "verify",
-                        payload={
-                            "check": "visual_capture_renewal",
-                            "ok": False,
-                            "foreground_blocked": bool(fresh.blocked_reason),
-                            "same_window": same_window,
-                            "same_pixels": fresh.screen_hash == previous.screen_hash,
-                            "same_content": same_content,
-                            "reason": "capture_or_window_unusable",
-                        },
-                    )
-                    raise ValueError("visual_screen_changed_before_action")
-                point = old_point
-                binding_method = "exact_capture"
-                phash_distance = 0
-                if not same_content:
-                    rebind = getattr(self.visual_perception, "rebind_action", None)
-                    if not callable(rebind):
-                        raise ValueError("visual_screen_changed_before_action")
-                    try:
-                        binding = rebind(
-                            self.observation,
-                            target,
-                            fresh,
-                            planned_point=old_point,
-                            max_phash_distance=self.settings.visual_action_phash_distance,
-                        )
-                    except ValueError as error:
-                        self.log.append(
-                            "verify",
-                            payload={
-                                "check": "visual_capture_renewal",
-                                "ok": False,
-                                "same_window": same_window,
-                                "same_content": False,
-                                "reason": str(error),
-                            },
-                        )
-                        raise ValueError("visual_screen_changed_before_action") from error
-                    point = binding.point
-                    binding_method = binding.method
-                    phash_distance = binding.phash_distance
-                data["obs_id"] = str(fresh.obs_id)
-                data["schema_version"] = "0.2"
-                data["target"] = {
-                    "image_point": list(point),
-                    "capture_id": str(new_shot.geometry.capture_id),
-                    "evidence": (
-                        "image_refined:"
-                        if refined
-                        else "image_planned:"
-                        if planned_point is not None
-                        else "ocr_rebound:"
-                        if not same_content
-                        else "ocr_visual:"
-                    )
-                    + target.ref
-                    + ":sha1:"
-                    + fresh.screen_hash,
-                    "source": "visual",
-                }
-                if log_renewal:
-                    self.log.append(
-                        "observe",
-                        payload={
-                            "check": "visual_planned_capture_renewal"
-                            if screen_batch
-                            else "visual_identical_capture_renewal",
-                            "ok": True,
-                            "perceived_obs_id": str(previous.obs_id),
-                            "action_obs_id": str(fresh.obs_id),
-                            "screen_hash": fresh.screen_hash,
-                            "screen_batch": screen_batch,
-                            "origin_changed": new_shot.geometry.origin != old_shot.geometry.origin,
-                            "same_content": same_content,
-                            "binding_method": binding_method,
-                            "phash_distance": phash_distance,
-                        },
-                    )
-        if choice.type in {"set_text", "type_text"}:
-            data["text"] = self.credentials.get(choice.source) or self.values.get(choice.source, "")
-        elif choice.type == "key":
-            if isinstance(self.observation, SceneObservation) and choice.keys in {
-                "pagedown",
-                "pageup",
-            }:
-                # A visual marker is evidence for the scroll region, not a control
-                # to activate. Physical wheel input follows L2C's targeted scroll
-                # semantics and cannot accidentally click an edit/save control.
-                data["type"] = "scroll"
-                data["wheel_delta"] = -600 if choice.keys == "pagedown" else 600
-            else:
-                data["keys"] = choice.keys
-        elif choice.type == "select_option":
-            data["option"] = self.values.get(choice.source, choice.option)
-        elif choice.type == "focus_window":
-            data["handle"] = choice.handle
-        elif choice.type == "wait":
-            data["duration_ms"] = choice.duration_ms
-        return Action.model_validate(data)
+                    if refined and self.click_refinement.bound is not None
+                    else None
+                ),
+                fresh_observation=fresh_observation,
+                max_phash_distance=self.settings.visual_action_phash_distance,
+                screen_batch=screen_batch,
+                log_renewal=log_renewal,
+            ),
+            ActionWiringServices(
+                relay=self.relay,
+                log=self.log,
+                rebind_action=rebind if callable(rebind) else None,
+            ),
+        )
 
     def _accept_dispatched_action(
         self,
