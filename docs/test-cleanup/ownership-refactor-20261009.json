@@ -1,0 +1,34 @@
+{
+  "base_commit": "7be7710",
+  "before": {
+    "production_files": 83,
+    "production_lines": 16807,
+    "functions_100_lines_or_more": 20,
+    "functions_complexity_40_or_more": 7,
+    "brain_lines": 2778,
+    "brain_methods": 75,
+    "saved_evidence_lines": 539,
+    "saved_evidence_methods": 14,
+    "combined_coverage_percent": 87.253
+  },
+  "after": {
+    "production_files": 93,
+    "production_lines": 17571,
+    "functions_100_lines_or_more": 17,
+    "functions_complexity_40_or_more": 4,
+    "brain_lines": 2635,
+    "brain_methods": 75,
+    "saved_evidence_lines": 509,
+    "saved_evidence_methods": 14,
+    "tests_passed": 677,
+    "coverage_run_seconds": 105.12,
+    "combined_coverage_percent": 87.60931602688024,
+    "statement_coverage_percent": 90.22390798972225,
+    "branch_coverage_percent": 79.66542750929368
+  },
+  "notes": [
+    "Complexity is an AST branch-node approximation used consistently before and after.",
+    "Production line growth includes explicit request/service/result contracts and compatibility re-exports.",
+    "No live ERP or paid model call was made."
+  ]
+}
