@@ -45,6 +45,7 @@ from models.validation import safe_validation_errors
 from pipeline.ocr import OcrEngine
 from pipeline.schemas import RenderedPage
 
+from .click_refinement import ClickRefinementRequest, ClickRefinementServices
 from .context import DUPLICATE_EVIDENCE_GUIDANCE, ExecutionContextRequest, execution_context
 from .execution import (
     ActionPlan,
@@ -1761,7 +1762,7 @@ class Brain:
         if (
             decision.intent in {"navigate", "select_tab", "login"}
             and choice.ref in {item["ref"] for item in self._unproductive_navigation_targets()}
-            and not self.click_refinement.applies(self, decision)
+            and not self.click_refinement.applies(self.observation, decision)
         ):
             raise GuardStop("navigation_no_progress")
 
@@ -1852,7 +1853,7 @@ class Brain:
                 target = next(item for item in self.observation.elements if item.ref == choice.ref)
                 x, y, width, height = target.bbox
                 planned_point = self.visual_points.get(self.observation, decision)
-                refined = self.click_refinement.applies(self, decision)
+                refined = self.click_refinement.applies(self.observation, decision)
                 old_point = (
                     self.click_refinement.bound.point
                     if refined
@@ -2124,7 +2125,7 @@ class Brain:
                 f"{self.phase}:{self._decision_policy().current_step}:{self.business_revision}"
             )
             try:
-                refined = self.click_refinement.applies(self, decision)
+                refined = self.click_refinement.applies(self.observation, decision)
                 action = self._wire_action(
                     choice,
                     decision,
@@ -2269,7 +2270,7 @@ class Brain:
             return None, None
         if not changed:
             self.pending = None
-            if self.click_refinement.prepare(self, pending, observation):
+            if self._try_click_refinement(pending, observation):
                 self.execution_authorized = True
                 return "execution", False
             target = pending.get("navigation_target")
@@ -2285,9 +2286,7 @@ class Brain:
             f"{self.phase}:{self.business_revision}",
         ):
             self.pending = None
-            if self.click_refinement.prepare(
-                self, pending, observation, failure="navigation_cycle"
-            ):
+            if self._try_click_refinement(pending, observation, failure="navigation_cycle"):
                 self.execution_authorized = True
                 return "execution", True
             self._record_exploration_failure(pending, "cycle")
@@ -2303,6 +2302,47 @@ class Brain:
             },
         )
         return None, True
+
+    def _try_click_refinement(
+        self,
+        pending: PendingAction,
+        observation: Observation,
+        *,
+        failure: Literal[
+            "navigation_no_progress", "navigation_cycle", "semantic_target_repeated"
+        ] = "navigation_no_progress",
+    ) -> bool:
+        """Apply one explicit refinement result to worker state."""
+
+        if not isinstance(observation, SceneObservation):
+            return False
+        result = self.click_refinement.prepare(
+            ClickRefinementRequest(
+                goal=self.goal,
+                phase=self.phase,
+                steps=self.steps,
+                max_steps=self.settings.max_steps,
+                enabled=self.settings.visual_click_refinement,
+                pending=pending,
+                scene=observation,
+                failure=failure,
+            ),
+            ClickRefinementServices(
+                case_dir=self.case_dir,
+                relay=self.relay,
+                log=self.log,
+                call=self._call,
+            ),
+        )
+        if result is None:
+            return False
+        self.feedback.append(result.feedback)
+        if not result.applied:
+            return False
+        self.decision = result.decision
+        self.action_plan = None
+        self.steps += 1
+        return True
 
     def _record_exploration_failure(
         self, pending: PendingAction, outcome: Literal["no_change", "cycle"]
@@ -2356,12 +2396,7 @@ class Brain:
         if not self.click_refinement.repeated_target(pending, current_scope):
             return None
         self.pending = None
-        if self.click_refinement.prepare(
-            self,
-            pending,
-            observation,
-            failure="semantic_target_repeated",
-        ):
+        if self._try_click_refinement(pending, observation, failure="semantic_target_repeated"):
             self.execution_authorized = True
             return "execution"
         return self._fail("semantic_target_repeated")

@@ -210,12 +210,7 @@ def test_navigation_cycle_requests_detailed_coordinate_inside_merged_tab(tmp_pat
         }
     )
 
-    assert brain.click_refinement.prepare(
-        brain,
-        pending,
-        scene,
-        failure="navigation_cycle",
-    )
+    assert brain._try_click_refinement(pending, scene, failure="navigation_cycle")
     assert len(model.prompts) == 1
     assert brain.feedback[-1]["reason"] == "navigation_cycle"
     assert brain.click_refinement.bound.point == (160, 35)
