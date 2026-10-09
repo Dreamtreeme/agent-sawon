@@ -1973,11 +1973,9 @@ def test_pending_query_input_proposes_search_without_claiming_verification(tmp_p
         action=Choice(type="set_text", ref="e1", source="hbl_no"),
     )
     brain.pending = {"decision": brain.decision}
-    from brain.graph.context import execution_context
-
     brain.settings = brain.settings.model_copy(update={"screen_matching": False})
     brain.task_instruction = None
-    contract = execution_context(brain, anticipate=True)
+    contract = brain._execution_context(anticipate=True)
     assert contract["checkpoint"] == "search" and contract["conditional"]
     assert "search" in contract["allowed_intents"]
     assert "query_input" not in contract["allowed_intents"]
@@ -2001,11 +1999,9 @@ def test_delivered_final_search_exposes_only_evidence_step(tmp_path, record):
     )
     brain.pending = {"decision": brain.decision}
 
-    from brain.graph.context import execution_context
-
     brain.settings = brain.settings.model_copy(update={"screen_matching": False})
     brain.task_instruction = None
-    contract = execution_context(brain, anticipate=True)
+    contract = brain._execution_context(anticipate=True)
     assert contract["checkpoint"] == "final_row_evidence"
     assert not {"query_input", "search"} & set(contract["allowed_intents"])
 
@@ -2142,11 +2138,9 @@ def test_final_row_matching_receives_visibility_and_action_contract(tmp_path, re
     brain, *_ = setup_brain(tmp_path, record, [])
     brain.phase = "final_query"
     brain.query_value_verified = brain.query_submitted = True
-    from brain.graph.context import execution_context
-
     brain.settings = brain.settings.model_copy(update={"screen_matching": False})
     brain.task_instruction = None
-    contract = execution_context(brain, anticipate=True)
+    contract = brain._execution_context(anticipate=True)
     assert "search" not in contract["allowed_intents"]
     assert "window expansion" in contract["guidance"]
     assert "reuse earlier refs" in contract["guidance"]

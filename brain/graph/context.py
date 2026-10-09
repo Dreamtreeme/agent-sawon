@@ -5,14 +5,31 @@ Pending outcomes describe a conditional proposal, never mutate verified runtime 
 
 from __future__ import annotations
 
-from dataclasses import replace
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, replace
+from typing import Any
 
+from .execution import PendingAction
 from .policy import DecisionPolicy
 from .save_review import SAVE_RESULT_ACTIONS, SAVE_REVIEW_GUIDANCE
+from .schemas import Decision
 
-if TYPE_CHECKING:
-    from .engine import Brain
+
+@dataclass(frozen=True)
+class ExecutionContextRequest:
+    """Runtime facts needed to describe the next execution boundary.
+
+    The context compiler is shared by direct and visual matching paths.  It must
+    not reach back into the mutable worker object, because doing so made prompt
+    construction depend on undocumented Brain attributes.
+    """
+
+    policy: DecisionPolicy
+    pending: PendingAction | None
+    current_decision: Decision | None
+    values: dict[str, str]
+    phase: str
+    saved_record_review: dict[str, Any] | None = None
+    saved_identity_field: str | None = None
 
 FINAL_QUERY_INPUT_GUIDANCE = (
     "CURRENT STEP: Fresh query input is required. Saving ended record entry. "
@@ -133,19 +150,19 @@ def phase_instruction(policy: DecisionPolicy) -> str:
     )
 
 
-def execution_context(
-    brain: Brain, policy: DecisionPolicy | None = None, *, anticipate: bool = False
-) -> dict:
-    actual = policy or brain._decision_policy()
+def execution_context(request: ExecutionContextRequest) -> dict:
+    """Compile model-facing execution context from an explicit immutable request."""
+
+    actual = request.policy
     proposal = actual
-    pending = brain.pending if anticipate else None
+    pending = request.pending
     decisions = []
     if pending:
         execution = pending.get("execution")
         decisions = (
             [a.decision for a in execution.plan.actions]
             if execution
-            else [pending.get("decision", brain.decision)]
+            else [pending.get("decision", request.current_decision)]
         )
         last = decisions[-1]
         facts = actual.facts
@@ -202,7 +219,9 @@ def execution_context(
             if d
         ],
         "conditional": proposal is not actual,
-        "final_required_fields": sorted(brain.values) if brain.phase == "final_query" else [],
+        "final_required_fields": (
+            sorted(request.values) if request.phase == "final_query" else []
+        ),
     }
     if actual.facts.remaining_credentials:
         contract["allowed_action_batches"] = [
@@ -223,9 +242,8 @@ def execution_context(
         contract["query_input"] = query_input_requirement(
             actual.facts.phase, actual.current_step, query_pending
         )
-    saved = brain.saved_evidence
-    if saved.session_id:
-        proof = saved.snapshot(brain.values)
+    proof = request.saved_record_review
+    if proof is not None:
         # The model needs review progress, not run-local provenance.  UUIDs,
         # observation/capture IDs, paths and refs made an otherwise identical
         # verified screen produce a different persistent visual-cache key.
@@ -244,7 +262,8 @@ def execution_context(
         contract["guidance"] = (
             "Verify the saved record using CURRENT query-row and linked detail-screen values. "
             "Identify the matching query row, then the same record in its detail form. "
-            f"Map visible input values to field evidence, including {saved.identity_field} "
+            "Map visible input values to field evidence, including "
+            f"{request.saved_identity_field} "
             "when visible. "
             "Use observed navigation/tabs to expose missing values. Do not fill, save, transmit "
             "or approve. Code joins validated observations and determines completion. "
@@ -255,7 +274,7 @@ def execution_context(
             "ONLY after code verifies the pending action from the CURRENT screen. "
             "A failed verification discards this proposal. These are not completed facts."
         )
-    if brain.phase == "save_result":
+    if request.phase == "save_result":
         contract["save_review"] = {
             "allowed_intents": {k: sorted(v) for k, v in SAVE_RESULT_ACTIONS.items()},
             "instructions": SAVE_REVIEW_GUIDANCE,

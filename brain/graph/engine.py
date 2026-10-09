@@ -45,7 +45,7 @@ from models.validation import safe_validation_errors
 from pipeline.ocr import OcrEngine
 from pipeline.schemas import RenderedPage
 
-from .context import DUPLICATE_EVIDENCE_GUIDANCE, execution_context
+from .context import DUPLICATE_EVIDENCE_GUIDANCE, ExecutionContextRequest, execution_context
 from .execution import (
     ActionPlan,
     ExecutionRequest,
@@ -320,7 +320,7 @@ class Brain:
         assert self.task_instruction is not None
         assert self.task_instruction_sha256 is not None
         policy = self._decision_policy()
-        contract = execution_context(self, policy, anticipate=True)
+        contract = self._execution_context(policy, anticipate=True)
         pending_execution = None if self.pending is None else self.pending.get("execution")
         post_action_review = bool(
             pending_execution is not None and pending_execution.plan.verification == "fields"
@@ -364,6 +364,24 @@ class Brain:
             policy=policy,
             grounded_interpretation=interpretation,
             proposal=proposal,
+        )
+
+    def _execution_context(
+        self, policy: DecisionPolicy | None = None, *, anticipate: bool = False
+    ) -> dict:
+        saved_record_review = (
+            self.saved_evidence.snapshot(self.values) if self.saved_evidence.session_id else None
+        )
+        return execution_context(
+            ExecutionContextRequest(
+                policy=policy or self._decision_policy(),
+                pending=self.pending if anticipate else None,
+                current_decision=self.decision,
+                values=self.values,
+                phase=self.phase,
+                saved_record_review=saved_record_review,
+                saved_identity_field=self.saved_evidence.identity_field,
+            )
         )
 
     def _screen_match_services(self):
@@ -1157,7 +1175,7 @@ class Brain:
             return self._fail("review_error:" + type(exc).__name__)
 
     def _phase_instruction(self, policy: DecisionPolicy | None = None) -> str:
-        return execution_context(self, policy or self._decision_policy())["guidance"]
+        return self._execution_context(policy)["guidance"]
 
     def _workflow_facts(self) -> ExecutionFacts:
         return ExecutionFacts(
@@ -1285,7 +1303,7 @@ class Brain:
         )
         if json.loads(summary)["truncated"]:
             raise GuardStop("observation_summary_truncated")
-        context = execution_context(self, policy)
+        context = self._execution_context(policy)
         return (
             POLICY
             + "\nTRUSTED_TASK="

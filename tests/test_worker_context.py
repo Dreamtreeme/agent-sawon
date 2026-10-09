@@ -7,7 +7,6 @@ from test_brain import record as record
 from test_screen_matching import fixture, response, setup_brain
 from test_visual_scene import wire
 
-from brain.graph.context import execution_context
 from brain.graph.matching import TASK_RULES
 from brain.graph.schemas import Choice, Decision
 from brain.task_instruction import TaskInstruction
@@ -36,7 +35,7 @@ def test_direct_and_screen_matching_receive_identical_execution_context(
     brain.phase = phase
     brain.query_value_verified = verified
     brain.query_submitted = submitted
-    expected = execution_context(brain)
+    expected = brain._execution_context()
     direct = brain._decision_prompt().split("TRUSTED_TASK=", 1)[1].split("\nUI_TEXT=", 1)[0]
     direct = json.loads(direct)
     assert direct["phase_instruction"] == expected["guidance"]
@@ -73,8 +72,8 @@ def test_pending_proposal_does_not_mutate_actual_facts_or_runtime_policy(tmp_pat
         action=Choice(type="set_text", ref="e1", source="hbl_no"),
     )
     brain.pending = {"decision": brain.decision}
-    actual = execution_context(brain)
-    proposed = execution_context(brain, anticipate=True)
+    actual = brain._execution_context()
+    proposed = brain._execution_context(anticipate=True)
     assert actual["checkpoint"] == "query_input"
     assert proposed["checkpoint"] == "search" and proposed["conditional"]
     assert proposed["query_input"]["pending"] and not proposed["query_input"]["required"]
@@ -91,7 +90,7 @@ def test_generic_task_context_has_no_legacy_query_input_gate(tmp_path, record):
     )
     brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
 
-    context = execution_context(brain)
+    context = brain._execution_context()
 
     assert context["checkpoint"] == "task"
     assert "query_input" not in context
@@ -113,7 +112,7 @@ def test_saved_review_context_excludes_run_local_provenance(tmp_path, record):
         "ref": "ref-a",
         "session_id": brain.saved_evidence.session_id,
     }
-    first = execution_context(brain)["saved_record_review"]
+    first = brain._execution_context()["saved_record_review"]
 
     brain.saved_evidence.session_id = "different-session"
     brain.saved_evidence.origin_obs_id = "origin-b"
@@ -124,7 +123,7 @@ def test_saved_review_context_excludes_run_local_provenance(tmp_path, record):
         "ref": "ref-b",
         "session_id": "different-session",
     }
-    second = execution_context(brain)["saved_record_review"]
+    second = brain._execution_context()["saved_record_review"]
 
     assert first == second
     assert first == {
@@ -154,8 +153,8 @@ def test_pending_last_record_fill_proposes_save_without_mutating_verified_fields
     )
     brain.pending = {"decision": brain.decision}
 
-    actual = execution_context(brain)
-    proposed = execution_context(brain, anticipate=True)
+    actual = brain._execution_context()
+    proposed = brain._execution_context(anticipate=True)
 
     assert actual["checkpoint"] == "fill_fields"
     assert proposed["checkpoint"] == "save"
@@ -190,8 +189,8 @@ def test_pending_external_selection_anticipates_its_verified_field(tmp_path, rec
     )
     brain.pending = {"decision": brain.decision, "effect_source": selected_field}
 
-    actual = execution_context(brain)
-    proposed = execution_context(brain, anticipate=True)
+    actual = brain._execution_context()
+    proposed = brain._execution_context(anticipate=True)
 
     assert actual["checkpoint"] == "fill_fields"
     assert proposed["checkpoint"] == "save"
@@ -276,8 +275,8 @@ def test_pending_login_proposes_post_authentication_work_without_resubmitting_cr
     )
     brain.pending = {"decision": brain.decision}
 
-    actual = execution_context(brain)
-    proposed = execution_context(brain, anticipate=True)
+    actual = brain._execution_context()
+    proposed = brain._execution_context(anticipate=True)
 
     assert "credential" in actual["allowed_intents"]
     assert proposed["conditional"]
