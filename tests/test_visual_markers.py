@@ -73,7 +73,7 @@ def test_semantic_schema_cannot_generate_coordinates():
         )
 
 
-@pytest.mark.parametrize("ids", [[999], [0, 0]])
+@pytest.mark.parametrize("ids", [[999], [0, 0]], ids=["unknown", "duplicate"])
 def test_unknown_or_duplicate_marker_cannot_be_bound(ids):
     blocks, _, markers, _ = fixture()
     meaning = SemanticDetection.model_validate(
@@ -177,7 +177,7 @@ def test_model_led_semantics_accepts_ocr_text_as_clickable_result_row():
     assert control.bbox == blocks[0].bbox
 
 
-@pytest.mark.parametrize("text_ids", [[8], []])
+@pytest.mark.parametrize("text_ids", [[8], []], ids=["explicit-text", "implicit-self"])
 def test_ocr_caption_can_be_a_tab_target_without_detector_extent(text_ids):
     blocks, _, markers, _ = fixture()
     label = next(m for m in markers if m.source == "ocr")

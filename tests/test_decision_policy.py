@@ -256,23 +256,21 @@ def test_save_confirmation_requires_a_prior_save_and_a_dialog_activation():
 @pytest.mark.parametrize(
     "payload,facts,valid",
     [
-        pytest.param(payload, None, None, id=f"payload{index}")
-        for index, payload in enumerate(
-            [
-                action("navigate", kind="set_text", source="hbl_no"),
-                action("navigate", kind="select_option", source="hbl_no"),
-                action("navigate", kind="key", keys="enter"),
-                action("navigate", kind="wait"),
-                action("search", kind="double_click"),
-                action("search", kind="set_text", source="hbl_no"),
-                action("query_input", kind="click"),
-                action("query_input", kind="set_text", source="mbl_no"),
-                action("fill", screen="editor", kind="click"),
-                action("wait", kind="click"),
-                action("cancel", kind="set_text", source="hbl_no"),
-                action("navigate", screen="unknown"),
-            ]
-        )
+        pytest.param(payload, None, None, id=case_id)
+        for case_id, payload in [
+            ("navigate-as-text", action("navigate", kind="set_text", source="hbl_no")),
+            ("navigate-as-option", action("navigate", kind="select_option", source="hbl_no")),
+            ("navigate-as-key", action("navigate", kind="key", keys="enter")),
+            ("navigate-as-wait", action("navigate", kind="wait")),
+            ("search-as-double-click", action("search", kind="double_click")),
+            ("search-as-text", action("search", kind="set_text", source="hbl_no")),
+            ("query-input-as-click", action("query_input", kind="click")),
+            ("query-input-wrong-source", action("query_input", kind="set_text", source="mbl_no")),
+            ("fill-as-click", action("fill", screen="editor", kind="click")),
+            ("wait-as-click", action("wait", kind="click")),
+            ("cancel-as-text", action("cancel", kind="set_text", source="hbl_no")),
+            ("navigate-on-unknown-screen", action("navigate", screen="unknown")),
+        ]
     ]
     + [
         pytest.param(

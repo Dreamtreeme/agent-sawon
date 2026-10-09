@@ -164,6 +164,7 @@ def test_empty_grid_uses_structured_evidence_not_header_notes(table_state):
         ({"text_ids": [0]}, "value_outside"),
         ({"parent_id": 9}, "parent_bounds"),
     ],
+    ids=["outside-capture", "unknown-ocr", "value-outside-control", "unknown-parent"],
 )
 def test_invalid_detector_evidence_fails_closed(update, reason):
     blocks, detection = scene()

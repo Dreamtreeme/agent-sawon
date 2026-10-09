@@ -58,7 +58,14 @@ def test_changed_observation_does_not_create_business_proof():
         {"source": "actual secret value"},
         {"new_facts": ("actual-secret-value",)},
         {"password": "actual-secret-value"},
-        {"control_label": "Untrusted screen text"},
+    ],
+    ids=[
+        "effect-before-observation",
+        "after-observation-before-completion",
+        "facts-before-completion",
+        "secret-source",
+        "secret-fact",
+        "unknown-secret-field",
     ],
 )
 def test_transition_rejects_unverified_effects_and_arbitrary_data(overrides):

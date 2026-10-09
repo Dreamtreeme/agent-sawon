@@ -82,9 +82,9 @@ def test_exhausted_windows_replace_preserves_original_and_cleans_temp(
 @pytest.mark.parametrize(
     "failure",
     [
-        PermissionError(errno.EACCES, "POSIX access denied"),
-        OSError(errno.ENOSPC, "disk full"),
-        _windows_error(87),
+        pytest.param(PermissionError(errno.EACCES, "POSIX access denied"), id="posix-access"),
+        pytest.param(OSError(errno.ENOSPC, "disk full"), id="disk-full"),
+        pytest.param(_windows_error(87), id="invalid-parameter"),
     ],
 )
 def test_unrelated_replace_error_is_not_retried(
