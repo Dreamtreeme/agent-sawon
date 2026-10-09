@@ -71,7 +71,16 @@ Ruff lint/format 통과입니다. 실제 ERP·유료 모델은 실행하지 않�
 중복 필드 및 같은 매핑의 무효 재구성을 제거했습니다. 후속 결과는 프로덕션 Python
 94파일/17,610줄에서 90파일/17,520줄, `Brain` 2,631줄/73메서드, 전체677개 통과입니다.
 branch 계측 coverage는 종합89.0493%, statement91.8477%, branch80.6099%로 이전 기록보다
-하락하지 않았습니다.
+하락하지 않았다고 처음 기록했지만 누적 coverage data의 영향이 확인되어 폐기했습니다.
+`coverage erase` 후 전체 production 재측정은 종합87.6118%, statement90.2367%,
+branch79.6503%이며 전체677개가 통과했습니다.
+
+리팩토링 후 실제 seed19 추적 파일럿 `core-pilot-20261009-refactor-trace-002`는 Luna,
+visual-only, OmniParser v2/640에서 core success와 ERP10/10을 완료했습니다. 행동25,
+관찰31, 모델33회(Luna19/local14), 작업자259.615초, 추정비용$0.05762435,
+미확정0입니다. 실제 그래프는 Observation15, Decision15, Review30, Execution14회이며,
+`Observation → 관찰근거 Review → Decision → 실행전 Review → Execution` 순서로 반복됩니다.
+전체 실행과 함수 호출 추적은 `docs/post-refactor-traced-pilot-20261009.md`에 기록합니다.
 
 #### 2026-10-08 화면 작업자 구형 Procedure 진입 경로 제거
 
