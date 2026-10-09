@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from brain.observe.evidence import is_record_input
 from brain.visual.scene import SceneObservation
 
+from .evidence_projection import EditorProjectionRequest, project_editor_evidence
 from .review import EvidenceReview, Matcher, _within, assign_result_fields, review_final
 from .schemas import Decision
 
@@ -209,76 +209,46 @@ class SavedEvidence:
         bindings: dict[str, str],
         by_ref: dict,
     ) -> bool:
-        inputs = {
-            ref: element
-            for ref, element in by_ref.items()
-            if is_record_input(element, observation)
-            or (
-                element.role.casefold() in {"text", "cell"}
-                and bool(element.value or element.name)
-                and any(matches(name, element.value or element.name, values) for name in values)
-            )
-        }
-        identity = inputs.get(bindings.get(self.identity_field))
-        if identity is None or not matches(self.identity_field, identity.value, values):
-            exact_identities = [
-                element
-                for element in inputs.values()
-                if matches(self.identity_field, element.value, values)
-            ]
-            identity = exact_identities[0] if len(exact_identities) == 1 else identity
-        current_link = False
-        if identity is not None:
-            if matches(self.identity_field, identity.value, values):
-                self.detail_window = observation.active_window.handle
-                self._store(
-                    self.identity_field,
-                    identity,
-                    observation,
-                    values,
-                    matches,
-                    explicit=True,
-                )
-                self.detail_identity = self.fields.get(self.identity_field)
-                current_link = True
-            else:
-                self.conflict = "saved_record_identity_changed"
-                self.fields.clear()
-                self.detail_identity = None
-        else:
-            unchanged = (
-                self.last_hash == observation.screen_hash
-                and self.last_window == observation.active_window.handle
-            )
-            current_link = bool(
-                self.detail_identity
-                and self.detail_window == observation.active_window.handle
-                and self.last_screen == "editor"
-                and (self.tab_continuity or unchanged)
-            )
-        if not current_link:
+        projection = project_editor_evidence(
+            EditorProjectionRequest(
+                observation=observation,
+                values=values,
+                bindings=bindings,
+                identity_field=self.identity_field,
+                detail_identity_present=self.detail_identity is not None,
+                detail_window=self.detail_window,
+                tab_continuity=self.tab_continuity,
+                last_hash=self.last_hash,
+                last_window=self.last_window,
+                last_screen=self.last_screen,
+            ),
+            matches,
+        )
+        if projection.identity_conflict:
+            self.conflict = "saved_record_identity_changed"
+            self.fields.clear()
+            self.detail_identity = None
+        if not projection.linked:
             self.detail_window = None
             self.detail_identity = None
             return False
-        candidates = {
-            name: {ref for ref, element in inputs.items() if matches(name, element.value, values)}
-            for name in values
-        }
-        assignment = assign_result_fields(candidates)
-        for name, ref in assignment.items():
-            self._store(name, inputs[ref], observation, values, matches, explicit=False)
-        owners: dict[str, list[str]] = {}
-        for name, ref in bindings.items():
-            if name in values and ref in inputs:
-                owners.setdefault(ref, []).append(name)
-        oid = str(observation.obs_id)
-        for ref, names in owners.items():
-            if len(names) > 1:
-                for name in names:
-                    if self.fields.get(name, {}).get("obs_id") == oid or name in bindings:
-                        self.fields.pop(name, None)
-                continue
-            self._store(names[0], inputs[ref], observation, values, matches, explicit=True)
+        if projection.identity is not None:
+            self.detail_window = observation.active_window.handle
+            self._store(
+                self.identity_field,
+                projection.identity,
+                observation,
+                values,
+                matches,
+                explicit=True,
+            )
+            self.detail_identity = self.fields.get(self.identity_field)
+        for name, element in projection.automatic:
+            self._store(name, element, observation, values, matches, explicit=False)
+        for name, element in projection.explicit:
+            self._store(name, element, observation, values, matches, explicit=True)
+        for name in projection.ambiguous_fields:
+            self.fields.pop(name, None)
         return True
 
     def _query_identity_input(self, by_ref, bindings, values, matches: Matcher):
