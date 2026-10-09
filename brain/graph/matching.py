@@ -811,26 +811,23 @@ def _is_login_batch(steps: list[MatchAction]) -> bool:
     )
 
 
-def validate_match_plan(
-    response: ScreenMatch,
-    capability: ActionCapability,
-    request: MatchRequest,
-    services: MatchServices,
-    active_fields: set[str],
-) -> ScreenMatch:
-    """Validate task actions separately from an already grounded screen interpretation."""
+def _validate_taught_step(response: ScreenMatch, request: MatchRequest) -> None:
     taught = request.task_instruction.procedure
-    if taught:
-        taught_ids = [item.id for item in taught]
-        if response.taught_step_id is not None and response.taught_step_id not in taught_ids:
-            raise ValueError("screen_match_taught_step_required")
-        if response.operation == "complete" and response.taught_step_id != taught_ids[-1]:
-            raise ValueError("screen_match_taught_final_step_required")
-    # Query fields and record fields share the same runtime primitive in a
-    # generic task: write a named task input, then reread it.  Keep login
-    # credentials separate, but do not make ERP screen terminology part of
-    # the common action contract.
-    rebound_steps = []
+    if not taught:
+        return
+    taught_ids = [item.id for item in taught]
+    if response.taught_step_id is not None and response.taught_step_id not in taught_ids:
+        raise ValueError("screen_match_taught_step_required")
+    if response.operation == "complete" and response.taught_step_id != taught_ids[-1]:
+        raise ValueError("screen_match_taught_final_step_required")
+
+
+def _normalize_match_actions(
+    response: ScreenMatch, request: MatchRequest, services: MatchServices
+) -> ScreenMatch:
+    """Normalize provider vocabulary at the model boundary."""
+
+    normalized = []
     for item in response.steps:
         source = normalize_action_source(
             intent=item.intent,
@@ -846,11 +843,6 @@ def validate_match_plan(
         ):
             item = item.model_copy(update={"intent": "fill"})
         elif item.action == "key" and item.intent == "fill" and item.source is None:
-            # A key press can expose or focus a field, but it cannot deliver a
-            # record value. Keep the model's grounded target and key while
-            # compiling the boundary as navigation. This also lets the screen
-            # fill contract carry the action as next_decision instead of
-            # rejecting it as a hidden single-field write.
             item = item.model_copy(update={"intent": "navigate"})
             services.log.append(
                 "verify",
@@ -862,35 +854,24 @@ def validate_match_plan(
                     "intent": "navigate",
                 },
             )
-        rebound_steps.append(item)
-    response = response.model_copy(update={"steps": rebound_steps})
-    response = response.model_copy(
-        update={
-            "evidence": [
-                evidence.model_copy(
-                    update={
-                        "field": resolve_input_key(evidence.field, request.values) or evidence.field
-                    }
-                )
-                for evidence in response.evidence
-            ]
-        }
-    )
-    allowed_intents = set(capability.actions)
-    if "login" in allowed_intents:
-        allowed_intents.add("credential")
-    if request.phase != "save_result" and any(
-        action.intent not in allowed_intents for action in response.steps
-    ):
-        raise ValueError("screen_match_action_outside_procedure")
-    if any(evidence.field not in request.values for evidence in response.evidence):
+        normalized.append(item)
+    evidence = [
+        item.model_copy(
+            update={"field": resolve_input_key(item.field, request.values) or item.field}
+        )
+        for item in response.evidence
+    ]
+    return response.model_copy(update={"steps": normalized, "evidence": evidence})
+
+
+def _validate_completion_annotations(
+    response: ScreenMatch, request: MatchRequest, services: MatchServices
+) -> ScreenMatch:
+    if any(item.field not in request.values for item in response.evidence):
         raise ValueError("screen_match_unknown_task_field")
     if response.operation == "complete" and not response.completion_evidence:
         raise ValueError("screen_match_task_completion_evidence_required")
     if response.operation != "complete" and response.completion_evidence:
-        # Completion annotations do not alter an otherwise grounded action.
-        # Keep the action and discard proof that belongs only to a later
-        # operation=complete turn.
         services.log.append(
             "verify",
             payload={
@@ -904,44 +885,57 @@ def validate_match_plan(
         for item in response.completion_evidence
     ):
         raise ValueError("screen_match_task_completion_condition_unknown")
+    return response
+
+
+def _validate_login_boundary(response: ScreenMatch, request: MatchRequest) -> None:
     if any(action.intent == "credential" for action in response.steps) and not _is_login_batch(
         response.steps
     ):
         raise ValueError("screen_match_login_batch_incomplete")
-    if _is_login_batch(response.steps):
-        expected_credentials = set(request.policy.facts.remaining_credentials)
-        planned_credentials = {
-            action.source for action in response.steps[:-1] if action.source is not None
-        }
-        if expected_credentials and planned_credentials != expected_credentials:
-            raise ValueError("screen_match_login_batch_incomplete")
-    if len(response.steps) > 1:
-        intents = {action.intent for action in response.steps}
-        login_batch = _is_login_batch(response.steps)
-        direct_fill_batch = intents == {"fill"}
-        selection_batch = intents == {"select_option"} and all(
-            action.action == "click" for action in response.steps
-        )
-        selection_then_navigation = (
-            response.steps[-1].intent == "navigate"
-            and all(action.intent == "select_option" for action in response.steps[:-1])
-            and all(
-                action.action in {"click", "double_click"} and action.source is None
-                for action in response.steps
-            )
-        )
-        same_boundary_batch = intents in ({"navigate"}, {"select_tab"}) and all(
-            action.source is None for action in response.steps
-        )
-        if not (
-            login_batch
-            or direct_fill_batch
-            or selection_batch
-            or selection_then_navigation
-            or same_boundary_batch
-        ):
-            raise ValueError("screen_match_mixed_boundary_actions")
-    response = bind_selection_effect(response, capability, active_fields)
+    if not _is_login_batch(response.steps):
+        return
+    expected = set(request.policy.facts.remaining_credentials)
+    planned = {action.source for action in response.steps[:-1] if action.source is not None}
+    if expected and planned != expected:
+        raise ValueError("screen_match_login_batch_incomplete")
+
+
+def _valid_multi_action_boundary(steps: list[MatchAction]) -> bool:
+    intents = {action.intent for action in steps}
+    if _is_login_batch(steps) or intents == {"fill"}:
+        return True
+    if intents == {"select_option"} and all(action.action == "click" for action in steps):
+        return True
+    selection_then_navigation = steps[-1].intent == "navigate" and all(
+        action.intent == "select_option" for action in steps[:-1]
+    )
+    if selection_then_navigation and all(
+        action.action in {"click", "double_click"} and action.source is None for action in steps
+    ):
+        return True
+    return intents in ({"navigate"}, {"select_tab"}) and all(
+        action.source is None for action in steps
+    )
+
+
+def _validate_action_boundary(
+    response: ScreenMatch,
+    capability: ActionCapability,
+    request: MatchRequest,
+) -> None:
+    allowed_intents = set(capability.actions)
+    if "login" in allowed_intents:
+        allowed_intents.add("credential")
+    if request.phase != "save_result" and any(
+        action.intent not in allowed_intents for action in response.steps
+    ):
+        raise ValueError("screen_match_action_outside_procedure")
+    if len(response.steps) > 1 and not _valid_multi_action_boundary(response.steps):
+        raise ValueError("screen_match_mixed_boundary_actions")
+
+
+def _validate_input_scope(response: ScreenMatch, capability: ActionCapability) -> None:
     scoped_sources = {
         action.source
         for action in response.steps
@@ -949,6 +943,23 @@ def validate_match_plan(
     }
     if capability.input_scope and not scoped_sources <= set(capability.input_scope):
         raise ValueError("screen_match_field_outside_procedure_scope")
+
+
+def validate_match_plan(
+    response: ScreenMatch,
+    capability: ActionCapability,
+    request: MatchRequest,
+    services: MatchServices,
+    active_fields: set[str],
+) -> ScreenMatch:
+    """Validate task actions separately from an already grounded screen interpretation."""
+    _validate_taught_step(response, request)
+    response = _normalize_match_actions(response, request, services)
+    response = _validate_completion_annotations(response, request, services)
+    _validate_login_boundary(response, request)
+    _validate_action_boundary(response, capability, request)
+    response = bind_selection_effect(response, capability, active_fields)
+    _validate_input_scope(response, capability)
     return response
 
 
