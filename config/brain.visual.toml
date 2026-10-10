@@ -12,6 +12,7 @@ task_path = "../examples/shipment-task.json"
 summary_strategy = "label_grouped"
 max_steps = 80
 max_cost_usd = 3.0
+guard_mode = "observe_only"
 model_call_reserve_usd = 0.025
 recovery_enabled = false
 

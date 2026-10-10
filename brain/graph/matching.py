@@ -869,9 +869,7 @@ _REPLANNABLE_MATCH_ERRORS = {
     "screen_match_login_batch_incomplete",
     "screen_match_mixed_boundary_actions",
     "screen_match_task_surface_mismatch",
-    "screen_match_taught_final_step_required",
     "screen_match_taught_step_required",
-    "screen_match_taught_target_mismatch",
     "screen_match_saved_row_target_mismatch",
     "screen_match_action_target_uncertain",
     "screen_match_action_surface_mismatch",
@@ -903,8 +901,6 @@ def _validate_taught_step(response: ScreenMatch, request: MatchRequest) -> None:
         raise ValueError("screen_match_taught_step_required")
     if response.taught_step_id is not None and response.taught_step_id not in taught_ids:
         raise ValueError("screen_match_taught_step_required")
-    if response.operation == "complete" and response.taught_step_id != taught_ids[-1]:
-        raise ValueError("screen_match_taught_final_step_required")
 
 
 def _semantic_label(text: str) -> str:
@@ -912,70 +908,6 @@ def _semantic_label(text: str) -> str:
 
     normalized = unicodedata.normalize("NFKC", text).casefold()
     return re.sub(r"[^0-9a-z가-힣]+", "", normalized)
-
-
-def _taught_input_targets(request: MatchRequest) -> dict[str, set[str]]:
-    targets: dict[str, set[str]] = {}
-    for procedure_step in request.task_instruction.procedure:
-        for action in procedure_step.actions:
-            if action.input_key in request.values:
-                targets.setdefault(action.input_key, set()).add(_semantic_label(action.target))
-    return targets
-
-
-def _control_label_texts(response: ScreenMatch, request: MatchRequest) -> dict[int, set[str]]:
-    ocr = {item["id"]: item["text"] for item in request.screen.get("ocr", [])}
-    return {
-        control.id: {
-            _semantic_label(ocr[label_id])
-            for label_id in control.label_ids
-            if label_id in ocr and _semantic_label(ocr[label_id])
-        }
-        for control in response.controls
-    }
-
-
-def _labels_match_taught_target(labels: set[str], targets: set[str]) -> bool:
-    return any(label in target or target in label for label in labels for target in targets)
-
-
-def _validate_taught_input_targets(response: ScreenMatch, request: MatchRequest) -> None:
-    """Reject source assignments that contradict the user's visible-label mapping."""
-
-    targets = _taught_input_targets(request)
-    labels = _control_label_texts(response, request)
-    selected = next(
-        (item for item in request.task_instruction.procedure if item.id == response.taught_step_id),
-        None,
-    )
-    selected_sources = (
-        {
-            action.input_key
-            for action in selected.actions
-            if action.verb == "fill" and action.input_key is not None
-        }
-        if selected is not None
-        else set()
-    )
-    action_sources = {
-        step.source
-        for step in response.steps
-        if step.action == "fill" and step.source in request.values
-    }
-    if selected is not None and not action_sources <= selected_sources:
-        raise ValueError("screen_match_taught_target_mismatch")
-    bindings = [
-        (step.source, step.target)
-        for step in response.steps
-        if step.action == "fill" and step.source in request.values
-    ] + [(item.field, item.target) for item in response.evidence]
-    for source, target_id in bindings:
-        expected = targets.get(source, set())
-        observed = labels.get(target_id, set())
-        # Absence of a printed label is model uncertainty. A present label that
-        # contradicts the user-taught source/target pair is a deterministic error.
-        if expected and observed and not _labels_match_taught_target(observed, expected):
-            raise ValueError("screen_match_taught_target_mismatch")
 
 
 def _validate_saved_row_navigation_target(response: ScreenMatch, request: MatchRequest) -> None:
@@ -1157,16 +1089,59 @@ def validate_match_plan(
     active_fields: set[str],
 ) -> ScreenMatch:
     """Validate task actions separately from an already grounded screen interpretation."""
-    _validate_taught_step(response, request)
     response = _normalize_match_actions(response, request, services)
-    response = _validate_completion_annotations(response, request, services)
-    _validate_taught_input_targets(response, request)
-    _validate_saved_row_navigation_target(response, request)
-    _validate_login_boundary(response, request)
-    _validate_action_boundary(response, capability, request)
+    if services.settings.guard_mode == "enforce":
+        _validate_taught_step(response, request)
+        response = _validate_completion_annotations(response, request, services)
+        _validate_saved_row_navigation_target(response, request)
+        _validate_login_boundary(response, request)
+        _validate_action_boundary(response, capability, request)
+    else:
+        checks = (
+            ("taught_step", lambda: _validate_taught_step(response, request)),
+            (
+                "completion_annotations",
+                lambda: _validate_completion_annotations(response, request, services),
+            ),
+            (
+                "saved_row_navigation_target",
+                lambda: _validate_saved_row_navigation_target(response, request),
+            ),
+            ("login_boundary", lambda: _validate_login_boundary(response, request)),
+            ("action_boundary", lambda: _validate_action_boundary(response, capability, request)),
+        )
+        for check, validate in checks:
+            try:
+                validate()
+            except ValueError as error:
+                services.log.append(
+                    "verify",
+                    payload={
+                        "check": "guard_observe_only",
+                        "guard": check,
+                        "would_reject": str(error),
+                    },
+                )
     response = bind_selection_effect(response, capability, active_fields)
-    _validate_input_scope(response, capability)
-    _validate_action_targets_executable(response, services)
+    if services.settings.guard_mode == "enforce":
+        _validate_input_scope(response, capability)
+        _validate_action_targets_executable(response, services)
+    else:
+        for check, validate in (
+            ("input_scope", lambda: _validate_input_scope(response, capability)),
+            ("action_target", lambda: _validate_action_targets_executable(response, services)),
+        ):
+            try:
+                validate()
+            except ValueError as error:
+                services.log.append(
+                    "verify",
+                    payload={
+                        "check": "guard_observe_only",
+                        "guard": check,
+                        "would_reject": str(error),
+                    },
+                )
     return response
 
 

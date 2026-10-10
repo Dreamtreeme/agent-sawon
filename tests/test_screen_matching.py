@@ -481,56 +481,7 @@ def test_generic_task_binds_prompt_container_path_to_input_key(
     assert brain.visual_proposal.evidence[0].field == "hbl_no"
 
 
-def test_taught_step_rejects_input_from_a_different_taught_group(tmp_path, record):
-    task_instruction = TaskInstruction.model_validate(
-        {
-            "name": "Taught shipment entry",
-            "objective": "Enter the taught shipment fields.",
-            "completion_conditions": ["The shipment is saved."],
-            "procedure": [
-                {
-                    "id": "fill-basic",
-                    "instruction": "Enter the House B/L number.",
-                    "completion": "The House B/L number is visible.",
-                    "actions": [
-                        {
-                            "verb": "fill",
-                            "target": "House B/L number field",
-                            "input_key": "hbl_no",
-                        }
-                    ],
-                }
-            ],
-        }
-    )
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
-    capability = ActionCapability(
-        actions=["fill"],
-        goal="Perform the current taught action",
-        completion="The taught action is complete",
-    )
-
-    def planned(source):
-        return ScreenMatch.model_validate(
-            {
-                "screen_kind": "editor",
-                "procedure_step": "task-action",
-                "taught_step_id": "fill-basic",
-                "controls": [{"id": 1, "role": "edit", "confidence": 1}],
-                "steps": [{"target": 1, "action": "fill", "intent": "fill", "source": source}],
-            }
-        )
-
-    request, services = matching_contract(brain)
-    accepted = validate_match_plan(
-        planned("hbl_no"), capability, request, services, set(brain.values)
-    )
-    assert accepted.steps[0].source == "hbl_no"
-    with pytest.raises(ValueError, match="taught_target_mismatch"):
-        validate_match_plan(planned("mbl_no"), capability, request, services, set(brain.values))
-
-
-def test_taught_binding_rejects_a_source_that_conflicts_with_the_visible_label(tmp_path, record):
+def test_cold_plan_trusts_model_semantics_within_the_runtime_input_scope(tmp_path, record):
     task_instruction = TaskInstruction.model_validate(
         {
             "name": "Taught shipment entry",
@@ -578,14 +529,10 @@ def test_taught_binding_rejects_a_source_that_conflicts_with_the_visible_label(t
             }
         )
 
-    assert (
-        validate_match_plan(planned("hbl_no"), capability, request, services, set(brain.values))
-        .steps[0]
-        .source
-        == "hbl_no"
+    accepted = validate_match_plan(
+        planned("mbl_no"), capability, request, services, set(brain.values)
     )
-    with pytest.raises(ValueError, match="taught_target_mismatch"):
-        validate_match_plan(planned("mbl_no"), capability, request, services, set(brain.values))
+    assert accepted.steps[0].source == "mbl_no"
 
 
 def test_literal_value_evidence_is_bound_to_its_unique_input_control(tmp_path, record):
@@ -1500,6 +1447,24 @@ def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
     assert not any(e.kind == "act" for e in brain.log.read_all())
 
 
+def test_observe_only_compiles_an_explicit_model_point_without_a_detected_marker(tmp_path, record):
+    meaning = fixture()[-1]
+    data = response(meaning)
+    data["steps"][0].update(target=999, point=[175, 30])
+    brain, *_ = setup_brain(tmp_path, record, [data])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+
+    brain._observe()
+    assert brain._select_node() == "review"
+
+    expected_ref = "e" + str(brain.observation.obs_id.int) + "0999"
+    assert any(element.ref == expected_ref for element in brain.observation.elements)
+    assert brain.action_plan.actions[0].decision.action.ref == expected_ref
+    assert any(
+        event.payload.get("guard") == "current_frame_target" for event in brain.log.read_all()
+    )
+
+
 def test_combined_match_keeps_grounding_and_corrects_only_invalid_action(tmp_path, record):
     meaning = fixture()[-1]
     wrong = mixed_boundary_response(meaning)
@@ -1522,7 +1487,7 @@ def test_combined_match_keeps_grounding_and_corrects_only_invalid_action(tmp_pat
     )
 
 
-def test_premature_completion_is_replanned_at_the_same_observation(tmp_path, record):
+def test_model_may_complete_from_current_evidence_before_the_last_taught_step(tmp_path, record):
     meaning = fixture()[-1]
     instruction = TaskInstruction.model_validate(
         {
@@ -1552,33 +1517,19 @@ def test_premature_completion_is_replanned_at_the_same_observation(tmp_path, rec
         taught_step_id="open-detail",
         completion_evidence=[{"condition_index": 0, "target": meaning.controls[0].id}],
     )
-    corrected = response(
-        meaning,
-        taught_step_id="open-detail",
-        steps=[
-            {
-                "target": meaning.controls[0].id,
-                "action": "click",
-                "source": None,
-                "intent": "navigate",
-                "point": [200, 50],
-            }
-        ],
-    )
     brain, model, _, ocr, detector, _ = setup_brain(
         tmp_path,
         record,
-        [premature, corrected],
+        [premature],
         task_instruction=instruction,
     )
 
     brain._observe()
 
-    assert len(model.prompts) == 2
-    assert '"error": "screen_match_taught_final_step_required"' in model.prompts[1]
+    assert len(model.prompts) == 1
     assert ocr.calls == detector.calls == 1
-    assert brain.visual_proposal.steps[0].intent == "navigate"
-    assert brain.visual_proposal.steps[0].source is None
+    assert brain.visual_proposal.operation == "complete"
+    assert brain.visual_proposal.taught_step_id == "open-detail"
 
 
 def test_mixed_partner_work_is_corrected_to_current_selection_batch(tmp_path, record):
@@ -2461,6 +2412,38 @@ def test_match_plan_rejects_an_action_outside_current_capability(tmp_path, recor
     request, services = matching_contract(brain)
     with pytest.raises(ValueError, match="action_outside_procedure"):
         validate_match_plan(proposal, capability, request, services, set(brain.values))
+
+
+def test_observe_only_records_policy_scope_and_disabled_target_without_rejecting(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+    capability = task_action_contract(
+        brain.phase,
+        brain.task_instruction,
+        {"allowed_intents": ["navigate"]},
+        {"shipper"},
+    )
+    proposal = ScreenMatch.model_validate(response(fixture()[-1], procedure_step="task-action"))
+    proposal = proposal.model_copy(
+        update={
+            "controls": [item.model_copy(update={"enabled": False}) for item in proposal.controls]
+        }
+    )
+    request, services = matching_contract(brain)
+
+    accepted = validate_match_plan(proposal, capability, request, services, set(brain.values))
+
+    assert accepted.steps[0].source == "hbl_no"
+    observed = [
+        event.payload
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "guard_observe_only"
+    ]
+    assert {item["guard"] for item in observed} == {
+        "action_boundary",
+        "input_scope",
+        "action_target",
+    }
 
 
 def test_pending_fields_remain_evidence_context_without_claiming_delivery(tmp_path, record):

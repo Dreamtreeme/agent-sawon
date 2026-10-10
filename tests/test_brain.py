@@ -402,6 +402,19 @@ def test_zero_cap_does_not_make_model_call(tmp_path, record):
     assert not model.prompts
 
 
+def test_observe_only_records_zero_cost_cap_and_still_calls_model(tmp_path, record):
+    result, brain, _, model = run_brain(
+        tmp_path,
+        record,
+        [decision("stop", intent="stop", kind="unknown")],
+        settings=BrainSettings(max_cost_usd=0, guard_mode="observe_only"),
+    )
+
+    assert result.reason != "case_cost_cap"
+    assert model.prompts
+    assert any(event.payload.get("guard") == "case_cost_cap" for event in brain.log.read_all())
+
+
 def test_call_reserve_stops_before_next_call(tmp_path, record):
     result, _, _, model = run_brain(
         tmp_path, record, [], price=Decimal("0.08"), settings=BrainSettings(max_cost_usd=0.1)

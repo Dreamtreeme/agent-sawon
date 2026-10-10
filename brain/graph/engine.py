@@ -555,6 +555,82 @@ class Brain:
             missing_targets = {
                 target for target in required_targets if prefix + str(target) not in grounded_refs
             }
+            if missing_targets and self.settings.guard_mode == "observe_only":
+                controls = {control.id: control for control in response.controls}
+                synthetic = []
+                for step in response.steps:
+                    if step.target not in missing_targets or step.point is None:
+                        continue
+                    x, y = step.point
+                    control = controls.get(step.target)
+                    synthetic.append(
+                        UIElement(
+                            ref=prefix + str(step.target),
+                            role=(
+                                control.role
+                                if control is not None
+                                else "edit"
+                                if step.action == "fill"
+                                else "button"
+                            ),
+                            name=control.visual_description
+                            if control is not None
+                            else "model point",
+                            enabled=True,
+                            bbox=(int(x) - 1, int(y) - 1, 3, 3),
+                        )
+                    )
+                if synthetic:
+                    self.observation = self.observation.model_copy(
+                        update={"elements": [*self.observation.elements, *synthetic]}
+                    )
+                    grounded_refs.update(item.ref for item in synthetic)
+                    services_log = {
+                        "check": "guard_observe_only",
+                        "guard": "current_frame_target",
+                        "accepted_model_points": [item.ref for item in synthetic],
+                    }
+                    self.log.append("verify", payload=services_log)
+                missing_targets = {
+                    target
+                    for target in required_targets
+                    if prefix + str(target) not in grounded_refs
+                }
+                if missing_targets:
+                    response = response.model_copy(
+                        update={
+                            "evidence": [
+                                item
+                                for item in response.evidence
+                                if item.target not in missing_targets
+                            ],
+                            "completion_evidence": [
+                                item
+                                for item in response.completion_evidence
+                                if item.target not in missing_targets
+                            ],
+                            "grid": None if response.grid in missing_targets else response.grid,
+                            "row": None if response.row in missing_targets else response.row,
+                        }
+                    )
+                    required_targets = (
+                        {step.target for step in response.steps}
+                        | {item.target for item in response.evidence}
+                        | {item.target for item in response.completion_evidence}
+                    )
+                    missing_targets = {
+                        target
+                        for target in required_targets
+                        if prefix + str(target) not in grounded_refs
+                    }
+                    self.log.append(
+                        "verify",
+                        payload={
+                            "check": "guard_observe_only",
+                            "guard": "ungrounded_evidence",
+                            "omitted_target_ids": sorted(missing_targets),
+                        },
+                    )
             if missing_targets:
                 request, _ = self.visual_perception.planning_context()
                 catalog_marker_ids = {marker["id"] for marker in request.screen.get("markers", [])}
@@ -607,6 +683,16 @@ class Brain:
     def _budget(self, reservation: Decimal | None = None) -> None:
         accounting = read_model_accounting(self.log)
         if accounting.unknown:
+            if self.settings.guard_mode == "observe_only":
+                self.log.append(
+                    "verify",
+                    payload={
+                        "check": "guard_observe_only",
+                        "guard": "known_model_cost",
+                        "would_reject": "unknown_model_call_cost",
+                    },
+                )
+                return
             raise GuardStop("unknown_model_call_cost")
         used = accounting.known_usd
         cap = Decimal(str(self.settings.max_cost_usd))
@@ -614,6 +700,19 @@ class Brain:
         if reservation is not None:
             reserve = max(reserve, reservation)
         if used >= cap or used + reserve > cap:
+            if self.settings.guard_mode == "observe_only":
+                self.log.append(
+                    "verify",
+                    payload={
+                        "check": "guard_observe_only",
+                        "guard": "case_cost_cap",
+                        "would_reject": "case_cost_cap",
+                        "known_usd": float(used),
+                        "reserved_usd": float(reserve),
+                        "configured_cap_usd": float(cap),
+                    },
+                )
+                return
             raise GuardStop("case_cost_cap")
 
     def _call(
@@ -665,10 +764,13 @@ class Brain:
             accounting = read_model_accounting(self.log)
             if accounting.model_calls != before + 1:
                 raise GuardStop("unmeasured_model_call")
-            if accounting.unknown:
+            if accounting.unknown and self.settings.guard_mode == "enforce":
                 raise GuardStop("unknown_model_call_cost")
         used = accounting.known_usd
-        if used > Decimal(str(self.settings.max_cost_usd)):
+        if (
+            used > Decimal(str(self.settings.max_cost_usd))
+            and self.settings.guard_mode == "enforce"
+        ):
             raise GuardStop("case_cost_cap")
         return result.response
 
@@ -1022,7 +1124,7 @@ class Brain:
                 "element_count": len(observation.elements),
             },
         )
-        if getattr(observation, "blocked_reason", None):
+        if getattr(observation, "blocked_reason", None) and self.settings.guard_mode == "enforce":
             raise GuardStop("blocked_foreground")
         if observation.active_window is None:
             raise GuardStop("missing_foreground")
@@ -1832,7 +1934,33 @@ class Brain:
                 "requested_source": error.source,
                 "target_ref": error.ref,
             }
-            raise GuardStop(str(error)) from error
+            if self.settings.guard_mode == "enforce":
+                raise GuardStop(str(error)) from error
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "guard_observe_only",
+                    "guard": "action_surface",
+                    "would_reject": str(error),
+                    "intent": decision.intent,
+                    "action": choice.type if choice is not None else None,
+                    "ref": choice.ref if choice is not None else None,
+                },
+            )
+        except GuardStop as error:
+            if self.settings.guard_mode == "enforce":
+                raise
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "guard_observe_only",
+                    "guard": "action",
+                    "would_reject": str(error),
+                    "intent": decision.intent,
+                    "action": choice.type if choice is not None else None,
+                    "ref": choice.ref if choice is not None else None,
+                },
+            )
 
     def _reconcile_action_plan(self, plan: ActionPlan) -> ActionPlan:
         """Drop writes whose model-grounded current target already has the goal value."""
