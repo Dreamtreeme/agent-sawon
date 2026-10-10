@@ -1602,11 +1602,7 @@ def select_match_response(
     method_proposal = request.proposal
     if method_proposal is None and request.phase != "save_result" and "correction" not in screen:
         method_proposal = services.methods.apply(screen)
-    cache_hit = (
-        services.cache.lookup(prepared.state)
-        if method_proposal is None and not request.post_action_review
-        else None
-    )
+    cache_hit = services.cache.lookup(prepared.state) if method_proposal is None else None
     if method_proposal is not None:
         response = method_proposal
     elif cache_hit is not None:

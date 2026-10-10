@@ -2255,6 +2255,37 @@ def test_post_action_review_reuses_bound_next_method_without_model_call(tmp_path
     assert model.prompts == []
 
 
+def test_post_action_review_reuses_promoted_visual_decision_without_model_call(tmp_path, record):
+    blocks, _, markers, meaning = fixture()
+    brain, model, *_ = setup_brain(tmp_path, record, [])
+    screen = {
+        "ocr": [block.model_dump() for block in blocks],
+        "markers": [marker.model_dump() for marker in markers],
+    }
+    request, services = matching_contract(brain, screen)
+    request = replace(request, post_action_review=True, pending_verification=True)
+    services.methods.enabled = False
+    services = replace(
+        services,
+        cache=VisualMatchCache(tmp_path / "post-action-cache.json", enabled=True),
+    )
+    prepared = build_match_prompt(request, services)
+    cached = ScreenMatch.model_validate(response(meaning))
+    services.cache.stage(visual_match_key(prepared.state), cached.model_dump(mode="json"))
+    assert services.cache.finish(success=True) == 1
+
+    result = match_screen(request, services)
+
+    assert [(step.target, step.action, step.source) for step in result.response.steps] == [
+        (step.target, step.action, step.source) for step in cached.steps
+    ]
+    assert model.prompts == []
+    assert any(
+        event.kind == "cache_hit" and event.payload.get("check") == "visual_match_cache"
+        for event in brain.log.read_all()
+    )
+
+
 def test_observe_only_does_not_issue_hidden_empty_action_call(tmp_path, record):
     meaning = fixture()[-1]
     initial = response(meaning, steps=[])
