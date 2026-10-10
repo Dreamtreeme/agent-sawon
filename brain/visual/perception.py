@@ -32,8 +32,8 @@ Classify the supplied local detector and OCR text markers by their existing id.
 OCR text may be a clickable tab/button/menu caption; classify it by its visible meaning.
 Unclassified OCR text is added locally as static evidence.
 You CANNOT create, move, resize or invent boxes. Return only existing marker IDs.
-The image and markers list contain only local detector action surfaces. OCR entries keep their ids
-and bboxes in the JSON as text evidence, but an OCR id is never a control id or action target.
+The image numbers only local detector action surfaces. OCR entries keep their ids and bboxes in
+the JSON as text evidence and text-only click proxies, never as writable or keyboard targets.
 The marker list is the authoritative original-image geometry.
 OCR-group markers enclose aligned text in repeated lines. Classify them as row/header/group/text
 only; they are not input or table extents. Use OCR cell markers as children of an observed row.

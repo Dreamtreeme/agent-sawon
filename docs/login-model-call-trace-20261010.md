@@ -199,10 +199,10 @@ OCR임을 확인하고 `unwritable_fill_target_deferred`로 거절했다. 행동
 ## 적용한 수정
 
 OCR은 계속 `id`, 텍스트, 좌표를 포함한 의미 증거로 모델에 전달하지만 marker 이미지에는
-OmniParser 검출 표면만 번호를 표시하고 `markers` 행동 대상 목록에도 이 표면만 넣는다.
-각 marker에는 `target_kind`와 `allowed_actions`를 추가했다. OmniParser 표면은
-`fill/click/double_click/key`를 허용한다. OCR은 `ocr` 목록의 텍스트·좌표 증거로만 남으며
-`label_ids/text_ids` 연결에는 사용할 수 있지만 control id나 step target이 될 수 없다.
+OmniParser 검출 표면만 이미지에 번호를 표시한다. JSON의 각 marker에는 `target_kind`와
+`allowed_actions`를 추가했다. OmniParser 표면은 `fill/click/double_click/key`를 허용하고,
+OCR은 `label_ids/text_ids` 의미 증거와 경계가 없는 텍스트 탭·버튼·메뉴의
+`click/double_click` 좌표로만 사용할 수 있다. OCR에는 `fill/key`를 허용하지 않는다.
 
 모델이 OCR marker를 `fill` 또는 `key` 대상으로 반환하면 해당 계획 전체를 실행 전에
 `screen_match_action_surface_mismatch`로 거절한다. 같은 현재 화면 계약으로 한 번 다시

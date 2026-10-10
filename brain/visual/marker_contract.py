@@ -22,10 +22,12 @@ def text_index(screen: dict) -> dict[int, int]:
 
 
 def allowed_marker_actions(source: str) -> list[str]:
-    """Only detector geometry is an action surface; OCR remains text evidence."""
+    """Keep OCR writable-proof while retaining text-only click coordinates."""
 
     if source == "omniparser":
         return ["fill", "click", "double_click", "key"]
+    if source in {"ocr", "ocr_group"}:
+        return ["click", "double_click"]
     return []
 
 
@@ -36,18 +38,19 @@ def model_screen(screen: dict) -> dict:
         return [index[i] for i in values if i in index]
 
     result = {k: v for k, v in screen.items() if k not in {"ocr", "markers", "correction"}}
-    result["id_namespace"] = "visible_evidence_ids; only markers are action targets"
+    result["id_namespace"] = "visible_marker_ids"
     result["ocr"] = [dict(b, id=index[b["id"]]) for b in screen["ocr"] if b["id"] in index]
     result["markers"] = [
         {
             **m,
             "text_ids": ids(m.get("text_ids", [])),
             "contained_ocr_ids": ids(m.get("contained_ocr_ids", [])),
-            "target_kind": "detector_surface",
+            "target_kind": (
+                "detector_surface" if m.get("source") == "omniparser" else "ocr_click_proxy"
+            ),
             "allowed_actions": allowed_marker_actions(m.get("source", "")),
         }
         for m in screen.get("markers", [])
-        if m.get("source") == "omniparser"
     ]
     if "correction" in screen:
         correction = screen["correction"]

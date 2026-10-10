@@ -31,7 +31,8 @@ def test_image_and_text_catalog_share_visible_ids_and_round_trip():
     current = screen()
     public = model_screen(current)
     assert public["ocr"] == [{"id": 8, "text": "Account"}, {"id": 4, "text": "Password"}]
-    assert [marker["id"] for marker in public["markers"]] == [7]
+    assert public["markers"][1]["text_ids"] == [8]
+    assert public["markers"][2]["contained_ocr_ids"] == [4]
     assert public["markers"][0]["target_kind"] == "detector_surface"
     assert public["markers"][0]["allowed_actions"] == [
         "fill",
@@ -39,6 +40,8 @@ def test_image_and_text_catalog_share_visible_ids_and_round_trip():
         "double_click",
         "key",
     ]
+    assert public["markers"][1]["target_kind"] == "ocr_click_proxy"
+    assert public["markers"][1]["allowed_actions"] == ["click", "double_click"]
     external = SemanticDetection(
         controls=[
             {

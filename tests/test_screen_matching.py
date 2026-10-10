@@ -50,8 +50,7 @@ def task_instruction():
     )
 
 
-@pytest.mark.parametrize(("action", "role"), [("fill", "edit"), ("click", "text")])
-def test_ocr_target_is_rejected_as_non_action_surface(tmp_path, action, role):
+def test_ocr_fill_target_is_rejected_as_non_action_surface(tmp_path):
     class BrainStub:
         log = RunLog(tmp_path, case_id="defer-ocr-fill", agent_id="test")
 
@@ -61,16 +60,15 @@ def test_ocr_target_is_rejected_as_non_action_surface(tmp_path, action, role):
             "procedure_step": "task-action",
             "controls": [
                 {"id": 1, "role": "edit", "confidence": 1},
-                {"id": 2, "role": role, "text_ids": [8], "confidence": 1},
+                {"id": 2, "role": "edit", "text_ids": [8], "confidence": 1},
             ],
             "steps": [
                 {"target": 1, "action": "fill", "intent": "fill", "source": "safe"},
                 {
                     "target": 2,
-                    "action": action,
+                    "action": "fill",
                     "intent": "fill",
                     "source": "missing",
-                    **({"point": [1, 1]} if action == "click" else {}),
                 },
             ],
         }
@@ -90,13 +88,38 @@ def test_ocr_target_is_rejected_as_non_action_surface(tmp_path, action, role):
         "targets": [
             {
                 "target": 2,
-                "action": action,
+                "action": "fill",
                 "source": "ocr",
-                "role": role,
+                "role": "edit",
                 "reason": "action_not_allowed_for_geometry",
             }
         ],
     }
+
+
+def test_ocr_text_click_proxy_is_actionable_without_claiming_a_control_role(tmp_path):
+    class BrainStub:
+        log = RunLog(tmp_path, case_id="ocr-text-click", agent_id="test")
+
+    response = ScreenMatch.model_validate(
+        {
+            "screen_kind": "editor",
+            "procedure_step": "task-action",
+            "controls": [{"id": 2, "role": "text", "text_ids": [8], "confidence": 1}],
+            "steps": [
+                {
+                    "target": 2,
+                    "action": "click",
+                    "point": [10, 10],
+                    "intent": "select_tab",
+                }
+            ],
+        }
+    )
+    screen = {"markers": [{"id": 2, "source": "ocr"}]}
+
+    assert validate_action_surfaces(BrainStub(), response, screen) is response
+    assert BrainStub.log.read_all() == []
 
 
 def setup_brain(

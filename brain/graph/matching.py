@@ -316,9 +316,9 @@ Never classify a rectangle containing multiple smaller closed rectangles as an e
 it is a container or grid candidate. When an input boundary is clipped at the viewport edge,
 scroll to expose that input instead of borrowing a nearby table or container rectangle.
 An OCR input marker must enclose that input's own current literal value, never its nearby label.
-Treat OCR as text evidence only. A step target MUST name an entry from markers whose
-allowed_actions contains the requested action. OCR ids may be used only in label_ids/text_ids;
-never use an OCR id as a control id or step target.
+Treat OCR primarily as text evidence. A step target MUST name a marker whose allowed_actions
+contains the requested action. An OCR marker may be a click target when its visible text is itself
+the tab, button, menu, link, row, or cell to activate; it is never a fill or keyboard target.
 """
 
 
@@ -355,8 +355,9 @@ Use the supplied existing marker ID and geometry; never substitute an OCR captio
 enclosing detector marker. Classify its visible role, labels, contained literal text, enabled state,
 and focus state. All label_ids/text_ids use the printed visible text-marker IDs. Do not invent IDs,
 boxes, values, actions, or hidden controls. Report uncertainty when the role cannot be grounded.
-The requested action must appear in that marker's allowed_actions. OCR ids are label/text evidence
-and cannot be control ids or action targets.
+The requested action must appear in that marker's allowed_actions. OCR click proxies may retain
+role=text when their visible caption is the requested click target; they cannot be writable or
+keyboard targets.
 """
 
 
@@ -1279,7 +1280,11 @@ def validate_action_surfaces(
             continue
         elif step.action not in allowed_marker_actions(source):
             reason = "action_not_allowed_for_geometry"
-        elif control is not None and control.role not in _ACTION_ROLES[step.action]:
+        elif (
+            control is not None
+            and not (source == "ocr" and step.action in {"click", "double_click"})
+            and control.role not in _ACTION_ROLES[step.action]
+        ):
             reason = "role_not_actionable"
         if reason is not None:
             rejected.append(
@@ -1640,9 +1645,11 @@ def validate_or_replan(
                     "instruction": (
                         "Re-read the CURRENT screen and return a corrected interpretation and "
                         "plan. For every step, choose a target marker whose allowed_actions "
-                        "contains the requested action. OCR ids are text evidence only and may "
-                        "appear in label_ids/text_ids, never as control ids or step targets. Keep "
-                        "controls and steps target IDs consistent."
+                        "contains the requested action. OCR markers may only be click targets "
+                        "when their visible text is the requested tab, button, menu, link, row, "
+                        "or cell; "
+                        "never fill or send keys to OCR. Keep controls and steps target IDs "
+                        "consistent."
                     ),
                     "rejected_target_ids": sorted(step.target for step in response.steps),
                 },
