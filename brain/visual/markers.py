@@ -134,6 +134,8 @@ def render_markers(path: Path, output: Path, markers: list[Marker]) -> None:
         marked = original.convert("RGB")
     draw = ImageDraw.Draw(marked)
     for marker in markers:
+        if marker.source != "omniparser":
+            continue
         x, y, w, h = marker.bbox
         draw.rectangle((x, y, x + w - 1, y + h - 1), outline="red", width=1)
         draw.text(

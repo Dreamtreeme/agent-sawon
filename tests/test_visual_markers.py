@@ -338,7 +338,8 @@ def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_pat
         text = next(m for m in payload["markers"] if m["source"] == "ocr")
         assert text["contained_ocr_ids"] == [8]
         with Image.open(page.image_path) as picture:
-            assert picture.getpixel((10, 20)) == (255, 0, 0)
+            assert picture.getpixel((10, 20)) == (255, 255, 255)  # OCR is evidence-only.
+            assert picture.getpixel((100, 15)) == (255, 0, 0)  # Detector surface is numbered.
         assert "NOT markers[].id" in prompt
         calls.append(page)
         if outcome == "provider_error":

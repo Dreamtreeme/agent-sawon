@@ -21,6 +21,18 @@ def text_index(screen: dict) -> dict[int, int]:
     }
 
 
+def allowed_marker_actions(source: str) -> list[str]:
+    """Expose geometry as an action surface without treating OCR text as an input."""
+
+    if source == "omniparser":
+        return ["fill", "click", "double_click", "key"]
+    if source in {"ocr", "ocr_group"}:
+        # A text-only menu, link, or table cell may still be activated.  It is a
+        # click proxy, never a writable or keyboard-navigation surface.
+        return ["click", "double_click"]
+    return []
+
+
 def model_screen(screen: dict) -> dict:
     index = text_index(screen)
 
@@ -35,6 +47,10 @@ def model_screen(screen: dict) -> dict:
             **m,
             "text_ids": ids(m.get("text_ids", [])),
             "contained_ocr_ids": ids(m.get("contained_ocr_ids", [])),
+            "target_kind": (
+                "detector_surface" if m.get("source") == "omniparser" else "ocr_click_proxy"
+            ),
+            "allowed_actions": allowed_marker_actions(m.get("source", "")),
         }
         for m in screen.get("markers", [])
     ]

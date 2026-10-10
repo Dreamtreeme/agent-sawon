@@ -23,7 +23,12 @@ from brain.input_binding import (
 from brain.observe.evidence import input_surface
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInstruction
-from brain.visual.marker_contract import local_response, model_controls, model_screen
+from brain.visual.marker_contract import (
+    allowed_marker_actions,
+    local_response,
+    model_controls,
+    model_screen,
+)
 from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import SemanticDetection, contains, overlap
 from sawon_runtime.storage import RunLog, atomic_write_json
@@ -311,6 +316,9 @@ Never classify a rectangle containing multiple smaller closed rectangles as an e
 it is a container or grid candidate. When an input boundary is clipped at the viewport edge,
 scroll to expose that input instead of borrowing a nearby table or container rectangle.
 An OCR input marker must enclose that input's own current literal value, never its nearby label.
+Treat OCR as text evidence. A step target MUST name a marker whose allowed_actions contains the
+requested action. OCR click proxies may be clicked only after classifying them as an actually
+clickable button, tab, menu item, row, cell, checkbox, or icon. Never fill or send keys to OCR.
 """
 
 
@@ -347,6 +355,8 @@ Use the supplied existing marker ID and geometry; never substitute an OCR captio
 enclosing detector marker. Classify its visible role, labels, contained literal text, enabled state,
 and focus state. All label_ids/text_ids use the printed visible text-marker IDs. Do not invent IDs,
 boxes, values, actions, or hidden controls. Report uncertainty when the role cannot be grounded.
+The requested action must appear in that marker's allowed_actions. OCR click proxies cannot be
+writable controls or keyboard targets.
 """
 
 
@@ -863,6 +873,7 @@ _REPLANNABLE_MATCH_ERRORS = {
     "screen_match_taught_target_mismatch",
     "screen_match_saved_row_target_mismatch",
     "screen_match_action_target_uncertain",
+    "screen_match_action_surface_mismatch",
 }
 
 
@@ -1219,57 +1230,74 @@ def omit_nonblocking_image_request(
     return response.model_copy(update={"needs_image": False})
 
 
-def defer_unwritable_fill_targets(
+_ACTION_ROLES = {
+    "fill": {"edit", "combobox", "cell"},
+    "click": {
+        "edit",
+        "combobox",
+        "button",
+        "checkbox",
+        "tabitem",
+        "menuitem",
+        "row",
+        "cell",
+        "icon",
+    },
+    "double_click": {"button", "menuitem", "row", "cell", "icon"},
+    "key": {
+        "edit",
+        "combobox",
+        "button",
+        "checkbox",
+        "tabitem",
+        "menuitem",
+        "table",
+        "row",
+        "cell",
+        "group",
+        "window",
+    },
+}
+
+
+def validate_action_surfaces(
     services: MatchServices, response: ScreenMatch, screen: dict
 ) -> ScreenMatch:
-    """Keep OCR-only input evidence readable but never use it as a write surface."""
+    """Keep text as evidence and permit actions only on typed current surfaces."""
 
     markers = {marker["id"]: marker for marker in screen.get("markers", [])}
-    invalid = [
-        step
-        for step in response.steps
-        if step.action == "fill"
-        and markers.get(step.target, {}).get("source") in {"ocr", "ocr_group"}
-    ]
-    if not invalid:
+    controls = {control.id: control for control in response.controls}
+    rejected = []
+    for step in response.steps:
+        marker = markers.get(step.target)
+        control = controls.get(step.target)
+        source = marker.get("source", "") if marker is not None else ""
+        reason = None
+        if marker is None:
+            # Preserve the existing unknown-marker error path.  This validator
+            # distinguishes known text evidence from known action geometry.
+            continue
+        elif step.action not in allowed_marker_actions(source):
+            reason = "action_not_allowed_for_geometry"
+        elif control is not None and control.role not in _ACTION_ROLES[step.action]:
+            reason = "role_not_actionable"
+        if reason is not None:
+            rejected.append(
+                {
+                    "target": step.target,
+                    "action": step.action,
+                    "source": source or None,
+                    "role": control.role if control is not None else None,
+                    "reason": reason,
+                }
+            )
+    if not rejected:
         return response
-    # A login or other boundary batch is atomic. Direct record fills may retain
-    # safe siblings and defer only targets whose writable extent is still absent.
-    has_boundary_action = any(step.action != "fill" for step in response.steps)
-    retained = (
-        [] if has_boundary_action else [step for step in response.steps if step not in invalid]
-    )
-    invalid_targets = {step.target for step in invalid}
-    still_referenced = (
-        {step.target for step in retained}
-        | {item.target for item in response.evidence}
-        | {item.target for item in response.completion_evidence}
-    )
-    controls = [
-        control
-        for control in response.controls
-        if control.id not in invalid_targets or control.id in still_referenced
-    ]
     services.log.append(
         "verify",
-        payload={
-            "check": "unwritable_fill_target_deferred",
-            "marker_ids": sorted(invalid_targets),
-            "safe_steps_retained": len(retained),
-            "refinement_required": not retained,
-        },
+        payload={"check": "action_surface_rejected", "targets": rejected},
     )
-    return response.model_copy(
-        update={
-            "controls": controls,
-            "steps": retained,
-            "needs_refinement": not retained,
-            "uncertainties": [
-                *response.uncertainties,
-                "A requested writable control has only OCR text geometry.",
-            ],
-        }
-    )
+    raise ValueError("screen_match_action_surface_mismatch")
 
 
 def enforce_taught_input_surfaces(
@@ -1370,8 +1398,8 @@ def prepare_match_plan(
             "procedure_step": capability.capability_id,
         }
     )
+    response = validate_action_surfaces(services, response, request.screen)
     response = enforce_taught_input_surfaces(request, services, response)
-    response = defer_unwritable_fill_targets(services, response, request.screen)
     return validate_match_plan(response, capability, request, services, active_fields)
 
 
@@ -1604,6 +1632,44 @@ def validate_or_replan(
     except ValueError as error:
         if str(error) not in _REPLANNABLE_MATCH_ERRORS:
             raise
+        if str(error) == "screen_match_action_surface_mismatch":
+            correction_state = {
+                **prepared.state,
+                "correction": {
+                    "error": str(error),
+                    "instruction": (
+                        "Re-read the CURRENT screen and return a corrected interpretation and "
+                        "plan. For every step, choose a target marker whose allowed_actions "
+                        "contains the requested action. OCR is text evidence and may only act as "
+                        "a click proxy after it is classified as a clickable role. Never fill or "
+                        "send keys to OCR. Keep controls and steps target IDs consistent."
+                    ),
+                    "rejected_target_ids": sorted(step.target for step in response.steps),
+                },
+            }
+            corrected = services.call(
+                TASK_RULES
+                + prepared.taught_rules
+                + prepared.method_rules
+                + json.dumps(correction_state, ensure_ascii=False),
+                ScreenMatch,
+                page=request.page,
+            )
+            corrected = local_response(corrected, request.screen)
+            corrected = bind_value_evidence_to_controls(services, corrected, request.screen)
+            corrected = prepare_match_plan(
+                request, services, corrected, prepared.capability, active_fields
+            )
+            write_match_artifact(services, "action-surface-correction", corrected)
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "action_surface_corrected",
+                    "rejected_target_ids": sorted(step.target for step in response.steps),
+                    "corrected_target_ids": sorted(step.target for step in corrected.steps),
+                },
+            )
+            return corrected
         if str(error) == "screen_match_action_target_uncertain":
             correction_state = {
                 **prepared.state,

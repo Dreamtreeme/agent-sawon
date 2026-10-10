@@ -196,6 +196,19 @@ OCR임을 확인하고 `unwritable_fill_target_deferred`로 거절했다. 행동
 것이다. 현재 validator는 잘못된 행동을 막지만, 올바른 detector 표면이 이미 있을 때에도
 “검출 누락 → 확대 → 전체 모델 재호출”로 처리해 두 번의 추가 호출을 만든다.
 
+## 적용한 수정
+
+OCR은 계속 `id`, 텍스트, 좌표를 포함한 의미 증거로 모델에 전달하지만 marker 이미지에는
+OmniParser 검출 표면만 번호를 표시한다. 각 marker에는 `target_kind`와 `allowed_actions`를
+추가했다. OmniParser 표면은 `fill/click/double_click/key`, OCR은 텍스트 자체가 실제로
+누를 수 있는 버튼·탭·메뉴·행·셀일 때의 `click/double_click`만 허용한다.
+
+모델이 OCR marker를 `fill` 또는 `key` 대상으로 반환하면 해당 계획 전체를 실행 전에
+`screen_match_action_surface_mismatch`로 거절한다. 같은 현재 화면 계약으로 한 번 다시
+계획하게 하며, 잘못 고른 OCR 사각형을 확대 탐지하지 않는다. 저장된 로그인 프레임에서
+입력 칸 7·9와 로그인 버튼 11만 이미지 번호로 남고 OCR 제목·라벨 번호는 사라지는 것을
+확인했다. 전체 로컬 회귀 테스트는 597건이 통과했다.
+
 ## 원본 증거
 
 - 첫 응답: `matching/05d6ad00a5954084a415335d031020b7-markers.json`

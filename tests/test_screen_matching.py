@@ -26,11 +26,11 @@ from brain.graph.matching import (
     build_match_prompt,
     compile_match,
     compile_screen_action_plan,
-    defer_unwritable_fill_targets,
     enforce_taught_input_surfaces,
     omit_nonblocking_image_request,
     omit_nonblocking_refinement,
     task_action_contract,
+    validate_action_surfaces,
     validate_match_plan,
 )
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
@@ -50,7 +50,7 @@ def task_instruction():
     )
 
 
-def test_ocr_fill_target_is_deferred_without_discarding_safe_sibling(tmp_path):
+def test_ocr_fill_target_is_rejected_as_non_action_surface(tmp_path):
     class BrainStub:
         log = RunLog(tmp_path, case_id="defer-ocr-fill", agent_id="test")
 
@@ -75,16 +75,21 @@ def test_ocr_fill_target_is_deferred_without_discarding_safe_sibling(tmp_path):
         ]
     }
 
-    partial = defer_unwritable_fill_targets(BrainStub(), response, screen)
-    assert [step.source for step in partial.steps] == ["safe"]
-    assert not partial.needs_refinement
-    assert {control.id for control in partial.controls} == {1}
-
-    missing_only = defer_unwritable_fill_targets(
-        BrainStub(), response.model_copy(update={"steps": response.steps[1:]}), screen
-    )
-    assert not missing_only.steps
-    assert missing_only.needs_refinement
+    with pytest.raises(ValueError, match="screen_match_action_surface_mismatch"):
+        validate_action_surfaces(BrainStub(), response, screen)
+    event = BrainStub.log.read_all()[-1]
+    assert event.payload == {
+        "check": "action_surface_rejected",
+        "targets": [
+            {
+                "target": 2,
+                "action": "fill",
+                "source": "ocr",
+                "role": "edit",
+                "reason": "action_not_allowed_for_geometry",
+            }
+        ],
+    }
 
 
 def setup_brain(
@@ -235,6 +240,36 @@ def test_task_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path, reco
         "e" + str(brain.observation.obs_id.int)
     )
     assert "secret-user" not in model.prompts[0] and "secret-pw" not in model.prompts[0]
+
+
+def test_ocr_fill_target_replans_without_visual_refinement(tmp_path, record):
+    blocks, _, markers, meaning = fixture()
+    text_target = next(marker.id for marker in markers if marker.source == "ocr")
+    wrong = response(meaning)
+    wrong["controls"] = [
+        {
+            "id": text_target,
+            "role": "edit",
+            "text_ids": [text_target],
+            "confidence": 1,
+        }
+    ]
+    wrong["steps"][0]["target"] = text_target
+    corrected = response(meaning)
+    brain, model, _, ocr, detector, _ = setup_brain(tmp_path, record, [wrong, corrected])
+
+    brain._observe()
+
+    assert len(model.prompts) == 2
+    assert '"allowed_actions": ["fill", "click", "double_click", "key"]' in model.prompts[0]
+    correction = json.loads(model.prompts[1][len(TASK_RULES) :])["correction"]
+    assert correction["error"] == "screen_match_action_surface_mismatch"
+    assert brain.visual_proposal.steps[0].target == meaning.controls[0].id
+    assert ocr.calls == detector.calls == 1
+    checks = {event.payload.get("check") for event in brain.log.read_all()}
+    assert "action_surface_rejected" in checks
+    assert "action_surface_corrected" in checks
+    assert "visual_refinement" not in checks
 
 
 def test_observation_semantics_are_reconciled_before_a_separate_task_plan(
