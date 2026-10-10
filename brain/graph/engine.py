@@ -477,7 +477,7 @@ class Brain:
                 response = self._match_visual(screen, request.page, proposal=response)
                 self.visual_proposal = response
                 atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
-                return response.interpretation()
+                return self._groundable_interpretation(response, screen)
         if self.settings.screen_matching and not self.settings.separate_observation_decision:
             screen = dict(request.screen)
             if request.correction is not None:
@@ -489,10 +489,38 @@ class Brain:
             response = self._match_visual(screen, request.page)
             self.visual_proposal = response
             atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
-            return response.interpretation()
+            return self._groundable_interpretation(response, screen)
         # Observation classifies the current pixels only.  Task planning happens
         # later in _selection_call against this immutable interpretation.
         return self._call(request.prompt(), SemanticDetection, page=request.page)
+
+    def _groundable_interpretation(self, response, screen: dict) -> SemanticDetection:
+        """Keep model-only point targets in the plan, outside the local scene graph."""
+
+        interpretation = response.interpretation()
+        if self.settings.guard_mode != "observe_only":
+            return interpretation
+        marker_ids = {marker["id"] for marker in screen.get("markers", [])}
+        omitted = [
+            control.id for control in interpretation.controls if control.id not in marker_ids
+        ]
+        if not omitted:
+            return interpretation
+        self.log.append(
+            "verify",
+            payload={
+                "check": "guard_observe_only",
+                "guard": "local_scene_marker",
+                "model_point_control_ids": sorted(omitted),
+            },
+        )
+        return interpretation.model_copy(
+            update={
+                "controls": [
+                    control for control in interpretation.controls if control.id in marker_ids
+                ]
+            }
+        )
 
     def _selection_call(self, prompt: str, schema: type[BaseModel]):
         if self.settings.screen_matching:

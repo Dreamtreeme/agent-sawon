@@ -1455,6 +1455,17 @@ def test_observe_only_compiles_an_explicit_model_point_without_a_detected_marker
     meaning = fixture()[-1]
     data = response(meaning)
     data["steps"][0].update(target=999, point=[175, 30])
+    data["controls"].append(
+        {
+            **data["controls"][0],
+            "id": 999,
+            "role": "tabitem",
+            "label_ids": [],
+            "text_ids": [],
+            "confidence_policy": "argmax",
+            "visual_description": "visible tab without a standalone marker",
+        }
+    )
     brain, model, *_ = setup_brain(tmp_path, record, [data])
     brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
 
@@ -1468,6 +1479,7 @@ def test_observe_only_compiles_an_explicit_model_point_without_a_detected_marker
     assert any(
         event.payload.get("guard") == "current_frame_target" for event in brain.log.read_all()
     )
+    assert any(event.payload.get("guard") == "local_scene_marker" for event in brain.log.read_all())
 
 
 def test_observe_only_prefers_model_completion_over_an_attached_action(tmp_path, record):
@@ -2080,9 +2092,7 @@ def test_observe_only_replans_the_full_screen_after_an_empty_action(tmp_path, re
     meaning = fixture()[-1]
     initial = response(meaning, steps=[])
     replanned = response(meaning)
-    brain, model, *_ = setup_brain(
-        tmp_path, record, [initial, replanned], task_instruction=None
-    )
+    brain, model, *_ = setup_brain(tmp_path, record, [initial, replanned], task_instruction=None)
     brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
 
     brain._observe()
@@ -2090,9 +2100,7 @@ def test_observe_only_replans_the_full_screen_after_an_empty_action(tmp_path, re
     assert brain._select_node() == "review"
     assert len(model.prompts) == 2
     assert brain.action_plan.actions[0].decision.action.source == "hbl_no"
-    assert any(
-        event.payload.get("guard") == "empty_action" for event in brain.log.read_all()
-    )
+    assert any(event.payload.get("guard") == "empty_action" for event in brain.log.read_all())
 
 
 @pytest.mark.parametrize("operation", ["act", "stop"])
