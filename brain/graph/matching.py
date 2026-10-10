@@ -1600,12 +1600,7 @@ def select_match_response(
 
     screen, page = request.screen, request.page
     method_proposal = request.proposal
-    if (
-        method_proposal is None
-        and request.phase != "save_result"
-        and not request.post_action_review
-        and "correction" not in screen
-    ):
+    if method_proposal is None and request.phase != "save_result" and "correction" not in screen:
         method_proposal = services.methods.apply(screen)
     cache_hit = (
         services.cache.lookup(prepared.state)

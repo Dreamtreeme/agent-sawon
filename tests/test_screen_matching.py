@@ -2233,6 +2233,28 @@ def test_post_action_review_preserves_next_action_in_same_response(tmp_path, rec
     assert result.response.needs_refinement is False
 
 
+def test_post_action_review_reuses_bound_next_method_without_model_call(tmp_path, record):
+    blocks, _, markers, meaning = fixture()
+    brain, model, *_ = setup_brain(tmp_path, record, [])
+    screen = {
+        "ocr": [block.model_dump() for block in blocks],
+        "markers": [marker.model_dump() for marker in markers],
+    }
+    request, services = matching_contract(brain, screen)
+    replay = ScreenMatch.model_validate(response(meaning))
+    services.methods.apply = lambda _screen: replay
+
+    result = match_screen(
+        replace(request, post_action_review=True, pending_verification=True), services
+    )
+
+    assert result.response.operation == replay.operation
+    assert [(step.target, step.action, step.source) for step in result.response.steps] == [
+        (step.target, step.action, step.source) for step in replay.steps
+    ]
+    assert model.prompts == []
+
+
 def test_observe_only_does_not_issue_hidden_empty_action_call(tmp_path, record):
     meaning = fixture()[-1]
     initial = response(meaning, steps=[])
