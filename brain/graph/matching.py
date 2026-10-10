@@ -1793,33 +1793,66 @@ def ground_match_response(
         )
         response = sanitize_unused_controls(services, request.phase, response, screen, required)
         if response.operation == "act" and not response.steps:
-            completion = services.call(
-                "The current form was matched but operation=act had no executable steps. "
-                "Return only the missing steps for this procedure goal using these CURRENT "
-                "control IDs and source keys. Never infer that an action already happened. "
-                "If no valid action is available, return operation=stop and steps=[].\n"
-                + json.dumps(
-                    {
-                        "capability": prepared.capability.model_dump(),
-                        "notebook": prepared.state["notebook"],
-                        "execution": prepared.state["execution"],
-                        "screen": prepared.state["screen"],
-                        "controls": model_controls(response.controls, screen),
+            if services.settings.guard_mode == "observe_only":
+                correction_state = {
+                    **prepared.state,
+                    "correction": {
+                        "error": "screen_match_empty_action",
+                        "instruction": (
+                            "Re-evaluate the whole CURRENT image and task state. Return the next "
+                            "visible action that advances the user's task, or a supported complete "
+                            "decision. Do not merely restate the previous step's expected result."
+                        ),
                     },
-                    ensure_ascii=False,
-                ),
-                ActionCompletion,
-                page=page if used_image else None,
-            )
-            response = response.model_copy(
-                update={"operation": completion.operation, "steps": completion.steps}
-            )
+                }
+                response = services.call(
+                    TASK_RULES
+                    + prepared.guard_rules
+                    + prepared.taught_rules
+                    + prepared.method_rules
+                    + json.dumps(correction_state, ensure_ascii=False),
+                    ScreenMatch,
+                    page=page,
+                )
+                write_match_artifact(services, "empty-action-replan", response)
+                response = local_response(response, screen)
+                response = bind_value_evidence_to_controls(services, response, screen)
+                services.log.append(
+                    "verify",
+                    payload={
+                        "check": "guard_observe_only",
+                        "guard": "empty_action",
+                        "outcome": "full_screen_replan",
+                    },
+                )
+            else:
+                completion = services.call(
+                    "The current form was matched but operation=act had no executable steps. "
+                    "Return only the missing steps for this procedure goal using these CURRENT "
+                    "control IDs and source keys. Never infer that an action already happened. "
+                    "If no valid action is available, return operation=stop and steps=[].\n"
+                    + json.dumps(
+                        {
+                            "capability": prepared.capability.model_dump(),
+                            "notebook": prepared.state["notebook"],
+                            "execution": prepared.state["execution"],
+                            "screen": prepared.state["screen"],
+                            "controls": model_controls(response.controls, screen),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    ActionCompletion,
+                    page=page if used_image else None,
+                )
+                response = response.model_copy(
+                    update={"operation": completion.operation, "steps": completion.steps}
+                )
             services.log.append(
                 "verify",
                 payload={
                     "check": "missing_match_actions_completed",
-                    "operation": completion.operation,
-                    "steps": len(completion.steps),
+                    "operation": response.operation,
+                    "steps": len(response.steps),
                 },
             )
     response = prepare_match_plan(
@@ -1855,7 +1888,6 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
                 "operation": "stop",
                 "steps": [],
                 "completion_evidence": [],
-                "needs_refinement": True,
                 "save_result": None,
                 "message_targets": [],
                 "repair_fields": [],
