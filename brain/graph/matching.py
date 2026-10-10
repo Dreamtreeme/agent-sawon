@@ -1392,6 +1392,21 @@ def prepare_match_plan(
             "procedure_step": capability.capability_id,
         }
     )
+    if (
+        services.settings.guard_mode == "observe_only"
+        and response.operation != "act"
+        and response.steps
+    ):
+        services.log.append(
+            "verify",
+            payload={
+                "check": "guard_observe_only",
+                "guard": "proof_with_actions",
+                "accepted_operation": response.operation,
+                "ignored_actions": len(response.steps),
+            },
+        )
+        response = response.model_copy(update={"steps": []})
     response = validate_action_surfaces(services, response, request.screen)
     response = enforce_taught_input_surfaces(request, services, response)
     return validate_match_plan(response, capability, request, services, active_fields)

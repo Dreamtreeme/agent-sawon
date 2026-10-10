@@ -1468,6 +1468,31 @@ def test_observe_only_compiles_an_explicit_model_point_without_a_detected_marker
     )
 
 
+def test_observe_only_prefers_model_completion_over_an_attached_action(tmp_path, record):
+    meaning = fixture()[-1]
+    data = response(
+        meaning,
+        operation="complete",
+        completion_evidence=[{"condition_index": 0, "target": meaning.controls[0].id}],
+    )
+    data["steps"][0]["point"] = [9999, 9999]
+    brain, *_ = setup_brain(tmp_path, record, [data])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+
+    brain._observe()
+
+    assert brain._select_node() == "review"
+    assert brain.decision.operation == "complete"
+    assert brain.decision.action is None
+    event = next(
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("guard") == "proof_with_actions"
+    )
+    assert event.payload["accepted_operation"] == "complete"
+    assert event.payload["ignored_actions"] == 1
+
+
 def test_combined_match_keeps_grounding_and_corrects_only_invalid_action(tmp_path, record):
     meaning = fixture()[-1]
     wrong = mixed_boundary_response(meaning)
