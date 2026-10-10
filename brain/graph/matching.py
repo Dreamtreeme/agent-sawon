@@ -330,8 +330,10 @@ scrolling viewport edge, expose that boundary with grounded scrolling before sto
 reselect a current tab to expose a caption that is already visible. A merged OCR marker containing
 multiple tab captions does not identify an inactive tab; visible panel content is stronger proof.
 Return only task-plan schema fields and never reclassify controls or invent IDs.
-Every referenced marker must already exist in grounded_interpretation.controls. Omit incidental
-past-row evidence that is not needed for this CURRENT action or completion decision.
+Prefer grounded_interpretation.controls. When a necessary CURRENT action target exists in
+screen.markers but was omitted from grounded_interpretation.controls, you may reference that real
+marker ID; the runtime will ground only that target before execution. Omit incidental past-row
+evidence that is not needed for this CURRENT action or completion decision.
 """
     + TASK_INPUT_RULES
     + SCREEN_BOUNDARY_BATCH_RULES

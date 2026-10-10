@@ -1138,6 +1138,7 @@ def test_identical_catalog_grounds_new_target_without_replacing_plan(tmp_path, r
     assert brain._review_node() == "execution"
     assert len(model.prompts) == 3
     assert model.prompts[1].startswith(TASK_PLAN_RULES)
+    assert "you may reference that real\nmarker ID" in model.prompts[1]
     assert model.prompts[2].startswith(TARGET_GROUNDING_RULES)
     assert ocr.calls == detector.calls == 1
     assert any(
