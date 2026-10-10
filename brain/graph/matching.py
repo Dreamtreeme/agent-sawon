@@ -1855,6 +1855,7 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
                 "operation": "stop",
                 "steps": [],
                 "completion_evidence": [],
+                "needs_refinement": True,
                 "save_result": None,
                 "message_targets": [],
                 "repair_fields": [],

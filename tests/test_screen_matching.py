@@ -1,6 +1,7 @@
 """Procedure-driven OCR matching shares one response with the existing executor."""
 
 import json
+from dataclasses import replace
 from hashlib import sha256
 from itertools import repeat
 from pathlib import Path
@@ -28,6 +29,7 @@ from brain.graph.matching import (
     compile_match,
     compile_screen_action_plan,
     enforce_taught_input_surfaces,
+    match_screen,
     omit_nonblocking_image_request,
     omit_nonblocking_refinement,
     task_action_contract,
@@ -2052,6 +2054,26 @@ def test_model_only_review_delegates_required_verification_without_repair_call(t
     ]
     assert delegated[-1].payload["reviewer"] == "screen_model"
     assert delegated[-1].payload["sources"] == ["hbl_no"]
+
+
+def test_post_action_review_cannot_be_reused_as_a_stop_decision(tmp_path, record):
+    blocks, _, markers, meaning = fixture()
+    reviewed = response(meaning, steps=[])
+    brain, model, *_ = setup_brain(tmp_path, record, [reviewed])
+    screen = {
+        "ocr": [block.model_dump() for block in blocks],
+        "markers": [marker.model_dump() for marker in markers],
+    }
+    request, services = matching_contract(brain, screen)
+
+    result = match_screen(
+        replace(request, post_action_review=True, pending_verification=True), services
+    )
+
+    assert len(model.prompts) == 1
+    assert result.response.operation == "stop"
+    assert result.response.steps == []
+    assert result.response.needs_refinement is True
 
 
 @pytest.mark.parametrize("operation", ["act", "stop"])
