@@ -154,6 +154,26 @@ def marker_role_allowed(source: str, role: str, *, allow_ocr_inputs: bool = Fals
     return True
 
 
+def _label_is_near_input(
+    control: tuple[int, int, int, int], label: tuple[int, int, int, int]
+) -> bool:
+    """Reject only grossly inconsistent input/label bindings.
+
+    The semantic model may choose any locally detected marker, but an input label
+    still has to be spatially related to that marker.  The deliberately generous
+    bound permits wide fields and ordinary form spacing while rejecting title-bar
+    or window-chrome markers paired with a label on the opposite side of the
+    screen.
+    """
+
+    x, y, width, height = control
+    a, b, label_width, label_height = label
+    horizontal_gap = max(0, x - (a + label_width), a - (x + width))
+    vertical_gap = max(0, y - (b + label_height), b - (y + height))
+    limit = max(256, width * 2, height * 4, label_width * 2, label_height * 4)
+    return horizontal_gap * horizontal_gap + vertical_gap * vertical_gap <= limit * limit
+
+
 def ground_meanings(
     meanings: SemanticDetection,
     markers: list[Marker],
@@ -162,6 +182,7 @@ def ground_meanings(
     allow_ocr_inputs: bool = False,
 ) -> Detection:
     by_id = {m.id: m for m in markers}
+    blocks_by_id = {block.id: block for block in blocks}
     if len(by_id) != len(markers):
         raise ValueError("duplicate_marker_id")
     semantic_ids = {meaning.id for meaning in meanings.controls}
@@ -201,6 +222,12 @@ def ground_meanings(
             raise ValueError("unknown_or_duplicate_marker_id")
         seen.add(meaning.id)
         marker = by_id[meaning.id]
+        if meaning.role in {"edit", "combobox"} and any(
+            label_id in blocks_by_id
+            and not _label_is_near_input(marker.bbox, blocks_by_id[label_id].bbox)
+            for label_id in meaning.label_ids
+        ):
+            raise ValueError("input_label_not_near_control")
         if meaning.id in redundant_ocr_inputs:
             uncertainties.append(
                 f"redundant_ocr_input_omitted:{meaning.id}:{redundant_ocr_inputs[meaning.id]}"

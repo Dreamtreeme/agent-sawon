@@ -102,6 +102,24 @@ def test_label_is_never_promoted_to_input():
         ground_meanings(meaning, markers, blocks)
 
 
+def test_remote_label_cannot_turn_window_chrome_into_input():
+    blocks = [OcrBlock(id=3, text="House B/L", bbox=(34, 75, 105, 27), confidence=1)]
+    markers = [
+        Marker(id=0, bbox=(1192, 0, 48, 41), source="omniparser", confidence=0.77),
+        Marker(id=10, bbox=(178, 66, 913, 49), source="omniparser", confidence=0.47),
+    ]
+    wrong = SemanticDetection.model_validate(
+        {"controls": [{"id": 0, "role": "edit", "label_ids": [3], "confidence": 0.9}]}
+    )
+    correct = wrong.model_copy(
+        update={"controls": [wrong.controls[0].model_copy(update={"id": 10})]}
+    )
+
+    with pytest.raises(ValueError, match="input_label_not_near_control"):
+        ground_meanings(wrong, markers, blocks)
+    assert ground_meanings(correct, markers, blocks).controls[0].bbox == [178, 66, 913, 49]
+
+
 def test_unsupported_ocr_structure_is_kept_as_text_without_dropping_child_control():
     blocks = [OcrBlock(id=8, text="Registration window", bbox=(10, 10, 120, 20), confidence=1)]
     markers = [
