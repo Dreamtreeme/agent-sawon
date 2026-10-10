@@ -15,6 +15,7 @@ from test_visual_scene import wire
 from brain.cache import VisualMatchCache
 from brain.graph.engine import Brain
 from brain.graph.matching import (
+    OBSERVE_ONLY_TARGET_RULES,
     TARGET_GROUNDING_RULES,
     TASK_PLAN_RULES,
     TASK_RULES,
@@ -265,6 +266,7 @@ def test_task_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path, reco
     )
     assert len(model.prompts) == 1
     assert model.prompts[0].startswith(TASK_RULES)
+    assert OBSERVE_ONLY_TARGET_RULES not in model.prompts[0]
     assert brain.action_plan.actions[0].decision.action.source == "hbl_no"
     assert brain.action_plan.actions[0].decision.action.ref.startswith(
         "e" + str(brain.observation.obs_id.int)
@@ -1451,12 +1453,13 @@ def test_observe_only_compiles_an_explicit_model_point_without_a_detected_marker
     meaning = fixture()[-1]
     data = response(meaning)
     data["steps"][0].update(target=999, point=[175, 30])
-    brain, *_ = setup_brain(tmp_path, record, [data])
+    brain, model, *_ = setup_brain(tmp_path, record, [data])
     brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
 
     brain._observe()
     assert brain._select_node() == "review"
 
+    assert OBSERVE_ONLY_TARGET_RULES in model.prompts[0]
     expected_ref = "e" + str(brain.observation.obs_id.int) + "0999"
     assert any(element.ref == expected_ref for element in brain.observation.elements)
     assert brain.action_plan.actions[0].decision.action.ref == expected_ref

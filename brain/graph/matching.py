@@ -283,6 +283,7 @@ class MatchPromptContext:
     capability: ActionCapability
     active_fields: frozenset[str]
     prompt: str
+    guard_rules: str
     taught_rules: str
     method_rules: str
 
@@ -347,6 +348,19 @@ evidence that is not needed for this CURRENT action or completion decision.
     + TASK_INPUT_RULES
     + SCREEN_BOUNDARY_BATCH_RULES
 )
+
+
+OBSERVE_ONLY_TARGET_RULES = """
+Experimental model-trust mode is active. The current marker catalog is useful evidence, but it is
+not an exhaustive list of visible click targets. When a clearly visible control needed for the
+next action has no standalone marker because OCR merged adjacent labels or local detection omitted
+it, you may assign a new nonnegative control ID and use it consistently in controls and steps.
+For that control, provide its visible role, confidence_policy=argmax, and a precise
+visual_description.
+For click or double_click, provide an original-image point inside the intended visible control.
+This is an explicit exception to the preceding no-invented-ID rule. Do not use the exception for
+fill or keyboard actions, hidden controls, or targets outside the CURRENT image.
+"""
 
 TARGET_GROUNDING_RULES = """Ground only the listed action target markers on the CURRENT image.
 The existing task plan is immutable: do not replace, reorder, or add actions.
@@ -1499,9 +1513,13 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
     if methods.enabled:
         state["method_memory"] = methods.prompt_context()
     method_rules = METHOD_RULES if methods.enabled else ""
+    guard_rules = (
+        OBSERVE_ONLY_TARGET_RULES if services.settings.guard_mode == "observe_only" else ""
+    )
     taught_rules = TAUGHT_PROCEDURE_RULES if request.task_instruction.procedure else ""
     prompt = (
         TASK_RULES
+        + guard_rules
         + taught_rules
         + method_rules
         + (POST_ACTION_REVIEW_RULES if request.post_action_review else "")
@@ -1512,6 +1530,7 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
         capability=capability,
         active_fields=frozenset(active_fields),
         prompt=prompt,
+        guard_rules=guard_rules,
         taught_rules=taught_rules,
         method_rules=method_rules,
     )
@@ -1558,6 +1577,7 @@ def select_match_response(
         }
         plan = services.call(
             TASK_PLAN_RULES
+            + prepared.guard_rules
             + prepared.taught_rules
             + prepared.method_rules
             + json.dumps(plan_state, ensure_ascii=False),
@@ -1582,6 +1602,7 @@ def select_match_response(
     if response.needs_image:
         response = services.call(
             TASK_RULES
+            + prepared.guard_rules
             + prepared.taught_rules
             + prepared.method_rules
             + json.dumps(prepared.state, ensure_ascii=False)
@@ -1631,6 +1652,7 @@ def validate_or_replan(
             }
             corrected = services.call(
                 TASK_RULES
+                + prepared.guard_rules
                 + prepared.taught_rules
                 + prepared.method_rules
                 + json.dumps(correction_state, ensure_ascii=False),
@@ -1668,6 +1690,7 @@ def validate_or_replan(
             }
             corrected = services.call(
                 TASK_RULES
+                + prepared.guard_rules
                 + prepared.taught_rules
                 + prepared.method_rules
                 + json.dumps(correction_state, ensure_ascii=False),
@@ -1707,6 +1730,7 @@ def validate_or_replan(
         }
         plan = services.call(
             TASK_PLAN_RULES
+            + prepared.guard_rules
             + prepared.taught_rules
             + prepared.method_rules
             + json.dumps(correction_state, ensure_ascii=False),
