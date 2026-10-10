@@ -529,7 +529,9 @@ class MethodLibrary:
             if task is None or not method.task_objective or method.task_objective == task
         ]
 
-    def upsert(self, method: LearnedMethod) -> LearnedMethod:
+    def upsert(
+        self, method: LearnedMethod, *, replace_action_groups: bool = False
+    ) -> LearnedMethod:
         if not self.enabled:
             return method
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -538,11 +540,12 @@ class MethodLibrary:
             previous = existing.get(method.id)
             if previous is not None:
                 # The incoming method carries the runtime's successful procedure
-                # order.  Preserve that order, then retain any historical groups
-                # absent from the latest successful trace.
+                # order. Runtime promotion may replace obsolete branches with one
+                # fully verified path; import and authoring callers retain variants.
                 groups = {item.id: item for item in method.action_groups}
-                for item in previous.action_groups:
-                    groups.setdefault(item.id, item)
+                if not replace_action_groups:
+                    for item in previous.action_groups:
+                        groups.setdefault(item.id, item)
                 method = method.model_copy(
                     update={
                         "revision": previous.revision + 1,

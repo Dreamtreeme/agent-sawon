@@ -140,10 +140,10 @@ class MethodRuntime:
         )
         by_id = {group.id: group for group in method.action_groups}
         order = [group_id for group_id in delivered if group_id in by_id]
-        # A graph represents one fully observed successful path. Historical
-        # variants that were not delivered in this run stay as variants; they
-        # must not be invented as later sequential steps.
-        if not order or set(order) != set(by_id):
+        # A promoted graph is the path verified in this successful run. Keeping
+        # every historical variant made several actions bind the same screen,
+        # which forced model fallback and could replay an obsolete no-op branch.
+        if not order:
             return method
         groups = []
         previous = None
@@ -314,9 +314,7 @@ class MethodRuntime:
             # The current screen chooses a taught branch. Earlier versions tried
             # only the first unused group, so an already advanced screen could
             # never reuse a later successful action and fell back to the model.
-            if taught_replay:
-                groups = remaining
-            elif trace_replay:
+            if trace_replay:
                 groups = [
                     group
                     for group in remaining
@@ -325,6 +323,8 @@ class MethodRuntime:
                         for predecessor in group.predecessor_group_ids
                     )
                 ]
+            elif taught_replay:
+                groups = remaining
             else:
                 groups = remaining
             for group_index, group in enumerate(groups):
@@ -634,21 +634,23 @@ class MethodRuntime:
                     },
                 },
             )
-            if self.task_context.task and not self.task_context.task.procedure:
-                compiled = self._compile_trace_graph(compiled)
+            compiled = self._compile_trace_graph(compiled)
             methods.append(compiled)
         promoted = 0
         promoted_methods = []
         installed_methods = []
         if success:
             for method in methods:
-                promoted_methods.append(self.library.upsert(method))
+                promoted_methods.append(self.library.upsert(method, replace_action_groups=True))
                 promoted += 1
             if promoted_methods:
                 installed_methods = promoted_methods
                 if self.promotion_path is not None:
                     destination = MethodLibrary(self.promotion_path, enabled=True)
-                    installed_methods = [destination.upsert(method) for method in promoted_methods]
+                    installed_methods = [
+                        destination.upsert(method, replace_action_groups=True)
+                        for method in promoted_methods
+                    ]
                 atomic_write_json(
                     self.case_dir / "method-candidate.json",
                     # Export the full merged method. A warm run often learns only

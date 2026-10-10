@@ -270,7 +270,7 @@ def test_model_adaptation_is_retained_only_after_whole_batch_delivery(tmp_path, 
         assert brain.methods.state.history[-1]["origin"] == "adaptation"
         assert brain.methods.finish(success=True) == 1
         groups = brain.methods.library.methods()[0].action_groups
-        assert len(groups) == 2
+        assert len(groups) == 1
         candidate = MethodDocument.model_validate_json(
             (brain.case_dir / "method-candidate.json").read_bytes()
         )
@@ -336,7 +336,7 @@ def test_successful_candidate_installs_versioned_live_library(tmp_path, business
 
     installed = MethodDocument.model_validate_json(live.read_bytes()).methods[0]
     assert installed.revision == 2
-    assert len(installed.action_groups) == 2
+    assert len(installed.action_groups) == 1
     assert MethodDocument.model_validate_json(
         (brain.case_dir / "method-candidate.json").read_bytes()
     ).methods == [installed]
