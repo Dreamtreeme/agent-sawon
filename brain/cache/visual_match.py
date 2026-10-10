@@ -45,6 +45,7 @@ _DIAGNOSTIC_NOTEBOOK_KEYS = {
     "scratchpad",
 }
 _CONFIDENCE_KEYS = {"candidate_confidence", "confidence"}
+_CACHE_LAYER_KEYS = {"method_memory"}
 
 
 def _cache_contract(value: Any, *, parent: str | None = None) -> Any:
@@ -55,7 +56,7 @@ def _cache_contract(value: Any, *, parent: str | None = None) -> Any:
             return sorted(value)
         result = {}
         for key, item in value.items():
-            if key in _VOLATILE_KEYS or key in _CONFIDENCE_KEYS:
+            if key in _VOLATILE_KEYS or key in _CONFIDENCE_KEYS or key in _CACHE_LAYER_KEYS:
                 continue
             if parent == "notebook" and key in _DIAGNOSTIC_NOTEBOOK_KEYS:
                 continue

@@ -66,3 +66,20 @@ def test_visual_match_cache_key_ignores_run_metadata_but_keeps_action_context():
     assert visual_match_key(first) == visual_match_key(second)
     second["notebook"]["failed_transitions"] = [{"action_key": "double_click:target:row"}]
     assert visual_match_key(first) != visual_match_key(second)
+
+
+def test_visual_match_cache_key_does_not_depend_on_method_library_state():
+    state = {
+        "screen": {"markers": [{"id": 3, "bbox": [10, 20, 30, 40]}]},
+        "task_contract_sha256": "a" * 64,
+        "execution": {"phase": "task"},
+    }
+    with_learned_branch = {
+        **state,
+        "method_memory": {
+            "methods": [{"id": "method-a", "groups": [{"id": "branch-1"}]}],
+            "recent_executions": [{"group_id": "branch-1", "status": "delivered"}],
+        },
+    }
+
+    assert visual_match_key(state) == visual_match_key(with_learned_branch)
