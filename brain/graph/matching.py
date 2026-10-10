@@ -781,6 +781,43 @@ def retain_action_targets(
     return repaired
 
 
+def bind_value_evidence_to_controls(
+    services: MatchServices, response: ScreenMatch, screen: dict
+) -> ScreenMatch:
+    """Resolve a literal OCR value marker to its already-grounded input control."""
+
+    markers = {marker["id"]: marker for marker in screen.get("markers", [])}
+    controls = {control.id: control for control in response.controls}
+    value_roles = {"edit", "combobox", "cell", "dataitem", "row"}
+    rebound = []
+    changes = []
+    for evidence in response.evidence:
+        marker = markers.get(evidence.target)
+        if marker is None or marker.get("source") != "ocr":
+            rebound.append(evidence)
+            continue
+        value_ids = set(marker.get("text_ids", []))
+        candidates = [
+            control.id
+            for control in controls.values()
+            if control.role in value_roles and value_ids and value_ids <= set(control.text_ids)
+        ]
+        if len(candidates) != 1:
+            rebound.append(evidence)
+            continue
+        rebound.append(evidence.model_copy(update={"target": candidates[0]}))
+        changes.append(
+            {"field": evidence.field, "value_marker": evidence.target, "control": candidates[0]}
+        )
+    if not changes:
+        return response
+    services.log.append(
+        "verify",
+        payload={"check": "value_evidence_bound_to_control", "bindings": changes},
+    )
+    return response.model_copy(update={"evidence": rebound})
+
+
 def bind_selection_effect(
     response: ScreenMatch, step: ActionCapability, active_fields: set[str]
 ) -> ScreenMatch:
@@ -1484,6 +1521,7 @@ def select_match_response(
         response = omit_nonblocking_image_request(services, response, screen)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
+    response = bind_value_evidence_to_controls(services, response, screen)
     return MatchSelection(response, cache_hit, method_proposal, used_image)
 
 

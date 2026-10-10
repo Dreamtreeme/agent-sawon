@@ -22,6 +22,7 @@ from brain.graph.matching import (
     MatchServices,
     ScreenMatch,
     ScreenPlan,
+    bind_value_evidence_to_controls,
     compile_match,
     compile_screen_action_plan,
     defer_unwritable_fill_targets,
@@ -519,6 +520,33 @@ def test_taught_binding_rejects_a_source_that_conflicts_with_the_visible_label(t
     )
     with pytest.raises(ValueError, match="taught_target_mismatch"):
         validate_match_plan(planned("mbl_no"), capability, request, services, set(brain.values))
+
+
+def test_literal_value_evidence_is_bound_to_its_unique_input_control(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    screen = {
+        "ocr": [{"id": 8, "text": "DEMO-HBL-001"}],
+        "markers": [{"id": 18, "source": "ocr", "text_ids": [8]}],
+    }
+    _, services = matching_contract(brain, screen)
+    response = ScreenMatch.model_validate(
+        {
+            "screen_kind": "editor",
+            "procedure_step": "task-action",
+            "operation": "stop",
+            "controls": [{"id": 14, "role": "edit", "text_ids": [8], "confidence": 1}],
+            "evidence": [{"field": "hbl_no", "target": 18}],
+        }
+    )
+
+    rebound = bind_value_evidence_to_controls(services, response, screen)
+
+    assert rebound.evidence[0].target == 14
+    event = brain.log.read_all()[-1]
+    assert event.payload == {
+        "check": "value_evidence_bound_to_control",
+        "bindings": [{"field": "hbl_no", "value_marker": 18, "control": 14}],
+    }
 
 
 def test_taught_direct_input_is_not_written_into_a_detected_grid_cell(tmp_path, record):
