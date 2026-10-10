@@ -365,7 +365,7 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(
     assert model.prompts[0].startswith(TASK_RULES)
     state = json.loads(model.prompts[0][len(TASK_RULES) :])
     assert state["task"]["objective"] == brain.task_instruction.objective
-    assert "procedure" not in state["task"]
+    assert state["task"]["procedure"] == []
     assert state["taught_procedure_progress"]["steps"] == []
     assert state["taught_procedure_progress"]["completed_step_ids"] == []
     assert state["notebook"]["inputs"] == brain.values
@@ -414,7 +414,7 @@ def test_generic_task_binds_prompt_container_path_to_input_key(
     assert brain.visual_proposal.evidence[0].field == "hbl_no"
 
 
-def test_taught_step_allows_other_provided_input_visible_on_current_screen(tmp_path, record):
+def test_taught_step_rejects_input_from_a_different_taught_group(tmp_path, record):
     task_instruction = TaskInstruction.model_validate(
         {
             "name": "Taught shipment entry",
@@ -459,10 +459,66 @@ def test_taught_step_allows_other_provided_input_visible_on_current_screen(tmp_p
         planned("hbl_no"), capability, request, services, set(brain.values)
     )
     assert accepted.steps[0].source == "hbl_no"
-    accepted = validate_match_plan(
-        planned("mbl_no"), capability, request, services, set(brain.values)
+    with pytest.raises(ValueError, match="taught_target_mismatch"):
+        validate_match_plan(planned("mbl_no"), capability, request, services, set(brain.values))
+
+
+def test_taught_binding_rejects_a_source_that_conflicts_with_the_visible_label(tmp_path, record):
+    task_instruction = TaskInstruction.model_validate(
+        {
+            "name": "Taught shipment entry",
+            "objective": "Enter the visible shipment fields.",
+            "completion_conditions": ["The fields match."],
+            "procedure": [
+                {
+                    "id": "fill-basic",
+                    "instruction": "Enter both reference numbers.",
+                    "completion": "Both reference numbers match.",
+                    "actions": [
+                        {
+                            "verb": "fill",
+                            "target": "House B/L number field",
+                            "input_key": "hbl_no",
+                        },
+                        {
+                            "verb": "fill",
+                            "target": "Master B/L field",
+                            "input_key": "mbl_no",
+                        },
+                    ],
+                }
+            ],
+        }
     )
-    assert accepted.steps[0].source == "mbl_no"
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
+    screen = {"ocr": [{"id": 5, "text": "House B/L number"}], "markers": []}
+    request, services = matching_contract(brain, screen)
+    capability = ActionCapability(
+        actions=["fill"],
+        input_scope=["hbl_no", "mbl_no"],
+        goal="Enter both references",
+        completion="Both references match",
+    )
+
+    def planned(source):
+        return ScreenMatch.model_validate(
+            {
+                "screen_kind": "editor",
+                "procedure_step": "task-action",
+                "taught_step_id": "fill-basic",
+                "controls": [{"id": 1, "role": "edit", "label_ids": [5], "confidence": 1}],
+                "steps": [{"target": 1, "action": "fill", "intent": "fill", "source": source}],
+            }
+        )
+
+    assert (
+        validate_match_plan(planned("hbl_no"), capability, request, services, set(brain.values))
+        .steps[0]
+        .source
+        == "hbl_no"
+    )
+    with pytest.raises(ValueError, match="taught_target_mismatch"):
+        validate_match_plan(planned("mbl_no"), capability, request, services, set(brain.values))
 
 
 def test_taught_direct_input_is_not_written_into_a_detected_grid_cell(tmp_path, record):
@@ -1227,7 +1283,19 @@ def test_premature_completion_is_replanned_at_the_same_observation(tmp_path, rec
         taught_step_id="open-detail",
         completion_evidence=[{"condition_index": 0, "target": meaning.controls[0].id}],
     )
-    corrected = response(meaning, taught_step_id="open-detail")
+    corrected = response(
+        meaning,
+        taught_step_id="open-detail",
+        steps=[
+            {
+                "target": meaning.controls[0].id,
+                "action": "click",
+                "source": None,
+                "intent": "navigate",
+                "point": [200, 50],
+            }
+        ],
+    )
     brain, model, _, ocr, detector, _ = setup_brain(
         tmp_path,
         record,
@@ -1237,11 +1305,11 @@ def test_premature_completion_is_replanned_at_the_same_observation(tmp_path, rec
 
     brain._observe()
 
-    assert brain._select_node() == "review"
     assert len(model.prompts) == 2
     assert '"error": "screen_match_taught_final_step_required"' in model.prompts[1]
     assert ocr.calls == detector.calls == 1
-    assert brain.action_plan.actions[0].decision.action.source == "hbl_no"
+    assert brain.visual_proposal.steps[0].intent == "navigate"
+    assert brain.visual_proposal.steps[0].source is None
 
 
 def test_mixed_partner_work_is_corrected_to_current_selection_batch(tmp_path, record):

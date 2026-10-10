@@ -357,18 +357,6 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
         "credential.username": "private-user-47",
         "credential.password": "private-password-83",
     }
-    brain.task_instruction = TaskInstruction.model_validate(
-        {
-            **brain.task_instruction.model_dump(),
-            "procedure": [
-                {
-                    "id": "login",
-                    "instruction": "Authenticate to the business application.",
-                    "completion": "The business menu is visible.",
-                }
-            ],
-        }
-    )
     blocks = [
         OcrBlock(id=10, text="Account", bbox=(10, 25, 70, 15), confidence=1),
         OcrBlock(id=11, text="Password", bbox=(10, 75, 70, 15), confidence=1),
@@ -422,6 +410,18 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
         ],
     )
     brain._observe()
+    brain.task_instruction = TaskInstruction.model_validate(
+        {
+            **brain.task_instruction.model_dump(),
+            "procedure": [
+                {
+                    "id": "login",
+                    "instruction": "Authenticate to the business application.",
+                    "completion": "The business menu is visible.",
+                }
+            ],
+        }
+    )
     brain.methods.remember(screen, learned)
     assert brain.methods.state.pending is not None
     brain.methods.delivered(complete=True)

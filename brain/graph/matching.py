@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -397,14 +399,16 @@ is allowed only for the final taught step and its completion evidence.
 Each taught step's actions preserve the user's actual button, tab and field instructions.
 Treat target as a semantic CURRENT-screen label, never as a stored coordinate. For fill actions,
 input_key identifies the value the user associated with that target. The procedure describes the
-expected route; it does not hide other supplied inputs that are visibly writable on the current
-screen. Fill every confidently matched visible input from notebook.inputs, even when the user
-mentioned that input in another procedure step. Perform taught navigation actions in order across
+expected route. Fill only inputs associated with the selected taught step; select the appropriate
+step when another taught group is visible. Perform taught navigation actions in order across
 as many screen-boundary batches as needed; use exploration only when a taught target cannot be
 grounded on the current screen.
 For a fill action, surface=null means a standalone direct input. surface=table_cell explicitly
 authorizes a grid cell and surface=any authorizes either. Do not bind a direct_input to a line-item
 or detail-table cell merely because its column caption resembles the business input name.
+For every fill and field-evidence binding, match the CURRENT control's printed label to the target
+text paired with that exact input_key in taught_procedure. Never assign a different remaining input
+to a visible field merely because that value has not been evidenced yet.
 """
 
 METHOD_RULES = """
@@ -805,6 +809,7 @@ _REPLANNABLE_MATCH_ERRORS = {
     "screen_match_task_surface_mismatch",
     "screen_match_taught_final_step_required",
     "screen_match_taught_step_required",
+    "screen_match_taught_target_mismatch",
 }
 
 
@@ -829,10 +834,83 @@ def _validate_taught_step(response: ScreenMatch, request: MatchRequest) -> None:
     if not taught:
         return
     taught_ids = [item.id for item in taught]
+    if response.operation in {"act", "complete"} and response.taught_step_id is None:
+        raise ValueError("screen_match_taught_step_required")
     if response.taught_step_id is not None and response.taught_step_id not in taught_ids:
         raise ValueError("screen_match_taught_step_required")
     if response.operation == "complete" and response.taught_step_id != taught_ids[-1]:
         raise ValueError("screen_match_taught_final_step_required")
+
+
+def _semantic_label(text: str) -> str:
+    """Normalize user-taught and OCR labels without application-specific aliases."""
+
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    return re.sub(r"[^0-9a-z가-힣]+", "", normalized)
+
+
+def _taught_input_targets(request: MatchRequest) -> dict[str, set[str]]:
+    targets: dict[str, set[str]] = {}
+    for procedure_step in request.task_instruction.procedure:
+        for action in procedure_step.actions:
+            if action.input_key in request.values:
+                targets.setdefault(action.input_key, set()).add(_semantic_label(action.target))
+    return targets
+
+
+def _control_label_texts(response: ScreenMatch, request: MatchRequest) -> dict[int, set[str]]:
+    ocr = {item["id"]: item["text"] for item in request.screen.get("ocr", [])}
+    return {
+        control.id: {
+            _semantic_label(ocr[label_id])
+            for label_id in control.label_ids
+            if label_id in ocr and _semantic_label(ocr[label_id])
+        }
+        for control in response.controls
+    }
+
+
+def _labels_match_taught_target(labels: set[str], targets: set[str]) -> bool:
+    return any(label in target or target in label for label in labels for target in targets)
+
+
+def _validate_taught_input_targets(response: ScreenMatch, request: MatchRequest) -> None:
+    """Reject source assignments that contradict the user's visible-label mapping."""
+
+    targets = _taught_input_targets(request)
+    labels = _control_label_texts(response, request)
+    selected = next(
+        (item for item in request.task_instruction.procedure if item.id == response.taught_step_id),
+        None,
+    )
+    selected_sources = (
+        {
+            action.input_key
+            for action in selected.actions
+            if action.verb == "fill" and action.input_key is not None
+        }
+        if selected is not None
+        else set()
+    )
+    action_sources = {
+        step.source
+        for step in response.steps
+        if step.action == "fill" and step.source in request.values
+    }
+    if selected is not None and not action_sources <= selected_sources:
+        raise ValueError("screen_match_taught_target_mismatch")
+    bindings = [
+        (step.source, step.target)
+        for step in response.steps
+        if step.action == "fill" and step.source in request.values
+    ] + [(item.field, item.target) for item in response.evidence]
+    for source, target_id in bindings:
+        expected = targets.get(source, set())
+        observed = labels.get(target_id, set())
+        # Absence of a printed label is model uncertainty. A present label that
+        # contradicts the user-taught source/target pair is a deterministic error.
+        if expected and observed and not _labels_match_taught_target(observed, expected):
+            raise ValueError("screen_match_taught_target_mismatch")
 
 
 def _normalize_match_actions(
@@ -969,6 +1047,7 @@ def validate_match_plan(
     _validate_taught_step(response, request)
     response = _normalize_match_actions(response, request, services)
     response = _validate_completion_annotations(response, request, services)
+    _validate_taught_input_targets(response, request)
     _validate_login_boundary(response, request)
     _validate_action_boundary(response, capability, request)
     response = bind_selection_effect(response, capability, active_fields)
@@ -1284,7 +1363,10 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
             "mode": "field_evidence_only",
             "delivered_sources": pending_verification_fields,
         }
-    state["task"] = request.task_instruction.model_dump(mode="json", exclude={"procedure"})
+    # User education is the semantic source of truth for field-to-input bindings.
+    # Omitting it left the model with input keys and pixels but no company-specific
+    # explanation of what each visible field means.
+    state["task"] = request.task_instruction.model_dump(mode="json")
     # The digest is the user-education contract boundary.  Two companies can
     # show identical pixels, and one company's memo can later be revised
     # without changing its display name.  Neither case may reuse a decision
@@ -1308,6 +1390,7 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
     taught_rules = TAUGHT_PROCEDURE_RULES if request.task_instruction.procedure else ""
     prompt = (
         TASK_RULES
+        + taught_rules
         + method_rules
         + (POST_ACTION_REVIEW_RULES if request.post_action_review else "")
         + json.dumps(state, ensure_ascii=False)
