@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ModelSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["0.1"] = "0.1"
-    provider: Literal["gemini", "replay", "openai"] = "gemini"
+    provider: Literal["anthropic", "gemini", "replay", "openai"] = "gemini"
     model: str = Field(default="gemini-3.8-flash", min_length=1)
     pricing_path: str = "pricing.toml"
     replay_path: str | None = None

@@ -19,13 +19,13 @@ def create_model_client(
     *,
     run_log: EventSink,
     env_path: Path | None = None,
-    provider: Literal["gemini", "replay", "openai"] | None = None,
+    provider: Literal["anthropic", "gemini", "replay", "openai"] | None = None,
 ) -> ModelClient:
-    """Replay needs no .env; Gemini never falls back to ambient credentials."""
+    """Replay needs no .env; paid providers never use ambient credentials."""
     with config_path.open("rb") as handle:
         settings = ModelSettings.model_validate(tomllib.load(handle))
     selected = provider if provider is not None else settings.provider
-    if selected not in {"gemini", "replay", "openai"}:
+    if selected not in {"anthropic", "gemini", "replay", "openai"}:
         raise ValueError("Unknown model provider")
     if selected == "replay":
         if not settings.replay_path:
@@ -54,6 +54,27 @@ def create_model_client(
             run_log=run_log,
             max_output_tokens=settings.max_output_tokens,
             reasoning_effort=settings.thinking_level or "low",
+        )
+    if selected == "anthropic":
+        from anthropic import Anthropic
+
+        from models.anthropic_client import AnthropicClient
+
+        api_key = dotenv_values(env_path, interpolate=False).get("CLAUDE_API_KEY")
+        if not api_key or not api_key.strip():
+            raise ValueError("CLAUDE_API_KEY is missing from the specified .env file")
+        return AnthropicClient(
+            sdk_client=Anthropic(
+                api_key=api_key,
+                max_retries=0,
+                timeout=settings.timeout_ms / 1000,
+                base_url="https://api.anthropic.com",
+            ),
+            model=settings.model,
+            price=price,
+            run_log=run_log,
+            max_output_tokens=settings.max_output_tokens,
+            effort=settings.thinking_level or "low",
         )
     from google import genai
     from google.genai import types

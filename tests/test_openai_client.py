@@ -45,6 +45,19 @@ def setup(tmp_path, *, text='{"value":7}', status="completed", usage=True):
     return client, sdk, log
 
 
+def openai_config(tmp_path: Path) -> Path:
+    config = tmp_path / "openai-model.toml"
+    config.write_text(
+        'provider = "openai"\nmodel = "gpt-5.6-luna"\n'
+        'pricing_path = "pricing.toml"\nmax_output_tokens = 8192\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "pricing.toml").write_text(
+        Path("models/pricing.toml").read_text(), encoding="utf-8"
+    )
+    return config
+
+
 def test_image_schema_and_actual_usage_share_measured_boundary(tmp_path):
     client, sdk, log = setup(tmp_path)
     from PIL import Image
@@ -94,15 +107,16 @@ def test_failed_responses_keep_cost_and_never_retry(tmp_path, mode):
 
 def test_factory_uses_explicit_key_and_disables_sdk_retries(tmp_path, monkeypatch):
     _, _, log = setup(tmp_path)
+    config = openai_config(tmp_path)
     env = tmp_path / ".env"
     env.write_text("GEMINI_API_KEY=fake\n", encoding="utf-8")
     monkeypatch.setenv("OPENAI_API_KEY", "ambient-must-not-be-used")
     with pytest.raises(ValueError, match="OPENAI_API_KEY"):
-        create_model_client(Path("config/models.toml"), env_path=env, run_log=log)
+        create_model_client(config, env_path=env, run_log=log)
     env.write_text("OPENAI_API_KEY=test-only\n", encoding="utf-8")
     constructor = Mock()
     monkeypatch.setattr("openai.OpenAI", constructor)
-    client = create_model_client(Path("config/models.toml"), env_path=env, run_log=log)
+    client = create_model_client(config, env_path=env, run_log=log)
     assert client.model == "gpt-5.6-luna"
     assert constructor.call_args.kwargs["max_retries"] == 0
     assert constructor.call_args.kwargs["api_key"] == "test-only"
@@ -121,7 +135,7 @@ def test_long_context_cache_write_pricing_and_reservation(tmp_path):
     # 272,000 input tokens still use the standard tier; the next token changes all rates.
     assert client._cost(usage.model_copy(update={"input_tokens": 272_000})) == Decimal("0.05372")
     assert client._cost(usage.model_copy(update={"input_tokens": 272_001})) == Decimal("0.1073804")
-    budget = CallBudget.from_config(Path("config/models.toml"))
+    budget = CallBudget.from_config(openai_config(tmp_path))
     assert budget("x" * 300_000, Answer) > client._cost(usage)
     with pytest.raises(ValidationError):
         TokenUsage(input_tokens=10, response_tokens=0, cached_input_tokens=8, cache_write_tokens=3)

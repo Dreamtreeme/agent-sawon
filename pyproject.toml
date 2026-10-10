@@ -13,6 +13,7 @@ dependencies = [
   "portalocker>=3,<4",
   "google-genai>=1.68,<2",
   "openai>=2.54,<3",
+  "anthropic>=0.125,<1",
   "python-dotenv>=1,<2",
   "langgraph>=1,<2",
 ]

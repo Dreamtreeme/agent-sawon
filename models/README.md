@@ -1,7 +1,8 @@
 # 모델 호출과 비용 기록
 
 `ModelClient.complete_json(prompt, schema, images=...)`는 pydantic 결과와 사용량,
-USD 비용 추정치, 지연 시간을 반환한다. `GeminiClient`, `OpenAIClient`, `JevClient`, `ReplayClient` 모두
+USD 비용 추정치, 지연 시간을 반환한다. `GeminiClient`, `OpenAIClient`,
+`AnthropicClient`, `JevClient`, `ReplayClient` 모두
 필수 실행 기록 작성기를 받아 공개 호출마다 `model_call` 이벤트를 남긴다.
 호출부가 기록 래퍼를 빠뜨리는 별도 경로는 제공하지 않는다.
 
@@ -23,7 +24,7 @@ client = create_model_client(Path("config/models.toml"), run_log=log, env_path=P
 ```
 
 비밀값은 명시한 `.env`에서 선택한 공급자의 키만 읽는다(Gemini: `GEMINI_API_KEY`,
-OpenAI: `OPENAI_API_KEY`). 부모 폴더 검색, 환경 변수
+OpenAI: `OPENAI_API_KEY`, Anthropic: `CLAUDE_API_KEY`). 부모 폴더 검색, 환경 변수
 키 자동 선택, 환경 변수 보간은 하지 않는다. 테스트는 가짜 SDK를 주입하며
 실제 API를 호출하지 않는다. SDK의 자동 재시도와 자동 함수 호출을 끄므로
 측정 한 건이 숨은 추가 요청을 만들지 않는다.
@@ -57,7 +58,14 @@ OpenAI: `OPENAI_API_KEY`). 부모 폴더 검색, 환경 변수
 원래 사용량과 비용은 `recorded_usage`/`recorded_usd`에 별도로 유지한다.
 지연 시간은 현재 재생 호출의 실측값이므로 원본 모델의 지연 비교에 쓰지 않는다.
 
-## Luna 화면 작업자
+## Claude Haiku 5.5 화면 작업자
+
+`config/models.toml`은 `claude-haiku-5-5`, Messages API structured outputs,
+adaptive thinking low, 출력 8192, 요청 제한 120초를 사용한다. 원본 크기 이미지를 base64로 전달하며
+Pydantic 스키마는 Anthropic SDK의 `transform_schema`로 지원 형식에 맞춘 뒤 로컬에서
+원래 계약을 다시 검증한다. 100K 입력 토큰 초과 시 공식 장문 단가를 적용한다.
+
+## 보존된 Luna 어댑터
 
 `config/models.toml`은 `gpt-5.6-luna`, Responses API, reasoning low, 출력8192를 사용한다.
 화면 작업자는 `brain.run --model-config config/models.toml`로 실행한다.

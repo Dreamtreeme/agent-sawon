@@ -1,6 +1,6 @@
 schema_version = "0.1"
-checked_on = 2026-10-01
-source = "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
+checked_on = 2026-10-10
+source = "https://platform.claude.com/docs/en/models/haiku-5-5/overview and https://developers.openai.com/api/docs/models/gpt-5.6-luna"
 basis = "standard_paid_text_image"
 
 [models."gpt-5.6-luna"]
@@ -8,3 +8,9 @@ input_usd_per_million = "0.20"
 output_usd_per_million = "1.20"
 cached_input_usd_per_million = "0.02"
 cache_write_usd_per_million = "0.25"
+
+[models."claude-haiku-5-5"]
+input_usd_per_million = "0.10"
+output_usd_per_million = "0.50"
+cached_input_usd_per_million = "0.01"
+cache_write_usd_per_million = "0.125"
