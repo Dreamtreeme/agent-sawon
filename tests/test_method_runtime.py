@@ -608,16 +608,52 @@ def test_unproductive_reused_edge_is_consumed_for_the_current_run(tmp_path):
     assert brain.methods.state.history[-1]["status"] == "unproductive"
 
 
-def test_successful_fallback_consumes_older_variants_of_the_same_taught_step(tmp_path):
+def test_successful_fallback_keeps_untried_followup_in_the_same_taught_step(tmp_path):
     brain, _, _ = setup(tmp_path, changed_label=True)
     installed = brain.methods.library.methods()[0]
-    old_group = installed.action_groups[0].model_copy(update={"taught_step_id": "save"})
+    failed_action = (
+        installed.action_groups[0]
+        .actions[0]
+        .model_copy(
+            update={
+                "action": "click",
+                "intent": "navigate",
+                "slot": None,
+                "relative_point": (0.5, 0.5),
+            }
+        )
+    )
+    old_group = installed.action_groups[0].model_copy(
+        update={
+            "id": "failed-branch",
+            "taught_step_id": "details",
+            "actions": [failed_action],
+        }
+    )
+    followup_group = installed.action_groups[0].model_copy(
+        update={
+            "id": "followup-action",
+            "taught_step_id": "details",
+            "predecessor_group_ids": [old_group.id],
+        }
+    )
     atomic_write_json(
         brain.methods.library.path,
-        MethodDocument(methods=[installed.model_copy(update={"action_groups": [old_group]})]),
+        MethodDocument(
+            methods=[installed.model_copy(update={"action_groups": [old_group, followup_group]})]
+        ),
     )
+    brain.methods.state.pending = {
+        "method": installed.model_copy(update={"action_groups": [old_group, followup_group]}),
+        "group_id": old_group.id,
+        "origin": "reuse",
+        "pruned_group_ids": [],
+    }
+    brain.methods.delivered(complete=True)
+    brain.methods.verify_delivery(success=False)
+
     _, _, screen, response = catalog("Account", shift=20)
-    response = response.model_copy(update={"method_id": installed.id, "taught_step_id": "save"})
+    response = response.model_copy(update={"method_id": installed.id, "taught_step_id": "details"})
 
     brain.methods.remember(screen, response)
     assert brain.methods.state.pending is not None
@@ -627,6 +663,7 @@ def test_successful_fallback_consumes_older_variants_of_the_same_taught_step(tmp
 
     assert (installed.id, old_group.id) in brain.methods.state.used
     assert (installed.id, new_group_id) in brain.methods.state.used
+    assert (installed.id, followup_group.id) not in brain.methods.state.used
 
 
 def test_prompt_context_keeps_only_current_method_and_procedure_window(tmp_path):
