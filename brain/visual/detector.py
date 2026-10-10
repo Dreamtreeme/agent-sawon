@@ -21,18 +21,7 @@ class DetectorSettings(BaseModel):
     """로컬 시각 검출기 런타임 제약 및 모델 경로 설정."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    weights: Path = Path("models/omniparser/icon_detect/model.pt")
-
-    # OmniParser v2 파이프라인 옵션
-    use_v2: bool = Field(
-        default=False,
-        description="OmniParser v2 icon_detect + Florence-2 캡셔닝 활성화 여부",
-    )
-    caption_weights: Path | None = Field(
-        default=None,
-        description="아이콘 기능 캡셔닝 모델(Florence-2 등) 디렉터리 경로",
-    )
-    caption_batch_size: int = Field(default=16, ge=1, le=128)
+    weights: Path = Path("models/omniparser-v2/icon_detect/model.pt")
 
     python: str | None = None
     device: str = "cpu"
@@ -59,7 +48,7 @@ class OmniParserDetector(MeasuredModelClient):
     def __init__(self, settings: DetectorSettings, run_log: EventSink):
         super().__init__(
             provider="local",
-            model="omniparser-v2" if settings.use_v2 else "omniparser-icon-detect",
+            model="omniparser-v2",
             run_log=run_log,
         )
         self.settings = settings
@@ -122,14 +111,6 @@ class OmniParserDetector(MeasuredModelClient):
             {
                 "image": str(images[0].resolve()),
                 "weights": str(self.settings.weights.resolve()),
-                # [추가] OmniParser v2 캡셔닝 모델 가중치 및 v2 활성화 플래그
-                "caption_weights": (
-                    str(self.settings.caption_weights.resolve())
-                    if self.settings.caption_weights is not None
-                    else None
-                ),
-                "use_v2": self.settings.use_v2,
-                "caption_batch_size": self.settings.caption_batch_size,
                 "device": self.settings.device,
                 "confidence": self.settings.confidence,
                 "image_size": self.settings.image_size,

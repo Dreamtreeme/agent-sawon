@@ -22,10 +22,6 @@ class Marker(BaseModel):
     source: Literal["ocr", "ocr_group", "omniparser"]
     confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
     text_ids: tuple[int, ...] = ()
-    # OmniParser v2(Florence-2) 기능형 설명 또는 OCR 원문 텍스트
-    functional_description: str | None = Field(
-        default=None, description="아이콘 기능형 설명(예: 'search button') 또는 텍스트"
-    )
 
 
 class MergeSettings(BaseModel):
@@ -89,7 +85,6 @@ def build_markers(
             source="ocr",
             confidence=b.confidence,
             text_ids=(b.id,),
-            functional_description=b.text,  # OCR 텍스트는 원문 내용을 기능 설명으로 보존
         )
         for b in blocks
     ]
@@ -235,12 +230,6 @@ def ground_meanings(
         if meaning.role in {"edit", "combobox"} and not meaning.text_ids:
             meaning = meaning.model_copy(
                 update={"text_ids": [b.id for b in blocks if contains(marker.bbox, b.bbox)]}
-            )
-
-        # 모델이 시각 설명을 비워두었으나 마커에 Florence-2 기능 설명이 있는 경우 보존
-        if not meaning.visual_description and marker.functional_description:
-            meaning = meaning.model_copy(
-                update={"visual_description": marker.functional_description[:160]}
             )
 
         controls.append(VisualControl(**meaning.model_dump(), bbox=list(marker.bbox)))

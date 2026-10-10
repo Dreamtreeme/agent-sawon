@@ -95,14 +95,6 @@ class BrainSettings(BaseModel):
                 detector_updates["python"] = str((path.parent / detector_python).resolve())
         if not settings.visual_detector.weights.is_absolute():
             detector_updates["weights"] = (path.parent / settings.visual_detector.weights).resolve()
-        if (
-            settings.visual_detector.caption_weights is not None
-            and not settings.visual_detector.caption_weights.is_absolute()
-        ):
-            detector_updates["caption_weights"] = (
-                path.parent / settings.visual_detector.caption_weights
-            ).resolve()
-
         if detector_updates:
             settings = settings.model_copy(
                 update={

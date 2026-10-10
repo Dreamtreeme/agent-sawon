@@ -1,33 +1,28 @@
 # L2C 방식의 로컬 좌표와 의미 판단 분리
 
-## 2026-10-08 OmniParser v2 실행 경로
+## 2026-10-10 OmniParser v2 좌표·OCR 의미 판단 경로
 
 `config/brain.visual.toml`은 프로젝트의 `data/models/omniparser-v2` 가중치와
-`.tools/vision-venv` 격리 환경을 사용한다. `use_v2=true`는 icon_detect와 Florence-2
-캡션을 함께 실행하며, 캡션 파일/의존성/추론 오류를 탐지 전용 성공으로 숨기지 않는다.
-기존 L2C 폴더의 icon_detect도 SHA-256 확인 결과 공식 v2 탐지 가중치였지만,
-이전 파일럿에서는 캡션을 사용하지 않았다.
+`.tools/vision-venv` 격리 환경을 사용한다. 기존 L2C 폴더의 icon_detect도 SHA-256
+확인 결과 공식 v2 탐지 가중치다. OmniParser는 조작 후보의 원본 화면 좌표만 찾고,
+OCR은 문자열과 그 좌표를 찾는다. 화면 모델은 번호 표시 화면과 두 종류의 좌표·OCR
+원문을 함께 받아 컨트롤 역할과 라벨 관계를 판단한다.
 
 전체 화면 탐지는 `image_size=640`을 유지하며 보완 crop만1280을 사용한다.
-캡션 활성화와 탐지 크기를 분리한다. 실제 동일 조회 캡처에서1280은 긴 빈 입력칸을
-놓쳤고640은 탐지했다. 해상도를 높이면 항상 탐지가 좋아지는 것은 아니다.
-탐지 좌표는 원본 캡처 기준으로 되돌린다. Florence 입력은
-각 영역의64×64 crop이며 GPU FP16, `caption_batch_size=16`, greedy 생성으로 처리한다.
-현재 OCR 상자와 겹친 텍스트 영역은 캡션에서 제외한다. 일반 관찰·재결합·보완 탐지가
-이미 얻은 OCR 좌표를 공유하므로 글자 조각을 아이콘으로 설명하기 위한 재인식은 없다.
-YOLO와 Florence는 같은 persistent worker에서 다음 화면과 보완 탐지에도 재사용한다.
-워커 계측에 `caption_enabled`, `caption_initialized`, `captioned_boxes`, `ocr_caption_skipped`, `detection_ms`,
-`caption_ms`를 남긴다. 모델 설명은 기존 `functional_description` 계약을 통해 OCR·마커
-병합과 화면 모델에 전달한다. 설명 자체를 업무 필드 값이나 완료 증거로 취급하지 않는다.
+실제 동일 조회 캡처에서1280은 긴 빈 입력칸을 놓쳤고640은 탐지했다. 해상도를 높이면
+항상 탐지가 좋아지는 것은 아니다. 탐지 좌표는 원본 캡처 기준으로 되돌린다. YOLO는
+같은 persistent worker에서 다음 화면과 보완 탐지에도 재사용한다. 워커는 초기화·탐지·
+전체 추론 시간을 기록한다.
 
-설치 시 GPU에 맞는 torch/torchvision과 `visual`, `visual-v2` extras가 필요하다.
-현재 Florence 사용자 코드와 호환되는 transformers4.49.0을 별도 환경에 고정한다.
-가중치·토크나이저·Florence 코드 파일을 사전에 준비하며 실제 워커는 local_files_only로
-로드한다. 공식 자산 revision과 로컬 auto_map 정규화는 `data/models/omniparser-v2/source.json`에
-기록한다. 설치 파일과 가중치는 Git에 추가하지 않는다.
+Florence-2의64×64 기능 캡션은 긴 빈 입력칸을 `Maximize`, `Center` 등으로 반복 오분류했다.
+이 설명은 좌표나 OCR 근거가 아니며 화면 모델의 판단을 오염시켰으므로 런타임과 마커
+계약에서 제거했다. 빈 입력칸은 OmniParser 사각형과 인접 OCR 라벨의 배치를 화면 모델이
+연결한다. 모델이 새 사각형을 만들 수 없다는 기존 제약은 유지한다.
 
-참조: [공식 OmniParser v2 자산](https://huggingface.co/microsoft/OmniParser-v2.0),
-[공식 배치 캡션 구현](https://github.com/microsoft/OmniParser/blob/master/util/utils.py).
+설치 시 GPU에 맞는 torch/torchvision과 `visual` extra가 필요하다. 공식 자산 revision은
+`data/models/omniparser-v2/source.json`에 기록한다. 설치 파일과 가중치는 Git에 추가하지 않는다.
+
+참조: [공식 OmniParser v2 자산](https://huggingface.co/microsoft/OmniParser-v2.0).
 
 ## 현재 화면 매칭 경로 (2026-10-01)
 
