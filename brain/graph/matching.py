@@ -858,6 +858,7 @@ _REPLANNABLE_MATCH_ERRORS = {
     "screen_match_taught_step_required",
     "screen_match_taught_target_mismatch",
     "screen_match_saved_row_target_mismatch",
+    "screen_match_action_target_uncertain",
 }
 
 
@@ -1116,6 +1117,22 @@ def _validate_input_scope(response: ScreenMatch, capability: ActionCapability) -
         raise ValueError("screen_match_field_outside_procedure_scope")
 
 
+def _validate_action_targets_executable(response: ScreenMatch, services: MatchServices) -> None:
+    """Reject a target that the subsequent visual binding will disable."""
+
+    controls = {control.id: control for control in response.controls}
+    for step in response.steps:
+        control = controls.get(step.target)
+        if control is None:
+            continue
+        uncertain = (
+            control.confidence_policy == "threshold"
+            and control.confidence < services.settings.visual_min_confidence
+        )
+        if not control.enabled or uncertain:
+            raise ValueError("screen_match_action_target_uncertain")
+
+
 def validate_match_plan(
     response: ScreenMatch,
     capability: ActionCapability,
@@ -1133,6 +1150,7 @@ def validate_match_plan(
     _validate_action_boundary(response, capability, request)
     response = bind_selection_effect(response, capability, active_fields)
     _validate_input_scope(response, capability)
+    _validate_action_targets_executable(response, services)
     return response
 
 
@@ -1582,6 +1600,43 @@ def validate_or_replan(
     except ValueError as error:
         if str(error) not in _REPLANNABLE_MATCH_ERRORS:
             raise
+        if str(error) == "screen_match_action_target_uncertain":
+            correction_state = {
+                **prepared.state,
+                "correction": {
+                    "error": str(error),
+                    "instruction": (
+                        "The proposed action target will be disabled by local visual confidence. "
+                        "Re-read the whole CURRENT screen and choose another confidently grounded "
+                        "action. If the selected taught step's expected result is already visible, "
+                        "advance to the next applicable taught step instead of repeating it."
+                    ),
+                    "rejected_target_ids": sorted(step.target for step in response.steps),
+                },
+            }
+            corrected = services.call(
+                TASK_RULES
+                + prepared.taught_rules
+                + prepared.method_rules
+                + json.dumps(correction_state, ensure_ascii=False),
+                ScreenMatch,
+                page=request.page,
+            )
+            corrected = local_response(corrected, request.screen)
+            corrected = bind_value_evidence_to_controls(services, corrected, request.screen)
+            corrected = prepare_match_plan(
+                request, services, corrected, prepared.capability, active_fields
+            )
+            write_match_artifact(services, "uncertain-target-correction", corrected)
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "uncertain_action_target_corrected",
+                    "rejected_target_ids": sorted(step.target for step in response.steps),
+                    "corrected_target_ids": sorted(step.target for step in corrected.steps),
+                },
+            )
+            return corrected
         interpretation = response.interpretation()
         correction_state = {
             **prepared.state,

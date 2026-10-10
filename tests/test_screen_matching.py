@@ -593,6 +593,29 @@ def test_post_save_query_rejects_navigation_to_a_caption_instead_of_identity_row
     assert accepted.steps[0].target == 30
 
 
+def test_low_confidence_action_target_is_rejected_before_execution(
+    tmp_path, record, task_instruction
+):
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
+    screen = {"ocr": [], "markers": [{"id": 6, "source": "omniparser", "text_ids": []}]}
+    request, services = matching_contract(brain, screen)
+    response = ScreenMatch.model_validate(
+        {
+            "screen_kind": "menu",
+            "taught_step_id": "open-query",
+            "procedure_step": "task-action",
+            "steps": [{"target": 6, "action": "click", "intent": "navigate", "point": [10, 10]}],
+            "controls": [{"id": 6, "role": "button", "confidence": 0.6}],
+        }
+    )
+    capability = ActionCapability(
+        actions=["navigate"], goal="Open query", completion="Query is visible"
+    )
+
+    with pytest.raises(ValueError, match="action_target_uncertain"):
+        validate_match_plan(response, capability, request, services, set(brain.values))
+
+
 def test_taught_direct_input_is_not_written_into_a_detected_grid_cell(tmp_path, record):
     task_instruction = TaskInstruction.model_validate(
         {
