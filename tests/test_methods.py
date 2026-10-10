@@ -89,6 +89,29 @@ def test_learned_method_rebinds_new_values_keys_and_current_geometry(tmp_path):
     assert restored.catalog("Unrelated task") == []
 
 
+def test_learned_fill_targets_rebind_current_values_as_visible_evidence(tmp_path):
+    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
+    library.upsert(learned())
+    current = scene(offset=100, old_value="New supplier", ids=100)
+
+    controls, evidence = library.bind_visible_value_evidence(
+        "find-party",
+        {"requested_party": "supplier"},
+        current,
+        {"supplier": "New supplier"},
+    )
+
+    assert evidence == [{"field": "supplier", "target": 110}]
+    assert controls[0]["id"] == 110
+    assert 102 in controls[0]["text_ids"]
+    assert library.bind_visible_value_evidence(
+        "find-party",
+        {"requested_party": "supplier"},
+        current,
+        {"supplier": "Different supplier"},
+    ) == ([], [])
+
+
 def test_trace_graph_rejects_unknown_predecessor():
     payload = learned().model_dump(mode="json")
     payload["action_groups"][0]["trace_index"] = 0

@@ -652,6 +652,51 @@ class MethodLibrary:
                 )
         return None
 
+    def bind_visible_value_evidence(
+        self,
+        method_id: str,
+        slot_map: dict[str, str],
+        screen: dict,
+        values: dict[str, str],
+    ) -> tuple[list[dict], list[dict]]:
+        """Reuse learned fill targets as deterministic proof on the current screen."""
+
+        method = next((item for item in self.methods() if item.id == method_id), None)
+        if method is None:
+            return [], []
+        sources = {slot.name: slot_map.get(slot.name, slot.source_key) for slot in method.slots}
+        blocks = {block["id"]: block for block in screen.get("ocr", [])}
+        controls: dict[int, dict] = {}
+        evidence: dict[str, dict] = {}
+        for group in method.action_groups:
+            targets = {target.name: target for target in group.targets}
+            for action in group.actions:
+                if action.action != "fill" or action.slot is None:
+                    continue
+                source = sources.get(action.slot)
+                target = targets.get(action.target)
+                if source is None or source not in values or target is None or source in evidence:
+                    continue
+                bound = _bind_target(target, screen)
+                if bound is None:
+                    continue
+                marker, label_ids = bound
+                text_ids = _marker_text_ids(marker, screen)
+                visible = [blocks[text_id]["text"] for text_id in text_ids if text_id in blocks]
+                if visible:
+                    visible.append(" ".join(visible))
+                if not any(field_matches(source, text, values) for text in visible):
+                    continue
+                controls[marker["id"]] = ControlMeaning(
+                    id=marker["id"],
+                    role=target.role,
+                    label_ids=label_ids,
+                    text_ids=text_ids,
+                    confidence=1,
+                ).model_dump(mode="json")
+                evidence[source] = {"field": source, "target": marker["id"]}
+        return list(controls.values()), list(evidence.values())
+
     def bind_completion_with_context(
         self,
         method_id: str,

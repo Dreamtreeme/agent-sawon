@@ -371,13 +371,30 @@ class MethodRuntime:
         if len(candidates) != 1:
             return None
         method, mapping, bound, pruned_group_ids = candidates[0]
+        proof_controls, proof_evidence = self.library.bind_visible_value_evidence(
+            method.id,
+            mapping,
+            screen,
+            dict(self.task_context.inputs),
+        )
+        response_data = dict(bound.response)
+        if proof_evidence:
+            controls = {
+                item["id"]: item for item in [*response_data.get("controls", []), *proof_controls]
+            }
+            response_data.update(
+                {
+                    "controls": list(controls.values()),
+                    "evidence": proof_evidence,
+                }
+            )
         response = ScreenMatch.model_validate(
             {
-                **bound.response,
+                **response_data,
                 "procedure_step": "task-action",
-                "purpose": bound.response.get("purpose") or method.purpose[:160],
+                "purpose": response_data.get("purpose") or method.purpose[:160],
                 "method_id": method.id,
-                "taught_step_id": bound.response.get("taught_step_id"),
+                "taught_step_id": response_data.get("taught_step_id"),
                 "method_bindings": [
                     {"slot": slot, "source": source} for slot, source in mapping.items()
                 ],
