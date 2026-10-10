@@ -134,7 +134,7 @@ class MethodRuntime:
                 item["group_id"]
                 for item in self.state.history
                 if item.get("method_id") == method.id
-                and item.get("status") == "delivered"
+                and item.get("status") in {"delivered", "provisional"}
                 and item.get("group_id")
             )
         )
@@ -544,7 +544,10 @@ class MethodRuntime:
             self.state.used.add((method.id, group_id))
             self.state.active_method_id = None
             if pending["origin"] != "reuse":
-                method = method.model_copy(update={"source_transitions": [event["observation_id"]]})
+                transitions = (
+                    [event["observation_id"]] if event["observation_id"] is not None else []
+                )
+                method = method.model_copy(update={"source_transitions": transitions})
                 self._stage(method)
         self.state.history.append(event)
         if status == "delivered":
@@ -577,6 +580,29 @@ class MethodRuntime:
                 },
             )
             return
+        history_index = delivered["history_index"]
+        group = next(
+            (item for item in method.action_groups if item.id == group_id),
+            None,
+        )
+        if group is not None and any(action.action == "fill" for action in group.actions):
+            # Pixel rereads can miss a just-delivered value. Keep the batch
+            # provisional; whole-task success is the later business proof that
+            # decides whether it is promoted.
+            if history_index < len(self.state.history):
+                self.state.history[history_index]["status"] = "provisional"
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "method_effect",
+                    "method_id": method.id,
+                    "group_id": group_id,
+                    "success": False,
+                    "provisional": True,
+                },
+            )
+            atomic_write_json(self.case_dir / "method-progress.json", self.context())
+            return
         # A failed learned candidate is discarded. A failed replay edge remains
         # consumed for this run so the graph can try its next verified branch
         # instead of selecting the same no-op forever.
@@ -584,7 +610,6 @@ class MethodRuntime:
             self.state.used.discard((method.id, group_id))
             for pruned_group_id in delivered["pruned_group_ids"]:
                 self.state.used.discard((method.id, pruned_group_id))
-        history_index = delivered["history_index"]
         if history_index < len(self.state.history):
             self.state.history[history_index]["status"] = "unproductive"
         if delivered["origin"] != "reuse":

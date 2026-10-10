@@ -528,7 +528,24 @@ def test_unproductive_method_edge_is_removed_before_success_promotion(tmp_path):
     brain, _, _ = setup(tmp_path, changed_label=True)
     method = brain.methods.library.methods()[0]
     _, _, screen, response = catalog("Account", shift=20)
-    response = response.model_copy(update={"method_id": method.id})
+    control = response.controls[0].model_copy(update={"role": "button"})
+    response = response.model_copy(
+        update={
+            "method_id": method.id,
+            "controls": [control],
+            "steps": [
+                response.steps[0].model_copy(
+                    update={
+                        "target": control.id,
+                        "action": "click",
+                        "source": None,
+                        "intent": "navigate",
+                        "point": [175, 55],
+                    }
+                )
+            ],
+        }
+    )
 
     brain.methods.remember(screen, response)
     assert brain.methods.state.pending is not None
@@ -545,10 +562,38 @@ def test_unproductive_method_edge_is_removed_before_success_promotion(tmp_path):
     assert brain.methods.finish(success=True) == 0
 
 
+def test_delivered_fill_with_incomplete_reread_is_promoted_only_on_task_success(tmp_path):
+    brain, _, _ = setup(tmp_path, changed_label=True)
+    method = brain.methods.library.methods()[0]
+    _, _, screen, response = catalog("Account", shift=20)
+    response = response.model_copy(update={"method_id": method.id})
+
+    brain.methods.remember(screen, response)
+    group_id = brain.methods.state.pending["group_id"]
+    brain.methods.delivered(complete=True)
+    brain.methods.verify_delivery(success=False)
+
+    assert brain.methods.state.history[-1]["status"] == "provisional"
+    assert (method.id, group_id) in brain.methods.state.used
+    assert brain.methods.finish(success=True) == 1
+    promoted = brain.methods.library.methods()[0]
+    assert [group.id for group in promoted.action_groups] == [group_id]
+
+
 def test_unproductive_reused_edge_is_consumed_for_the_current_run(tmp_path):
     brain, _, _ = setup(tmp_path)
     method = brain.methods.library.methods()[0]
     group = method.action_groups[0]
+    action = group.actions[0].model_copy(
+        update={
+            "action": "click",
+            "intent": "navigate",
+            "slot": None,
+            "relative_point": (0.5, 0.5),
+        }
+    )
+    group = group.model_copy(update={"actions": [action]})
+    method = method.model_copy(update={"action_groups": [group]})
     brain.methods.state.pending = {
         "method": method,
         "group_id": group.id,
