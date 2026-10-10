@@ -231,6 +231,7 @@ def test_preflight_reservation_blocks_before_any_billable_call(
     result, clients = prepare(
         tmp_path,
         documents,
+        settings=PipelineSettings(max_cost_usd=0.5),
         reserve=(lambda *_: reserved) if reserved is not None else None,
         model_kwargs={"usd": 0.1},
     )

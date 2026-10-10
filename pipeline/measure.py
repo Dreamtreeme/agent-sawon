@@ -202,7 +202,7 @@ def run_campaign(
     model_config: Path,
     env_path: Path | None,
     repeats: int = 3,
-    max_cost_usd: float = 1.0,
+    max_cost_usd: float = 3.0,
 ) -> dict[str, Any]:
     if isinstance(repeats, bool) or not isinstance(repeats, int) or not 1 <= repeats <= 100:
         raise ValueError("repeats_must_be_an_integer_between_one_and_100")
@@ -373,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--repeats", type=int, default=3, help="Repeats per case; use 1 for smoke runs"
     )
-    parser.add_argument("--max-cost-usd", type=float, default=1.0)
+    parser.add_argument("--max-cost-usd", type=float, default=3.0)
     args = parser.parse_args(argv)
     if not math.isfinite(args.max_cost_usd) or not 0 < args.max_cost_usd <= 10:
         parser.error("Campaign budget must be between zero and ten dollars")

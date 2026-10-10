@@ -11,7 +11,7 @@ separate_observation_decision = false
 task_path = "../examples/shipment-task.json"
 summary_strategy = "label_grouped"
 max_steps = 80
-max_cost_usd = 1.0
+max_cost_usd = 3.0
 model_call_reserve_usd = 0.025
 recovery_enabled = false
 

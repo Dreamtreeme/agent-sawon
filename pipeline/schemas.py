@@ -62,7 +62,7 @@ class PipelineSettings(FrozenModel):
     single_document_confidence: float = Field(default=0.8, ge=0, le=1)
     corroborated_confidence: float = Field(default=0.95, ge=0, le=1)
     within_tolerance_confidence: float = Field(default=0.85, ge=0, le=1)
-    max_cost_usd: float = Field(default=0.5, gt=0, allow_inf_nan=False)
+    max_cost_usd: float = Field(default=3.0, gt=0, allow_inf_nan=False)
     max_pages: int = Field(default=20, ge=1, le=100)
     max_document_bytes: int = Field(default=30_000_000, ge=1)
     max_pixels: int = Field(default=8_000_000, ge=10_000, le=40_000_000)

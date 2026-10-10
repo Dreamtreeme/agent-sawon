@@ -698,7 +698,13 @@ def test_nested_grid_summary_uses_nearest_row_context(record, strategy):
 
 
 def test_observed_call_exceeding_cost_cap_stops_before_ui_work(tmp_path, record):
-    result, _, relay, model = run_brain(tmp_path, record, [], price=Decimal("0.51"))
+    result, _, relay, model = run_brain(
+        tmp_path,
+        record,
+        [],
+        price=Decimal("0.51"),
+        settings=BrainSettings(max_cost_usd=0.5),
+    )
     assert result.reason == "case_cost_cap"
     assert len(model.prompts) == 1
     assert not relay.actions
