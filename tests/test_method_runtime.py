@@ -545,6 +545,24 @@ def test_unproductive_method_edge_is_removed_before_success_promotion(tmp_path):
     assert brain.methods.finish(success=True) == 0
 
 
+def test_unproductive_reused_edge_is_consumed_for_the_current_run(tmp_path):
+    brain, _, _ = setup(tmp_path)
+    method = brain.methods.library.methods()[0]
+    group = method.action_groups[0]
+    brain.methods.state.pending = {
+        "method": method,
+        "group_id": group.id,
+        "origin": "reuse",
+        "pruned_group_ids": [],
+    }
+
+    brain.methods.delivered(complete=True)
+    brain.methods.verify_delivery(success=False)
+
+    assert (method.id, group.id) in brain.methods.state.used
+    assert brain.methods.state.history[-1]["status"] == "unproductive"
+
+
 def test_prompt_context_keeps_only_current_method_and_procedure_window(tmp_path):
     brain, _, _ = setup(tmp_path)
     method = brain.methods.library.methods()[0]

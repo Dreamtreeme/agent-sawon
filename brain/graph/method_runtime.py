@@ -567,9 +567,13 @@ class MethodRuntime:
                 },
             )
             return
-        self.state.used.discard((method.id, group_id))
-        for pruned_group_id in delivered["pruned_group_ids"]:
-            self.state.used.discard((method.id, pruned_group_id))
+        # A failed learned candidate is discarded. A failed replay edge remains
+        # consumed for this run so the graph can try its next verified branch
+        # instead of selecting the same no-op forever.
+        if delivered["origin"] != "reuse":
+            self.state.used.discard((method.id, group_id))
+            for pruned_group_id in delivered["pruned_group_ids"]:
+                self.state.used.discard((method.id, pruned_group_id))
         history_index = delivered["history_index"]
         if history_index < len(self.state.history):
             self.state.history[history_index]["status"] = "unproductive"
