@@ -531,6 +531,16 @@ class MethodRuntime:
         if status == "delivered":
             for pruned_group_id in pending.get("pruned_group_ids", []):
                 self.state.used.add((method.id, pruned_group_id))
+            if pending["origin"] != "reuse" and event["taught_step_id"]:
+                # A successful fallback is the selected branch for this taught
+                # step. Consume older variants now so they cannot bind a later
+                # screen merely because it repeats the same label or button.
+                for installed in self.library.methods():
+                    if installed.id != method.id:
+                        continue
+                    for group in installed.action_groups:
+                        if group.taught_step_id == event["taught_step_id"]:
+                            self.state.used.add((method.id, group.id))
             self.state.used.add((method.id, group_id))
             self.state.active_method_id = None
             if pending["origin"] != "reuse":
