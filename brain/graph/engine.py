@@ -2786,12 +2786,14 @@ class Brain:
         observation: Observation | None = None
         observed_effect = ObservedEffect.UNCHECKED
         new_facts: list[TransitionFact] = []
+        method_effect_verified = False
         try:
             observation = self._observe()
             execution = pending.get("execution")
             if execution is not None and execution.plan.verification == "fields":
                 outcome = self._verify_screen_batch(execution, observation)
                 if len(execution.matched_refs) == len(execution.delivered):
+                    method_effect_verified = True
                     self._stage_visual_match_candidate(pending)
                 return outcome
             if pending.get("login_plan_descriptors") and all(
@@ -2850,7 +2852,9 @@ class Brain:
                 new_facts,
             )
 
-            self._stage_visual_match_candidate(pending)
+            method_effect_verified = bool(new_facts or observed_effect != ObservedEffect.NO_CHANGE)
+            if method_effect_verified:
+                self._stage_visual_match_candidate(pending)
             self.pending = None
             # Reuse an already interpreted visual scene for every visual action.
             # UIA keeps its cheap fresh-state read before the next selection.
@@ -2870,6 +2874,7 @@ class Brain:
             )
             return self._fail("verification_error:" + type(exc).__name__)
         finally:
+            self.methods.verify_delivery(success=method_effect_verified)
             self._log_verification_transition(pending, observation, observed_effect, new_facts)
             self.pending = None
 

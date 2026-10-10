@@ -477,6 +477,74 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
     assert model.prompts == []
 
 
+def test_taught_method_selects_the_only_branch_that_binds_current_screen(tmp_path):
+    brain, model, _ = setup(tmp_path)
+    method = brain.methods.library.methods()[0]
+    first = method.action_groups[0].model_copy(
+        update={"id": "customer-screen", "taught_step_id": "customer"}
+    )
+    _, _, account_screen, account_response = catalog("Account", shift=20)
+    account_method = method_from_match(
+        account_screen,
+        account_response.model_dump(mode="json"),
+        method_id=method.id,
+        purpose=method.purpose,
+        task_objective=method.task_objective,
+        task_contract_sha256=method.task_contract_sha256,
+    )
+    assert account_method is not None
+    second = account_method.action_groups[0].model_copy(
+        update={"id": "account-screen", "taught_step_id": "account"}
+    )
+    atomic_write_json(
+        brain.methods.library.path,
+        MethodDocument(methods=[method.model_copy(update={"action_groups": [first, second]})]),
+    )
+    brain.task_instruction = TaskInstruction.model_validate(
+        {
+            **brain.task_instruction.model_dump(),
+            "procedure": [
+                {"id": "customer", "instruction": "Use customer form", "completion": "Done"},
+                {"id": "account", "instruction": "Use account form", "completion": "Done"},
+            ],
+        }
+    )
+    brain.methods.state.pending = None
+    brain.methods.state.used.clear()
+
+    replay = brain.methods.apply(account_screen)
+
+    assert replay is not None
+    assert brain.methods.state.pending["group_id"] == second.id
+    assert brain.methods.state.pending["pruned_group_ids"] == [first.id]
+    brain.methods.delivered(complete=True)
+    brain.methods.verify_delivery(success=True)
+    assert (method.id, first.id) in brain.methods.state.used
+    assert (method.id, second.id) in brain.methods.state.used
+    assert model.prompts == []
+
+
+def test_unproductive_method_edge_is_removed_before_success_promotion(tmp_path):
+    brain, _, _ = setup(tmp_path, changed_label=True)
+    method = brain.methods.library.methods()[0]
+    _, _, screen, response = catalog("Account", shift=20)
+    response = response.model_copy(update={"method_id": method.id})
+
+    brain.methods.remember(screen, response)
+    assert brain.methods.state.pending is not None
+    group_id = brain.methods.state.pending["group_id"]
+    brain.methods.delivered(complete=True)
+    assert method.id in brain.methods.state.staged
+    assert (method.id, group_id) in brain.methods.state.used
+
+    brain.methods.verify_delivery(success=False)
+
+    assert method.id not in brain.methods.state.staged
+    assert (method.id, group_id) not in brain.methods.state.used
+    assert brain.methods.state.history[-1]["status"] == "unproductive"
+    assert brain.methods.finish(success=True) == 0
+
+
 def test_prompt_context_keeps_only_current_method_and_procedure_window(tmp_path):
     brain, _, _ = setup(tmp_path)
     method = brain.methods.library.methods()[0]

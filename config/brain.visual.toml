@@ -29,3 +29,8 @@ python = "../.tools/vision-venv/Scripts/python.exe"
 [visual_match_cache]
 enabled = true
 path = "../cases/visual-match-cache.json"
+
+[methods]
+enabled = true
+path = "../cases/methods.json"
+promotion_path = "../cases/methods.json"

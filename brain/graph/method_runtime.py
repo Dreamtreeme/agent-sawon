@@ -42,6 +42,7 @@ class MethodState:
     purpose: str = ""
     history: list[dict] = field(default_factory=list)
     pending: dict | None = None
+    unverified: dict | None = None
     staged: dict[str, MethodDocument] = field(default_factory=dict)
     staged_completions: dict[str, MethodCompletion] = field(default_factory=dict)
 
@@ -310,10 +311,11 @@ class MethodRuntime:
                 for group in self._ordered_groups(method)
                 if (method.id, group.id) not in self.state.used
             ]
-            # A compiled procedure is ordered. Never skip an unbindable step and
-            # accidentally execute a later screen's action.
+            # The current screen chooses a taught branch. Earlier versions tried
+            # only the first unused group, so an already advanced screen could
+            # never reuse a later successful action and fell back to the model.
             if taught_replay:
-                groups = remaining[:1]
+                groups = remaining
             elif trace_replay:
                 groups = [
                     group
@@ -325,14 +327,17 @@ class MethodRuntime:
                 ]
             else:
                 groups = remaining
-            for group in groups:
+            for group_index, group in enumerate(groups):
                 if (method.id, group.id) in self.state.used:
                     continue
                 bound = self.library.bind_with_context(
                     method.id, mapping, screen, self._binding_values(), group_id=group.id
                 )
                 if bound is not None:
-                    candidates.append((method, mapping, bound))
+                    pruned_group_ids = (
+                        [item.id for item in groups[:group_index]] if taught_replay else []
+                    )
+                    candidates.append((method, mapping, bound, pruned_group_ids))
             if not remaining and method.completion is not None:
                 completion = self.library.bind_completion_with_context(
                     method.id, mapping, screen, self.task_context.inputs
@@ -365,7 +370,7 @@ class MethodRuntime:
             return response
         if len(candidates) != 1:
             return None
-        method, mapping, bound = candidates[0]
+        method, mapping, bound, pruned_group_ids = candidates[0]
         response = ScreenMatch.model_validate(
             {
                 **bound.response,
@@ -380,7 +385,12 @@ class MethodRuntime:
         )
         self.state.purpose = response.purpose
         self.state.bindings[method.id] = mapping
-        self.state.pending = {"method": method, "group_id": bound.group_id, "origin": "reuse"}
+        self.state.pending = {
+            "method": method,
+            "group_id": bound.group_id,
+            "origin": "reuse",
+            "pruned_group_ids": pruned_group_ids,
+        }
         self.log.append(
             "cache_hit",
             payload={
@@ -500,6 +510,7 @@ class MethodRuntime:
 
     def delivered(self, *, complete: bool) -> None:
         pending, self.state.pending = self.state.pending, None
+        self.state.unverified = None
         if pending is None:
             return
         method, group_id = pending["method"], pending["group_id"]
@@ -518,13 +529,70 @@ class MethodRuntime:
             "observation_id": self.task_context.observation_id,
         }
         if status == "delivered":
+            for pruned_group_id in pending.get("pruned_group_ids", []):
+                self.state.used.add((method.id, pruned_group_id))
             self.state.used.add((method.id, group_id))
             self.state.active_method_id = None
             if pending["origin"] != "reuse":
                 method = method.model_copy(update={"source_transitions": [event["observation_id"]]})
                 self._stage(method)
         self.state.history.append(event)
+        if status == "delivered":
+            self.state.unverified = {
+                "method": method,
+                "group_id": group_id,
+                "origin": pending["origin"],
+                "pruned_group_ids": pending.get("pruned_group_ids", []),
+                "history_index": len(self.state.history) - 1,
+            }
         self.log.append("verify", payload={"check": "method_execution", **event})
+        atomic_write_json(self.case_dir / "method-progress.json", self.context())
+
+    def verify_delivery(self, *, success: bool) -> None:
+        """Keep only a delivered method edge that produced observable progress."""
+
+        delivered, self.state.unverified = self.state.unverified, None
+        if delivered is None:
+            return
+        method = delivered["method"]
+        group_id = delivered["group_id"]
+        if success:
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "method_effect",
+                    "method_id": method.id,
+                    "group_id": group_id,
+                    "success": True,
+                },
+            )
+            return
+        self.state.used.discard((method.id, group_id))
+        for pruned_group_id in delivered["pruned_group_ids"]:
+            self.state.used.discard((method.id, pruned_group_id))
+        history_index = delivered["history_index"]
+        if history_index < len(self.state.history):
+            self.state.history[history_index]["status"] = "unproductive"
+        if delivered["origin"] != "reuse":
+            document = self.state.staged.get(method.id)
+            if document is not None:
+                candidate = document.methods[0]
+                groups = [item for item in candidate.action_groups if item.id != group_id]
+                if groups:
+                    self.state.staged[method.id] = MethodDocument(
+                        methods=[candidate.model_copy(update={"action_groups": groups})]
+                    )
+                else:
+                    self.state.staged.pop(method.id, None)
+        self.log.append(
+            "verify",
+            payload={
+                "check": "method_effect",
+                "method_id": method.id,
+                "group_id": group_id,
+                "success": False,
+            },
+        )
         atomic_write_json(self.case_dir / "method-progress.json", self.context())
 
     def finish(self, *, success: bool) -> int:
