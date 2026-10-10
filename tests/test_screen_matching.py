@@ -840,7 +840,7 @@ def test_post_save_model_review_uses_only_persisted_detail_evidence(
     assert notebook["workflow_state"]["post_save_detail_review"] is True
 
 
-def test_post_save_query_identity_is_recorded_from_current_model_evidence(
+def test_post_save_query_input_is_not_mistaken_for_a_saved_result_row(
     tmp_path, record, task_instruction
 ):
     meaning = fixture()[-1]
@@ -858,7 +858,85 @@ def test_post_save_query_identity_is_recorded_from_current_model_evidence(
 
     brain._observe()
 
+    assert not brain.post_save_query_identity_verified
+
+
+def test_post_save_result_transition_starts_detail_review_and_advances_taught_step(
+    tmp_path, record
+):
+    from sawon_interfaces import UIElement
+
+    from brain.graph.schemas import Choice, Decision
+    from brain.graph.transitions import ObservedEffect
+
+    taught = TaskInstruction.model_validate_json(
+        (
+            Path(__file__).resolve().parents[1] / "examples/shipment-user-taught-task.json"
+        ).read_bytes()
+    )
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=taught)
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    brain.save_issued = True
+    brain.active_taught_step = "requery-saved-record"
+    identity = brain.values["hbl_no"]
+    result = UIElement(
+        ref="e1",
+        role="cell",
+        name=identity,
+        value=identity,
+        enabled=True,
+        bbox=(100, 50, 150, 30),
+    )
+    query = SceneObservation(wire=wire(), screen_kind="query", elements=[result])
+    decision = Decision(
+        screen_kind="query",
+        operation="act",
+        intent="navigate",
+        subgoal="open saved result",
+        reason="review the persisted values",
+        action=Choice(type="click", ref="e1"),
+    )
+    brain.observation = query
+    action = brain._wire_action(decision.action, decision)
+    pending = brain._accept_dispatched_action(
+        action,
+        decision,
+        decision.action,
+        progress_scope="task:requery-saved-record:0",
+        point_refined=False,
+    )
+    assert pending["post_save_identity_result_target"] is True
+
+    # A row selection that stays on the query screen is not a completed transition.
+    brain.observation = SceneObservation(wire=wire(), screen_kind="query", elements=[result])
+    brain._record_action_verification(
+        pending, decision, decision.action, None, True, ObservedEffect.CHANGED, []
+    )
+    assert not brain.model_saved_detail_review
+
+    decision = decision.model_copy(update={"action": Choice(type="double_click", ref="e1")})
+    brain.observation = query
+    action = brain._wire_action(decision.action, decision)
+    pending = brain._accept_dispatched_action(
+        action,
+        decision,
+        decision.action,
+        progress_scope="task:requery-saved-record:1",
+        point_refined=False,
+    )
+    brain.observation = SceneObservation(wire=wire(), screen_kind="editor", elements=[])
+    brain._record_action_verification(
+        pending, decision, decision.action, None, True, ObservedEffect.CHANGED, []
+    )
+
     assert brain.post_save_query_identity_verified
+    assert brain.model_saved_detail_review
+    assert brain.active_taught_step == "verify-requeried-record"
+    assert "requery-saved-record" in brain.completed_taught_steps
+    assert any(
+        event.payload.get("check") == "model_saved_detail_review_started"
+        for event in brain.log.read_all()
+    )
 
 
 def test_complete_post_save_model_evidence_finishes_before_another_decision(
@@ -1505,6 +1583,33 @@ def test_observe_only_prefers_model_completion_over_an_attached_action(tmp_path,
     )
     assert event.payload["accepted_operation"] == "complete"
     assert event.payload["ignored_actions"] == 1
+
+
+def test_observe_only_retains_a_task_action_attached_to_duplicate_evidence(tmp_path, record):
+    meaning = fixture()[-1]
+    data = response(meaning, operation="duplicate_clear")
+    brain, *_ = setup_brain(tmp_path, record, [data])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+
+    brain._observe()
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+
+    retained = brain.action_plan.actions[0].decision
+    assert retained.operation == "act"
+    assert retained.action is not None
+    event = next(
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("guard") == "proof_with_actions"
+    )
+    assert event.payload == {
+        "check": "guard_observe_only",
+        "guard": "proof_with_actions",
+        "reported_operation": "duplicate_clear",
+        "outcome": "normalized_to_action",
+        "retained_actions": 1,
+    }
 
 
 def test_combined_match_keeps_grounding_and_corrects_only_invalid_action(tmp_path, record):

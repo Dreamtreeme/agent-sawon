@@ -47,6 +47,8 @@ class PendingAction(TypedDict):
     exploration_action_key: NotRequired[str]
     exploration_goal_key: NotRequired[str]
     exploration_action: NotRequired[dict]
+    post_save_identity_result_target: NotRequired[bool]
+    taught_step_id: NotRequired[str]
 
 
 @dataclass(frozen=True)

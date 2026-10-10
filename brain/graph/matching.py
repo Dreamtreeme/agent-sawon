@@ -1412,6 +1412,28 @@ def prepare_match_plan(
     )
     if (
         services.settings.guard_mode == "observe_only"
+        and request.phase == "task"
+        and response.operation == "duplicate_clear"
+        and response.steps
+    ):
+        # A combined task response may report what the current query proves and
+        # also choose the next visible action.  The proof operation cannot carry
+        # actions in the executor contract, so retain the model's executable
+        # choice as an ordinary task action instead of discarding it and paying
+        # for an identical follow-up decision.
+        services.log.append(
+            "verify",
+            payload={
+                "check": "guard_observe_only",
+                "guard": "proof_with_actions",
+                "reported_operation": response.operation,
+                "outcome": "normalized_to_action",
+                "retained_actions": len(response.steps),
+            },
+        )
+        response = response.model_copy(update={"operation": "act", "grid": None, "row": None})
+    elif (
+        services.settings.guard_mode == "observe_only"
         and response.operation != "act"
         and response.steps
     ):

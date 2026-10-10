@@ -28,6 +28,7 @@ from brain.observe.evidence import (
 )
 from brain.observe.progress import navigation_state, navigation_target, semantic_target_key
 from brain.observe.values import field_matches as field_matches
+from brain.observe.values import normalize as normalize_value
 from brain.observe.values import values_for as values_for
 from brain.relay import Relay
 from brain.settings import BrainSettings
@@ -468,6 +469,29 @@ class Brain:
             return
         self.active_taught_step = taught_step_id
         self.completed_taught_steps.update(step.id for step in task.procedure[:proposed])
+
+    def _complete_taught_procedure_step(self, taught_step_id: str | None) -> None:
+        """Advance after an observed screen effect completes the selected taught step."""
+
+        task = self.task_instruction
+        if taught_step_id is None or task is None or not task.procedure:
+            return
+        order = {step.id: index for index, step in enumerate(task.procedure)}
+        completed = order.get(taught_step_id)
+        if completed is None:
+            return
+        self.completed_taught_steps.update(step.id for step in task.procedure[: completed + 1])
+        current = order.get(self.active_taught_step or "", -1)
+        if completed >= current and completed + 1 < len(task.procedure):
+            self.active_taught_step = task.procedure[completed + 1].id
+        self.log.append(
+            "verify",
+            payload={
+                "check": "taught_procedure_step_completed",
+                "completed_step_id": taught_step_id,
+                "active_step_id": self.active_taught_step,
+            },
+        )
 
     def _detect_visual(self, request: SemanticRequest) -> SemanticDetection:
         if self.settings.screen_matching and self.settings.separate_observation_decision:
@@ -1810,6 +1834,8 @@ class Brain:
             self.save_issued
             and self.observation.screen_kind == "query"
             and field == self.identity_input_key
+            and element.role.casefold() not in {"edit", "combobox"}
+            and field_matches(field, element.value or element.name, self.values)
         ):
             self.post_save_query_identity_verified = True
         if self.model_saved_detail_review:
@@ -2153,6 +2179,22 @@ class Brain:
         if choice.type in {"click", "double_click"} and choice.ref is not None:
             target = next(item for item in self.observation.elements if item.ref == choice.ref)
             pending["click_target"] = navigation_target(target, self.observation)
+            identity_field = self.identity_input_key
+            if (
+                self.phase == "task"
+                and self.save_issued
+                and decision.screen_kind == "query"
+                and decision.intent == "navigate"
+                and identity_field is not None
+                and target.role.casefold() not in {"edit", "combobox"}
+                and normalize_value(self.values[identity_field])
+                in normalize_value(target.value or target.name)
+            ):
+                pending["post_save_identity_result_target"] = True
+                if self.visual_proposal is not None and self.visual_proposal.taught_step_id:
+                    pending["taught_step_id"] = self.visual_proposal.taught_step_id
+                elif self.active_taught_step is not None:
+                    pending["taught_step_id"] = self.active_taught_step
         if choice.type in {"set_text", "type_text"}:
             target = next(item for item in self.observation.elements if item.ref == choice.ref)
             pending["descriptor"] = describe(target, self.observation.elements)
@@ -2599,6 +2641,7 @@ class Brain:
 
     def _record_action_verification(
         self,
+        pending: PendingAction,
         decision: Decision,
         choice: Choice,
         effect_source: str | None,
@@ -2635,17 +2678,21 @@ class Brain:
         if (
             self.phase == "task"
             and self.save_issued
-            and self.post_save_query_identity_verified
             and self.settings.visual_model_only_review
             and decision.screen_kind == "query"
             and decision.intent == "navigate"
             and choice.type in {"click", "double_click"}
             and navigation_change
+            and pending.get("post_save_identity_result_target", False)
+            and self.observation is not None
+            and self.observation.screen_kind != decision.screen_kind
         ):
             # Start a distinct model-owned review ledger after the saved result
             # row opens. Pre-save entry evidence must not satisfy this review.
+            self.post_save_query_identity_verified = True
             self.model_saved_detail_review = True
             self.post_save_verified.clear()
+            self._complete_taught_procedure_step(pending.get("taught_step_id"))
             self.log.append(
                 "verify",
                 payload={
@@ -2794,6 +2841,7 @@ class Brain:
                 return outcome
             self._begin_saved_query_proof(pending, decision)
             self._record_action_verification(
+                pending,
                 decision,
                 choice,
                 effect_source,
