@@ -188,6 +188,8 @@ class Brain:
     query_window_handle = progress_property("query_window_handle")
     duplicate_clear = progress_property("duplicate_clear")
     save_issued = progress_property("save_issued")
+    model_saved_detail_review = progress_property("model_saved_detail_review")
+    post_save_verified = progress_property("post_save_verified")
     saved_evidence = progress_property("saved_evidence")
     saved_bindings = progress_property("saved_bindings")
     saved_row_binding = progress_property("saved_row_binding")
@@ -333,10 +335,13 @@ class Brain:
         post_action_review = bool(
             pending_execution is not None and pending_execution.plan.verification == "fields"
         )
+        model_verified = (
+            self.post_save_verified if self.model_saved_detail_review else set(self.verified)
+        )
         context_layers = self.rolling_context.export_prompt_context(
             current_goal=self.goal,
-            verified_inputs=list(self.verified),
-            remaining_inputs=list(set(self.values) - set(self.verified)),
+            verified_inputs=list(model_verified),
+            remaining_inputs=list(set(self.values) - model_verified),
         )
         saved_record_review = (
             self.saved_evidence.snapshot(self.values) if self.saved_evidence.session_id else None
@@ -346,7 +351,7 @@ class Brain:
             page=page,
             phase=self.phase,
             values=self.values,
-            verified_fields=frozenset(self.verified),
+            verified_fields=frozenset(model_verified),
             execution_contract=contract,
             required_verification=tuple(required_verification(self.pending)),
             post_action_review=post_action_review,
@@ -356,6 +361,7 @@ class Brain:
                 "query_value_verified": self.query_value_verified,
                 "query_submitted": self.query_submitted,
                 "save_issued": self.save_issued,
+                "post_save_detail_review": self.model_saved_detail_review,
             },
             context_layers=context_layers,
             recent_feedback=tuple(
@@ -1601,6 +1607,8 @@ class Brain:
         for previous in superseded:
             self.verified.pop(previous, None)
         self.verified[field] = descriptor
+        if self.model_saved_detail_review:
+            self.post_save_verified.add(field)
         self._record_progress("field:" + field)
         return superseded
 
@@ -2394,6 +2402,27 @@ class Brain:
         )
         for fact in new_facts:
             self.rolling_context.mark_milestone(f"검증 완료: {fact}")
+        if (
+            self.phase == "task"
+            and self.save_issued
+            and self.settings.visual_model_only_review
+            and decision.screen_kind == "query"
+            and decision.intent == "navigate"
+            and choice.type in {"click", "double_click"}
+            and navigation_change
+        ):
+            # Start a distinct model-owned review ledger after the saved result
+            # row opens. Pre-save entry evidence must not satisfy this review.
+            self.model_saved_detail_review = True
+            self.post_save_verified.clear()
+            self.log.append(
+                "verify",
+                payload={
+                    "ok": True,
+                    "check": "model_saved_detail_review_started",
+                    "obs_id": str(self.observation.obs_id) if self.observation else None,
+                },
+            )
 
     def _log_verification_transition(
         self,
@@ -2634,6 +2663,10 @@ class Brain:
         assert self.observation is not None
         if self.phase == "task":
             assert self.task_instruction is not None
+            if self.model_saved_detail_review:
+                missing = set(self.values) - self.post_save_verified
+                if missing:
+                    return self._fail("post_save_model_evidence_incomplete")
             try:
                 result = evaluate_task_completion(
                     self.observation,

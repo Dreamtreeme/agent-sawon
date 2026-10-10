@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from brain.observe.evidence import matching_elements
 from brain.observe.progress import navigation_target, semantic_target_key
@@ -29,6 +29,13 @@ class DetailedClick(BaseModel):
     x: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     y: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     explanation: str = Field(min_length=1, max_length=300)
+
+    @field_validator("explanation", mode="before")
+    @classmethod
+    def bound_explanation(cls, value):
+        """Keep provider prose from invalidating an otherwise usable point."""
+
+        return value[:300] if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def coordinate_pair(self):

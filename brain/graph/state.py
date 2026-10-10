@@ -80,6 +80,8 @@ class ProgressState:
     query_window_handle: int | None = None
     duplicate_clear: bool = False
     save_issued: bool = False
+    model_saved_detail_review: bool = False
+    post_save_verified: set[str] = field(default_factory=set)
     saved_evidence: SavedEvidence = field(default_factory=SavedEvidence)
     saved_bindings: tuple[str, dict[str, str]] | None = None
     saved_row_binding: tuple[str, str] | None = None

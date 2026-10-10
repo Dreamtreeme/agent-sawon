@@ -9,6 +9,7 @@ from test_brain import ScriptedModel, element
 from test_brain import record as record
 from test_visual_scene import wire
 
+from brain.graph.click_refinement import DetailedClick
 from brain.graph.engine import Brain
 from brain.graph.schemas import Choice, Decision
 from brain.settings import BrainSettings
@@ -17,6 +18,16 @@ from brain.visual.perception import VisualGroundingError
 from brain.visual.scene import SemanticDetection, bind_scene
 from pipeline.schemas import OcrBlock
 from sawon_runtime.storage import RunLog
+
+
+def test_detailed_click_bounds_provider_explanation_without_losing_point():
+    answer = DetailedClick.model_validate(
+        {"outcome": "retry", "x": 10, "y": 20, "explanation": "x" * 500}
+    )
+
+    assert answer.x == 10
+    assert answer.y == 20
+    assert len(answer.explanation) == 300
 
 
 def setup(

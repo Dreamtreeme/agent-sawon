@@ -23,6 +23,7 @@ from brain.graph.matching import (
     ScreenMatch,
     ScreenPlan,
     bind_value_evidence_to_controls,
+    build_match_prompt,
     compile_match,
     compile_screen_action_plan,
     defer_unwritable_fill_targets,
@@ -779,6 +780,25 @@ def test_model_only_generic_task_keeps_model_grounded_input_progress(
         if event.payload.get("check") == "model_task_evidence_recorded"
     )
     assert event.payload["fields"] == ["hbl_no"]
+
+
+def test_post_save_model_review_uses_only_persisted_detail_evidence(
+    tmp_path, record, task_instruction
+):
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    brain.verified = {field: {"pre_save": field} for field in brain.values}
+    brain.model_saved_detail_review = True
+    brain.post_save_verified = {"hbl_no"}
+
+    request, services = matching_contract(brain)
+    prepared = build_match_prompt(request, services)
+    notebook = prepared.state["notebook"]
+
+    assert request.verified_fields == {"hbl_no"}
+    assert notebook["verified_inputs"] == ["hbl_no"]
+    assert set(notebook["remaining_inputs"]) == set(brain.values) - {"hbl_no"}
+    assert notebook["workflow_state"]["post_save_detail_review"] is True
 
 
 def test_model_only_generic_task_keeps_model_mapped_editor_ocr_progress(

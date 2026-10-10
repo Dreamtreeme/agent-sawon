@@ -372,6 +372,11 @@ Every referenced marker MUST also be defined in controls in this same response. 
 operation=act, omit past-row evidence unrelated to the current action.
 In generic task mode those inputs remain reusable across screens: verified_inputs reports prior
 evidence but does not mean a value is already present in a different current form.
+When notebook.workflow_state.post_save_detail_review is true, the saved result row has already
+been opened and verified_inputs contains only fields re-read from that persisted detail. Review
+the saved record; do not fill or save again. Navigate only to expose remaining_inputs. Once no
+remaining inputs exist, use CURRENT visible evidence for the applicable completion condition and
+return operation=complete instead of revisiting a previously reviewed tab.
 The execution contract is the complete list of actions currently allowed by code. Return one
 screen-boundary action batch: direct fills only, login credentials plus login, same-intent
 navigation clicks, or consecutive select_option row/confirmation clicks. Do not mix fills with
@@ -1408,6 +1413,7 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
                 "available_inputs": available_inputs,
                 "pending_verification_inputs": pending_verification_fields,
                 MODEL_INPUTS_NAME: record,
+                "workflow_state": dict(request.workflow_flags),
             }
         )
         if request.saved_record_review is not None:
