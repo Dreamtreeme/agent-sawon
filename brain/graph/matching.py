@@ -244,6 +244,7 @@ class MatchRequest:
     evidence_claims: tuple[dict, ...]
     failed_transitions: tuple[dict, ...]
     saved_record_review: dict | None
+    taught_procedure_progress: dict
     task_instruction: TaskInstruction
     task_instruction_sha256: str
     policy: DecisionPolicy
@@ -372,6 +373,9 @@ Every referenced marker MUST also be defined in controls in this same response. 
 operation=act, omit past-row evidence unrelated to the current action.
 In generic task mode those inputs remain reusable across screens: verified_inputs reports prior
 evidence but does not mean a value is already present in a different current form.
+When notebook.workflow_state.save_issued is true, the run is verifying the record that it just
+saved. A matching row on that post-save query is the expected saved record, not a pre-entry
+duplicate. Continue the user-taught post-save review instead of returning duplicate_found or stop.
 When notebook.workflow_state.post_save_detail_review is true, the saved result row has already
 been opened and verified_inputs contains only fields re-read from that persisted detail. Review
 the saved record; do not fill or save again. Navigate only to expose remaining_inputs. Once no
@@ -1472,7 +1476,7 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
     # without changing its display name.  Neither case may reuse a decision
     # compiled under another education file.
     state["task_contract_sha256"] = request.task_instruction_sha256
-    state["taught_procedure_progress"] = services.methods.procedure_prompt_context()
+    state["taught_procedure_progress"] = request.taught_procedure_progress
     if request.task_instruction.procedure:
         state["taught_procedure_rules"] = TAUGHT_PROCEDURE_RULES.strip()
     state["capability"] = capability.model_dump()

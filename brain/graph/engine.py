@@ -188,6 +188,7 @@ class Brain:
     query_window_handle = progress_property("query_window_handle")
     duplicate_clear = progress_property("duplicate_clear")
     save_issued = progress_property("save_issued")
+    post_save_query_identity_verified = progress_property("post_save_query_identity_verified")
     model_saved_detail_review = progress_property("model_saved_detail_review")
     post_save_verified = progress_property("post_save_verified")
     saved_evidence = progress_property("saved_evidence")
@@ -213,6 +214,8 @@ class Brain:
     visual_proposal = progress_property("visual_proposal")
     visual_proposal_obs_id = progress_property("visual_proposal_obs_id")
     procedure_step = progress_property("procedure_step")
+    active_taught_step = progress_property("active_taught_step")
+    completed_taught_steps = progress_property("completed_taught_steps")
 
     def __init__(
         self,
@@ -361,6 +364,7 @@ class Brain:
                 "query_value_verified": self.query_value_verified,
                 "query_submitted": self.query_submitted,
                 "save_issued": self.save_issued,
+                "post_save_query_identity_verified": self.post_save_query_identity_verified,
                 "post_save_detail_review": self.model_saved_detail_review,
             },
             context_layers=context_layers,
@@ -373,6 +377,7 @@ class Brain:
             evidence_claims=tuple(self.evidence_ledger.prompt_context()),
             failed_transitions=tuple(self._failed_exploration_transitions()),
             saved_record_review=saved_record_review,
+            taught_procedure_progress=self._taught_procedure_progress(),
             task_instruction=self.task_instruction,
             task_instruction_sha256=self.task_instruction_sha256,
             policy=policy,
@@ -419,8 +424,50 @@ class Brain:
             ),
         )
         self.procedure_step = result.response.procedure_step
+        self._advance_taught_procedure(result.response.taught_step_id)
         self.visual_match_candidate = result.visual_match_candidate
         return result.response
+
+    def _taught_procedure_progress(self) -> dict:
+        """Expose one monotonic procedure window without making it an execution FSM."""
+
+        task = self.task_instruction
+        if task is None or not task.procedure:
+            return {"steps": [], "completed_step_ids": []}
+        order = {step.id: index for index, step in enumerate(task.procedure)}
+        current = order.get(self.active_taught_step or "", 0)
+        return {
+            "steps": [
+                step.model_dump(mode="json") for step in task.procedure[current : current + 2]
+            ],
+            "completed_step_ids": [
+                step.id for step in task.procedure if step.id in self.completed_taught_steps
+            ],
+        }
+
+    def _advance_taught_procedure(self, taught_step_id: str | None) -> None:
+        """Advance prompt context from a grounded model plan; never rewind it."""
+
+        task = self.task_instruction
+        if taught_step_id is None or task is None or not task.procedure:
+            return
+        order = {step.id: index for index, step in enumerate(task.procedure)}
+        proposed = order.get(taught_step_id)
+        if proposed is None:
+            return
+        current = order.get(self.active_taught_step or "", -1)
+        if proposed < current:
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "taught_procedure_regression_ignored",
+                    "active_step_id": self.active_taught_step,
+                    "proposed_step_id": taught_step_id,
+                },
+            )
+            return
+        self.active_taught_step = taught_step_id
+        self.completed_taught_steps.update(step.id for step in task.procedure[:proposed])
 
     def _detect_visual(self, request: SemanticRequest) -> SemanticDetection:
         if self.settings.screen_matching and self.settings.separate_observation_decision:
@@ -708,9 +755,9 @@ class Brain:
         elif reason in {"navigation_no_progress", "navigation_cycle"}:
             feedback["required_response"] = (
                 "Navigation has no new task evidence or repeats a prior screen cycle. "
-                "Choose a different grounded route or stop. Controls in "
-                "unproductive_navigation_targets cannot be repeated in the same state. "
-                + self._phase_instruction()
+                "Do not repeat the same action in failed_transitions. A different gesture "
+                "on the same grounded target remains available when the application uses "
+                "separate select/open interactions. " + self._phase_instruction()
             )
         elif reason == "record_input_scope_mismatch":
             feedback["required_response"] = (
@@ -1247,6 +1294,13 @@ class Brain:
     def _exploration_goal_key(self) -> str:
         if self.task_instruction is None:
             return f"{self.phase}:{self._decision_policy().current_step}"
+        if self.save_issued:
+            if self.model_saved_detail_review:
+                remaining = sorted(set(self.values) - self.post_save_verified)
+                return "post_save_detail:" + ",".join(remaining)
+            if self.post_save_query_identity_verified:
+                return "post_save:open_detail"
+            return "post_save:requery_identity"
         remaining = sorted(set(self.values) - set(self.verified))
         return "inputs:" + ",".join(remaining) if remaining else "completion"
 
@@ -1390,6 +1444,21 @@ class Brain:
     def _select_node(self) -> WorkerNode:
         if self.steps >= self.settings.max_steps:
             return self._finish("stopped", "max_steps")
+        if self._post_save_model_evidence_complete():
+            self.action_plan = None
+            self.visual_proposal = None
+            self.visual_match_candidate = None
+            self.execution_authorized = False
+            self.log.append(
+                "verify",
+                payload={
+                    "ok": True,
+                    "check": "post_save_model_evidence_complete",
+                    "fields": sorted(self.post_save_verified),
+                    "identity_field": self.identity_input_key,
+                },
+            )
+            return self._finish("success", "task_completed_with_verified_evidence")
         self.steps += 1
         duplicate_checkpoint = self._duplicate_checkpoint_pending()
         final_query_pending = (
@@ -1607,6 +1676,12 @@ class Brain:
         for previous in superseded:
             self.verified.pop(previous, None)
         self.verified[field] = descriptor
+        if (
+            self.save_issued
+            and self.observation.screen_kind == "query"
+            and field == self.identity_input_key
+        ):
+            self.post_save_query_identity_verified = True
         if self.model_saved_detail_review:
             self.post_save_verified.add(field)
         self._record_progress("field:" + field)
@@ -1723,11 +1798,7 @@ class Brain:
         if fill_target and self.phase == "task" and choice.source is not None:
             surface_owner = self.evidence_ledger.owner(describe(target, self.observation.elements))
         exploration_blocked = False
-        if (
-            choice is not None
-            and self.phase == "task"
-            and decision.intent in {"navigate", "select_tab", "login"}
-        ):
+        if choice is not None and decision.intent in {"navigate", "select_tab", "login"}:
             action_key, _ = self._exploration_action(decision)
             exploration_blocked = self.exploration.failed(
                 navigation_state(self.observation),
@@ -1753,10 +1824,6 @@ class Brain:
                         else True
                     ),
                     exploration_blocked=exploration_blocked,
-                    unproductive_refs=frozenset(
-                        item["ref"] for item in self._unproductive_navigation_targets()
-                    ),
-                    refinement_applies=self.click_refinement.applies(self.observation, decision),
                 )
             )
         except ActionSurfaceConflict as error:
@@ -1903,7 +1970,7 @@ class Brain:
         delivered_point = getattr(getattr(action.root, "target", None), "image_point", None)
         if delivered_point is not None:
             pending["delivered_point"] = tuple(delivered_point)
-        if self.phase == "task" and decision.intent in {"navigate", "select_tab", "login"}:
+        if decision.intent in {"navigate", "select_tab", "login"}:
             action_key, description = self._exploration_action(decision)
             pending["exploration_action_key"] = action_key
             pending["exploration_goal_key"] = self._exploration_goal_key()
@@ -1964,8 +2031,15 @@ class Brain:
             and decision.screen_kind == "query"
         ):
             self.query_submitted = True
+        if self.phase == "task" and self.save_issued and decision.intent == "search":
+            self.post_save_query_identity_verified = False
+            self.model_saved_detail_review = False
+            self.post_save_verified.clear()
         if decision.intent == "save":
             self.save_issued = True
+            self.post_save_query_identity_verified = False
+            self.model_saved_detail_review = False
+            self.post_save_verified.clear()
             self.phase = "save_result"
             self.query_submitted = self.query_value_verified = False
             self.query_descriptor = None
@@ -2405,6 +2479,7 @@ class Brain:
         if (
             self.phase == "task"
             and self.save_issued
+            and self.post_save_query_identity_verified
             and self.settings.visual_model_only_review
             and decision.screen_kind == "query"
             and decision.intent == "navigate"
@@ -2423,6 +2498,19 @@ class Brain:
                     "obs_id": str(self.observation.obs_id) if self.observation else None,
                 },
             )
+
+    def _post_save_model_evidence_complete(self) -> bool:
+        """Return whether one post-save detail episode covers every task input."""
+
+        return bool(
+            self.phase == "task"
+            and self.task_instruction is not None
+            and self.settings.visual_model_only_review
+            and self.save_issued
+            and self.post_save_query_identity_verified
+            and self.model_saved_detail_review
+            and set(self.values) <= self.post_save_verified
+        )
 
     def _log_verification_transition(
         self,
@@ -2628,6 +2716,9 @@ class Brain:
         elif review.result == "rejected":
             self.phase = "task" if self.task_instruction is not None else "enter"
             self.save_issued = False
+            self.post_save_query_identity_verified = False
+            self.model_saved_detail_review = False
+            self.post_save_verified.clear()
             self.query_submitted = self.query_value_verified = False
             self.query_descriptor = self.query_window_handle = None
             for source in review.repair_fields:

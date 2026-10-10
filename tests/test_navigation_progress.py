@@ -110,6 +110,16 @@ def navigate(intent="navigate", *, claim="Open the next panel"):
     return choose_current_tab
 
 
+def double_click_current_tab(prompt):
+    ui = json.loads(prompt.split("\nUI_TEXT=", 1)[1])
+    tab = next(item for item in ui["elements"] if item["role"] == "TabItem")
+    return decision(
+        kind="editor",
+        intent="navigate",
+        action={"type": "double_click", "ref": tab["ref"]},
+    )
+
+
 def no_progress_failures(brain):
     return [
         event.payload
@@ -189,6 +199,19 @@ def test_unchanged_navigation_blocks_second_click_and_stops_after_two_failures(t
     ]
     assert len(returned) == 4  # Query input, search, editor navigation, first failed tab.
     assert all(item["ok"] for item in returned)
+
+
+def test_failed_single_click_does_not_block_double_click_on_same_target(tmp_path, record):
+    relay = NavigationRelay(record)
+    result, _, _, _ = run_brain(
+        tmp_path,
+        record,
+        [*success_steps(record)[:4], navigate(), double_click_current_tab],
+        relay=relay,
+    )
+
+    assert result.reason == "repeated_subgoal_failure:enter:navigate"
+    assert [action.root.type for action in relay.actions[-2:]] == ["click", "double_click"]
 
 
 def test_ref_focus_geometry_hash_and_model_prose_churn_do_not_count_as_progress(tmp_path, record):

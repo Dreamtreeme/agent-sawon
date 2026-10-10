@@ -30,11 +30,50 @@ class VisualMatchDocument(BaseModel):
     entries: tuple[VisualMatchEntry, ...] = ()
 
 
+_VOLATILE_KEYS = {
+    "capture_id",
+    "image_path",
+    "obs_id",
+    "observation_id",
+    "ref",
+    "revision",
+    "screenshot",
+}
+_DIAGNOSTIC_NOTEBOOK_KEYS = {
+    "recent_feedback",
+    "recent_turns",
+    "scratchpad",
+}
+_CONFIDENCE_KEYS = {"candidate_confidence", "confidence"}
+
+
+def _cache_contract(value: Any, *, parent: str | None = None) -> Any:
+    """Remove run-local metadata while retaining every decision-bearing fact."""
+
+    if isinstance(value, dict):
+        if parent == "inputs":
+            return sorted(value)
+        result = {}
+        for key, item in value.items():
+            if key in _VOLATILE_KEYS or key in _CONFIDENCE_KEYS:
+                continue
+            if parent == "notebook" and key in _DIAGNOSTIC_NOTEBOOK_KEYS:
+                continue
+            result[key] = _cache_contract(item, parent=key)
+        return result
+    if isinstance(value, list):
+        return [_cache_contract(item, parent=parent) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_cache_contract(item, parent=parent) for item in value)
+    return value
+
+
 def visual_match_key(state: dict[str, Any]) -> str:
-    """Bind reuse to current pixels/catalog plus the complete workflow contract."""
-    encoded = json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    """Bind reuse to stable screen semantics and the executable task contract."""
+    contract = _cache_contract(state)
+    encoded = json.dumps(
+        contract, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 

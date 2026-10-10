@@ -824,6 +824,95 @@ def test_post_save_model_review_uses_only_persisted_detail_evidence(
     assert notebook["workflow_state"]["post_save_detail_review"] is True
 
 
+def test_post_save_query_identity_is_recorded_from_current_model_evidence(
+    tmp_path, record, task_instruction
+):
+    meaning = fixture()[-1]
+    task_response = response(meaning)
+    task_response.update(
+        {
+            "steps": [],
+            "operation": "stop",
+            "evidence": [{"field": "hbl_no", "target": meaning.controls[0].id}],
+        }
+    )
+    brain, *_ = setup_brain(tmp_path, record, [task_response], task_instruction=task_instruction)
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    brain.save_issued = True
+
+    brain._observe()
+
+    assert brain.post_save_query_identity_verified
+
+
+def test_complete_post_save_model_evidence_finishes_before_another_decision(
+    tmp_path, record, task_instruction
+):
+    brain, model, relay, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    brain.save_issued = True
+    brain.post_save_query_identity_verified = True
+    brain.model_saved_detail_review = True
+    brain.post_save_verified = set(brain.values)
+
+    assert brain._select_node() == "finish"
+
+    assert brain.result is not None and brain.result.status == "success"
+    assert brain.result.reason == "task_completed_with_verified_evidence"
+    assert model.prompts == []
+    assert not hasattr(relay, "actions")
+    event = next(
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "post_save_model_evidence_complete"
+    )
+    assert event.payload["fields"] == sorted(brain.values)
+
+
+def test_post_save_exploration_failures_are_scoped_by_review_stage(
+    tmp_path, record, task_instruction
+):
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
+    brain.save_issued = True
+
+    assert brain._exploration_goal_key() == "post_save:requery_identity"
+    brain.post_save_query_identity_verified = True
+    assert brain._exploration_goal_key() == "post_save:open_detail"
+    brain.model_saved_detail_review = True
+    brain.post_save_verified = {"hbl_no"}
+    assert brain._exploration_goal_key() == "post_save_detail:" + ",".join(
+        sorted(set(brain.values) - {"hbl_no"})
+    )
+
+
+def test_taught_procedure_prompt_progress_is_run_local_and_monotonic(tmp_path, record):
+    taught = TaskInstruction.model_validate_json(
+        (
+            Path(__file__).resolve().parents[1] / "examples/shipment-user-taught-task.json"
+        ).read_bytes()
+    )
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=taught)
+
+    initial = brain._taught_procedure_progress()
+    assert [step["id"] for step in initial["steps"]] == ["login", "open-query"]
+    assert initial["completed_step_ids"] == []
+
+    brain._advance_taught_procedure("save-record")
+    advanced = brain._taught_procedure_progress()
+    assert [step["id"] for step in advanced["steps"]] == [
+        "save-record",
+        "requery-saved-record",
+    ]
+    assert advanced["completed_step_ids"] == [step.id for step in taught.procedure[:6]]
+
+    brain._advance_taught_procedure("check-duplicate")
+    assert brain._taught_procedure_progress() == advanced
+    assert any(
+        event.payload.get("check") == "taught_procedure_regression_ignored"
+        for event in brain.log.read_all()
+    )
+
+
 def test_model_only_generic_task_keeps_model_mapped_editor_ocr_progress(
     tmp_path, record, task_instruction
 ):

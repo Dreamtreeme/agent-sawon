@@ -36,8 +36,6 @@ class ActionGuardRequest:
     surface_owner: str | None = None
     query_matches: bool = True
     exploration_blocked: bool = False
-    unproductive_refs: frozenset[str] = frozenset()
-    refinement_applies: bool = False
 
 
 def validate_action_guard(request: ActionGuardRequest) -> None:
@@ -83,12 +81,6 @@ def validate_action_guard(request: ActionGuardRequest) -> None:
     ):
         raise GuardStop("query_value_changed")
     if request.exploration_blocked:
-        raise GuardStop("navigation_no_progress")
-    if (
-        decision.intent in {"navigate", "select_tab", "login"}
-        and choice.ref in request.unproductive_refs
-        and not request.refinement_applies
-    ):
         raise GuardStop("navigation_no_progress")
 
 

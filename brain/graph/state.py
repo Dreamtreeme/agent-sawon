@@ -80,6 +80,7 @@ class ProgressState:
     query_window_handle: int | None = None
     duplicate_clear: bool = False
     save_issued: bool = False
+    post_save_query_identity_verified: bool = False
     model_saved_detail_review: bool = False
     post_save_verified: set[str] = field(default_factory=set)
     saved_evidence: SavedEvidence = field(default_factory=SavedEvidence)
@@ -105,6 +106,8 @@ class ProgressState:
     visual_proposal: ScreenMatch | None = None
     visual_proposal_obs_id: UUID | None = None
     procedure_step: str | None = None
+    active_taught_step: str | None = None
+    completed_taught_steps: set[str] = field(default_factory=set)
 
 
 def state_property(section: str, key: str) -> property:
