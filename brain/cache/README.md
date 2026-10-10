@@ -12,21 +12,25 @@ path = "../cases/methods/reviewed-methods.json"
 ```
 
 Paths resolve relative to the configuration file. The source is copied into each case's
-`methods-working.json`; it is never changed in place. A preceding model decision selects a
-method and binds its slots to the task's current input keys. The next observation binds
-learned labels and label-relative geometry to current OCR/control candidates and generates
-ScreenMatch without a model call. Existing scene binding, ActionPlan and execution handle it.
-No absolute historical coordinates, input values or marker IDs are execution targets.
+`methods-working.json`; it is never changed in place. Reuse is scoped to the exact user-education
+digest and task objective. Each fresh observation binds learned labels and label-relative geometry
+to current OCR/control candidates, then generates ScreenMatch without a semantic-model call.
+Existing scene binding, ActionPlan and execution handle it. No absolute historical coordinates,
+input values or marker IDs are execution targets.
 
-When current targets do not bind, the normal screen model plans the current action. Delivered
-business fill batches become local method variants and appear in `method-progress.json`.
-Delivery is not proof of business completion. Inspect the run and its video before selecting
-that working file as the next run's source. Interrupted batches are not retained as variants.
+When current targets do not bind, the screen model plans the current action. A successful run
+promotes only its delivered trace, including login, navigation, lookup, input, save and review
+actions. A no-progress click is consumed for the current run. A delivered fill whose immediate
+OCR reread is incomplete remains provisional and is promoted only if the whole task succeeds.
+Sequential actions may share one taught step; they are not treated as interchangeable branches.
 
-The first supported runtime family is a visible business-input batch. Navigation, lookup,
-login, save and final result decisions still use the model. This does not implement a general
-branching recipe or establish compatibility with every ERP workflow. Generated methods and
-their source traces belong in ignored private storage. See the learning CLI in
+Learned fill targets also rebind visible current values as deterministic evidence. This lets a
+warm run accumulate proof across multiple tabs before applying its learned completion condition.
+The save-result review contract remains separate from ordinary action replay. Delivery alone is
+never business success, and failed runs promote neither methods nor visual decisions.
+
+This does not establish compatibility with every ERP workflow. Generated methods and their source
+traces belong in ignored private storage. See the learning CLI in
 [demo_learning](../demo_learning/README.md).
 
 ## 화면 매칭 캐시
