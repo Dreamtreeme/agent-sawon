@@ -50,7 +50,8 @@ def task_instruction():
     )
 
 
-def test_ocr_fill_target_is_rejected_as_non_action_surface(tmp_path):
+@pytest.mark.parametrize(("action", "role"), [("fill", "edit"), ("click", "text")])
+def test_ocr_target_is_rejected_as_non_action_surface(tmp_path, action, role):
     class BrainStub:
         log = RunLog(tmp_path, case_id="defer-ocr-fill", agent_id="test")
 
@@ -60,11 +61,17 @@ def test_ocr_fill_target_is_rejected_as_non_action_surface(tmp_path):
             "procedure_step": "task-action",
             "controls": [
                 {"id": 1, "role": "edit", "confidence": 1},
-                {"id": 2, "role": "edit", "text_ids": [8], "confidence": 1},
+                {"id": 2, "role": role, "text_ids": [8], "confidence": 1},
             ],
             "steps": [
                 {"target": 1, "action": "fill", "intent": "fill", "source": "safe"},
-                {"target": 2, "action": "fill", "intent": "fill", "source": "missing"},
+                {
+                    "target": 2,
+                    "action": action,
+                    "intent": "fill",
+                    "source": "missing",
+                    **({"point": [1, 1]} if action == "click" else {}),
+                },
             ],
         }
     )
@@ -83,9 +90,9 @@ def test_ocr_fill_target_is_rejected_as_non_action_surface(tmp_path):
         "targets": [
             {
                 "target": 2,
-                "action": "fill",
+                "action": action,
                 "source": "ocr",
-                "role": "edit",
+                "role": role,
                 "reason": "action_not_allowed_for_geometry",
             }
         ],

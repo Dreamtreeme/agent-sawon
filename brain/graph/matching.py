@@ -316,9 +316,9 @@ Never classify a rectangle containing multiple smaller closed rectangles as an e
 it is a container or grid candidate. When an input boundary is clipped at the viewport edge,
 scroll to expose that input instead of borrowing a nearby table or container rectangle.
 An OCR input marker must enclose that input's own current literal value, never its nearby label.
-Treat OCR as text evidence. A step target MUST name a marker whose allowed_actions contains the
-requested action. OCR click proxies may be clicked only after classifying them as an actually
-clickable button, tab, menu item, row, cell, checkbox, or icon. Never fill or send keys to OCR.
+Treat OCR as text evidence only. A step target MUST name an entry from markers whose
+allowed_actions contains the requested action. OCR ids may be used only in label_ids/text_ids;
+never use an OCR id as a control id or step target.
 """
 
 
@@ -355,8 +355,8 @@ Use the supplied existing marker ID and geometry; never substitute an OCR captio
 enclosing detector marker. Classify its visible role, labels, contained literal text, enabled state,
 and focus state. All label_ids/text_ids use the printed visible text-marker IDs. Do not invent IDs,
 boxes, values, actions, or hidden controls. Report uncertainty when the role cannot be grounded.
-The requested action must appear in that marker's allowed_actions. OCR click proxies cannot be
-writable controls or keyboard targets.
+The requested action must appear in that marker's allowed_actions. OCR ids are label/text evidence
+and cannot be control ids or action targets.
 """
 
 
@@ -1640,9 +1640,9 @@ def validate_or_replan(
                     "instruction": (
                         "Re-read the CURRENT screen and return a corrected interpretation and "
                         "plan. For every step, choose a target marker whose allowed_actions "
-                        "contains the requested action. OCR is text evidence and may only act as "
-                        "a click proxy after it is classified as a clickable role. Never fill or "
-                        "send keys to OCR. Keep controls and steps target IDs consistent."
+                        "contains the requested action. OCR ids are text evidence only and may "
+                        "appear in label_ids/text_ids, never as control ids or step targets. Keep "
+                        "controls and steps target IDs consistent."
                     ),
                     "rejected_target_ids": sorted(step.target for step in response.steps),
                 },
