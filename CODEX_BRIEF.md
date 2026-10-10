@@ -2237,3 +2237,11 @@ ruff check/format 및 diff 검사 통과. 실제 저장 캡처의 OCR37블록/�
   결과 행 선택·더블클릭, 상세 탭 왕복이 더 길어진 모델 경로가 유료 호출 2회 감소분을 상쇄했다.
   따라서 호출 분할 제거의 기능 회귀는 없고 작업자 성공 종료까지 확인했지만, 단일 실행만으로
   속도 개선이나 웜 재사용을 입증하지 않는다.
+- 015의 Haiku 24회를 다시 추적한 결과, 약16개 유효 판단 경계에 복구8회가 붙었다. 저장 후
+  13회가 96.136초로 유료 지연의56.1%를 차지한다. 필드 검토와 다음 탭/저장 행동의 병합은
+  성공했지만, generic duplicate-clear 응답에 포함된 행동1개를 코드가 무시한 뒤 전체 화면을
+  재호출하는 분할이 남았다. 또한 저장 상세가 열린 사실을 나타내는
+  `model_saved_detail_review_started`가 한 번도 기록되지 않아 모델이 `requery-saved-record`로
+  회귀했다. 두 번째 닫기 제안은 scoped `semantic_target_repeated`가 차단해 추가 루프를 막았다.
+  24회 모두 provider prompt cache hit는0이며 상세 근거는 bench의
+  `docs/observe-only-call-efficiency-015-20261010.md`에 보존한다.
