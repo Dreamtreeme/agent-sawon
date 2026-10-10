@@ -555,6 +555,14 @@ def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
         controls=[],
         operation="act",
         evidence=[{"field": source, "target": target}],
+        steps=[
+            {
+                "target": target,
+                "action": "click",
+                "intent": "select_tab",
+                "point": [10, 10],
+            }
+        ],
     )
     fill = Decision(
         screen_kind="editor",
@@ -601,7 +609,7 @@ def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
     assert event.payload["delegated"] == [source]
     assert event.payload["matched"] == [source]
     assert event.payload["ok"] is True
-    assert brain.visual_proposal is None
+    assert brain.visual_proposal is proposal
 
 
 def test_save_policy_uses_current_verified_evidence(tmp_path, record):

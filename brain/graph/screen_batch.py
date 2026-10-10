@@ -245,7 +245,13 @@ def verify_screen_fields(
             ),
             clear_verified=(),
             failure_reason="screen_fill_evidence_missing" if mismatched else None,
-            clear_visual_proposal=True,
+            clear_visual_proposal=not bool(
+                request.visual_proposal is not None
+                and (
+                    getattr(request.visual_proposal, "steps", None)
+                    or getattr(request.visual_proposal, "operation", None) == "complete"
+                )
+            ),
         )
 
     matched, matched_refs, mismatched, mismatched_refs = [], [], [], []

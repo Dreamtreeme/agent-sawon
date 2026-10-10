@@ -416,6 +416,10 @@ user-authored completion condition. Map each supporting marker to its zero-based
 in completion_evidence; map visible business values separately in evidence. Follow all constraints
 and never transmit or approve. Treat a visible status or result as current evidence: when it already
 shows a command's expected effect, do not repeat that command; advance the task from that result.
+operation=act MUST contain at least one executable step in this response. Never return an empty
+act for a later completion call. In generic task phase, do not return duplicate_clear or
+duplicate_found: record the visible query evidence and choose the next taught action in the same
+response.
 If a required input is not visible, choose an untried CURRENT affordance whose expected effect can
 expose it. failed_transitions lists actions that already produced no change or a cycle for this same
 screen state and goal gap; do not repeat them. Incomplete work alone is not a terminal reason to
@@ -467,9 +471,11 @@ immediately next subgoal; after a delivered batch the next purpose is chosen fro
 
 POST_ACTION_REVIEW_RULES = """
 This call reviews the result of a field batch that was already executed. Describe the current
-screen and map every readable supplied input to evidence. Do not choose the next action in this
-call: return operation=stop, steps=[], completion_evidence=[], and no save result. A later Decision
-call will use the accepted evidence and choose what to do next.
+screen and map every readable supplied input to evidence. In the SAME response, choose the next
+grounded action that advances the task when one is visible. Do not repeat a delivered field input.
+Return completion only when current evidence supports it, and stop only when no grounded action or
+supported completion is available. Review and next-action planning are one decision boundary; do
+not defer the action to a later model call.
 """
 
 
@@ -755,6 +761,18 @@ def retain_action_targets(
     )
     missing = required - controls.keys()
     if not missing:
+        return response
+
+    if services.settings.guard_mode == "observe_only":
+        services.log.append(
+            "verify",
+            payload={
+                "check": "guard_observe_only",
+                "guard": "target_grounding_call",
+                "outcome": "disabled",
+                "target_ids": sorted(missing),
+            },
+        )
         return response
 
     marker_ids = {marker["id"] for marker in screen.get("markers", [])}
@@ -1501,7 +1519,7 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
     }
     if request.post_action_review:
         state["post_action_review"] = {
-            "mode": "field_evidence_only",
+            "mode": "field_evidence_and_next_action",
             "delivered_sources": pending_verification_fields,
         }
     # User education is the semantic source of truth for field-to-input bindings.
@@ -1646,6 +1664,17 @@ def validate_or_replan(
     try:
         return prepare_match_plan(request, services, response, prepared.capability, active_fields)
     except ValueError as error:
+        if services.settings.guard_mode == "observe_only":
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "guard_observe_only",
+                    "guard": "full_plan_correction_call",
+                    "outcome": "disabled",
+                    "error": str(error),
+                },
+            )
+            raise
         if str(error) not in _REPLANNABLE_MATCH_ERRORS:
             raise
         if str(error) == "screen_match_action_surface_mismatch":
@@ -1776,7 +1805,7 @@ def ground_match_response(
     *,
     used_image: bool,
 ) -> ScreenMatch:
-    """Ground referenced controls, repair an empty act once, and revalidate writes."""
+    """Ground referenced controls and revalidate writes without hidden model retries."""
 
     screen, page = request.screen, request.page
     required = request.required_verification
@@ -1794,37 +1823,15 @@ def ground_match_response(
         response = sanitize_unused_controls(services, request.phase, response, screen, required)
         if response.operation == "act" and not response.steps:
             if services.settings.guard_mode == "observe_only":
-                correction_state = {
-                    **prepared.state,
-                    "correction": {
-                        "error": "screen_match_empty_action",
-                        "instruction": (
-                            "Re-evaluate the whole CURRENT image and task state. Return the next "
-                            "visible action that advances the user's task, or a supported complete "
-                            "decision. Do not merely restate the previous step's expected result."
-                        ),
-                    },
-                }
-                response = services.call(
-                    TASK_RULES
-                    + prepared.guard_rules
-                    + prepared.taught_rules
-                    + prepared.method_rules
-                    + json.dumps(correction_state, ensure_ascii=False),
-                    ScreenMatch,
-                    page=page,
-                )
-                write_match_artifact(services, "empty-action-replan", response)
-                response = local_response(response, screen)
-                response = bind_value_evidence_to_controls(services, response, screen)
                 services.log.append(
                     "verify",
                     payload={
                         "check": "guard_observe_only",
-                        "guard": "empty_action",
-                        "outcome": "full_screen_replan",
+                        "guard": "empty_action_completion_call",
+                        "outcome": "disabled",
                     },
                 )
+                raise ValueError("screen_match_empty_action")
             else:
                 completion = services.call(
                     "The current form was matched but operation=act had no executable steps. "
@@ -1847,14 +1854,14 @@ def ground_match_response(
                 response = response.model_copy(
                     update={"operation": completion.operation, "steps": completion.steps}
                 )
-            services.log.append(
-                "verify",
-                payload={
-                    "check": "missing_match_actions_completed",
-                    "operation": response.operation,
-                    "steps": len(response.steps),
-                },
-            )
+                services.log.append(
+                    "verify",
+                    payload={
+                        "check": "missing_match_actions_completed",
+                        "operation": response.operation,
+                        "steps": len(response.steps),
+                    },
+                )
     response = prepare_match_plan(
         request,
         services,
@@ -1879,21 +1886,6 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
     cache_hit = selection.cache_hit
     method_proposal = selection.method_proposal
     used_image = selection.used_image
-    if request.post_action_review:
-        # The model's semantic controls and field evidence are the review result.
-        # A speculative next action from this same response must not run or block
-        # verification of the batch that has already been delivered.
-        response = response.model_copy(
-            update={
-                "operation": "stop",
-                "steps": [],
-                "completion_evidence": [],
-                "save_result": None,
-                "message_targets": [],
-                "repair_fields": [],
-                "expected_result": "Review the delivered field values on the current screen",
-            }
-        )
     response = validate_or_replan(response, request, services, prepared)
     response = ground_match_response(
         response,

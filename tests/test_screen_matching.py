@@ -2068,10 +2068,11 @@ def test_model_only_review_delegates_required_verification_without_repair_call(t
     assert delegated[-1].payload["sources"] == ["hbl_no"]
 
 
-def test_post_action_review_is_evidence_only(tmp_path, record):
+def test_post_action_review_preserves_next_action_in_same_response(tmp_path, record):
     blocks, _, markers, meaning = fixture()
-    reviewed = response(meaning, steps=[])
+    reviewed = response(meaning)
     brain, model, *_ = setup_brain(tmp_path, record, [reviewed])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
     screen = {
         "ocr": [block.model_dump() for block in blocks],
         "markers": [marker.model_dump() for marker in markers],
@@ -2083,24 +2084,32 @@ def test_post_action_review_is_evidence_only(tmp_path, record):
     )
 
     assert len(model.prompts) == 1
-    assert result.response.operation == "stop"
-    assert result.response.steps == []
+    assert result.response.operation == "act"
+    expected = ScreenMatch.model_validate(reviewed).steps[0]
+    actual = result.response.steps[0]
+    assert (actual.target, actual.action, actual.source) == (
+        expected.target,
+        expected.action,
+        expected.source,
+    )
     assert result.response.needs_refinement is False
 
 
-def test_observe_only_replans_the_full_screen_after_an_empty_action(tmp_path, record):
+def test_observe_only_does_not_issue_hidden_empty_action_call(tmp_path, record):
     meaning = fixture()[-1]
     initial = response(meaning, steps=[])
-    replanned = response(meaning)
-    brain, model, *_ = setup_brain(tmp_path, record, [initial, replanned], task_instruction=None)
+    brain, model, *_ = setup_brain(tmp_path, record, [initial], task_instruction=None)
     brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
 
-    brain._observe()
+    with pytest.raises(ValueError, match="screen_match_empty_action"):
+        brain._observe()
 
-    assert brain._select_node() == "review"
-    assert len(model.prompts) == 2
-    assert brain.action_plan.actions[0].decision.action.source == "hbl_no"
-    assert any(event.payload.get("guard") == "empty_action" for event in brain.log.read_all())
+    assert len(model.prompts) == 1
+    assert any(
+        event.payload.get("guard") == "empty_action_completion_call"
+        and event.payload.get("outcome") == "disabled"
+        for event in brain.log.read_all()
+    )
 
 
 @pytest.mark.parametrize("operation", ["act", "stop"])
