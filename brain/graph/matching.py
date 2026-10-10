@@ -411,6 +411,9 @@ or detail-table cell merely because its column caption resembles the business in
 For every fill and field-evidence binding, match the CURRENT control's printed label to the target
 text paired with that exact input_key in taught_procedure. Never assign a different remaining input
 to a visible field merely because that value has not been evidenced yet.
+After saving, opening a query result must target the current row or cell carrying the literal
+notebook.inputs value named by task.identity_input_key. A query caption or input control is not the
+saved result row.
 """
 
 METHOD_RULES = """
@@ -849,6 +852,7 @@ _REPLANNABLE_MATCH_ERRORS = {
     "screen_match_taught_final_step_required",
     "screen_match_taught_step_required",
     "screen_match_taught_target_mismatch",
+    "screen_match_saved_row_target_mismatch",
 }
 
 
@@ -950,6 +954,38 @@ def _validate_taught_input_targets(response: ScreenMatch, request: MatchRequest)
         # contradicts the user-taught source/target pair is a deterministic error.
         if expected and observed and not _labels_match_taught_target(observed, expected):
             raise ValueError("screen_match_taught_target_mismatch")
+
+
+def _validate_saved_row_navigation_target(response: ScreenMatch, request: MatchRequest) -> None:
+    """A post-save query may open only a target carrying the saved identity value."""
+
+    identity_key = request.task_instruction.identity_input_key
+    if (
+        request.saved_record_review is None
+        or identity_key is None
+        or response.screen_kind != "query"
+    ):
+        return
+    navigations = [
+        step
+        for step in response.steps
+        if step.intent == "navigate" and step.action in {"click", "double_click"}
+    ]
+    if not navigations:
+        return
+    expected = _semantic_label(request.values[identity_key])
+    ocr = {item["id"]: _semantic_label(item["text"]) for item in request.screen.get("ocr", [])}
+    markers = {marker["id"]: marker for marker in request.screen.get("markers", [])}
+    controls = {control.id: control for control in response.controls}
+    for step in navigations:
+        control = controls.get(step.target)
+        text_ids = set(control.text_ids) if control is not None else set()
+        marker = markers.get(step.target)
+        if marker is not None and marker.get("source") == "ocr":
+            text_ids.update(marker.get("text_ids", []))
+        if expected and expected in {ocr.get(text_id, "") for text_id in text_ids}:
+            continue
+        raise ValueError("screen_match_saved_row_target_mismatch")
 
 
 def _normalize_match_actions(
@@ -1087,6 +1123,7 @@ def validate_match_plan(
     response = _normalize_match_actions(response, request, services)
     response = _validate_completion_annotations(response, request, services)
     _validate_taught_input_targets(response, request)
+    _validate_saved_row_navigation_target(response, request)
     _validate_login_boundary(response, request)
     _validate_action_boundary(response, capability, request)
     response = bind_selection_effect(response, capability, active_fields)

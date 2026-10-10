@@ -549,6 +549,49 @@ def test_literal_value_evidence_is_bound_to_its_unique_input_control(tmp_path, r
     }
 
 
+def test_post_save_query_rejects_navigation_to_a_caption_instead_of_identity_row(tmp_path, record):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.saved_evidence.begin("saved")
+    screen = {
+        "ocr": [
+            {"id": 3, "text": "House B/L"},
+            {"id": 4, "text": record.fields.hbl_no.value},
+        ],
+        "markers": [
+            {"id": 12, "source": "ocr", "text_ids": [3]},
+            {"id": 30, "source": "ocr", "text_ids": [4]},
+        ],
+    }
+    request, services = matching_contract(brain, screen)
+    capability = ActionCapability(
+        actions=["navigate"], goal="Open saved result", completion="Saved detail opens"
+    )
+
+    def planned(target, text_id):
+        return ScreenMatch.model_validate(
+            {
+                "screen_kind": "query",
+                "procedure_step": "task-action",
+                "controls": [
+                    {"id": target, "role": "text", "text_ids": [text_id], "confidence": 1}
+                ],
+                "steps": [
+                    {
+                        "target": target,
+                        "action": "click",
+                        "intent": "navigate",
+                        "point": [100, 100],
+                    }
+                ],
+            }
+        )
+
+    with pytest.raises(ValueError, match="saved_row_target_mismatch"):
+        validate_match_plan(planned(12, 3), capability, request, services, set(brain.values))
+    accepted = validate_match_plan(planned(30, 4), capability, request, services, set(brain.values))
+    assert accepted.steps[0].target == 30
+
+
 def test_taught_direct_input_is_not_written_into_a_detected_grid_cell(tmp_path, record):
     task_instruction = TaskInstruction.model_validate(
         {
