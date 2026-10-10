@@ -13,7 +13,7 @@ from test_brain import record as record
 from test_visual_markers import fixture
 from test_visual_scene import wire
 
-from brain.cache import VisualMatchCache
+from brain.cache import VisualMatchCache, visual_match_key
 from brain.graph.engine import Brain
 from brain.graph.matching import (
     OBSERVE_ONLY_TARGET_RULES,
@@ -32,6 +32,7 @@ from brain.graph.matching import (
     match_screen,
     omit_nonblocking_image_request,
     omit_nonblocking_refinement,
+    select_match_response,
     task_action_contract,
     validate_action_surfaces,
     validate_match_plan,
@@ -1267,6 +1268,38 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(tmp_path, record,
         if event.kind == "cache_hit" and event.payload.get("check") == "visual_match_cache"
     ]
     assert len(hits) == 1
+
+
+def test_save_result_does_not_use_an_action_method_before_review_contract(
+    tmp_path, record, task_instruction
+):
+    brain, model, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
+    request, services = matching_contract(brain)
+    request = replace(request, phase="save_result")
+    brain.methods.enabled = True
+
+    def reject_method(_screen):
+        raise AssertionError("save-result review must precede a learned action")
+
+    brain.methods.apply = reject_method
+    cache = VisualMatchCache(tmp_path / "save-result-cache.json", enabled=True)
+    services = replace(services, cache=cache)
+    prepared = build_match_prompt(request, services)
+    cached = ScreenMatch(
+        screen_kind="dialog",
+        controls=[],
+        procedure_step="inspect-save",
+        operation="stop",
+        expected_result="Inspect the current save result",
+    )
+    cache.stage(visual_match_key(prepared.state), cached.model_dump(mode="json"))
+    assert cache.finish(success=True) == 1
+
+    selected = select_match_response(request, services, prepared)
+
+    assert selected.response == cached
+    assert selected.cache_hit is not None
+    assert model.prompts == []
 
 
 def test_identical_capture_reuses_ocr_but_replans_current_task_action(tmp_path, record):
