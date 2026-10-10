@@ -16,6 +16,33 @@ from models.base import EventSink, MeasuredModelClient, ProviderReply, TokenUsag
 from models.pricing import PriceRate
 
 
+def anthropic_provider_schema(schema: type[BaseModel]) -> dict[str, Any]:
+    """Bound grammar complexity while preserving the local Pydantic contract.
+
+    Anthropic counts every object property omitted from ``required`` toward its
+    structured-output optional-parameter limit. Pydantic defaults make the
+    combined screen contract exceed that limit even though nullable/defaulted
+    values can be emitted explicitly. Requiring every property removes those
+    grammar branches; local validation still applies defaults, unions and
+    cross-field rules to the returned JSON.
+    """
+    transformed = transform_schema(schema)
+
+    def require_properties(node: Any) -> None:
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if node.get("type") == "object" and isinstance(properties, dict):
+                node["required"] = list(properties)
+            for child in node.values():
+                require_properties(child)
+        elif isinstance(node, list):
+            for child in node:
+                require_properties(child)
+
+    require_properties(transformed)
+    return transformed
+
+
 class AnthropicClient(MeasuredModelClient):
     def __init__(
         self,
@@ -59,7 +86,7 @@ class AnthropicClient(MeasuredModelClient):
                 "effort": self._effort,
                 "format": {
                     "type": "json_schema",
-                    "schema": transform_schema(schema),
+                    "schema": anthropic_provider_schema(schema),
                 },
             },
         )

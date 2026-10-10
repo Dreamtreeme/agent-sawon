@@ -7,7 +7,8 @@ import pytest
 from PIL import Image
 from pydantic import BaseModel
 
-from models.anthropic_client import AnthropicClient
+from brain.graph.matching import ScreenMatch
+from models.anthropic_client import AnthropicClient, anthropic_provider_schema
 from models.base import TokenUsage
 from models.factory import create_model_client
 from models.pricing import PriceBook
@@ -63,6 +64,34 @@ def test_structured_vision_request_and_usage_share_one_measured_call(tmp_path):
     assert request["output_config"]["format"]["type"] == "json_schema"
     assert request["messages"][0]["content"][0]["source"]["media_type"] == "image/png"
     assert sdk.messages.create.call_count == len(log.read_all()) == 1
+
+
+def test_screen_schema_removes_anthropic_optional_grammar_branches():
+    schema = anthropic_provider_schema(ScreenMatch)
+    optional = []
+    unions = []
+
+    def inspect(node):
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if node.get("type") == "object" and isinstance(properties, dict):
+                required = set(node.get("required", []))
+                optional.extend(key for key in properties if key not in required)
+                unions.extend(
+                    key
+                    for key, value in properties.items()
+                    if isinstance(value, dict)
+                    and ("anyOf" in value or isinstance(value.get("type"), list))
+                )
+            for child in node.values():
+                inspect(child)
+        elif isinstance(node, list):
+            for child in node:
+                inspect(child)
+
+    inspect(schema)
+    assert optional == []
+    assert len(unions) == 9  # Under Anthropic's documented limit of 16.
 
 
 def test_long_prompt_tier_changes_all_haiku_rates(tmp_path):
