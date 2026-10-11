@@ -112,9 +112,8 @@ class MatchAction(BaseModel):
         min_length=2,
         max_length=2,
         description=(
-            "Original-image [x,y] click point inside target. Required for click and "
-            "double_click so merged visual targets retain the intended subregion; ignored for "
-            "non-pointer actions."
+            "Original-image [x,y] point inside target. Required for click/double_click and for "
+            "every action whose target is a model-created control without a local marker."
         ),
     )
 
@@ -130,11 +129,8 @@ class MatchAction(BaseModel):
     def explicit_visual_click_point(self):
         if self.action == "key" and self.keys is None:
             raise ValueError("key_action_requires_keys")
-        if self.action in {"click", "double_click"}:
-            if self.point is None:
-                raise ValueError("visual_click_point_required")
-            if any(value < 0 for value in self.point):
-                raise ValueError("visual_click_point_negative")
+        if self.point is not None and any(value < 0 for value in self.point):
+            raise ValueError("visual_click_point_negative")
         return self
 
 
@@ -357,9 +353,11 @@ next action has no standalone marker because OCR merged adjacent labels or local
 it, you may assign a new nonnegative control ID and use it consistently in controls and steps.
 For that control, provide its visible role, confidence_policy=argmax, and a precise
 visual_description.
-For click or double_click, provide an original-image point inside the intended visible control.
+For EVERY action on a new control ID, provide an original-image point inside the intended visible
+control. This includes fill and keyboard actions on a clearly visible blank edit field; the point
+is how the runtime binds your semantic control to CURRENT-screen geometry.
 This is an explicit exception to the preceding no-invented-ID rule. Do not use the exception for
-fill or keyboard actions, hidden controls, or targets outside the CURRENT image.
+hidden controls or targets outside the CURRENT image.
 """
 
 TARGET_GROUNDING_RULES = """Ground only the listed action target markers on the CURRENT image.
@@ -763,18 +761,6 @@ def retain_action_targets(
     if not missing:
         return response
 
-    if services.settings.guard_mode == "observe_only":
-        services.log.append(
-            "verify",
-            payload={
-                "check": "guard_observe_only",
-                "guard": "target_grounding_call",
-                "outcome": "disabled",
-                "target_ids": sorted(missing),
-            },
-        )
-        return response
-
     marker_ids = {marker["id"] for marker in screen.get("markers", [])}
     # Let the normal semantic-grounding retry repair an invalid interpretation.
     # This helper handles only a sound interpretation that omitted a real target.
@@ -899,12 +885,27 @@ _REPLANNABLE_MATCH_ERRORS = {
     "screen_match_action_outside_procedure",
     "screen_match_field_outside_procedure_scope",
     "screen_match_login_batch_incomplete",
+    "screen_match_completion_decision_required",
+    "screen_match_model_point_required",
     "screen_match_mixed_boundary_actions",
+    "screen_match_step_not_executable",
     "screen_match_task_surface_mismatch",
     "screen_match_taught_step_required",
     "screen_match_saved_row_target_mismatch",
     "screen_match_action_target_uncertain",
     "screen_match_action_surface_mismatch",
+}
+
+# Observe-only disables policy rejection, but these responses cannot be
+# represented by the common executor at all. Let the bounded plan correction
+# repair their structure instead of failing later in compile_match and paying
+# for a fresh full-screen decision on the same pixels.
+_EXECUTOR_CONTRACT_ERRORS = {
+    "screen_match_login_batch_incomplete",
+    "screen_match_completion_decision_required",
+    "screen_match_model_point_required",
+    "screen_match_mixed_boundary_actions",
+    "screen_match_step_not_executable",
 }
 
 
@@ -1053,6 +1054,36 @@ def _validate_login_boundary(response: ScreenMatch, request: MatchRequest) -> No
         raise ValueError("screen_match_login_batch_incomplete")
 
 
+def _validate_step_contract(
+    response: ScreenMatch, request: MatchRequest, services: MatchServices
+) -> None:
+    """Reject combinations that cannot be represented by Decision/Choice."""
+
+    if response.operation == "stop" and request.policy.facts.final_evidence_ready:
+        raise ValueError("screen_match_completion_decision_required")
+    marker_ids = {marker["id"] for marker in request.screen.get("markers", [])}
+    controls = {control.id: control for control in response.controls}
+    for step in response.steps:
+        if step.action in {"click", "double_click"} and step.point is None:
+            raise ValueError("screen_match_step_not_executable")
+        writes_value = step.intent in {"credential", "fill"} or step.action == "fill"
+        if writes_value and not (
+            step.action == "fill"
+            and step.intent in {"credential", "fill"}
+            and step.source is not None
+        ):
+            raise ValueError("screen_match_step_not_executable")
+        control = controls.get(step.target)
+        model_created = (
+            services.settings.guard_mode == "observe_only"
+            and step.target not in marker_ids
+            and control is not None
+            and control.confidence_policy == "argmax"
+        )
+        if model_created and step.point is None:
+            raise ValueError("screen_match_model_point_required")
+
+
 def _valid_multi_action_boundary(steps: list[MatchAction]) -> bool:
     intents = {action.intent for action in steps}
     if _is_login_batch(steps) or intents == {"fill"}:
@@ -1122,6 +1153,7 @@ def validate_match_plan(
 ) -> ScreenMatch:
     """Validate task actions separately from an already grounded screen interpretation."""
     response = _normalize_match_actions(response, request, services)
+    _validate_step_contract(response, request, services)
     if services.settings.guard_mode == "enforce":
         _validate_taught_step(response, request)
         response = _validate_completion_annotations(response, request, services)
@@ -1154,6 +1186,8 @@ def validate_match_plan(
                         "would_reject": str(error),
                     },
                 )
+                if str(error) in _EXECUTOR_CONTRACT_ERRORS:
+                    raise
     response = bind_selection_effect(response, capability, active_fields)
     if services.settings.guard_mode == "enforce":
         _validate_input_scope(response, capability)
@@ -1682,7 +1716,10 @@ def validate_or_replan(
     try:
         return prepare_match_plan(request, services, response, prepared.capability, active_fields)
     except ValueError as error:
-        if services.settings.guard_mode == "observe_only":
+        if (
+            services.settings.guard_mode == "observe_only"
+            and str(error) not in _EXECUTOR_CONTRACT_ERRORS
+        ):
             services.log.append(
                 "verify",
                 payload={
@@ -1775,6 +1812,28 @@ def validate_or_replan(
             )
             return corrected
         interpretation = response.interpretation()
+        correction_instruction = (
+            "Keep grounded_interpretation unchanged. Return a task plan that matches the "
+            "supplied capability and the execution contract."
+        )
+        if str(error) == "screen_match_step_not_executable":
+            correction_instruction += (
+                " Every click or double_click step MUST include an original-image [x,y] point "
+                "inside its intended CURRENT visible target. Every fill step MUST use "
+                "action=fill, intent=fill or credential, and a notebook input key as source."
+            )
+        elif str(error) == "screen_match_model_point_required":
+            correction_instruction += (
+                " Every step targeting a model-created control ID MUST include an "
+                "original-image [x,y] point inside that CURRENT visible control, including fill."
+            )
+        elif str(error) == "screen_match_completion_decision_required":
+            correction_instruction += (
+                " Runtime evidence reports that all required inputs have been verified. Do not "
+                "stop with work described as in progress. Re-evaluate the CURRENT visible proof "
+                "and either return operation=complete with completion_evidence mapped to a user "
+                "completion condition, or return the one executable action still required."
+            )
         correction_state = {
             **prepared.state,
             "grounded_interpretation": {
@@ -1784,10 +1843,7 @@ def validate_or_replan(
             },
             "correction": {
                 "error": str(error),
-                "instruction": (
-                    "Keep grounded_interpretation unchanged. Return a task plan that matches "
-                    "the supplied capability and the execution contract."
-                ),
+                "instruction": correction_instruction,
             },
         }
         plan = services.call(

@@ -45,10 +45,6 @@ def test_explicit_visual_point_preserves_noncentral_subregion():
 )
 def test_visual_point_is_required_and_bound_to_target(point, reason):
     observation = scene()
-    if point is None:
-        with pytest.raises(ValueError, match=reason):
-            MatchAction(target=8, action="click", intent="select_tab")
-        return
     bindings = VisualPointBindings()
     with pytest.raises(ValueError, match=reason):
         bindings.bind(

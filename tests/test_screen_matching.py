@@ -1459,6 +1459,7 @@ def test_identical_catalog_grounds_new_target_without_replacing_plan(tmp_path, r
     brain, model, _, ocr, detector, _ = setup_brain(
         tmp_path, record, [empty, open_entry, open_entry], task_instruction=None
     )
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
     brain._observe()
     brain.phase = "enter"
     brain.duplicate_clear = True
@@ -1476,9 +1477,9 @@ def test_identical_catalog_grounds_new_target_without_replacing_plan(tmp_path, r
         and event.payload.get("plan_preserved") is True
         for event in brain.log.read_all()
     )
-    assert any(
-        event.payload.get("check") == "catalog_targets_merged"
-        and event.payload.get("plan_preserved") is True
+    assert not any(
+        event.payload.get("guard") == "target_grounding_call"
+        and event.payload.get("outcome") == "disabled"
         for event in brain.log.read_all()
     )
 
@@ -1652,6 +1653,7 @@ def test_combined_match_keeps_grounding_and_corrects_only_invalid_action(tmp_pat
     brain, model, _, _, _, _ = setup_brain(
         tmp_path, record, [wrong, corrected], task_instruction=None
     )
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
 
     brain._observe()
 
@@ -1660,11 +1662,87 @@ def test_combined_match_keeps_grounding_and_corrects_only_invalid_action(tmp_pat
     assert len(model.prompts) == 2
     assert model.prompts[0].startswith(TASK_RULES)
     assert model.prompts[1].startswith(TASK_PLAN_RULES)
-    correction = json.loads(model.prompts[1][len(TASK_PLAN_RULES) :])["correction"]
+    correction_prompt = model.prompts[1][len(TASK_PLAN_RULES) :]
+    correction = json.loads(correction_prompt[correction_prompt.index("{") :])["correction"]
     assert correction["error"] == "screen_match_mixed_boundary_actions"
     assert any(
         event.payload.get("check") == "combined_action_corrected" for event in brain.log.read_all()
     )
+
+
+def test_observe_only_corrects_an_unlocated_model_created_fill_target(tmp_path, record):
+    meaning = fixture()[-1]
+    wrong = response(meaning)
+    wrong["steps"][0].update(target=999, intent="fill")
+    wrong["controls"].append(
+        {
+            **wrong["controls"][0],
+            "id": 999,
+            "role": "edit",
+            "label_ids": [],
+            "text_ids": [],
+            "confidence_policy": "argmax",
+            "visual_description": "visible blank input without a standalone marker",
+        }
+    )
+    corrected = response(meaning)
+    corrected["steps"][0].update(target=999, intent="fill", point=[175, 30])
+    brain, model, *_ = setup_brain(tmp_path, record, [wrong, corrected])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+
+    brain._observe()
+
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    assert brain.action_plan.actions[0].decision.action.type == "set_text"
+    correction_prompt = model.prompts[1][len(TASK_PLAN_RULES) :]
+    correction = json.loads(correction_prompt[correction_prompt.index("{") :])["correction"]
+    assert correction["error"] == "screen_match_model_point_required"
+
+
+def test_observe_only_corrects_a_click_that_omits_its_point(tmp_path, record):
+    meaning = fixture()[-1]
+    wrong = response(meaning)
+    wrong["steps"][0].update(action="click", intent="navigate", source=None)
+    corrected = response(meaning)
+    corrected["steps"][0].update(action="click", intent="navigate", source=None, point=[175, 30])
+    brain, model, *_ = setup_brain(tmp_path, record, [wrong, corrected])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+
+    brain._observe()
+
+    assert brain._select_node() == "review"
+    correction_prompt = model.prompts[1][len(TASK_PLAN_RULES) :]
+    correction = json.loads(correction_prompt[correction_prompt.index("{") :])["correction"]
+    assert correction["error"] == "screen_match_step_not_executable"
+
+
+def test_stop_is_rejected_when_current_review_has_all_required_evidence(tmp_path, record):
+    meaning = fixture()[-1]
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+    request, services = matching_contract(brain)
+    request = replace(
+        request,
+        policy=DecisionPolicy(replace(request.policy.facts, final_evidence_ready=True)),
+    )
+    proposal = ScreenMatch.model_validate(
+        response(meaning, operation="stop", steps=[], procedure_step="task-action")
+    )
+
+    with pytest.raises(ValueError, match="screen_match_completion_decision_required"):
+        validate_match_plan(
+            proposal,
+            task_action_contract(
+                brain.phase,
+                brain.task_instruction,
+                request.execution_contract,
+                set(brain.values),
+            ),
+            request,
+            services,
+            set(brain.values),
+        )
 
 
 def test_model_may_complete_from_current_evidence_before_the_last_taught_step(tmp_path, record):
