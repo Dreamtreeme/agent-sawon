@@ -45,6 +45,7 @@ class MethodState:
     unverified: dict | None = None
     staged: dict[str, MethodDocument] = field(default_factory=dict)
     staged_completions: dict[str, MethodCompletion] = field(default_factory=dict)
+    blocked_method_ids: set[str] = field(default_factory=set)
 
 
 def open_method_library(
@@ -188,6 +189,8 @@ class MethodRuntime:
         order = {step.id: index for index, step in enumerate(task.procedure)}
         remaining_ids = []
         for method in self.library.methods():
+            if method.id in self.state.blocked_method_ids:
+                continue
             if not self._matches_current_task(method):
                 continue
             remaining_ids.extend(
@@ -235,6 +238,7 @@ class MethodRuntime:
             "active_method_id": self.state.active_method_id,
             "slot_bindings": self.state.bindings,
             "recent_executions": self.state.history[-6:],
+            "blocked_method_ids": sorted(self.state.blocked_method_ids),
         }
 
     def prompt_context(self) -> dict:
@@ -243,6 +247,8 @@ class MethodRuntime:
         objective = None if task is None else task.objective
         methods = []
         for method in self.library.methods():
+            if method.id in self.state.blocked_method_ids:
+                continue
             if objective is not None and not self._matches_current_task(method):
                 continue
             remaining = [
@@ -296,6 +302,8 @@ class MethodRuntime:
         candidates = []
         completion_candidates = []
         for method in self.library.methods():
+            if method.id in self.state.blocked_method_ids:
+                continue
             taught_replay = bool(task.procedure) and self._matches_current_task(method)
             trace_replay = self._has_trace_graph(method) and self._matches_current_task(method)
             auto_replay = taught_replay or trace_replay
@@ -420,6 +428,40 @@ class MethodRuntime:
             },
         )
         return response
+
+    def reject_pending(self, *, reason: str) -> dict | None:
+        """Reject the method edge that failed before it reached the relay.
+
+        A grounding or contract failure belongs to the newly proposed edge, not
+        to the previously delivered edge that is still awaiting effect review.
+        Suspend the whole method for this run so a descendant cannot jump over
+        the rejected edge; screen matching then falls through to visual cache or
+        the model on the same observation.
+        """
+
+        pending, self.state.pending = self.state.pending, None
+        if pending is None:
+            return None
+        method, group_id = pending["method"], pending["group_id"]
+        self.state.blocked_method_ids.add(method.id)
+        event = {
+            "method_id": method.id,
+            "group_id": group_id,
+            "purpose": self.state.purpose or method.purpose,
+            "origin": pending["origin"],
+            "taught_step_id": pending.get("taught_step_id")
+            or next(
+                (group.taught_step_id for group in method.action_groups if group.id == group_id),
+                None,
+            ),
+            "status": "rejected_before_delivery",
+            "reason": reason[:160],
+            "observation_id": self.task_context.observation_id,
+        }
+        self.state.history.append(event)
+        self.log.append("verify", payload={"check": "method_execution", **event})
+        atomic_write_json(self.case_dir / "method-progress.json", self.context())
+        return event
 
     def remember(self, screen: dict, response: ScreenMatch) -> None:
         self.state.pending = None

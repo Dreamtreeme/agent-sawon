@@ -152,6 +152,9 @@ def test_missing_or_ambiguous_current_anchor_returns_to_model(tmp_path):
         {"id": 18, "source": "omniparser", "bbox": [100, 95, 200, 30], "text_ids": []}
     )
     assert library.bind("find-party", {}, duplicate, {"party": "value"}) is None
+    far = scene()
+    far["markers"][0]["bbox"] = [900, 500, 200, 30]
+    assert library.bind("find-party", {}, far, {"party": "value"}) is None
     assert library.bind("find-party", {}, scene(), {"unrelated": "value"}) is None
 
 

@@ -608,6 +608,35 @@ def test_unproductive_reused_edge_is_consumed_for_the_current_run(tmp_path):
     assert brain.methods.state.history[-1]["status"] == "unproductive"
 
 
+def test_predispatch_rejection_blocks_that_method_without_blame_on_previous_delivery(tmp_path):
+    brain, _, _ = setup(tmp_path)
+    method = brain.methods.library.methods()[0]
+    group = method.action_groups[0]
+    previous = {
+        "method": method,
+        "group_id": "previous-group",
+        "origin": "reuse",
+        "pruned_group_ids": [],
+        "history_index": 0,
+    }
+    brain.methods.state.unverified = previous
+    brain.methods.state.pending = {
+        "method": method,
+        "group_id": group.id,
+        "origin": "reuse",
+        "pruned_group_ids": [],
+    }
+
+    rejected = brain.methods.reject_pending(reason="input_label_not_near_control")
+
+    assert rejected is not None
+    assert rejected["group_id"] == group.id
+    assert rejected["status"] == "rejected_before_delivery"
+    assert brain.methods.state.unverified is previous
+    assert method.id in brain.methods.state.blocked_method_ids
+    assert brain.methods.apply(catalog()[2]) is None
+
+
 def test_successful_fallback_keeps_untried_followup_in_the_same_taught_step(tmp_path):
     brain, _, _ = setup(tmp_path, changed_label=True)
     installed = brain.methods.library.methods()[0]

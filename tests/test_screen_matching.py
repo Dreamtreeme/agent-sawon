@@ -13,6 +13,7 @@ from test_brain import record as record
 from test_visual_markers import fixture
 from test_visual_scene import wire
 
+import brain.graph.matching as matching
 from brain.cache import VisualMatchCache, visual_match_key
 from brain.graph.engine import Brain
 from brain.graph.matching import (
@@ -21,6 +22,7 @@ from brain.graph.matching import (
     TASK_PLAN_RULES,
     TASK_RULES,
     ActionCapability,
+    MatchSelection,
     MatchServices,
     ScreenMatch,
     ScreenPlan,
@@ -210,6 +212,54 @@ def matching_contract(brain, screen=None):
         methods=brain.methods,
     )
     return brain._screen_match_request(screen, None), services
+
+
+def test_method_grounding_failure_retries_visual_cache_or_model_once(
+    tmp_path, record, task_instruction, monkeypatch
+):
+    brain, _, _, _, _, _ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
+    request, services = matching_contract(brain)
+    method_response = ScreenMatch(
+        screen_kind="editor",
+        procedure_step="task-action",
+        purpose="reused method",
+        controls=[],
+        steps=[],
+    )
+    fallback_response = method_response.model_copy(update={"purpose": "fallback"})
+    selections = []
+
+    def select(_request, _services, _prepared, *, allow_method=True):
+        selections.append(allow_method)
+        if allow_method:
+            return MatchSelection(method_response, None, method_response, False)
+        return MatchSelection(fallback_response, ("f" * 64, {}), None, False)
+
+    def ground(response, *_args, **_kwargs):
+        if response is method_response:
+            raise ValueError("input_label_not_near_control")
+        return response
+
+    rejected = []
+
+    def reject_pending(*, reason):
+        rejected.append(reason)
+        return {"method_id": "method-1", "group_id": "group-1"}
+
+    monkeypatch.setattr(matching, "select_match_response", select)
+    monkeypatch.setattr(matching, "validate_or_replan", lambda response, *_: response)
+    monkeypatch.setattr(matching, "ground_match_response", ground)
+    monkeypatch.setattr(services.methods, "reject_pending", reject_pending)
+
+    result = match_screen(request, services)
+
+    assert result.response.purpose == "fallback"
+    assert selections == [True, False]
+    assert rejected == ["input_label_not_near_control"]
+    event = next(
+        item for item in brain.log.read_all() if item.payload.get("check") == "method_fallback"
+    )
+    assert event.payload["next"] == "visual_cache_or_model"
 
 
 def response(meaning, **kwargs):

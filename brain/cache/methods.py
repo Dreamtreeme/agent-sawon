@@ -18,6 +18,11 @@ from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import ControlMeaning, contains
 from sawon_runtime.storage import atomic_write_json
 
+# Relative label-to-control geometry is scale invariant. A large score means the
+# only same-label marker belongs to a different part of the form, so method reuse
+# must yield to visual cache or the model instead of selecting the least-bad box.
+MAX_RELATIVE_GEOMETRY_SCORE = 2.0
+
 
 class MethodSlot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -482,6 +487,8 @@ def _bind_target(target: MethodTarget, screen: dict) -> tuple[dict, list[int]] |
         return None
     # Current labels locate the target; detector source only resolves equal geometry.
     candidates.sort(key=lambda item: (item[0], item[1]["source"] != target.marker_source))
+    if target.anchor_geometry is not None and candidates[0][0] > MAX_RELATIVE_GEOMETRY_SCORE:
+        return None
     if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
         if (candidates[0][1]["source"] == target.marker_source) == (
             candidates[1][1]["source"] == target.marker_source
@@ -591,6 +598,13 @@ class MethodLibrary:
         visible_text = {normalize(block["text"]) for block in screen.get("ocr", [])}
         for group in method.action_groups:
             if group_id is not None and group.id != group_id:
+                continue
+            current_kind = screen.get("screen_kind")
+            if (
+                current_kind
+                and group.screen_kind != "unknown"
+                and current_kind != group.screen_kind
+            ):
                 continue
             if any(
                 not any(normalize(anchor) in text for text in visible_text)

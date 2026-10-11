@@ -6,7 +6,7 @@ import json
 import re
 import unicodedata
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
 from uuid import uuid4
@@ -223,6 +223,8 @@ class MatchMethodRuntime(Protocol):
     def apply(self, screen: dict) -> ScreenMatch | None: ...
 
     def remember(self, screen: dict, response: ScreenMatch) -> None: ...
+
+    def reject_pending(self, *, reason: str) -> dict | None: ...
 
 
 @dataclass(frozen=True)
@@ -1629,12 +1631,19 @@ def select_match_response(
     request: MatchRequest,
     services: MatchServices,
     prepared: MatchPromptContext,
+    *,
+    allow_method: bool = True,
 ) -> MatchSelection:
     """Resolve method, cache, grounded-plan and model sources in priority order."""
 
     screen, page = request.screen, request.page
-    method_proposal = request.proposal
-    if method_proposal is None and request.phase != "save_result" and "correction" not in screen:
+    method_proposal = request.proposal if allow_method else None
+    if (
+        allow_method
+        and method_proposal is None
+        and request.phase != "save_result"
+        and "correction" not in screen
+    ):
         method_proposal = services.methods.apply(screen)
     cache_hit = services.cache.lookup(prepared.state) if method_proposal is None else None
     if method_proposal is not None:
@@ -1960,14 +1969,51 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
     cache_hit = selection.cache_hit
     method_proposal = selection.method_proposal
     used_image = selection.used_image
-    response = validate_or_replan(response, request, services, prepared)
-    response = ground_match_response(
-        response,
-        request,
-        services,
-        prepared,
-        used_image=used_image,
-    )
+    try:
+        response = validate_or_replan(response, request, services, prepared)
+        response = ground_match_response(
+            response,
+            request,
+            services,
+            prepared,
+            used_image=used_image,
+        )
+    except ValueError as error:
+        if method_proposal is None:
+            raise
+        rejected = services.methods.reject_pending(reason=str(error))
+        services.log.append(
+            "verify",
+            payload={
+                "check": "method_fallback",
+                "method_id": None if rejected is None else rejected["method_id"],
+                "group_id": None if rejected is None else rejected["group_id"],
+                "reason": str(error)[:160],
+                "next": "visual_cache_or_model",
+            },
+        )
+        # Rebuild after suspending the failed method. This removes its stale
+        # procedure window from the cache key and from the model notebook.
+        fallback_request = replace(
+            request,
+            proposal=None,
+            taught_procedure_progress=services.methods.procedure_prompt_context(),
+        )
+        prepared = build_match_prompt(fallback_request, services)
+        state = prepared.state
+        selection = select_match_response(fallback_request, services, prepared, allow_method=False)
+        response = selection.response
+        cache_hit = selection.cache_hit
+        method_proposal = None
+        used_image = selection.used_image
+        response = validate_or_replan(response, fallback_request, services, prepared)
+        response = ground_match_response(
+            response,
+            fallback_request,
+            services,
+            prepared,
+            used_image=used_image,
+        )
     visual_match_candidate = (
         (
             cache_hit[0] if cache_hit is not None else visual_match_key(state),
