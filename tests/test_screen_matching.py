@@ -1571,6 +1571,40 @@ def test_identical_catalog_grounds_new_target_without_replacing_plan(tmp_path, r
     )
 
 
+def test_catalog_target_recovery_keeps_point_only_target_for_executor(tmp_path, record):
+    meaning = fixture()[-1]
+    data = response(
+        meaning,
+        controls=[],
+        steps=[
+            {
+                "target": meaning.controls[0].id,
+                "action": "fill",
+                "source": "hbl_no",
+                "intent": "query_input",
+            },
+            {
+                "target": 999,
+                "action": "fill",
+                "source": "shipper_name",
+                "intent": "fill",
+                "point": [175, 30],
+            },
+        ],
+    )
+    brain, model, *_ = setup_brain(tmp_path, record, [response(meaning, steps=[])])
+    screen = {"ocr": [], "markers": [item.model_dump() for item in fixture()[2]]}
+    _, services = matching_contract(brain, screen)
+    original = ScreenMatch.model_validate(data)
+
+    repaired = matching.retain_action_targets(services, original, screen)
+
+    assert {control.id for control in repaired.controls} == {meaning.controls[0].id}
+    assert repaired.steps == original.steps
+    assert '"required_target_ids": [0]' in model.prompts[0]
+    assert '"required_target_ids": [0, 999]' not in model.prompts[0]
+
+
 def test_task_partner_input_compiles_to_current_screen_batch(tmp_path, record):
     meaning = fixture()[-1]
     partner = response(

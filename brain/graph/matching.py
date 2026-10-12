@@ -802,7 +802,7 @@ def retain_verification(
 def retain_action_targets(
     services: MatchServices, response: ScreenMatch, screen: dict, page=None
 ) -> ScreenMatch:
-    """Add semantics for model-selected action and evidence targets."""
+    """Add semantics for omitted targets that exist in the current marker catalog."""
     controls = {control.id: control for control in response.controls}
     required = (
         {step.target for step in response.steps}
@@ -814,11 +814,15 @@ def retain_action_targets(
         return response
 
     marker_ids = {marker["id"] for marker in screen.get("markers", [])}
-    # Let the normal semantic-grounding retry repair an invalid interpretation.
-    # This helper handles only a sound interpretation that omitted a real target.
+    # Existing meanings outside the catalog indicate an invalid interpretation,
+    # which the normal semantic-grounding retry must replace as a whole.
     if not controls.keys() <= marker_ids:
         return response
-    if not missing <= marker_ids:
+    # A plan may combine catalog markers with explicit model points. Recover the
+    # catalog omissions here and leave point-only targets to the executor's
+    # current-frame binding path.
+    recoverable = missing & marker_ids
+    if not recoverable:
         return response
 
     original_steps = response.steps
@@ -828,7 +832,7 @@ def retain_action_targets(
         TARGET_GROUNDING_RULES
         + json.dumps(
             {
-                "required_target_ids": sorted(missing),
+                "required_target_ids": sorted(recoverable),
                 "existing_controls": model_controls(response.controls, screen),
                 "screen": model_screen(screen),
             },
@@ -839,13 +843,13 @@ def retain_action_targets(
     )
     supplement = local_response(supplement, screen)
     supplied = {control.id: control for control in supplement.controls}
-    if not missing <= supplied.keys():
+    if not recoverable <= supplied.keys():
         raise GuardStop("action_target_semantics_missing")
 
     # Preserve every prior meaning. Only the omitted targets and their explicit
     # parent chain may be added by this repair call.
-    allowed = set(missing)
-    for target_id in tuple(missing):
+    allowed = set(recoverable)
+    for target_id in tuple(recoverable):
         current = supplied.get(target_id)
         visited: set[int] = set()
         while current is not None and current.parent_id is not None:
@@ -868,7 +872,7 @@ def retain_action_targets(
         "verify",
         payload={
             "check": "action_targets_grounded",
-            "marker_ids": sorted(missing),
+            "marker_ids": sorted(recoverable),
             "procedure_step": response.procedure_step,
             "plan_preserved": True,
         },
