@@ -1,5 +1,9 @@
 # 이전 성공044와 현재 실패047 비교
 
+> 후속 수정: `ScreenMatch.collect_action_bindings()`의 전체 객체 동등성 검사를 제거했다.
+> 행동의 inline target을 실행 의미의 기준으로 사용하며, `controls`의 설명·확신도 차이는
+> 응답 거부 사유로 취급하지 않는다.
+
 ## 결론
 
 실패047의 직접 중단 원인은 P1 `1e5950f`에서 추가한 동일 ID의 ControlMeaning 전체 동등성

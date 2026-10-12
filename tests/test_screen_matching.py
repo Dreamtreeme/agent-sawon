@@ -3193,9 +3193,18 @@ def test_action_owned_control_normalizes_once_and_keeps_cache_contract():
     assert "maxItems" not in json.dumps(schema)
     stored_schema = ScreenMatch.model_json_schema(mode="serialization")
     assert stored_schema["$defs"]["MatchAction"]["properties"]["target"]["type"] == "integer"
-    raw["controls"] = [{**control, "role": "button"}]
-    with pytest.raises(ValueError, match="conflicting_target_binding"):
-        ScreenMatch.model_validate(raw)
+    raw["controls"] = [
+        {
+            **control,
+            "role": "button",
+            "confidence": 0.1,
+            "visual_description": "supporting observation",
+        }
+    ]
+    normalized = ScreenMatch.model_validate(raw)
+    assert normalized.controls[0].role == "edit"
+    assert normalized.controls[0].confidence == 1
+    assert normalized.controls[0].visual_description == ""
 
 
 @pytest.mark.parametrize("model_created", [False, True], ids=["detected", "model-created"])

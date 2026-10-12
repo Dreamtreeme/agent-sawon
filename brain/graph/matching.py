@@ -257,8 +257,6 @@ class ScreenMatch(SemanticDetection, ScreenPlan):
         controls = {}
         for raw in value.get("controls", []):
             control = ControlMeaning.model_validate(raw)
-            if control.id in controls and controls[control.id] != control:
-                raise ValueError("screen_match_conflicting_target_binding")
             controls[control.id] = control
         normalized = []
         for step in steps:
@@ -267,8 +265,9 @@ class ScreenMatch(SemanticDetection, ScreenPlan):
                 continue
             bound = TargetedMatchAction.model_validate(step)
             control = bound.target
-            if control.id in controls and controls[control.id] != control:
-                raise ValueError("screen_match_conflicting_target_binding")
+            # The action owns its target binding.  ``controls`` may repeat the
+            # same observed element as supporting evidence with different
+            # descriptive metadata; that must not reject an executable action.
             controls[control.id] = control
             normalized.append({**bound.model_dump(), "target": control.id})
         return {**value, "controls": list(controls.values()), "steps": normalized}
