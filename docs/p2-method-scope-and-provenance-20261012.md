@@ -59,3 +59,31 @@ scope 검사에서 자동 재생되지 않는다. 이를 새 형식으로 추정
 않는다. 다음 실제 화면 검증은 같은 교육·새 업무 값에서 메서드 적중 로그의 scope/provenance와
 폴백 여부를 대조하고, 다른 회사 교육에서는 같은 라이브러리를 주어도 후보가 노출되지 않는지
 확인하는 두 조건으로 나눈다.
+
+## 실제 화면 검증 051–053
+
+첫 051은 `compiled_only=true`였지만 저장소의 메서드가 `runtime_trace`라 메서드 적중이
+0회였다. visual cache 15회와 모델 경로로 ERP 10/10에 성공했지만 메서드 범위 검증에서
+제외한다.
+
+격리한 052/053은 seed23 메서드 원본을 복사해 고정하고 visual cache를 끈 뒤
+`compiled_only=false`로 실행했다.
+
+| 실행 | 교육 | seed23 method bound | 결과 | Haiku/local | 비용 |
+|---|---|---:|---|---:|---:|
+| 052 | company-023, 같은 SHA | 9 | stopped, 저장 전 0/10 | 3/10 | $0.0085978 |
+| 053 | company-019, 다른 SHA | 0 | success, 10/10 | 18/16 | $0.0473155 |
+
+052의 9개 적중에는 계약 SHA, `runtime_trace`, revision 3, 원 실행 참조가 모두 기록됐다.
+로그인부터 기본 필드 입력과 추가정보 탭 이동까지 현재 화면에 재결합했다. 저장까지 가지 못한
+직접 원인은 추가정보 입력 폴백 모델 계획이 `selection_error:action_target_semantics_missing`로
+거절된 것이다. 이는 범위 혼합이 아니라 불완전한 메서드 이후 모델 폴백 계약의 별도 결함이다.
+
+053은 같은 seed23 메서드 파일을 읽었지만 company-019 교육 SHA가 달라 `method_bound`와
+`selection_source=method`가 모두 0이었다. 모델 프롬프트는 기존 `prompt_context()`의 exact
+scope 필터로 seed23 메서드를 받지 않았고 콜드 모델 경로로 ERP 10/10을 완료했다.
+
+실행 후 중앙 진단 파일 `task-notebook.json`만 전체 라이브러리 catalog를 기록하는 projection
+불일치를 발견했다. 모델 입력은 아니었지만 사람의 사후 분석에서 다른 회사 메서드로 오해할 수
+있어 `context()`도 같은 교육 목표와 SHA 필터를 사용하도록 통일했다. 관련 146개 및 전체
+640개 테스트, Ruff lint/format이 통과했다.

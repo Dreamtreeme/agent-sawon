@@ -597,7 +597,9 @@ class MethodLibrary:
             return []
         return MethodDocument.model_validate_json(self.path.read_bytes()).methods
 
-    def catalog(self, task: str | None = None) -> list[dict]:
+    def catalog(
+        self, task: str | None = None, task_contract_sha256: str | None = None
+    ) -> list[dict]:
         return [
             {
                 "id": method.id,
@@ -618,6 +620,7 @@ class MethodLibrary:
             }
             for method in self.methods()
             if task is None or not method.task_objective or method.task_objective == task
+            if task_contract_sha256 is None or method.task_contract_sha256 == task_contract_sha256
         ]
 
     def upsert(

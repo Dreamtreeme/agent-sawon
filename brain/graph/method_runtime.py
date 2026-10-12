@@ -190,8 +190,12 @@ class MethodRuntime:
         return result
 
     def context(self) -> dict:
+        task = self.task_context.task
         return {
-            "methods": self.library.catalog(),
+            "methods": self.library.catalog(
+                None if task is None else task.objective,
+                self.task_context.task_sha256 if task is not None else None,
+            ),
             "current_purpose": self.state.purpose,
             "active_method_id": self.state.active_method_id,
             "slot_bindings": self.state.bindings,

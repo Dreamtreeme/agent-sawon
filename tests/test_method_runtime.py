@@ -200,6 +200,7 @@ def test_learned_method_is_scoped_to_exact_user_education_file(tmp_path):
     brain.task_instruction_sha256 = "0" * 64
 
     assert brain.methods.prompt_context()["methods"] == []
+    assert brain.methods.context()["methods"] == []
 
 
 @pytest.mark.parametrize("observe_again", [False, True])
