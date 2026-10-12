@@ -4,7 +4,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from brain.vocabulary import KeyInput
+from brain.vocabulary import DecisionIntent, KeyInput
+from brain.vocabulary import ExecutableIntent as _ExecutableIntent
 
 FieldName = Annotated[
     str,
@@ -73,22 +74,7 @@ class Decision(StrictModel):
             "evidence operations also use intent=verify and action=null. stop ends work."
         )
     )
-    intent: Literal[
-        "credential",
-        "login",
-        "navigate",
-        "query_input",
-        "search",
-        "fill",
-        "save",
-        "confirm_save",
-        "select_tab",
-        "select_option",
-        "cancel",
-        "wait",
-        "verify",
-        "stop",
-    ] = Field(
+    intent: DecisionIntent = Field(
         description=(
             "Intent of this one action, not the overall subgoal: credential for typing "
             "username/password; login for activating login; query_input for typing the "
@@ -125,20 +111,6 @@ class Decision(StrictModel):
 NonemptyRef = Annotated[str, Field(min_length=1, pattern=r"\S")]
 TextSource = FieldName
 ScreenKind = Literal["login", "menu", "query", "editor", "partner", "dialog", "unknown"]
-ExecutableIntent = Literal[
-    "credential",
-    "login",
-    "navigate",
-    "query_input",
-    "search",
-    "fill",
-    "save",
-    "confirm_save",
-    "select_tab",
-    "select_option",
-    "cancel",
-    "wait",
-]
 
 
 class WireModel(BaseModel):
@@ -236,7 +208,7 @@ class WireDecisionBase(WireModel):
 
 class WireActDecision(WireDecisionBase):
     operation: Literal["act"]
-    intent: ExecutableIntent
+    intent: _ExecutableIntent
     action: WireChoice
     evidence: list[WireEvidence] = Field(default_factory=list)
 

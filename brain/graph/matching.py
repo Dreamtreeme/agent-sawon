@@ -31,7 +31,12 @@ from brain.visual.marker_contract import (
 )
 from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import ControlMeaning, SemanticDetection, contains, overlap
-from brain.vocabulary import ACTION_CONTROL_ROLES, KeyInput
+from brain.vocabulary import (
+    ACTION_CONTROL_ROLES,
+    ActionCapabilityIntent,
+    KeyInput,
+    MatchActionIntent,
+)
 from models.base import model_call_context
 from models.schema import compact_provider_schema
 from sawon_runtime.storage import RunLog, atomic_write_json
@@ -50,23 +55,7 @@ class ActionCapability(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     capability_id: Literal["task-action"] = "task-action"
     input_scope: list[FieldName] = Field(default_factory=list)
-    actions: list[
-        Literal[
-            "login",
-            "navigate",
-            "query_input",
-            "fill",
-            "search",
-            "save",
-            "confirm_save",
-            "select_tab",
-            "select_option",
-            "cancel",
-            "wait",
-            "complete",
-            "inspect",
-        ]
-    ] = Field(default_factory=list)
+    actions: list[ActionCapabilityIntent] = Field(default_factory=list)
     goal: str = Field(min_length=1, max_length=500)
     completion: str = Field(min_length=1, max_length=500)
 
@@ -82,19 +71,7 @@ class MatchAction(BaseModel):
     target: int = Field(ge=0)
     action: Literal["fill", "click", "double_click", "key"]
     source: str | None = Field(default=None, min_length=1, max_length=4000)
-    intent: Literal[
-        "credential",
-        "login",
-        "navigate",
-        "query_input",
-        "search",
-        "fill",
-        "save",
-        "confirm_save",
-        "select_tab",
-        "select_option",
-        "cancel",
-    ]
+    intent: MatchActionIntent
     keys: KeyInput | None = None
     point: list[float] | None = Field(
         default=None,

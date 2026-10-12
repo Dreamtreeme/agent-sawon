@@ -14,7 +14,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .schemas import Decision, ExecutableIntent, FieldName, TextSource
+from brain.vocabulary import ExecutableIntent
+
+from .schemas import Decision, FieldName, TextSource
 
 TransitionFact = (
     FieldName
