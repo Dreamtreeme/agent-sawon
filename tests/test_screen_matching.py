@@ -1059,6 +1059,13 @@ def test_post_save_completion_rejection_names_missing_evidence_and_scope(
     event = brain.log.read_all()[-1]
     assert event.payload["subgoal_key"] == "task:post_save_detail:description"
 
+    request, services = matching_contract(brain)
+    prepared = build_match_prompt(request, services)
+    prompted = prepared.state["notebook"]["recent_feedback"][-1]
+    assert prompted["missing_fields"] == ["description"]
+    assert prompted["subgoal_key"] == "task:post_save_detail:description"
+    assert "Do not refill or save" in prompted["required_response"]
+
 
 def test_education_focus_can_revisit_steps_without_inventing_completion(tmp_path, record):
     taught = TaskInstruction.model_validate_json(
