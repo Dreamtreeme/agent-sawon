@@ -11,7 +11,7 @@ from typing import Protocol
 from pydantic import BaseModel
 from sawon_interfaces import SourceLocation
 
-from models.base import ModelClient
+from models.base import ModelClient, model_call_context
 
 from .normalize import normalize_value, normalized_text
 from .schemas import (
@@ -119,7 +119,8 @@ def bind_extraction(
 def extract_page(
     model: ModelClient, page: RenderedPage, blocks: list[OcrBlock], *, case_dir: Path
 ) -> tuple[ExtractedPage, Decimal]:
-    response = model.complete_json(
-        extraction_prompt(page, blocks), PageExtraction, images=[page.image_path]
-    )
+    with model_call_context(purpose="document_extraction", frame=str(page.image_path)):
+        response = model.complete_json(
+            extraction_prompt(page, blocks), PageExtraction, images=[page.image_path]
+        )
     return bind_extraction(page, blocks, response.response, case_dir=case_dir), response.usd

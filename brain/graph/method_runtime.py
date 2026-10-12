@@ -189,56 +189,6 @@ class MethodRuntime:
                 result = result.replace(value, "{" + source + "}")
         return result
 
-    def procedure_prompt_context(self) -> dict:
-        """Return the current taught step window instead of the whole procedure."""
-        task = self.task_context.task
-        if task is None or not task.procedure:
-            return {"steps": [], "completed_step_ids": [], "recent_results": []}
-        order = {step.id: index for index, step in enumerate(task.procedure)}
-        remaining_ids = []
-        for method in self.library.methods():
-            if method.id in self.state.blocked_method_ids:
-                continue
-            if not self._matches_current_task(method):
-                continue
-            remaining_ids.extend(
-                group.taught_step_id
-                for group in self._ordered_groups(method)
-                if (method.id, group.id) not in self.state.used and group.taught_step_id in order
-            )
-        delivered = {
-            item.get("taught_step_id")
-            for item in self.state.history
-            if item.get("status") == "delivered" and item.get("taught_step_id") in order
-        }
-        if remaining_ids:
-            current_index = min(order[step_id] for step_id in remaining_ids)
-        elif delivered:
-            # Delivery proves that one action batch reached the application.  A
-            # taught step may contain several batches separated by new screens
-            # (for example close a save dialog, return to query, fill, search,
-            # then inspect the row).  Keep the most recently reached step current
-            # and let current-screen evidence justify selecting the next step.
-            # Advancing here used to equate "one click delivered" with "the whole
-            # business step completed" and skipped the rest of re-query flows.
-            current_index = max(order[step_id] for step_id in delivered)
-        else:
-            current_index = 0
-        focused = task.procedure[current_index : current_index + 2]
-        return {
-            "steps": [item.model_dump(mode="json") for item in focused],
-            "completed_step_ids": [step.id for step in task.procedure[:current_index]],
-            "recent_results": [
-                {
-                    "taught_step_id": item.get("taught_step_id"),
-                    "purpose": item.get("purpose"),
-                    "status": item.get("status"),
-                }
-                for item in self.state.history[-2:]
-                if item.get("taught_step_id")
-            ],
-        }
-
     def context(self) -> dict:
         return {
             "methods": self.library.catalog(),

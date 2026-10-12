@@ -421,3 +421,22 @@ def test_gemini_configures_thinking_without_raising_output_limit(run_log, rate):
     config = sdk.models.generate_content.call_args.kwargs["config"]
     assert config.max_output_tokens == 8192
     assert config.thinking_config.thinking_level == types.ThinkingLevel.LOW
+
+
+def test_model_call_context_records_failure_and_does_not_leak(run_log, rate):
+    from models.base import model_call_context
+
+    client, _ = fake_gemini(run_log, rate, sdk_response('{"value": "invalid"}'))
+    with (
+        pytest.raises(ValidationError),
+        model_call_context(purpose="input_review", decision_id="decision-1", frame="frame.png"),
+    ):
+        client.complete_json("private prompt", Answer)
+    good, _ = fake_gemini(run_log, rate)
+    good.complete_json("test", Answer)
+    failed, succeeded = run_log.read_all()
+    assert failed.payload["context"]["purpose"] == "input_review"
+    assert failed.payload["status"] == "error"
+    assert succeeded.payload["context"] == {}
+    assert failed.payload["prompt_utf8_bytes"] == len(b"private prompt")
+    assert "private prompt" not in json.dumps(failed.payload)

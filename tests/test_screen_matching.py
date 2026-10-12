@@ -1030,7 +1030,7 @@ def test_post_save_exploration_failures_are_scoped_by_review_stage(
     )
 
 
-def test_taught_procedure_prompt_progress_is_run_local_and_monotonic(tmp_path, record):
+def test_education_focus_can_revisit_steps_without_inventing_completion(tmp_path, record):
     taught = TaskInstruction.model_validate_json(
         (
             Path(__file__).resolve().parents[1] / "examples/shipment-user-taught-task.json"
@@ -1048,14 +1048,14 @@ def test_taught_procedure_prompt_progress_is_run_local_and_monotonic(tmp_path, r
         "save-record",
         "requery-saved-record",
     ]
-    assert advanced["completed_step_ids"] == [step.id for step in taught.procedure[:6]]
+    assert advanced["completed_step_ids"] == []
+    assert [step["id"] for step in initial["index"]] == [step.id for step in taught.procedure]
 
     brain._advance_taught_procedure("check-duplicate")
-    assert brain._taught_procedure_progress() == advanced
-    assert any(
-        event.payload.get("check") == "taught_procedure_regression_ignored"
-        for event in brain.log.read_all()
-    )
+    assert brain._taught_procedure_progress()["focused_step_id"] == "check-duplicate"
+    assert brain._taught_procedure_progress()["completed_step_ids"] == []
+    brain._complete_taught_procedure_step("save-record")
+    assert brain._taught_procedure_progress()["completed_step_ids"] == ["save-record"]
 
 
 def test_model_only_generic_task_keeps_model_mapped_editor_ocr_progress(
@@ -1688,7 +1688,7 @@ def test_observe_only_retains_a_task_action_attached_to_duplicate_evidence(tmp_p
         if event.payload.get("guard") == "proof_with_actions"
     )
     assert event.payload == {
-        "check": "guard_observe_only",
+        "check": "compound_response_normalized",
         "guard": "proof_with_actions",
         "reported_operation": "duplicate_clear",
         "outcome": "normalized_to_action",
@@ -3108,3 +3108,54 @@ def test_control_cleanup_preserves_current_evidence_regardless_of_prior_verifica
     assert "unbound_action_evidence_omitted" not in checks
     assert "stale_verified_evidence_omitted" not in checks
     assert ("hbl_no" in brain.verified) is verified
+
+
+def test_education_retrieval_replans_before_any_provisional_action(tmp_path, record):
+    taught = TaskInstruction.model_validate_json(
+        (
+            Path(__file__).resolve().parents[1] / "examples/shipment-user-taught-task.json"
+        ).read_bytes()
+    )
+    meaning = fixture()[-1]
+    request_details = response(meaning, requested_instruction_ids=["save-record"])
+    resolved = response(meaning, operation="stop", steps=[])
+    brain, model, *_ = setup_brain(
+        tmp_path, record, [request_details, resolved], task_instruction=taught
+    )
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+    brain._observe()
+    assert len(model.prompts) == 2
+    assert '"retrieved_step_ids": ["save-record"]' in model.prompts[1]
+    expected = next(step for step in taught.procedure if step.id == "save-record")
+    assert expected.completion in model.prompts[1]
+    assert brain.visual_proposal.steps == []
+    assert brain.completed_taught_steps == set()
+    events = brain.log.read_all()
+    assert not any(event.kind == "act" for event in events)
+    retrieval = next(e for e in events if e.payload.get("check") == "education_details_retrieved")
+    assert retrieval.payload["discarded_provisional_actions"] == 1
+    calls = [e for e in events if e.kind == "model_call"]
+    assert [e.payload["context"]["purpose"] for e in calls] == [
+        "screen_decision",
+        "education_retrieval",
+    ]
+    assert calls[0].payload["context"]["decision_id"] == calls[1].payload["context"]["decision_id"]
+
+
+@pytest.mark.parametrize("guard_mode", ["enforce", "observe_only"])
+def test_compound_claim_survives_before_action_without_becoming_verified(
+    tmp_path, record, guard_mode
+):
+    meaning = fixture()[-1]
+    data = response(meaning, operation="duplicate_clear")
+    brain, model, *_ = setup_brain(tmp_path, record, [data])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": guard_mode})
+    brain._observe()
+    assert brain.visual_proposal.operation == "act"
+    assert brain.visual_proposal.steps
+    assert brain.duplicate_clear is False
+    claim = next(item for item in brain.feedback if item.get("check") == "model_observation_claim")
+    assert claim["operation"] == "duplicate_clear"
+    assert claim["status"] == "reported_not_independently_verified"
+    assert len(model.prompts) == 1
+    assert not any(event.kind == "act" for event in brain.log.read_all())

@@ -31,10 +31,12 @@ from brain.visual.marker_contract import (
 )
 from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import SemanticDetection, contains, overlap
+from models.base import model_call_context
 from sawon_runtime.storage import RunLog, atomic_write_json
+from sawon_runtime.visual import RenderedPage
 
 from .execution import GuardStop, PendingAction
-from .model_call import ScreenModelCall
+from .model_call import ResponseT, ScreenModelCall
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision, FieldName
 from .visual_turn import adapt_proposal, bind_proposal
@@ -180,6 +182,7 @@ class ScreenPlan(MethodChoice):
     model_config = ConfigDict(extra="forbid")
     procedure_step: str
     steps: list[MatchAction] = Field(default_factory=list, max_length=50)
+    requested_instruction_ids: list[str] = Field(default_factory=list, max_length=40)
     operation: Literal["act", "duplicate_clear", "duplicate_found", "complete", "stop"] = "act"
     grid: int | None = Field(default=None, ge=0)
     row: int | None = Field(default=None, ge=0)
@@ -215,8 +218,6 @@ class MatchMethodRuntime(Protocol):
     """Method operations required by matching, independent of their implementation."""
 
     enabled: bool
-
-    def procedure_prompt_context(self) -> dict: ...
 
     def prompt_context(self) -> dict: ...
 
@@ -273,6 +274,7 @@ class MatchResult:
 
     response: ScreenMatch
     visual_match_candidate: tuple[str, dict] | None
+    observation_claim: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -292,6 +294,18 @@ class MatchSelection:
     cache_hit: tuple[str, dict] | None
     method_proposal: ScreenMatch | None
     used_image: bool
+
+
+def _call_match(
+    services: MatchServices,
+    purpose: str,
+    prompt: str,
+    schema: type[ResponseT],
+    *,
+    page: RenderedPage | None = None,
+) -> ResponseT:
+    with model_call_context(purpose=purpose):
+        return services.call(prompt, schema, page=page)
 
 
 def write_match_artifact(services: MatchServices, kind: str, value: BaseModel) -> None:
@@ -429,6 +443,11 @@ stop while another grounded transition can expose the missing input or completio
 )
 
 TAUGHT_PROCEDURE_RULES = """
+taught_procedure_progress.index lists every available user instruction. The detailed steps are
+focused context, not a restriction on navigation or proof of completion. Revisit an earlier step
+when the current screen requires it. If details for another step are needed, return its ID in
+requested_instruction_ids with steps=[]; the runtime supplies those instructions before any action.
+Request all needed IDs together. Do not infer that preceding steps completed from a selected ID.
 The user-taught procedure is the authoritative program route. Select taught_step_id from that
 ordered procedure. Use the current screen to bind that step's target and verify its completion;
 do not replace the taught route with another workflow. Repeat a step when it requires several
@@ -715,7 +734,9 @@ def retain_verification(
         return response
     # Only an actual omission causes this measured repair call. The action/proof
     # proposal remains unchanged; original verification still checks current values.
-    supplement = services.call(
+    supplement = _call_match(
+        services,
+        "target_grounding",
         "Return only missing verification controls and their necessary parents from CURRENT "
         "OCR/markers. Preserve their labels and literal contained text. No actions or invented "
         "values/boxes. Report uncertainty if they cannot be observed.\n"
@@ -772,7 +793,9 @@ def retain_action_targets(
         return response
 
     original_steps = response.steps
-    supplement = services.call(
+    supplement = _call_match(
+        services,
+        "input_evidence_recovery",
         TARGET_GROUNDING_RULES
         + json.dumps(
             {
@@ -1446,12 +1469,7 @@ def prepare_match_plan(
             "procedure_step": capability.capability_id,
         }
     )
-    if (
-        services.settings.guard_mode == "observe_only"
-        and request.phase == "task"
-        and response.operation == "duplicate_clear"
-        and response.steps
-    ):
+    if request.phase == "task" and response.operation == "duplicate_clear" and response.steps:
         # A combined task response may report what the current query proves and
         # also choose the next visible action.  The proof operation cannot carry
         # actions in the executor contract, so retain the model's executable
@@ -1460,7 +1478,7 @@ def prepare_match_plan(
         services.log.append(
             "verify",
             payload={
-                "check": "guard_observe_only",
+                "check": "compound_response_normalized",
                 "guard": "proof_with_actions",
                 "reported_operation": response.operation,
                 "outcome": "normalized_to_action",
@@ -1468,15 +1486,11 @@ def prepare_match_plan(
             },
         )
         response = response.model_copy(update={"operation": "act", "grid": None, "row": None})
-    elif (
-        services.settings.guard_mode == "observe_only"
-        and response.operation != "act"
-        and response.steps
-    ):
+    elif response.operation != "act" and response.steps:
         services.log.append(
             "verify",
             payload={
-                "check": "guard_observe_only",
+                "check": "compound_response_normalized",
                 "guard": "proof_with_actions",
                 "accepted_operation": response.operation,
                 "ignored_actions": len(response.steps),
@@ -1596,8 +1610,6 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
     # compiled under another education file.
     state["task_contract_sha256"] = request.task_instruction_sha256
     state["taught_procedure_progress"] = request.taught_procedure_progress
-    if request.task_instruction.procedure:
-        state["taught_procedure_rules"] = TAUGHT_PROCEDURE_RULES.strip()
     state["capability"] = capability.model_dump()
     if contract["conditional"]:
         state["proposal_after_verification"] = {
@@ -1675,7 +1687,9 @@ def select_match_response(
                 "uncertainties": grounded.uncertainties,
             },
         }
-        plan = services.call(
+        plan = _call_match(
+            services,
+            "grounded_screen_plan",
             TASK_PLAN_RULES
             + prepared.guard_rules
             + prepared.taught_rules
@@ -1694,13 +1708,73 @@ def select_match_response(
             },
         )
     else:
-        response = services.call(prepared.prompt, ScreenMatch, page=page)
+        response = _call_match(
+            services,
+            (
+                "input_review"
+                if request.post_action_review
+                else "completion_review"
+                if request.workflow_flags.get("save_issued")
+                else "screen_decision"
+            ),
+            prepared.prompt,
+            ScreenMatch,
+            page=page,
+        )
         write_match_artifact(services, "markers", response)
         response = local_response(response, screen)
+    if response.requested_instruction_ids:
+        by_id = {step.id: step for step in request.task_instruction.procedure}
+        requested = list(dict.fromkeys(response.requested_instruction_ids))
+        if any(step_id not in by_id for step_id in requested):
+            raise ValueError("unknown_requested_instruction")
+        expanded = {
+            **prepared.state,
+            "taught_procedure_progress": {
+                **request.taught_procedure_progress,
+                "steps": [by_id[step_id].model_dump(mode="json") for step_id in requested],
+                "retrieved_step_ids": requested,
+            },
+        }
+        services.log.append(
+            "verify",
+            payload={
+                "check": "education_details_retrieved",
+                "step_ids": requested,
+                "frame": str(page.image_path) if page else None,
+                "discarded_provisional_actions": len(response.steps),
+                "education_utf8_bytes": len(
+                    json.dumps(expanded["taught_procedure_progress"], ensure_ascii=False).encode(
+                        "utf-8"
+                    )
+                ),
+            },
+        )
+        prepared = replace(prepared, state=expanded)
+        response = _call_match(
+            services,
+            "education_retrieval",
+            TASK_RULES
+            + prepared.guard_rules
+            + prepared.taught_rules
+            + prepared.method_rules
+            + json.dumps(expanded, ensure_ascii=False)
+            + "\nRequested details are present. Return the decision, not another retrieval.",
+            ScreenMatch,
+            page=page,
+        )
+        write_match_artifact(services, "education-plan", response)
+        response = local_response(response, screen)
+        if response.requested_instruction_ids:
+            raise ValueError("education_retrieval_unresolved")
+        cache_hit = None
+        method_proposal = None
     response = omit_nonblocking_image_request(services, response, screen)
     used_image = cache_hit is None and method_proposal is None
     if response.needs_image:
-        response = services.call(
+        response = _call_match(
+            services,
+            "image_recovery",
             TASK_RULES
             + prepared.guard_rules
             + prepared.taught_rules
@@ -1764,7 +1838,9 @@ def validate_or_replan(
                     "rejected_target_ids": sorted(step.target for step in response.steps),
                 },
             }
-            corrected = services.call(
+            corrected = _call_match(
+                services,
+                "replan_after_rejection",
                 TASK_RULES
                 + prepared.guard_rules
                 + prepared.taught_rules
@@ -1802,7 +1878,9 @@ def validate_or_replan(
                     "rejected_target_ids": sorted(step.target for step in response.steps),
                 },
             }
-            corrected = services.call(
+            corrected = _call_match(
+                services,
+                "replan_after_rejection",
                 TASK_RULES
                 + prepared.guard_rules
                 + prepared.taught_rules
@@ -1861,7 +1939,9 @@ def validate_or_replan(
                 "instruction": correction_instruction,
             },
         }
-        plan = services.call(
+        plan = _call_match(
+            services,
+            "replan_after_rejection",
             TASK_PLAN_RULES
             + prepared.guard_rules
             + prepared.taught_rules
@@ -1922,7 +2002,9 @@ def ground_match_response(
                 )
                 raise ValueError("screen_match_empty_action")
             else:
-                completion = services.call(
+                completion = _call_match(
+                    services,
+                    "missing_actions_recovery",
                     "The current form was matched but operation=act had no executable steps. "
                     "Return only the missing steps for this procedure goal using these CURRENT "
                     "control IDs and source keys. Never infer that an action already happened. "
@@ -1966,6 +2048,28 @@ def ground_match_response(
 
 def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
     screen = request.screen
+    decision_id = uuid4().hex
+    original_call = services.call
+
+    def traced_call(
+        prompt: str, schema: type[ResponseT], *, page: RenderedPage | None = None
+    ) -> ResponseT:
+        with model_call_context(
+            decision_id=decision_id,
+            frame=str(request.page.image_path) if request.page else None,
+            phase=request.phase,
+        ):
+            return original_call(prompt, schema, page=page)
+
+    services = replace(services, call=traced_call)
+    services.log.append(
+        "select",
+        payload={
+            "check": "screen_decision_started",
+            "decision_id": decision_id,
+            "frame": str(request.page.image_path) if request.page else None,
+        },
+    )
     prepared = build_match_prompt(request, services)
     state = prepared.state
     capability = prepared.capability
@@ -1975,6 +2079,7 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
     cache_hit = selection.cache_hit
     method_proposal = selection.method_proposal
     used_image = selection.used_image
+    reported_response = response
     try:
         response = validate_or_replan(response, request, services, prepared)
         response = ground_match_response(
@@ -1998,17 +2103,17 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
                 "next": "visual_cache_or_model",
             },
         )
-        # Rebuild after suspending the failed method. This removes its stale
-        # procedure window from the cache key and from the model notebook.
+        # Rebuild method memory while keeping the caller-owned education focus.
+        # A failed cache binding must not reset or invent teaching progress.
         fallback_request = replace(
             request,
             proposal=None,
-            taught_procedure_progress=services.methods.procedure_prompt_context(),
         )
         prepared = build_match_prompt(fallback_request, services)
         state = prepared.state
         selection = select_match_response(fallback_request, services, prepared, allow_method=False)
         response = selection.response
+        reported_response = response
         cache_hit = selection.cache_hit
         method_proposal = None
         used_image = selection.used_image
@@ -2020,6 +2125,40 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
             prepared,
             used_image=used_image,
         )
+    observation_claim = None
+    if reported_response.operation != "act" and reported_response.steps:
+        observation_claim = {
+            "operation": reported_response.operation,
+            "grid": reported_response.grid,
+            "row": reported_response.row,
+            "evidence": [item.model_dump(mode="json") for item in reported_response.evidence],
+            "frame": str(request.page.image_path) if request.page else None,
+            "planned_operation": response.operation,
+        }
+        services.log.append(
+            "verify",
+            payload={
+                "check": "observation_claim_preserved",
+                "status": "reported_not_independently_verified",
+                **observation_claim,
+            },
+        )
+    services.log.append(
+        "verify",
+        payload={
+            "check": "match_context_size",
+            "frame": str(request.page.image_path) if request.page else None,
+            "sections_utf8_bytes": {
+                key: len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+                for key, value in prepared.state.items()
+            },
+            "selection_source": "method"
+            if method_proposal is not None
+            else "visual_cache"
+            if cache_hit is not None
+            else "model",
+        },
+    )
     visual_match_candidate = (
         (
             cache_hit[0] if cache_hit is not None else visual_match_key(state),
@@ -2032,6 +2171,8 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
         "select",
         payload={
             "check": "screen_mapping",
+            "decision_id": decision_id,
+            "frame": str(request.page.image_path) if request.page else None,
             "phase": request.phase,
             "procedure_step": capability.capability_id,
             "steps": len(response.steps),
@@ -2046,6 +2187,7 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
     return MatchResult(
         response=response,
         visual_match_candidate=visual_match_candidate,
+        observation_claim=observation_claim,
     )
 
 

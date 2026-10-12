@@ -707,7 +707,7 @@ def test_successful_fallback_keeps_untried_followup_in_the_same_taught_step(tmp_
     assert (installed.id, followup_group.id) not in brain.methods.state.used
 
 
-def test_prompt_context_keeps_only_current_method_and_procedure_window(tmp_path):
+def test_method_history_does_not_own_education_completion(tmp_path):
     brain, _, _ = setup(tmp_path)
     method = brain.methods.library.methods()[0]
     first = method.action_groups[0].model_copy(
@@ -757,45 +757,16 @@ def test_prompt_context_keeps_only_current_method_and_procedure_window(tmp_path)
         ]
     )
 
-    procedure = brain.methods.procedure_prompt_context()
+    procedure = brain._taught_procedure_progress()
     memory = brain.methods.prompt_context()
 
-    assert [step["id"] for step in procedure["steps"]] == ["step-2", "step-3"]
-    assert procedure["completed_step_ids"] == ["step-1"]
-    assert [item["purpose"] for item in procedure["recent_results"]] == ["retry", "second"]
+    assert [step["id"] for step in procedure["steps"]] == ["step-1", "step-2"]
+    assert procedure["completed_step_ids"] == []
     assert [group["id"] for group in memory["methods"][0]["groups"]] == [
         "group-second",
         "group-third",
     ]
     assert len(memory["recent_executions"]) == 2
-
-
-def test_delivered_batch_does_not_complete_a_multi_action_taught_step(tmp_path):
-    brain, _, _ = setup(tmp_path)
-    atomic_write_json(brain.methods.library.path, MethodDocument())
-    brain.task_instruction = TaskInstruction.model_validate(
-        {
-            "name": "Multi-screen procedure",
-            "objective": brain.task_instruction.objective,
-            "completion_conditions": ["Done"],
-            "procedure": [
-                {"id": f"step-{index}", "instruction": f"Do {index}", "completion": "Done"}
-                for index in range(1, 5)
-            ],
-        }
-    )
-    brain.methods.state.history.append(
-        {
-            "taught_step_id": "step-2",
-            "purpose": "first batch within step 2",
-            "status": "delivered",
-        }
-    )
-
-    procedure = brain.methods.procedure_prompt_context()
-
-    assert [step["id"] for step in procedure["steps"]] == ["step-2", "step-3"]
-    assert procedure["completed_step_ids"] == ["step-1"]
 
 
 def test_generic_success_trace_becomes_model_free_execution_graph(tmp_path):

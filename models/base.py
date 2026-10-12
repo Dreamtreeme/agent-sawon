@@ -5,6 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -18,6 +21,18 @@ from sawon_interfaces import EventCost, RunEvent
 from .validation import safe_validation_errors
 
 T = TypeVar("T", bound=BaseModel)
+
+_CALL_CONTEXT: ContextVar[dict[str, object] | None] = ContextVar("model_call_context", default=None)
+
+
+@contextmanager
+def model_call_context(**metadata: object) -> Iterator[None]:
+    """Attach caller-owned provenance without changing provider/replay contracts."""
+    token = _CALL_CONTEXT.set({**(_CALL_CONTEXT.get() or {}), **metadata})
+    try:
+        yield
+    finally:
+        _CALL_CONTEXT.reset(token)
 
 
 class TokenUsage(BaseModel):
@@ -119,6 +134,11 @@ class MeasuredModelClient(ABC):
         usd = Decimal(0) if api_free else None
         payload = {
             "call_id": str(uuid4()),
+            "context": dict(_CALL_CONTEXT.get() or {}),
+            "response_schema": schema.__name__,
+            "prompt_utf8_bytes": len(prompt.encode("utf-8")),
+            "schema_utf8_bytes": len(json.dumps(schema.model_json_schema()).encode("utf-8")),
+            "image_count": len(images or []),
             "provider": self.provider,
             "model": self.model,
             "status": "error",

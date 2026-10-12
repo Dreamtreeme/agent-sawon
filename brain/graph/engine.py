@@ -425,13 +425,21 @@ class Brain:
                 methods=self.methods,
             ),
         )
+        if result.observation_claim is not None:
+            self.feedback.append(
+                {
+                    "check": "model_observation_claim",
+                    "status": "reported_not_independently_verified",
+                    **result.observation_claim,
+                }
+            )
         self.procedure_step = result.response.procedure_step
         self._advance_taught_procedure(result.response.taught_step_id)
         self.visual_match_candidate = result.visual_match_candidate
         return result.response
 
     def _taught_procedure_progress(self) -> dict:
-        """Expose one monotonic procedure window without making it an execution FSM."""
+        """Expose navigable education separately from observed completion."""
 
         task = self.task_instruction
         if task is None or not task.procedure:
@@ -439,6 +447,8 @@ class Brain:
         order = {step.id: index for index, step in enumerate(task.procedure)}
         current = order.get(self.active_taught_step or "", 0)
         return {
+            "index": [{"id": step.id, "instruction": step.instruction} for step in task.procedure],
+            "focused_step_id": task.procedure[current].id,
             "steps": [
                 step.model_dump(mode="json") for step in task.procedure[current : current + 2]
             ],
@@ -448,7 +458,7 @@ class Brain:
         }
 
     def _advance_taught_procedure(self, taught_step_id: str | None) -> None:
-        """Advance prompt context from a grounded model plan; never rewind it."""
+        """Focus education on the selected step without marking work complete."""
 
         task = self.task_instruction
         if taught_step_id is None or task is None or not task.procedure:
@@ -457,19 +467,9 @@ class Brain:
         proposed = order.get(taught_step_id)
         if proposed is None:
             return
-        current = order.get(self.active_taught_step or "", -1)
-        if proposed < current:
-            self.log.append(
-                "verify",
-                payload={
-                    "check": "taught_procedure_regression_ignored",
-                    "active_step_id": self.active_taught_step,
-                    "proposed_step_id": taught_step_id,
-                },
-            )
-            return
+        # Choosing a route is not evidence that earlier work completed. Revisit
+        # any taught step when the current screen calls for it.
         self.active_taught_step = taught_step_id
-        self.completed_taught_steps.update(step.id for step in task.procedure[:proposed])
 
     def _complete_taught_procedure_step(self, taught_step_id: str | None) -> None:
         """Advance after an observed screen effect completes the selected taught step."""
@@ -481,7 +481,7 @@ class Brain:
         completed = order.get(taught_step_id)
         if completed is None:
             return
-        self.completed_taught_steps.update(step.id for step in task.procedure[: completed + 1])
+        self.completed_taught_steps.add(taught_step_id)
         current = order.get(self.active_taught_step or "", -1)
         if completed >= current and completed + 1 < len(task.procedure):
             self.active_taught_step = task.procedure[completed + 1].id
