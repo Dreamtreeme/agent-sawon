@@ -58,17 +58,17 @@ OpenAI: `OPENAI_API_KEY`, Anthropic: `CLAUDE_API_KEY`). 부모 폴더 검색, �
 원래 사용량과 비용은 `recorded_usage`/`recorded_usd`에 별도로 유지한다.
 지연 시간은 현재 재생 호출의 실측값이므로 원본 모델의 지연 비교에 쓰지 않는다.
 
-## Claude Haiku 5.5 화면 작업자
+## 기본 Claude Haiku 5.5 화면 작업자
 
-Haiku 비교 프로필은 `claude-haiku-5-5`, Messages API structured outputs,
+`config/models.toml`은 `claude-haiku-5-5`, Messages API structured outputs,
 adaptive thinking low, 출력 8192, 요청 제한 120초를 사용한다. 원본 크기 이미지를 base64로 전달하며
 Pydantic 스키마는 Anthropic SDK의 `transform_schema`로 지원 형식에 맞춘 뒤 로컬에서
 원래 계약을 다시 검증한다. 100K 입력 토큰 초과 시 공식 장문 단가를 적용한다.
 
-## 기본 Luna 화면 작업자
+## 보존된 Luna 폴백·비교 작업자
 
-`config/models.toml`은 `gpt-5.6-luna`, Responses API, reasoning low, 출력8192를 사용한다.
-화면 작업자는 `brain.run --model-config config/models.toml`로 실행한다.
+Luna 프로필은 `gpt-5.6-luna`, Responses API, reasoning low, 출력8192를 사용한다.
+Haiku 실행 결과와 혼합하지 않도록 증거별 `--model-config`로 분리한다.
 Gemini 어댑터는 유지하고, 비교 프리셋은 삭제했다.
 OpenAI SDK는 자동 재시도0이며 명시적 OpenAI API 주소를 사용한다. 원본 크기의 이미지를
 전달하고 Pydantic 스키마를 strict JSON schema로 변환한다. 파싱 전 사용량을 확보하므로

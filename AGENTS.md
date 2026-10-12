@@ -39,11 +39,12 @@ See ../agent-sawon-bench/docs/visual-v1-contract-20260930.md. Preserve previous 
 - Run `python -m ruff check .`, `python -m ruff format --check .`, `python -m pytest`.
 - Do not publish this repository or its prompts/cache as part of routine implementation.
 
-The user selected Luna as the primary screen-worker path on 2026-10-02.
-Follow ../agent-sawon-bench/docs/luna-primary-plan-20261002.md.
-The later Haiku 5.5 work was a bounded comparison pilot and did not replace this primary path.
-`config/models.toml` must remain the Luna production profile; use evidence-local profiles for provider comparisons.
-Preserve Gemini, Haiku and Jev adapters as comparison paths; prioritize actual save/final-query completion.
+The user selected Luna as the primary screen-worker path on 2026-10-02, then explicitly changed the
+ERP pilot worker to Haiku 5.5 on 2026-10-10. The later instruction takes precedence:
+`config/models.toml` remains the Haiku 5.5 profile. Preserve Luna as the measured fallback/comparison
+path, and preserve Gemini and Jev adapters. The 2026-10-12 Haiku HTTP 400 came from the oversized
+`ScreenMatch` structured-output grammar; fix that request boundary rather than silently replacing Haiku.
+Prioritize actual save/final-query completion and keep provider identity explicit in every report.
 
 On 2026-10-12 the first project-wide methodology change (P0) split compact education focus from
 on-demand step details, preserved compound observation claims while executing their actions, and added
@@ -54,7 +55,7 @@ warm ERP pilots before introducing a larger FSM or step-cache promotion policy.
 
 On 2026-10-08 the user removed legacy UIA semantic-cache and observation-delta demonstration learning. Do not restore their modules, CLI flags or cache formats. Keep visual_match, learned methods and visual recording; prepared document handoff lives in pipeline.handoff.
 
-On 2026-10-08 the user consolidated runtime profiles into config/brain.visual.toml, config/models.toml (Luna), and config/pipeline.toml (Korean GPU OCR). Do not restore milestone/harness/provider-comparison presets. Provider adapters may remain without committed comparison profiles. Cost-rate data lives in models/pricing.toml; historical experiment configurations remain in Git and run artifacts.
+On 2026-10-08 the user consolidated runtime profiles into config/brain.visual.toml, config/models.toml, and config/pipeline.toml (Korean GPU OCR). The later Haiku selection controls the model file. Do not restore milestone/harness/provider-comparison presets. Provider adapters may remain without committed comparison profiles. Cost-rate data lives in models/pricing.toml; historical experiment configurations remain in Git and run artifacts.
 
 On 2026-10-08 the user authorized removing the legacy screen-matching Procedure entry path. Screen matching now requires TaskInstruction through --task/task_path. Do not restore --procedure, procedure_path, the old Procedure loader, or compiled fixed-step candidate filters. Preserve TaskInstruction.procedure (the user's taught steps), the shared capability contract and historical run evidence. Legacy non-screen-matching policy phases remain outside this removal stage.
 
