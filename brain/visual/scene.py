@@ -7,6 +7,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sawon_interfaces import Observation, UIElement
 
+from brain.vocabulary import ControlRole
 from models.schema import compact_provider_schema
 from sawon_runtime.visual import OcrBlock
 
@@ -14,22 +15,7 @@ from sawon_runtime.visual import OcrBlock
 class ControlMeaning(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: int = Field(ge=0)
-    role: Literal[
-        "edit",
-        "combobox",
-        "button",
-        "checkbox",
-        "tabitem",
-        "menuitem",
-        "table",
-        "row",
-        "cell",
-        "header",
-        "group",
-        "window",
-        "text",
-        "icon",
-    ]
+    role: ControlRole
     parent_id: int | None = None
     label_ids: list[int] = Field(
         default_factory=list, max_length=20, description="OCR block IDs naming this control"

@@ -31,7 +31,7 @@ from brain.visual.marker_contract import (
 )
 from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import ControlMeaning, SemanticDetection, contains, overlap
-from brain.vocabulary import KeyInput
+from brain.vocabulary import ACTION_CONTROL_ROLES, KeyInput
 from models.base import model_call_context
 from models.schema import compact_provider_schema
 from sawon_runtime.storage import RunLog, atomic_write_json
@@ -1349,36 +1349,6 @@ def omit_nonblocking_image_request(
     return response.model_copy(update={"needs_image": False})
 
 
-_ACTION_ROLES = {
-    "fill": {"edit", "combobox", "cell"},
-    "click": {
-        "edit",
-        "combobox",
-        "button",
-        "checkbox",
-        "tabitem",
-        "menuitem",
-        "row",
-        "cell",
-        "icon",
-    },
-    "double_click": {"button", "menuitem", "row", "cell", "icon"},
-    "key": {
-        "edit",
-        "combobox",
-        "button",
-        "checkbox",
-        "tabitem",
-        "menuitem",
-        "table",
-        "row",
-        "cell",
-        "group",
-        "window",
-    },
-}
-
-
 def validate_action_surfaces(
     services: MatchServices, response: ScreenMatch, screen: dict
 ) -> ScreenMatch:
@@ -1401,7 +1371,7 @@ def validate_action_surfaces(
         elif (
             control is not None
             and not (source == "ocr" and step.action in {"click", "double_click"})
-            and control.role not in _ACTION_ROLES[step.action]
+            and control.role not in ACTION_CONTROL_ROLES[step.action]
         ):
             reason = "role_not_actionable"
         if reason is not None:
