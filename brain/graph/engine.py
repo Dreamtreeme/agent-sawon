@@ -608,9 +608,9 @@ class Brain:
             missing_targets = {
                 target for target in required_targets if prefix + str(target) not in grounded_refs
             }
+            synthetic = []
             if missing_targets and self.settings.guard_mode == "observe_only":
                 controls = {control.id: control for control in response.controls}
-                synthetic = []
                 for step in response.steps:
                     if step.target not in missing_targets or step.point is None:
                         continue
@@ -696,6 +696,18 @@ class Brain:
                 self.observation = self.visual_perception.merge_interpretation(
                     self.observation.wire, semantics
                 )
+                if synthetic:
+                    synthetic_refs = {element.ref for element in synthetic}
+                    self.observation = self.observation.model_copy(
+                        update={
+                            "elements": [
+                                element
+                                for element in self.observation.elements
+                                if element.ref not in synthetic_refs
+                            ]
+                            + synthetic
+                        }
+                    )
                 self.visual_proposal_obs_id = self.observation.obs_id
                 atomic_write_json(
                     self.case_dir / f"observations/{self.observation_number:04d}.json",

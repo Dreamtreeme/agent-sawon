@@ -1571,17 +1571,19 @@ def test_identical_catalog_grounds_new_target_without_replacing_plan(tmp_path, r
     )
 
 
-def test_catalog_target_recovery_keeps_point_only_target_for_executor(tmp_path, record):
+def test_catalog_recovery_preserves_point_only_target_through_scene_merge(tmp_path, record):
     meaning = fixture()[-1]
+    empty = response(meaning, controls=[], steps=[], operation="stop")
     data = response(
         meaning,
         controls=[],
+        procedure_step="task-action",
         steps=[
             {
                 "target": meaning.controls[0].id,
                 "action": "fill",
                 "source": "hbl_no",
-                "intent": "query_input",
+                "intent": "fill",
             },
             {
                 "target": 999,
@@ -1592,17 +1594,25 @@ def test_catalog_target_recovery_keeps_point_only_target_for_executor(tmp_path, 
             },
         ],
     )
-    brain, model, *_ = setup_brain(tmp_path, record, [response(meaning, steps=[])])
-    screen = {"ocr": [], "markers": [item.model_dump() for item in fixture()[2]]}
-    _, services = matching_contract(brain, screen)
-    original = ScreenMatch.model_validate(data)
+    supplement = response(meaning, steps=[])
+    brain, model, *_ = setup_brain(tmp_path, record, [empty, data, supplement])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
 
-    repaired = matching.retain_action_targets(services, original, screen)
+    brain._observe()
+    brain.phase = "task"
+    brain.duplicate_clear = True
+    brain._observe()
+    assert brain._select_node() == "review"
 
-    assert {control.id for control in repaired.controls} == {meaning.controls[0].id}
-    assert repaired.steps == original.steps
-    assert '"required_target_ids": [0]' in model.prompts[0]
-    assert '"required_target_ids": [0, 999]' not in model.prompts[0]
+    assert len(brain.action_plan.actions) == 2
+    assert [action.decision.action.source for action in brain.action_plan.actions] == [
+        "hbl_no",
+        "shipper_name",
+    ]
+    assert model.prompts[1].startswith(TASK_PLAN_RULES)
+    assert model.prompts[2].startswith(TARGET_GROUNDING_RULES)
+    assert '"required_target_ids": [0]' in model.prompts[2]
+    assert '"required_target_ids": [0, 999]' not in model.prompts[2]
 
 
 def test_task_partner_input_compiles_to_current_screen_batch(tmp_path, record):
