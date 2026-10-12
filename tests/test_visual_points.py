@@ -53,9 +53,46 @@ def test_visual_point_is_required_and_bound_to_target(point, reason):
         )
 
 
-def test_nonpointer_model_hint_is_accepted_and_ignored():
+@pytest.mark.parametrize(
+    ("action", "intent", "source", "keys", "wire_type"),
+    [("fill", "fill", "hbl_no", None, "set_text"), ("key", "navigate", None, "tab", "key")],
+)
+def test_input_and_keyboard_points_survive_compiled_action(action, intent, source, keys, wire_type):
     observation = scene()
     bindings = VisualPointBindings()
-    step = MatchAction(target=8, action="fill", intent="fill", source="hbl_no", point=(190, 50))
+    step = MatchAction(
+        target=8, action=action, intent=intent, source=source, keys=keys, point=(190.25, 50.75)
+    )
     bindings.bind(observation, [step])
-    assert bindings.get(observation, decision(observation)) is None
+    selected = decision(observation).model_copy(
+        update={
+            "intent": intent,
+            "action": Choice(
+                type=wire_type, ref=observation.elements[0].ref, source=source, keys=keys
+            ),
+        }
+    )
+    assert bindings.get(observation, selected).point == (190.25, 50.75)
+    bindings.bind(observation, [step.model_copy(update={"point": None})])
+    assert bindings.get(observation, selected) is None  # Same-frame replacement clears old points.
+
+
+def test_points_are_scoped_to_frame_and_input_source():
+    observation = scene()
+    bindings = VisualPointBindings()
+    bindings.bind(
+        observation,
+        [
+            MatchAction(target=8, action="fill", intent="fill", source=source, point=point)
+            for source, point in [("hbl_no", (190, 50)), ("mbl_no", (140, 45))]
+        ],
+    )
+    for source, point in [("hbl_no", (190, 50)), ("mbl_no", (140, 45))]:
+        selected = decision(observation).model_copy(
+            update={
+                "intent": "fill",
+                "action": Choice(type="set_text", ref=observation.elements[0].ref, source=source),
+            }
+        )
+        assert bindings.get(observation, selected).point == point, source
+        assert bindings.get(scene(), selected) is None, source

@@ -3159,3 +3159,62 @@ def test_compound_claim_survives_before_action_without_becoming_verified(
     assert claim["status"] == "reported_not_independently_verified"
     assert len(model.prompts) == 1
     assert not any(event.kind == "act" for event in brain.log.read_all())
+
+
+def test_action_owned_control_normalizes_once_and_keeps_cache_contract():
+    import copy
+
+    control = {"id": 8, "role": "edit", "confidence": 1, "label_ids": [3]}
+    raw = {
+        "screen_kind": "editor",
+        "procedure_step": "task-action",
+        "controls": [],
+        "steps": [
+            {
+                "target": control,
+                "action": "fill",
+                "intent": "fill",
+                "source": "hbl_no",
+                "point": [190.25, 50.75],
+            },
+        ],
+    }
+    original = copy.deepcopy(raw)
+    result = ScreenMatch.model_validate(raw)
+    assert raw == original
+    assert result.controls[0].id == result.steps[0].target == 8
+    assert result.controls[0].label_ids == [3]
+    assert result.steps[0].point == [190.25, 50.75]
+    assert ScreenMatch.model_validate_json(result.model_dump_json()) == result
+    schema = ScreenMatch.model_json_schema()
+    assert schema["$defs"]["MatchAction"]["properties"]["target"]["$ref"].endswith(
+        "/ControlMeaning"
+    )
+    assert "maxItems" not in json.dumps(schema)
+    stored_schema = ScreenMatch.model_json_schema(mode="serialization")
+    assert stored_schema["$defs"]["MatchAction"]["properties"]["target"]["type"] == "integer"
+    raw["controls"] = [{**control, "role": "button"}]
+    with pytest.raises(ValueError, match="conflicting_target_binding"):
+        ScreenMatch.model_validate(raw)
+
+
+@pytest.mark.parametrize("model_created", [False, True], ids=["detected", "model-created"])
+def test_inline_target_reaches_wire_with_exact_fill_point_without_recovery(
+    tmp_path, record, model_created
+):
+    meaning = fixture()[-1]
+    data = response(meaning)
+    control = data["controls"].pop(0)
+    if model_created:
+        control = {**control, "id": 999, "label_ids": [], "text_ids": []}
+    data["steps"][0].update(target=control, point=[175.25, 30.75])
+    brain, model, *_ = setup_brain(tmp_path, record, [data])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+    brain._observe()
+    assert brain._select_node() == "review"
+    selected = brain.action_plan.actions[0].decision
+    wired = brain._wire_action(selected.action, selected)
+    assert wired.root.target.image_point == (175.25, 30.75)
+    assert wired.root.target.evidence.startswith("image_planned:")
+    assert selected.action.source == "hbl_no"
+    assert len(model.prompts) == 1  # No target-semantics supplement or coordinate-repair call.

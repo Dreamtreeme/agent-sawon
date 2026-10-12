@@ -30,8 +30,9 @@ from brain.visual.marker_contract import (
     model_screen,
 )
 from brain.visual.markers import marker_role_allowed
-from brain.visual.scene import SemanticDetection, contains, overlap
+from brain.visual.scene import ControlMeaning, SemanticDetection, contains, overlap
 from models.base import model_call_context
+from models.schema import compact_provider_schema
 from sawon_runtime.storage import RunLog, atomic_write_json
 from sawon_runtime.visual import RenderedPage
 
@@ -136,6 +137,12 @@ class MatchAction(BaseModel):
         return self
 
 
+class TargetedMatchAction(MatchAction):
+    """Provider action owns its chosen control; runtime actions retain integer IDs."""
+
+    target: ControlMeaning
+
+
 class MatchEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
     field: FieldName
@@ -202,11 +209,53 @@ class ScreenMatch(SemanticDetection, ScreenPlan):
     evidence: list[MatchEvidence] = Field(
         default_factory=list,
         max_length=100,
-        description="Current field observations whose target is also defined in controls. Omit "
-        "past or incidental observations not needed by this action. Completion maps these to "
+        description="Current field observations whose target is defined in controls "
+        "or steps[].target. "
+        "Omit past or incidental observations not needed by this action. Completion maps these to "
         "final row proof; duplicate checks verify the query input separately.",
     )
     needs_image: bool = False
+
+    @classmethod
+    def model_json_schema(cls, *args, **kwargs):
+        schema = super().model_json_schema(*args, **kwargs)
+        if kwargs.get("mode", "validation") == "serialization":
+            return schema
+        # Only the provider input shape changes. Cache/artifact serialization and
+        # all execution compilers retain the established ID-based contract.
+        action_schema = TargetedMatchAction.model_json_schema()
+        schema["$defs"].update(action_schema.pop("$defs", {}))
+        schema["$defs"]["MatchAction"] = action_schema
+        return compact_provider_schema(schema)
+
+    @model_validator(mode="before")
+    @classmethod
+    def collect_action_bindings(cls, value):
+        if not isinstance(value, dict):
+            return value
+        steps = value.get("steps", [])
+        if not any(
+            isinstance(step, dict) and isinstance(step.get("target"), dict) for step in steps
+        ):
+            return value
+        controls = {}
+        for raw in value.get("controls", []):
+            control = ControlMeaning.model_validate(raw)
+            if control.id in controls and controls[control.id] != control:
+                raise ValueError("screen_match_conflicting_target_binding")
+            controls[control.id] = control
+        normalized = []
+        for step in steps:
+            if not isinstance(step, dict) or not isinstance(step.get("target"), dict):
+                normalized.append(step)
+                continue
+            bound = TargetedMatchAction.model_validate(step)
+            control = bound.target
+            if control.id in controls and controls[control.id] != control:
+                raise ValueError("screen_match_conflicting_target_binding")
+            controls[control.id] = control
+            normalized.append({**bound.model_dump(), "target": control.id})
+        return {**value, "controls": list(controls.values()), "steps": normalized}
 
     def interpretation(self) -> SemanticDetection:
         return SemanticDetection.model_validate(
@@ -408,8 +457,10 @@ scrolling viewport edge, ground a current control in that viewport and use scrol
 whole input before stopping. Do not reselect a current tab to expose a caption already visible.
 A merged OCR marker containing multiple tab captions does not identify an inactive tab; use the
 visible panel content as stronger evidence of the current view.
-Every referenced marker MUST also be defined in controls in this same response. During
-operation=act, omit past-row evidence unrelated to the current action.
+Define each steps[].target as the selected control object (id, role, OCR links, confidence).
+Use controls only for additional evidence/parent controls; evidence may reference action target
+IDs. Preserve the exact original-image action point in steps[].point. During operation=act,
+omit past-row evidence unrelated to the current action.
 In generic task mode those inputs remain reusable across screens: verified_inputs reports prior
 evidence but does not mean a value is already present in a different current form.
 When notebook.workflow_state.save_issued is true, the run is verifying the record that it just
