@@ -89,6 +89,13 @@ GUI 의존성까지 필요하면 `-Gui`를 전달한다. 이 스크립트는 GPU
   우회하지 않는다. 공급자별 요청 변환은 어댑터에 둔다.
 - 로그는 `RunLog`로 추가하고 상태 파일은 공용 atomic write를 사용한다.
   전달 성공과 업무 완료를 구분하고 실패 실행의 증거를 덮어쓰지 않는다.
+- 행동 intent, 키 입력, 컨트롤 role 어휘는 `brain/vocabulary.py`에서만 정의한다.
+- 새 어휘 값이 필요하면 `brain/vocabulary.py`에 추가하고, 다른 파일에서 같은 값을 다시
+  정의하지 않는다.
+- 어휘를 사용하는 파일은 `brain/vocabulary.py`의 정의를 import하며, 이 모듈은 다른
+  `brain` 모듈을 import하지 않는다.
+- 어휘를 변경하면 `tests/fixtures/vocabulary`의 스키마 fixture와 비교 테스트가 실패하므로,
+  변경이 의도된 경우에만 fixture를 갱신한다.
 
 ## Testing and evidence
 
