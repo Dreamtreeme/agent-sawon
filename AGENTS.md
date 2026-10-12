@@ -1,90 +1,110 @@
-# Agent Sawon 현재 작업 지침
+# Repository Guidelines
 
-이 문서는 현재 코드에 적용할 지침만 담는다. 날짜별 과거 지시는
-[`docs/archive/AGENTS-20261012-before-rewrite.md`](docs/archive/AGENTS-20261012-before-rewrite.md)에
-보존한다. 과거 기록은 기능을 복원하라는 지시가 아니다.
+## Project overview
 
-## 1. 범위와 기준 문서
+Agent Sawon은 문서에서 업무 데이터를 추출하고, 사용자 교육과 화면 관찰을 바탕으로
+Windows ERP를 조작하는 Python 프로젝트다. 이 저장소는 판단·모델·문서 처리 코어이며,
+옆의 `../agent-sawon-bench`가 공개 인터페이스, relay, Mock ERP, 실행 하네스와 채점을 제공한다.
 
-- 현재 구현 범위는 M2 / 3–4단계까지다. 남은 M1 실측과 마일스톤 종료는
-  별도 검증 없이 완료 처리하지 않는다.
-- 현재 실행 규칙은 `CODEX_BRIEF.md`의 최상단 개정, `docs/README.md`의
-  현재 기준 문서, 이 파일 순으로 함께 적용한다.
-- 진행 상태와 실측 결과는 sibling 저장소
-  `../agent-sawon-bench/docs/progress.md`에 기록한다.
+## Repository layout
 
-## 2. 현재 런타임
+- `brain/run.py`: 업무 실행 CLI. 입력 record, task, relay와 설정을 연결한다.
+- `brain/graph/`: LangGraph 작업자, `WorkerState`, 판단·실행·검토와 문맥 구성.
+  네 책임 노드의 다음 경로는 상태의 `lifecycle.route`로 결정된다.
+- `brain/visual/`, `brain/observe/`: 화면 탐지·OCR 기하, 대상 연결, 관찰과 증거 처리.
+- `brain/cache/`, `brain/demo_learning/`: 화면 캐시, 실행 기록 학습, 웜 메서드 편찬.
+- `models/`: 공급자 어댑터, 공용 호출 계측, 스키마 변환, 단가와 비용 예약.
+- `pipeline/`: 문서 렌더링·OCR·추출·검증 및 실행 전 데이터 인계.
+- `sawon_runtime/`: 공용 저장소, 시각 계약, 지속 워커와 프로세스 관리.
+- `config/`, `examples/`: 실행 설정과 업무 입력 예제.
+- `tests/`: pytest 테스트. `cases/`, `data/`, `.tools/`는 로컬 실행 산출물·모델·환경이다.
 
-- 화면 작업은 screenshot, 한국어 GPU OCR, OmniParser v2를 사용하는
-  visual-first 경로가 기본이다. visual-only 모드에 UIA 관찰과 직접 control pattern을
-  섞지 않는다.
-- OCR이 제공하는 텍스트·좌표와 OmniParser가 제공하는 시각 영역을 전달하고,
-  모델이 현재 화면과 사용자 교육에서 의미와 다음 행동을 판단한다. 탐지기의
-  불확실한 설명을 업무 사실로 취급하지 않는다.
-- 화면 매칭은 `TaskInstruction`/교육 파일만 진입점으로 사용한다. 삭제한
-  `Procedure`, `--procedure`, `procedure_path`, 고정 절차 필터를 복원하지 않는다.
-- 작업자 그래프는 `Observation → Decision → Review → Execution`의 책임을
-  상태 계약으로 분리한다. 한 실행의 상태는 `WorkerState`가 소유한다.
-- Brain은 ERP 내부나 DB를 읽지 않고 relay HTTP로만 관찰·실행한다.
-  `ExecutionRequest`/`ExecutionResult`가 전송 계약이며 실행기에 Brain 전체를 넘기지 않는다.
-- allowlist ERP 전경 활성화는 relay가 복원할 수 있다. 앱이 렌더링한 비밀번호
-  bullet을 유지하며 별도 화이트/블랙 덮개를 추가하지 않는다.
+## Development setup
 
-## 3. 모델과 호출 계약
-
-- 기본 화면 작업자는 `config/models.toml`의 `claude-haiku-5-5`다.
-  Luna는 계측된 폴백·비교 경로이며 Gemini와 Jev 어댑터도 보존한다.
-- Haiku의 현재 알려진 차단 요인은 큰 `ScreenMatch` JSON schema에서 발생하는
-  Anthropic structured-output grammar HTTP 400이다. 이 문제는 요청 계약을
-  축소·분리해 해결하며 Haiku를 조용히 다른 모델로 대체하지 않는다.
-- 모든 모델 호출은 공용 measured `ModelClient`를 통과한다. 호출 목적, decision ID,
-  frame, prompt/schema byte, 이미지 개수, 토큰, 비용, 지연을 기록한다.
-- 누적 총비용 상한은 사용하지 않는다. 건별 `$3` 상한, 호출 전 예약,
-  알려진 비용과 사용량 미반환 비용의 분리 기록은 유지한다.
-- 테스트는 replay/fake를 사용하고, 실제 호출 결과를 가짜 응답으로 재분류하지
-  않는다.
-
-## 4. 교육, 재사용, 복구
-
-- 회사/시드별 사용자 교육을 독립적으로 적용한다. ERP 라벨, 좌표, AutomationId,
-  네비게이션 경로, 탭 순서를 프로덕션 코드에 하드코딩하지 않는다.
-- 교육 문맥은 전체 색인과 현재 초점 상세를 나누고, 모델이 필요한 step ID의
-  상세를 요청할 수 있게 한다. 뒤 단계를 선택했다는 이유로 앞 단계를 완료
-  처리하지 않는다. 삭제한 `MethodRuntime.procedure_prompt_context` 중복 채널을
-  복원하지 않는다.
-- visual-match cache, 성공 실행에서 편찬한 learned method, 실행 화면 기록만
-  재사용 범위다. 구형 UIA 의미 캐시와 observation-delta 시연 학습은 복원하지
-  않는다.
-- 메서드 승격은 전체 업무 성공 후에만 한다. 웜 메서드 재결합이 실패하면
-  현재 화면의 visual cache, 그다음 모델 판단으로 폴백한다.
-- 관찰 주장과 행동이 함께 있는 모델 응답은 주장을 버리지 말고 독립 검증 여부를
-  표시한다. 종결 응답의 부수 행동은 실행하지 않는다.
-- 현재는 거대한 FSM, 단계별 캐시 즉시 승격, 증거 없는 새 의미 휴리스틱을
-  추가하지 않는다. 먼저 제한된 콜드·웜 파일럿으로 검증한다.
-
-## 5. 증거와 데이터 경계
-
-- `run_log.jsonl`은 append-only로 유지하고 status 파일은 atomic replace로 갱신한다.
-- relay 전달, target binding, 클릭 성공을 업무 성공으로 간주하지 않는다. 저장과
-  최종 재조회 결과를 독립 증거로 검증한다.
-- evaluation seed 5000–5999는 개발·테스트에 사용하지 않는다.
-- API key, 원본 AI Hub 데이터, 실제 업무 정보, 비공개 prompt/cache/screenshot을
-  커밋하지 않는다. 키는 `.env`에만 보관하고 로그에 출력하지 않는다.
-- 이 비공개 저장소와 prompt/cache를 루틴 작업으로 공개·배포하지 않는다.
-
-## 6. 코드와 검증 기준
-
-- Core는 bench에서 공개한 `sawon_interfaces`만 import할 수 있다.
-- Python 3.13, typed code, Pydantic v2, Ruff, pytest를 사용한다. 데스크톱 테스트는
-  `gui` marker를 붙인다.
-- 테스트가 아닌 코드를 바꾸면 아래 검사를 실행한다.
+Python 3.13과 PowerShell을 사용한다. 두 저장소를 같은 부모 폴더에 둔다.
+저장소 루트에서 다음 명령으로 가상환경과 editable 의존성을 설치한다.
 
 ```powershell
-python -m ruff check .
-python -m ruff format --check .
-python -m pytest
+.\scripts\setup.ps1
 ```
 
-- 실제 GUI 실행은 개발 seed, 회사별 교육, 모델 정체, 캐시 초기 상태,
-  건별 상한을 계획에 고정한다. 성공률·시간·행동·관찰·호출 이유·비용·
-  미확정 호출·ERP 채점을 함께 보고한다.
+GUI 의존성까지 필요하면 `-Gui`를 전달한다. 이 스크립트는 GPU OCR·탐지 환경이나
+모델 가중치를 설치하지 않는다. 실제 화면 실행 전 `config/pipeline.toml`의 `ocr_python`과
+`config/brain.visual.toml`의 탐지기 Python·가중치 경로를 확인한다.
+시각 환경의 세부 설치는 `brain/visual/README.md`를 참고한다.
+
+## Build and test commands
+
+루트의 `.venv` Python을 명시해 다른 저장소나 시스템 Python과 혼동하지 않는다.
+
+```powershell
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m ruff format --check .
+.\.venv\Scripts\python.exe -m pytest
+```
+
+- 변경 영역을 먼저 확인할 때: `.\.venv\Scripts\python.exe -m pytest tests/test_screen_matching.py -q`
+- 선택적 병렬 실행: `.\scripts\test-parallel.ps1` (`-n 4`, 기본은 순차 실행).
+- core와 bench를 함께 검사할 때: `.\scripts\check.ps1`.
+- 기본 pytest는 `gui` 테스트를 제외한다. 실제 Windows 데스크톱이 필요한 테스트에는
+  `@pytest.mark.gui`를 붙이고, 실행할 때 `-m gui`를 명시한다.
+- CI는 `.github/workflows/check.yml`에 정의되어 있다. Windows/Linux 순차 검사와
+  Linux 병렬 검사를 수행하며, bench 체크아웃에 `BENCH_REPOSITORY`와 `BENCH_READ_KEY`가 필요하다.
+- 코드 변경 후 lint·format·전체 테스트를 확인한다. 문서만 바꿨다면 링크·경로·명령의 정확성과
+  `git diff --check`를 확인한다. 실행하지 못한 검사는 사유를 보고한다.
+
+## Runtime configuration
+
+- `config/brain.visual.toml`: 화면 작업 설정. 현재 visual-only, 모델 기반 의미 판단·검토,
+  `guard_mode = "observe_only"`, 편찬된 메서드 사용을 지정한다. 설정을 바꿀 때
+  `brain/settings.py`의 기본값과 실제 프로필 값을 구분한다.
+- `config/models.toml`: 사용할 공급자·모델·출력 한도. 현재 Anthropic Haiku가 설정되어 있다.
+  과거 보고서의 모델명을 근거로 이 설정을 교체하지 않는다.
+- `config/pipeline.toml`: 문서 검증과 한국어 GPU OCR 설정.
+- `models/pricing.toml`: 비용 계산에 사용하는 단가.
+
+명령 옵션은 아래 진입점에서 확인한다. `--help`는 모델 호출이나 화면 조작을 하지 않는다.
+
+```powershell
+.\.venv\Scripts\python.exe -m brain.run --help
+.\.venv\Scripts\python.exe -m pipeline.run --help
+.\.venv\Scripts\python.exe -m brain.demo_learning.warm_methods --help
+```
+
+화면 작업에는 업무별 `--task`, 입력 record와 실행 중인 relay가 필요하다. 새 실행은 새 case
+디렉터리를 사용한다. 문서 추출 결과를 이어 실행할 때는 `--prepared-case`와
+`pipeline/handoff.py`의 인계 검증을 사용한다. 실제 ERP 파일럿은 bench 하네스에서 실행한다.
+
+## Code conventions and boundaries
+
+- 타입 힌트와 Pydantic v2를 사용한다. Ruff 기준은 Python 3.13, 줄 길이 100,
+  `E`, `F`, `I`, `UP`, `B` 규칙이며 `pyproject.toml`을 기준으로 한다.
+- Core가 bench에서 가져오는 계약은 `sawon_interfaces`로 제한한다. 작업자의 환경 접근은
+  relay를 사용하고 ERP 내부 DB를 읽어 판단하지 않는다.
+- 업무별 버튼명·좌표·탭 순서는 교육 파일과 관찰 데이터로 전달한다. 프로덕션 코드에
+  특정 회사나 시드의 경로를 하드코딩하지 않는다.
+- 상태는 `WorkerState`, 실행 인계는 `ExecutionRequest`/`ExecutionResult`를 사용한다.
+  기존 공용 기능을 재사용하고 서비스에 전체 `Brain`을 넘기는 결합을 추가하지 않는다.
+- 모델 호출은 `models`의 공용 계측 경계를 사용한다. SDK 직접 호출로 비용·지연·실패 기록을
+  우회하지 않는다. 공급자별 요청 변환은 어댑터에 둔다.
+- 로그는 `RunLog`로 추가하고 상태 파일은 공용 atomic write를 사용한다.
+  전달 성공과 업무 완료를 구분하고 실패 실행의 증거를 덮어쓰지 않는다.
+
+## Testing and evidence
+
+- 일반 테스트는 fake/replay, 임시 경로와 격리된 상태를 사용한다. 실제 API나 데스크톱에 의존하지 않는다.
+- 동작 변경에는 구체적인 결함을 잡는 테스트를 추가하거나 기존 테스트를 수정한다.
+  같은 검증을 중복 추가하지 말고, 반복 케이스는 실패 입력을 식별할 수 있게 표시한다.
+- 화면 동작을 분석할 때 로그와 해당 프레임을 함께 확인한다. 실제 파일럿 보고에는
+  모델·교육 파일·콜드/웜 조건·시간·호출·비용·ERP 채점 결과를 남긴다.
+- 평가용 seed 5000–5999는 개발이나 테스트에 사용하지 않는다.
+
+## Secrets and change delivery
+
+- 유료 클라이언트는 명시적으로 지정한 `.env`에서 키를 읽는다.
+  키 이름은 `CLAUDE_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`다.
+- 키, 실제 업무 데이터, 원본 문서, 비공개 화면·로그·캐시는 커밋하지 않는다.
+  `.gitignore`에 포함된 실행 산출물을 강제로 추가하지 않는다.
+- 커밋에는 해당 작업의 변경만 포함한다. 설명에는 변경 이유, 검증 결과와 남은 한계를 적는다.
+- 실행 이력과 장기 계획은 `docs/` 및 `../agent-sawon-bench/docs/progress.md`에서 관리한다.
+  이 파일에는 날짜별 실험 결과나 일시적인 오류 해결 계획을 누적하지 않는다.
