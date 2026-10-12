@@ -48,6 +48,21 @@ def navigation_state(observation: Observation) -> str:
     refs are not evidence that a navigation reached its intended destination.
     A different fingerprint is only an observed change, never task completion.
     """
+    capture_phash = getattr(observation, "capture_phash", None)
+    if capture_phash is not None:
+        # Model-selected fields can change between plans on identical pixels.
+        # Those interpretation edits are not a navigation effect.
+        return hashlib.sha256(
+            json.dumps(
+                {
+                    "image": capture_phash,
+                    "window": observation.active_window.handle
+                    if observation.active_window
+                    else None,
+                },
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
     nodes = []
     for element in observation.elements:
         nodes.append(

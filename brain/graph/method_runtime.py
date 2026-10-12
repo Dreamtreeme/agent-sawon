@@ -55,8 +55,11 @@ def open_method_library(
     enabled: bool,
     promotion_path: Path | None = None,
     compiled_only: bool = False,
+    max_phash_distance: int = 6,
 ) -> MethodLibrary:
-    library = MethodLibrary(case_dir / "methods-working.json", enabled=enabled)
+    library = MethodLibrary(
+        case_dir / "methods-working.json", enabled=enabled, max_phash_distance=max_phash_distance
+    )
     if enabled:
         selected = (
             promotion_path if promotion_path is not None and promotion_path.exists() else path
@@ -124,7 +127,7 @@ class MethodRuntime:
             method.action_groups,
             key=lambda group: (
                 procedure_order.get(group.taught_step_id, len(procedure_order)),
-                delivered_order.get(group.id, len(delivered_order)),
+                delivered_order.get(group.id, len(self.state.history)),
                 original_order[group.id],
             ),
         )
@@ -584,7 +587,7 @@ class MethodRuntime:
         self.log.append("verify", payload={"check": "method_execution", **event})
         atomic_write_json(self.case_dir / "method-progress.json", self.context())
 
-    def verify_delivery(self, *, success: bool) -> None:
+    def verify_delivery(self, *, success: bool | None) -> None:
         """Keep only a delivered method edge that produced observable progress."""
 
         delivered, self.state.unverified = self.state.unverified, None
@@ -592,6 +595,19 @@ class MethodRuntime:
             return
         method = delivered["method"]
         group_id = delivered["group_id"]
+        if success is None:
+            self.state.history[delivered["history_index"]]["status"] = "provisional"
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "method_effect",
+                    "method_id": method.id,
+                    "group_id": group_id,
+                    "success": None,
+                    "reason": "observation_unavailable",
+                },
+            )
+            return
         if success:
             self.log.append(
                 "verify",
@@ -687,7 +703,7 @@ class MethodRuntime:
         methods = []
         for method in candidates.values():
             compiled = compile_method_candidate(
-                method,
+                self._compile_trace_graph(method),
                 {
                     **self.task_context.inputs,
                     **{

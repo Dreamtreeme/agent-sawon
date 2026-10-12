@@ -35,3 +35,4 @@ enabled = true
 path = "../cases/methods.json"
 promotion_path = "../cases/methods.json"
 compiled_only = true
+max_phash_distance = 6

@@ -17,7 +17,6 @@ from brain.graph.matching import MethodBinding, ScreenMatch
 from brain.graph.method_runtime import open_method_library
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
-from brain.visual.marker_contract import model_controls
 from brain.visual.markers import Marker, build_markers
 from brain.visual.scene import ControlMeaning
 from pipeline.schemas import OcrBlock
@@ -99,9 +98,26 @@ def setup(
         "Account" if changed_label else "Customer", shift=20
     )
     current_response = current_response.model_copy(update={"method_id": method.id})
+    names = [block.text for block in blocks]
     model_response = {
-        **current_response.model_dump(mode="json"),
-        "controls": model_controls(current_response.controls, current_screen),
+        "screen_kind": "editor",
+        "procedure_step": "task-action",
+        "method_id": method.id,
+        "purpose": "Enter customer and reference",
+        "fields": {
+            name: {"role": "edit", "bbox": list(box.bbox), "value": ""}
+            for name, box in zip(names, boxes, strict=True)
+        },
+        "assignments": dict(zip(names, ("customer", "reference"), strict=True)),
+        "steps": [
+            {
+                "target": name,
+                "action": "fill",
+                "intent": "fill",
+                "point": [box.bbox[0] + 25, box.bbox[1] + 10],
+            }
+            for name, box in zip(names, boxes, strict=True)
+        ],
     }
 
     class Relay:
@@ -833,3 +849,18 @@ def test_generic_success_trace_becomes_model_free_execution_graph(tmp_path):
     assert second_replay is not None
     assert second_replay.purpose == "Enter the visible reference"
     assert model.prompts == []
+
+
+def test_next_observation_error_does_not_discard_delivered_method(tmp_path):
+    brain, _, _ = setup(tmp_path)
+    brain._observe()
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    brain._act_node()
+    brain.methods.verify_delivery(success=None)
+    assert brain.methods.state.history[-1]["status"] == "provisional"
+    event = next(
+        e for e in reversed(brain.log.read_all()) if e.payload.get("check") == "method_effect"
+    )
+    assert event.payload["success"] is None
+    assert event.payload["reason"] == "observation_unavailable"

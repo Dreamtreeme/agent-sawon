@@ -13,6 +13,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from brain.cache.methods import LearnedMethod, MethodLibrary, MethodSlot, method_from_match
+from brain.visual.action_rebind import perceptual_hash
 from models.accounting import read_model_accounting
 from models.base import ModelClient
 from models.budget import CallBudget
@@ -57,6 +58,11 @@ def read_screen(case_dir: Path, obs_id: str) -> dict:
     folder = case_dir / "visual" / obs_id
     markers = _read(folder / "markers.json")
     return {
+        **(
+            {"screen_phash": perceptual_hash(folder / "capture.png")}
+            if (folder / "capture.png").exists()
+            else {}
+        ),
         "image_size": markers["image_size"],
         "ocr": _read(folder / "ocr.json")["blocks"],
         "markers": markers["markers"],

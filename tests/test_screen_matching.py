@@ -20,7 +20,6 @@ from brain.graph.matching import (
     OBSERVE_ONLY_TARGET_RULES,
     TARGET_GROUNDING_RULES,
     TASK_PLAN_RULES,
-    TASK_RULES,
     ActionCapability,
     MatchSelection,
     MatchServices,
@@ -42,6 +41,7 @@ from brain.graph.matching import (
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
 from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
+from brain.graph.screen_mapping import MAPPING_RULES
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInstruction
 from brain.visual.perception import DETECTION_RULES
@@ -168,6 +168,8 @@ def setup_brain(
         item = next(plans)
         if prompt.startswith((TASK_PLAN_RULES, TASK_PLAN_RULES)):
             return {key: value for key, value in item.items() if key in ScreenPlan.model_fields}
+        if prompt.startswith(MAPPING_RULES):
+            assert "fields" in item, "Provider fixtures must use semantic names and coordinates"
         if prompt.startswith(TARGET_GROUNDING_RULES):
             return {
                 key: value for key, value in item.items() if key in SemanticDetection.model_fields
@@ -284,23 +286,29 @@ def response(meaning, **kwargs):
     }
 
 
-def mixed_boundary_response(meaning, **kwargs):
-    result = response(meaning, **kwargs)
-    result["steps"].append(
-        {
-            "target": meaning.controls[0].id,
-            "action": "click",
-            "intent": "navigate",
-            "point": [175, 30],
-        }
-    )
-    return result
+def named_response(**overrides):
+    """Provider fixture: semantic names and chosen geometry, with no detector handles."""
+    return {
+        "screen_kind": "query",
+        "fields": {"Reference": {"role": "edit", "bbox": [100, 15, 150, 30], "value": ""}},
+        "assignments": {"Reference": "hbl_no"},
+        "procedure_step": "enter-duplicate-key",
+        "steps": [
+            {
+                "target": "Reference",
+                "action": "fill",
+                "source": "hbl_no",
+                "intent": "query_input",
+                "point": [175, 30],
+            }
+        ],
+        **overrides,
+    }
 
 
 def test_task_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path, record):
-    meaning = fixture()[-1]
     brain, model, _, _, _, _ = setup_brain(
-        tmp_path, record, [response(meaning)], task_instruction=None
+        tmp_path, record, [named_response()], task_instruction=None
     )
     brain.credentials = {"credential.username": "secret-user", "credential.password": "secret-pw"}
     assert brain._plan_node() == "observation"
@@ -318,43 +326,13 @@ def test_task_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path, reco
         for event in brain.log.read_all()
     )
     assert len(model.prompts) == 1
-    assert model.prompts[0].startswith(TASK_RULES)
+    assert model.prompts[0].startswith(MAPPING_RULES)
     assert OBSERVE_ONLY_TARGET_RULES not in model.prompts[0]
     assert brain.action_plan.actions[0].decision.action.source == "hbl_no"
     assert brain.action_plan.actions[0].decision.action.ref.startswith(
         "e" + str(brain.observation.obs_id.int)
     )
     assert "secret-user" not in model.prompts[0] and "secret-pw" not in model.prompts[0]
-
-
-def test_ocr_fill_target_replans_without_visual_refinement(tmp_path, record):
-    blocks, _, markers, meaning = fixture()
-    text_target = next(marker.id for marker in markers if marker.source == "ocr")
-    wrong = response(meaning)
-    wrong["controls"] = [
-        {
-            "id": text_target,
-            "role": "edit",
-            "text_ids": [text_target],
-            "confidence": 1,
-        }
-    ]
-    wrong["steps"][0]["target"] = text_target
-    corrected = response(meaning)
-    brain, model, _, ocr, detector, _ = setup_brain(tmp_path, record, [wrong, corrected])
-
-    brain._observe()
-
-    assert len(model.prompts) == 2
-    assert '"allowed_actions": ["fill", "click", "double_click", "key"]' in model.prompts[0]
-    correction = json.loads(model.prompts[1][len(TASK_RULES) :])["correction"]
-    assert correction["error"] == "screen_match_action_surface_mismatch"
-    assert brain.visual_proposal.steps[0].target == meaning.controls[0].id
-    assert ocr.calls == detector.calls == 1
-    checks = {event.payload.get("check") for event in brain.log.read_all()}
-    assert "action_surface_rejected" in checks
-    assert "action_surface_corrected" in checks
-    assert "visual_refinement" not in checks
 
 
 def test_observation_semantics_are_reconciled_before_a_separate_task_plan(
@@ -364,7 +342,7 @@ def test_observation_semantics_are_reconciled_before_a_separate_task_plan(
     brain, model, _, _, _, _ = setup_brain(
         tmp_path,
         record,
-        [meaning.model_dump(), response(meaning)],
+        [meaning.model_dump(), named_response()],
         separate_observation_decision=True,
         task_instruction=task_instruction,
     )
@@ -376,86 +354,38 @@ def test_observation_semantics_are_reconciled_before_a_separate_task_plan(
 
     assert brain._select_node() == "review"
     assert len(model.prompts) == 2
-    assert model.prompts[1].startswith(TASK_PLAN_RULES)
+    assert model.prompts[1].startswith(MAPPING_RULES)
     assert any(
         event.payload.get("check") == "grounded_interpretation_planned"
         for event in brain.log.read_all()
     )
 
 
-def test_separate_planning_corrects_only_the_plan_from_the_same_observation(tmp_path, record):
-    meaning = fixture()[-1].model_copy(update={"screen_kind": "query"})
-    wrong = mixed_boundary_response(meaning)
-    corrected = response(meaning)
-    brain, model, _, ocr, detector, _ = setup_brain(
-        tmp_path,
-        record,
-        [meaning.model_dump(), wrong, corrected],
-        separate_observation_decision=True,
-    )
-
-    brain._observe()
-    assert brain._select_node() == "review"
-
-    assert len(model.prompts) == 3
-    assert model.prompts[0].startswith(DETECTION_RULES)
-    assert model.prompts[1].startswith(TASK_PLAN_RULES)
-    assert model.prompts[2].startswith(TASK_PLAN_RULES)
-    correction = json.loads(model.prompts[2][len(TASK_PLAN_RULES) :])["correction"]
-    assert correction["error"] == "screen_match_mixed_boundary_actions"
-    assert ocr.calls == detector.calls == 1
-    assert any(
-        event.payload.get("check") == "combined_action_corrected" for event in brain.log.read_all()
-    )
-
-
-def test_act_grounds_current_evidence_before_recording_the_plan(tmp_path, record, task_instruction):
-    meaning = fixture()[-1]
-    data = response(meaning)
-    incidental_marker = next(
-        marker.id for marker in fixture()[2] if marker.id != meaning.controls[0].id
-    )
+def test_named_current_evidence_is_bound_without_a_second_grounding_call(
+    tmp_path, record, task_instruction
+):
+    data = named_response()
+    data["fields"]["Summary"] = {"role": "text", "bbox": [10, 20, 60, 15], "value": "Reference"}
     data["evidence"] = [
-        {"field": "mbl_no", "target": incidental_marker},
-        {"field": "shipper", "target": incidental_marker},
+        {"field": "mbl_no", "target": "Summary"},
+        {"field": "shipper", "target": "Summary"},
     ]
     brain, model, _, ocr, detector, _ = setup_brain(
-        tmp_path,
-        record,
-        [
-            data,
-            {
-                "screen_kind": meaning.screen_kind,
-                "controls": [{"id": incidental_marker, "role": "text", "confidence": 1}],
-            },
-        ],
-        task_instruction=task_instruction,
+        tmp_path, record, [data], task_instruction=task_instruction
     )
-
     brain._observe()
-
-    assert len(model.prompts) == 2
+    assert len(model.prompts) == 1
     assert [item.field for item in brain.visual_proposal.evidence] == ["mbl_no", "shipper"]
-    assert brain.visual_proposal.steps[0].target == meaning.controls[0].id
     assert ocr.calls == detector.calls == 1
-    event = next(
-        event
-        for event in brain.log.read_all()
-        if event.payload.get("check") == "action_targets_grounded"
-    )
-    assert event.payload["marker_ids"] == [incidental_marker]
-    assert brain.saved_bindings[1]["mbl_no"] in {
-        element.ref for element in brain.observation.elements
-    }
-    assert "mbl_no" not in brain.verified  # A binding is not a verified value.
+    assert brain.saved_bindings[1]["mbl_no"] in {e.ref for e in brain.observation.elements}
+    assert "mbl_no" not in brain.verified  # Binding alone does not claim value verification.
 
 
 def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(
     tmp_path, record, task_instruction
 ):
-    meaning = fixture()[-1]
-    task_response = response(
-        meaning,
+    fixture()[-1]
+    task_response = named_response(
         procedure_step="로그인",
     )
     task_response["steps"][0]["source"] = record.fields.hbl_no.value
@@ -484,8 +414,8 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(
     brain._observe()
 
     assert len(model.prompts) == 1
-    assert model.prompts[0].startswith(TASK_RULES)
-    state = json.loads(model.prompts[0][len(TASK_RULES) :])
+    assert model.prompts[0].startswith(MAPPING_RULES)
+    state = json.loads(model.prompts[0][len(MAPPING_RULES) :])
     assert state["task"]["objective"] == brain.task_instruction.objective
     assert state["task"]["procedure"] == []
     assert state["taught_procedure_progress"]["steps"] == []
@@ -522,10 +452,9 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(
 def test_generic_task_binds_prompt_container_path_to_input_key(
     tmp_path, record, source, task_instruction
 ):
-    meaning = fixture()[-1]
-    task_response = response(meaning, procedure_step="Enter the visible task input")
+    task_response = named_response(procedure_step="Enter the visible task input")
     task_response["steps"][0]["source"] = source
-    task_response["evidence"] = [{"field": source, "target": meaning.controls[0].id}]
+    task_response["evidence"] = [{"field": source, "target": "Reference"}]
     brain, *_ = setup_brain(tmp_path, record, [task_response], task_instruction=task_instruction)
 
     brain._observe()
@@ -852,11 +781,10 @@ def test_taught_surface_agrees_through_compile_dispatch_and_reread(
 def test_model_only_generic_task_keeps_model_grounded_input_progress(
     tmp_path, record, task_instruction
 ):
-    meaning = fixture()[-1]
-    task_response = response(meaning, procedure_step="Enter the visible task input")
+    task_response = named_response(procedure_step="Enter the visible task input")
     task_response["steps"] = []
     task_response["operation"] = "stop"
-    task_response["evidence"] = [{"field": "hbl_no", "target": meaning.controls[0].id}]
+    task_response["evidence"] = [{"field": "hbl_no", "target": "Reference"}]
     brain, *_ = setup_brain(tmp_path, record, [task_response], task_instruction=task_instruction)
     brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
 
@@ -894,13 +822,12 @@ def test_post_save_model_review_uses_only_persisted_detail_evidence(
 def test_post_save_query_input_is_not_mistaken_for_a_saved_result_row(
     tmp_path, record, task_instruction
 ):
-    meaning = fixture()[-1]
-    task_response = response(meaning)
+    task_response = named_response()
     task_response.update(
         {
             "steps": [],
             "operation": "stop",
-            "evidence": [{"field": "hbl_no", "target": meaning.controls[0].id}],
+            "evidence": [{"field": "hbl_no", "target": "Reference"}],
         }
     )
     brain, *_ = setup_brain(tmp_path, record, [task_response], task_instruction=task_instruction)
@@ -1095,50 +1022,32 @@ def test_education_focus_can_revisit_steps_without_inventing_completion(tmp_path
     assert brain._taught_procedure_progress()["completed_step_ids"] == ["save-record"]
 
 
-def test_model_only_generic_task_keeps_model_mapped_editor_ocr_progress(
+def test_model_only_review_retains_named_text_evidence_without_input_detection(
     tmp_path, record, task_instruction
 ):
-    blocks, _, markers, _ = fixture()
-    literal = next(marker for marker in markers if marker.source == "ocr")
-    task_response = ScreenMatch.model_validate(
-        {
-            "screen_kind": "editor",
-            "procedure_step": "Observe the entered task value",
-            "controls": [
-                {
-                    "id": literal.id,
-                    "role": "text",
-                    "text_ids": [literal.id],
-                    "confidence": 1,
-                }
-            ],
-            "steps": [],
-            "operation": "stop",
-            "evidence": [{"field": "hbl_no", "target": literal.id}],
-        }
+    data = named_response(
+        screen_kind="editor",
+        operation="stop",
+        steps=[],
+        fields={
+            "Reference": {
+                "role": "text",
+                "bbox": [10, 20, 60, 15],
+                "value": record.fields.hbl_no.value,
+            }
+        },
+        evidence=[{"field": "hbl_no", "target": "Reference"}],
     )
-    brain, *_ = setup_brain(
-        tmp_path, record, [task_response.model_dump(mode="json")], task_instruction=task_instruction
-    )
+    brain, model, *_ = setup_brain(tmp_path, record, [data], task_instruction=task_instruction)
     brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
-
     brain._observe()
-    assert brain._select_node() == "finish"
-
     assert "hbl_no" in brain.verified
-    assert brain.observation.elements[0].role == "text"
-    event = next(
-        event
-        for event in brain.log.read_all()
-        if event.payload.get("check") == "model_task_evidence_recorded"
-    )
-    assert event.payload["fields"] == ["hbl_no"]
+    assert len(model.prompts) == 1
 
 
 def test_pending_fill_cannot_claim_its_own_pre_action_evidence(tmp_path, record, task_instruction):
-    meaning = fixture()[-1]
-    task_response = response(meaning, procedure_step="Enter the visible task input")
-    task_response["evidence"] = [{"field": "hbl_no", "target": meaning.controls[0].id}]
+    task_response = named_response(procedure_step="Enter the visible task input")
+    task_response["evidence"] = [{"field": "hbl_no", "target": "Reference"}]
     brain, *_ = setup_brain(tmp_path, record, [task_response], task_instruction=task_instruction)
     brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
 
@@ -1200,55 +1109,6 @@ def test_task_capability_allows_save_after_prior_evidence_without_hiding_inputs(
     assert "save" in capability.actions
 
 
-def test_grounded_current_action_does_not_refine_for_future_hidden_input(
-    tmp_path, record, task_instruction
-):
-    meaning = fixture()[-1]
-    task_response = response(
-        meaning,
-        procedure_step="Fill visible inputs",
-        needs_refinement=True,
-        uncertainties=["another task input is below the current viewport"],
-    )
-    brain, *_ = setup_brain(tmp_path, record, [task_response], task_instruction=task_instruction)
-
-    brain._observe()
-
-    assert brain.visual_proposal.needs_refinement is False
-    event = next(
-        event
-        for event in brain.log.read_all()
-        if event.payload.get("check") == "nonblocking_refinement_omitted"
-    )
-    assert event.payload["action_targets"] == [meaning.controls[0].id]
-
-
-def test_grounded_current_action_does_not_request_the_same_image_again(
-    tmp_path, record, task_instruction
-):
-    meaning = fixture()[-1]
-    task_response = response(
-        meaning,
-        procedure_step="Scroll the current form to reveal later inputs",
-        needs_image=True,
-        uncertainties=["another task input is below the current viewport"],
-    )
-    brain, model, *_ = setup_brain(
-        tmp_path, record, [task_response], task_instruction=task_instruction
-    )
-
-    brain._observe()
-
-    assert brain.visual_proposal.needs_image is False
-    assert len(model.prompts) == 1
-    event = next(
-        event
-        for event in brain.log.read_all()
-        if event.payload.get("check") == "nonblocking_image_request_omitted"
-    )
-    assert event.payload["action_targets"] == [meaning.controls[0].id]
-
-
 def test_ocr_role_mismatch_keeps_requested_image_and_refinement(tmp_path, record):
     class BrainStub:
         log = RunLog(tmp_path, case_id="ocr-role-mismatch", agent_id="test")
@@ -1282,8 +1142,7 @@ def test_ocr_role_mismatch_keeps_requested_image_and_refinement(tmp_path, record
 def test_generic_task_discards_prose_source_from_non_binding_click(
     tmp_path, record, task_instruction
 ):
-    meaning = fixture()[-1]
-    task_response = response(meaning, procedure_step="Open the relevant work area")
+    task_response = named_response(procedure_step="Open the relevant work area")
     task_response["steps"][0].update(
         action="click",
         intent="navigate",
@@ -1300,16 +1159,15 @@ def test_generic_task_discards_prose_source_from_non_binding_click(
 
 
 def test_generic_task_treats_key_to_expose_input_as_navigation(tmp_path, record, task_instruction):
-    meaning = fixture()[-1]
-    task_response = response(meaning, procedure_step="Expose the next task input")
+    task_response = named_response(procedure_step="Expose the next task input")
     task_response["steps"][0].update(
         action="key",
         intent="fill",
         source=None,
         keys="tab",
-        point=None,
+        point=[175, 30],
     )
-    task_response["evidence"] = [{"field": "hbl_no", "target": meaning.controls[0].id}]
+    task_response["evidence"] = [{"field": "hbl_no", "target": "Reference"}]
     brain, *_ = setup_brain(tmp_path, record, [task_response], task_instruction=task_instruction)
 
     brain._observe()
@@ -1328,11 +1186,10 @@ def test_generic_task_treats_key_to_expose_input_as_navigation(tmp_path, record,
 
 
 def test_promoted_exact_visual_match_reuse_precedes_model_call(tmp_path, record, task_instruction):
-    meaning = fixture()[-1]
     cache_path = tmp_path / "visual-match.json"
 
     first, first_model, *_ = setup_brain(
-        tmp_path / "first", record, [response(meaning)], task_instruction=task_instruction
+        tmp_path / "first", record, [named_response()], task_instruction=task_instruction
     )
     first.visual_match_cache = VisualMatchCache(cache_path, enabled=True)
     first._observe()
@@ -1390,53 +1247,35 @@ def test_save_result_does_not_use_an_action_method_before_review_contract(
 
 
 def test_identical_capture_reuses_ocr_but_replans_current_task_action(tmp_path, record):
-    meaning = fixture()[-1]
-    entry = response(
-        meaning,
-        procedure_step="open-entry",
-        steps=[
-            {
-                "target": meaning.controls[0].id,
-                "action": "click",
-                "intent": "navigate",
-                "point": [175, 30],
-            }
-        ],
+    next_action = named_response(
+        fields={"Next": {"role": "button", "bbox": [100, 15, 150, 30]}},
+        assignments={},
+        steps=[{"target": "Next", "action": "click", "intent": "navigate", "point": [175, 30]}],
     )
-    entry["controls"][0]["role"] = "button"
-    entry["evidence"] = [{"field": "hbl_no", "target": meaning.controls[0].id}]
     brain, model, relay, ocr, detector, _ = setup_brain(
-        tmp_path, record, [response(meaning), entry, entry], task_instruction=None
+        tmp_path, record, [named_response(), next_action, next_action]
     )
     brain._observe()
-    old_id = brain.observation.obs_id
-    brain.phase, brain.duplicate_clear = "enter", True
+    first_id = brain.observation.obs_id
     brain._observe()
-    assert brain.observation.obs_id != old_id
+    assert brain.observation.obs_id != first_id
     assert ocr.calls == detector.calls == len(model.prompts) == 1
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     assert len(model.prompts) == 2
-    assert "task-action" in model.prompts[-1]
-    assert "enter-duplicate-key" not in model.prompts[-1]
     assert brain.decision.intent == "navigate"
-    assert brain.saved_bindings == (
-        str(brain.observation.obs_id),
-        {"hbl_no": brain.decision.action.ref},
+    assert brain._wire_action(brain.decision.action, brain.decision).root.target.image_point == (
+        175,
+        30,
     )
-    assert brain.decision.action.ref.startswith("e" + str(brain.observation.obs_id.int))
-    action = brain._wire_action(brain.decision.action, brain.decision)
-    assert action.root.target.image_point == (175, 30)
-    assert action.root.target.evidence.startswith("image_planned:")
     relay.color = "black"
     brain._observe()
     assert ocr.calls == detector.calls == 2
 
 
 def test_gemini_interprets_and_plans_in_one_image_call(tmp_path, record, task_instruction):
-    meaning = fixture()[-1]
-    plan = response(meaning)
-    plan["evidence"] = [{"field": "hbl_no", "target": meaning.controls[0].id}]
+    plan = named_response()
+    plan["evidence"] = [{"field": "hbl_no", "target": "Reference"}]
     brain, model, _, _, _, _ = setup_brain(
         tmp_path, record, [plan], task_instruction=task_instruction
     )
@@ -1456,14 +1295,13 @@ def test_gemini_interprets_and_plans_in_one_image_call(tmp_path, record, task_in
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     assert images_seen == [True]
-    assert model.prompts[0].startswith(TASK_RULES)
+    assert model.prompts[0].startswith(MAPPING_RULES)
 
 
 def test_task_planner_sees_that_post_save_query_is_still_missing(
     tmp_path, record, task_instruction
 ):
-    meaning = fixture()[-1]
-    task_response = response(meaning, procedure_step="Continue the taught procedure")
+    task_response = named_response(procedure_step="Continue the taught procedure")
     brain, model, *_ = setup_brain(
         tmp_path, record, [task_response], task_instruction=task_instruction
     )
@@ -1471,34 +1309,15 @@ def test_task_planner_sees_that_post_save_query_is_still_missing(
 
     brain._observe()
 
-    state = json.loads(model.prompts[0][len(TASK_RULES) :])
+    state = json.loads(model.prompts[0][len(MAPPING_RULES) :])
     saved = state["notebook"]["saved_record_review"]
     assert saved["query_row_seen"] is False
     assert saved["confirmed_fields"] == []
     assert saved["missing_fields"] == sorted(brain.values)
 
 
-def test_local_grounding_retry_receives_only_the_relevant_correction(
-    tmp_path, record, task_instruction
-):
-    meaning = fixture()[-1]
-    bad = response(meaning)
-    bad["controls"][0]["id"] = 999
-    corrected = response(meaning)
-    brain, model, _, _, _, _ = setup_brain(
-        tmp_path, record, [bad, corrected], task_instruction=task_instruction
-    )
-    brain._observe()
-    assert brain._select_node() == "review"
-    assert brain._review_node() == "execution"
-    assert len(model.prompts) == 2
-    assert '"error": "unknown_or_duplicate_marker_id"' in model.prompts[1]
-    assert "rejected_response" not in model.prompts[1]
-
-
 def test_identical_rematch_reuses_grounded_interpretation(tmp_path, record, task_instruction):
-    meaning = fixture()[-1]
-    full = response(meaning)
+    full = named_response()
     brain, model, _, ocr, detector, _ = setup_brain(
         tmp_path, record, [full, full], task_instruction=task_instruction
     )
@@ -1508,122 +1327,22 @@ def test_identical_rematch_reuses_grounded_interpretation(tmp_path, record, task
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     assert len(model.prompts) == 2
-    assert model.prompts[-1].startswith(TASK_PLAN_RULES)
+    assert model.prompts[-1].startswith(MAPPING_RULES)
     assert ocr.calls == detector.calls == 1
     assert any(
         event.payload.get("check") == "identical_form_reused" for event in brain.log.read_all()
     )
 
 
-def test_identical_catalog_grounds_new_target_without_replacing_plan(tmp_path, record):
-    meaning = fixture()[-1]
-    empty = response(
-        meaning,
-        controls=[],
-        procedure_step="enter-duplicate-key",
-        steps=[],
-        operation="stop",
-    )
-    open_entry = response(
-        meaning,
-        screen_kind="query",
-        procedure_step="open-entry",
-        controls=[
-            {
-                **response(meaning)["controls"][0],
-                "role": "button",
-            }
-        ],
-        steps=[
-            {
-                "target": meaning.controls[0].id,
-                "action": "click",
-                "intent": "navigate",
-                "point": [175, 30],
-            }
-        ],
-    )
-    brain, model, _, ocr, detector, _ = setup_brain(
-        tmp_path, record, [empty, open_entry, open_entry], task_instruction=None
-    )
-    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
-    brain._observe()
-    brain.phase = "enter"
-    brain.duplicate_clear = True
-    brain._observe()
-
-    assert brain._select_node() == "review"
-    assert brain._review_node() == "execution"
-    assert len(model.prompts) == 3
-    assert model.prompts[1].startswith(TASK_PLAN_RULES)
-    assert "you may reference that real\nmarker ID" in model.prompts[1]
-    assert model.prompts[2].startswith(TARGET_GROUNDING_RULES)
-    assert ocr.calls == detector.calls == 1
-    assert any(
-        event.payload.get("check") == "action_targets_grounded"
-        and event.payload.get("plan_preserved") is True
-        for event in brain.log.read_all()
-    )
-    assert not any(
-        event.payload.get("guard") == "target_grounding_call"
-        and event.payload.get("outcome") == "disabled"
-        for event in brain.log.read_all()
-    )
-
-
-def test_catalog_recovery_preserves_point_only_target_through_scene_merge(tmp_path, record):
-    meaning = fixture()[-1]
-    empty = response(meaning, controls=[], steps=[], operation="stop")
-    data = response(
-        meaning,
-        controls=[],
-        procedure_step="task-action",
-        steps=[
-            {
-                "target": meaning.controls[0].id,
-                "action": "fill",
-                "source": "hbl_no",
-                "intent": "fill",
-            },
-            {
-                "target": 999,
-                "action": "fill",
-                "source": "shipper_name",
-                "intent": "fill",
-                "point": [175, 30],
-            },
-        ],
-    )
-    supplement = response(meaning, steps=[])
-    brain, model, *_ = setup_brain(tmp_path, record, [empty, data, supplement])
-    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
-
-    brain._observe()
-    brain.phase = "task"
-    brain.duplicate_clear = True
-    brain._observe()
-    assert brain._select_node() == "review"
-
-    assert len(brain.action_plan.actions) == 2
-    assert [action.decision.action.source for action in brain.action_plan.actions] == [
-        "hbl_no",
-        "shipper_name",
-    ]
-    assert model.prompts[1].startswith(TASK_PLAN_RULES)
-    assert model.prompts[2].startswith(TARGET_GROUNDING_RULES)
-    assert '"required_target_ids": [0]' in model.prompts[2]
-    assert '"required_target_ids": [0, 999]' not in model.prompts[2]
-
-
 def test_task_partner_input_compiles_to_current_screen_batch(tmp_path, record):
-    meaning = fixture()[-1]
-    partner = response(
-        meaning,
+    fixture()[-1]
+    partner = named_response(
         screen_kind="partner",
         procedure_step="lookup-partner",
         steps=[
             {
-                "target": meaning.controls[0].id,
+                "target": "Reference",
+                "point": [175, 30],
                 "action": "fill",
                 "source": "shipper",
                 "intent": "fill",
@@ -1647,90 +1366,11 @@ def test_task_partner_input_compiles_to_current_screen_batch(tmp_path, record):
     assert brain.action_plan.actions[0].decision.action.source == "shipper"
 
 
-@pytest.mark.parametrize("bad", ["mixed-boundary", "wrong-target", "wrong-phase"])
-def test_invalid_mapping_cannot_reach_action(tmp_path, record, bad):
-    meaning = fixture()[-1]
-    data = response(meaning)
-    if bad == "mixed-boundary":
-        data = mixed_boundary_response(meaning)
-    elif bad == "wrong-target":
-        data["steps"][0]["target"] = 999
-    else:
-        data["steps"][0].update(action="click", intent="save", source=None, point=[175, 30])
-    responses = [data, data] if bad in {"mixed-boundary", "wrong-phase"} else [data]
-    brain, model, _, _, _, _ = setup_brain(tmp_path, record, responses)
-    if bad in {"mixed-boundary", "wrong-phase"}:
-        expected = {
-            "mixed-boundary": "screen_match_mixed_boundary_actions",
-            "wrong-phase": "screen_match_action_outside_procedure",
-        }[bad]
-        with pytest.raises(ValueError, match=expected):
-            brain._observe()
-        assert len(model.prompts) == 2
-        assert model.prompts[-1].startswith(TASK_PLAN_RULES)
-        assert not any(e.kind == "act" for e in brain.log.read_all())
-        return
-    brain._observe()
-    schema = ScreenFillPlan
-    valid = response(meaning, procedure_step="task-action")
-    valid["steps"][0]["intent"] = "fill"
-    assert compile_match(ScreenMatch.model_validate(valid), brain.observation, schema)
-    if bad == "wrong-target":
-        with pytest.raises(ValueError, match="^visual_proposal_unknown_marker$"):
-            compile_match(ScreenMatch.model_validate(data), brain.observation, schema)
-    assert brain._select_node() == "observation"
-    failures = [
-        e.payload["reason"]
-        for e in brain.log.read_all()
-        if e.kind == "verify" and e.payload.get("ok") is False
-    ]
-    expected = {
-        "mixed-boundary": "screen_match_mixed_boundary_actions",
-        "wrong-target": "visual_proposal_unknown_marker",
-    }[bad]
-    assert failures == ["selection_error:" + expected]
-    assert len(model.prompts) == 1
-    assert brain.pending is None and brain.action_plan is None
-    assert not any(e.kind == "act" for e in brain.log.read_all())
-
-
-def test_observe_only_compiles_an_explicit_model_point_without_a_detected_marker(tmp_path, record):
-    meaning = fixture()[-1]
-    data = response(meaning)
-    data["steps"][0].update(target=999, point=[175, 30])
-    data["controls"].append(
-        {
-            **data["controls"][0],
-            "id": 999,
-            "role": "tabitem",
-            "label_ids": [],
-            "text_ids": [],
-            "confidence_policy": "argmax",
-            "visual_description": "visible tab without a standalone marker",
-        }
-    )
-    brain, model, *_ = setup_brain(tmp_path, record, [data])
-    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
-
-    brain._observe()
-    assert brain._select_node() == "review"
-
-    assert OBSERVE_ONLY_TARGET_RULES in model.prompts[0]
-    expected_ref = "e" + str(brain.observation.obs_id.int) + "0999"
-    assert any(element.ref == expected_ref for element in brain.observation.elements)
-    assert brain.action_plan.actions[0].decision.action.ref == expected_ref
-    assert any(
-        event.payload.get("guard") == "current_frame_target" for event in brain.log.read_all()
-    )
-    assert any(event.payload.get("guard") == "local_scene_marker" for event in brain.log.read_all())
-
-
 def test_observe_only_prefers_model_completion_over_an_attached_action(tmp_path, record):
-    meaning = fixture()[-1]
-    data = response(
-        meaning,
+    fixture()[-1]
+    data = named_response(
         operation="complete",
-        completion_evidence=[{"condition_index": 0, "target": meaning.controls[0].id}],
+        completion_evidence=[{"condition_index": 0, "target": "Reference"}],
     )
     data["steps"][0]["point"] = [9999, 9999]
     brain, *_ = setup_brain(tmp_path, record, [data])
@@ -1751,8 +1391,7 @@ def test_observe_only_prefers_model_completion_over_an_attached_action(tmp_path,
 
 
 def test_observe_only_retains_a_task_action_attached_to_duplicate_evidence(tmp_path, record):
-    meaning = fixture()[-1]
-    data = response(meaning, operation="duplicate_clear")
+    data = named_response(operation="duplicate_clear")
     brain, *_ = setup_brain(tmp_path, record, [data])
     brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
 
@@ -1777,75 +1416,16 @@ def test_observe_only_retains_a_task_action_attached_to_duplicate_evidence(tmp_p
     }
 
 
-def test_combined_match_keeps_grounding_and_corrects_only_invalid_action(tmp_path, record):
-    meaning = fixture()[-1]
-    wrong = mixed_boundary_response(meaning)
-    corrected = response(meaning)
-    brain, model, _, _, _, _ = setup_brain(
-        tmp_path, record, [wrong, corrected], task_instruction=None
-    )
-    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+def test_semantic_action_requires_model_selected_point_before_execution(tmp_path, record):
+    from pydantic import ValidationError
 
-    brain._observe()
-
-    assert brain._select_node() == "review"
-    assert brain._review_node() == "execution"
-    assert len(model.prompts) == 2
-    assert model.prompts[0].startswith(TASK_RULES)
-    assert model.prompts[1].startswith(TASK_PLAN_RULES)
-    correction_prompt = model.prompts[1][len(TASK_PLAN_RULES) :]
-    correction = json.loads(correction_prompt[correction_prompt.index("{") :])["correction"]
-    assert correction["error"] == "screen_match_mixed_boundary_actions"
-    assert any(
-        event.payload.get("check") == "combined_action_corrected" for event in brain.log.read_all()
-    )
-
-
-def test_observe_only_corrects_an_unlocated_model_created_fill_target(tmp_path, record):
-    meaning = fixture()[-1]
-    wrong = response(meaning)
-    wrong["steps"][0].update(target=999, intent="fill")
-    wrong["controls"].append(
-        {
-            **wrong["controls"][0],
-            "id": 999,
-            "role": "edit",
-            "label_ids": [],
-            "text_ids": [],
-            "confidence_policy": "argmax",
-            "visual_description": "visible blank input without a standalone marker",
-        }
-    )
-    corrected = response(meaning)
-    corrected["steps"][0].update(target=999, intent="fill", point=[175, 30])
-    brain, model, *_ = setup_brain(tmp_path, record, [wrong, corrected])
-    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
-
-    brain._observe()
-
-    assert brain._select_node() == "review"
-    assert brain._review_node() == "execution"
-    assert brain.action_plan.actions[0].decision.action.type == "set_text"
-    correction_prompt = model.prompts[1][len(TASK_PLAN_RULES) :]
-    correction = json.loads(correction_prompt[correction_prompt.index("{") :])["correction"]
-    assert correction["error"] == "screen_match_model_point_required"
-
-
-def test_observe_only_corrects_a_click_that_omits_its_point(tmp_path, record):
-    meaning = fixture()[-1]
-    wrong = response(meaning)
-    wrong["steps"][0].update(action="click", intent="navigate", source=None)
-    corrected = response(meaning)
-    corrected["steps"][0].update(action="click", intent="navigate", source=None, point=[175, 30])
-    brain, model, *_ = setup_brain(tmp_path, record, [wrong, corrected])
-    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
-
-    brain._observe()
-
-    assert brain._select_node() == "review"
-    correction_prompt = model.prompts[1][len(TASK_PLAN_RULES) :]
-    correction = json.loads(correction_prompt[correction_prompt.index("{") :])["correction"]
-    assert correction["error"] == "screen_match_step_not_executable"
+    wrong = named_response()
+    wrong["steps"][0].pop("point")
+    brain, model, *_ = setup_brain(tmp_path, record, [wrong])
+    with pytest.raises(ValidationError, match="point"):
+        brain._observe()
+    assert len(model.prompts) == 1
+    assert not any(event.kind == "act" for event in brain.log.read_all())
 
 
 def test_stop_is_rejected_when_current_review_has_all_required_evidence(tmp_path, record):
@@ -1877,7 +1457,7 @@ def test_stop_is_rejected_when_current_review_has_all_required_evidence(tmp_path
 
 
 def test_model_may_complete_from_current_evidence_before_the_last_taught_step(tmp_path, record):
-    meaning = fixture()[-1]
+    fixture()[-1]
     instruction = TaskInstruction.model_validate(
         {
             "name": "Taught task",
@@ -1899,12 +1479,11 @@ def test_model_may_complete_from_current_evidence_before_the_last_taught_step(tm
             ],
         }
     )
-    premature = response(
-        meaning,
+    premature = named_response(
         operation="complete",
         steps=[],
         taught_step_id="open-detail",
-        completion_evidence=[{"condition_index": 0, "target": meaning.controls[0].id}],
+        completion_evidence=[{"condition_index": 0, "target": "Reference"}],
     )
     brain, model, _, ocr, detector, _ = setup_brain(
         tmp_path,
@@ -1919,139 +1498,6 @@ def test_model_may_complete_from_current_evidence_before_the_last_taught_step(tm
     assert ocr.calls == detector.calls == 1
     assert brain.visual_proposal.operation == "complete"
     assert brain.visual_proposal.taught_step_id == "open-detail"
-
-
-def test_mixed_partner_work_is_corrected_to_current_selection_batch(tmp_path, record):
-    meaning = fixture()[-1]
-    mixed = response(
-        meaning,
-        screen_kind="partner",
-        procedure_step="lookup-partner",
-        steps=[
-            {
-                "target": meaning.controls[0].id,
-                "action": "fill",
-                "source": "shipper",
-                "intent": "fill",
-            },
-            {
-                "target": meaning.controls[0].id,
-                "action": "click",
-                "intent": "search",
-                "point": [175, 30],
-            },
-            {
-                "target": meaning.controls[0].id,
-                "action": "click",
-                "intent": "select_option",
-                "point": [175, 30],
-            },
-        ],
-    )
-    corrected = response(
-        meaning,
-        screen_kind="partner",
-        procedure_step="lookup-partner",
-        steps=[
-            {
-                "target": meaning.controls[0].id,
-                "action": "click",
-                "intent": "select_option",
-                "point": [175, 30],
-            },
-            {
-                "target": meaning.controls[0].id,
-                "action": "click",
-                "source": "shipper",
-                "intent": "select_option",
-                "point": [175, 30],
-            },
-        ],
-    )
-    brain, model, _, _, _, _ = setup_brain(
-        tmp_path, record, [mixed, corrected], task_instruction=None
-    )
-    brain.phase, brain.duplicate_clear = "enter", True
-    brain.verified.update(
-        {
-            field: "verified"
-            for field in ("hbl_no", "mbl_no", "packages.count", "packages.unit", "pol")
-        }
-    )
-
-    brain._observe()
-
-    assert len(model.prompts) == 2
-    correction = json.loads(model.prompts[1][len(TASK_PLAN_RULES) :])["correction"]
-    assert correction["error"] == "screen_match_mixed_boundary_actions"
-    assert brain.visual_proposal.steps == ScreenMatch.model_validate(corrected).steps
-
-
-def test_action_correction_grounds_real_target_without_replanning(tmp_path, record):
-    meaning = fixture()[-1]
-    wrong = mixed_boundary_response(meaning, controls=[])
-    corrected = response(meaning, controls=[])
-    grounded = response(meaning)
-    brain, model, _, ocr, detector, _ = setup_brain(
-        tmp_path, record, [wrong, corrected, grounded], task_instruction=None
-    )
-
-    brain._observe()
-
-    assert brain._select_node() == "review"
-    assert brain._review_node() == "execution"
-    assert brain.action_plan.actions[0].decision.intent == "fill"
-    assert len(model.prompts) == 3
-    assert model.prompts[-1].startswith(TARGET_GROUNDING_RULES)
-    assert ocr.calls == detector.calls == 1
-    assert any(
-        event.payload.get("check") == "action_targets_grounded"
-        and event.payload.get("plan_preserved") is True
-        for event in brain.log.read_all()
-    )
-
-
-def test_missing_action_semantics_preserves_original_single_click(tmp_path, record):
-    meaning = fixture()[-1]
-    plan = response(
-        meaning,
-        screen_kind="query",
-        procedure_step="open-entry",
-        controls=[],
-        steps=[
-            {
-                "target": meaning.controls[0].id,
-                "action": "click",
-                "intent": "navigate",
-                "point": [175, 30],
-            }
-        ],
-    )
-    target = response(
-        meaning,
-        screen_kind="query",
-        procedure_step="open-entry",
-        controls=[{**response(meaning)["controls"][0], "role": "button"}],
-        steps=[],
-        operation="stop",
-    )
-    brain, model, _, ocr, detector, _ = setup_brain(
-        tmp_path, record, [plan, target], task_instruction=None
-    )
-    brain.phase = "enter"
-    brain.duplicate_clear = True
-
-    brain._observe()
-    assert brain._select_node() == "review"
-    assert brain._review_node() == "execution"
-
-    assert len(model.prompts) == 2
-    assert model.prompts[1].startswith(TARGET_GROUNDING_RULES)
-    assert brain.action_plan is None
-    assert brain.decision.intent == "navigate"
-    assert brain.decision.action.ref.endswith(str(meaning.controls[0].id))
-    assert brain.visual_points.get(brain.observation, brain.decision).point == (175.0, 30.0)
-    assert ocr.calls == detector.calls == 1
 
 
 def test_login_and_record_arrays_compile_to_existing_batches(tmp_path, record):
@@ -2417,7 +1863,7 @@ def test_model_only_review_delegates_required_verification_without_repair_call(t
 
 def test_post_action_review_preserves_next_action_in_same_response(tmp_path, record):
     blocks, _, markers, meaning = fixture()
-    reviewed = response(meaning)
+    reviewed = named_response()
     brain, model, *_ = setup_brain(tmp_path, record, [reviewed])
     brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
     screen = {
@@ -2434,10 +1880,10 @@ def test_post_action_review_preserves_next_action_in_same_response(tmp_path, rec
     assert result.response.operation == "act"
     expected = ScreenMatch.model_validate(reviewed).steps[0]
     actual = result.response.steps[0]
-    assert (actual.target, actual.action, actual.source) == (
-        expected.target,
+    assert (actual.action, actual.source, actual.point) == (
         expected.action,
         expected.source,
+        expected.point,
     )
     assert result.response.needs_refinement is False
 
@@ -2496,8 +1942,7 @@ def test_post_action_review_reuses_promoted_visual_decision_without_model_call(t
 
 
 def test_observe_only_does_not_issue_hidden_empty_action_call(tmp_path, record):
-    meaning = fixture()[-1]
-    initial = response(meaning, steps=[])
+    initial = named_response(steps=[])
     brain, model, *_ = setup_brain(tmp_path, record, [initial], task_instruction=None)
     brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
 
@@ -2514,12 +1959,10 @@ def test_observe_only_does_not_issue_hidden_empty_action_call(tmp_path, record):
 
 @pytest.mark.parametrize("operation", ["act", "stop"])
 def test_empty_action_is_completed_once_or_explicitly_stopped(tmp_path, record, operation):
-    meaning = fixture()[-1]
-    initial = response(meaning, steps=[])
-    completion = {
-        "operation": operation,
-        "steps": response(meaning)["steps"] if operation == "act" else [],
-    }
+    initial = named_response(steps=[])
+    completion = named_response(
+        operation=operation, steps=named_response()["steps"] if operation == "act" else []
+    )
     for step in completion["steps"]:
         step["intent"] = "fill"
     brain, model, _, _, _, _ = setup_brain(
@@ -2748,15 +2191,13 @@ def test_selected_record_value_is_verified_on_return_to_editor(tmp_path, record)
 
 
 def test_save_matching_receives_same_action_contract_as_validator(tmp_path, record):
-    from brain.graph.matching import TASK_RULES
     from brain.graph.save_review import SAVE_RESULT_ACTIONS, SAVE_REVIEW_GUIDANCE
 
     brain, model, _, _, _, meaning = setup_brain(
         tmp_path,
         record,
         [
-            response(
-                fixture()[-1],
+            named_response(
                 screen_kind="dialog",
                 procedure_step="inspect-save",
                 steps=[],
@@ -2773,7 +2214,7 @@ def test_save_matching_receives_same_action_contract_as_validator(tmp_path, reco
         },
         None,
     )
-    state = json.loads(model.prompts[-1][len(TASK_RULES) :])
+    state = json.loads(model.prompts[-1][len(MAPPING_RULES) :])
     expected = {
         "allowed_intents": {
             result: sorted(intents) for result, intents in SAVE_RESULT_ACTIONS.items()
@@ -2838,7 +2279,6 @@ def test_delivered_final_search_exposes_only_evidence_step(tmp_path, record):
 
 @pytest.mark.parametrize("pending", [False, True])
 def test_task_prompt_separates_available_pending_and_verified_inputs(tmp_path, record, pending):
-    from brain.graph.matching import TASK_RULES
     from brain.graph.schemas import Choice, Decision
 
     procedure_step = "save-entry" if pending else "fill-additional-entry"
@@ -2846,8 +2286,7 @@ def test_task_prompt_separates_available_pending_and_verified_inputs(tmp_path, r
         tmp_path,
         record,
         [
-            response(
-                fixture()[-1],
+            named_response(
                 screen_kind="editor",
                 procedure_step=procedure_step,
                 steps=[],
@@ -2876,7 +2315,7 @@ def test_task_prompt_separates_available_pending_and_verified_inputs(tmp_path, r
         },
         None,
     )
-    state = json.loads(model.prompts[-1][len(TASK_RULES) :])
+    state = json.loads(model.prompts[-1][len(MAPPING_RULES) :])
     notebook = state["notebook"]
     assert set(notebook["inputs"]) == set(brain.values)
     assert notebook["remaining_inputs"] == ["consignee"]
@@ -2933,16 +2372,14 @@ def test_observe_only_records_policy_scope_and_disabled_target_without_rejecting
 
 
 def test_pending_fields_remain_evidence_context_without_claiming_delivery(tmp_path, record):
-    from brain.graph.matching import TASK_RULES
     from brain.graph.schemas import Choice, Decision
 
-    meaning = fixture()[-1]
+    fixture()[-1]
     brain, model, _, _, _, _ = setup_brain(
         tmp_path,
         record,
         [
-            response(
-                meaning,
+            named_response(
                 screen_kind="editor",
                 procedure_step="open-shipper-lookup",
                 steps=[],
@@ -2973,7 +2410,7 @@ def test_pending_fields_remain_evidence_context_without_claiming_delivery(tmp_pa
         None,
     )
 
-    state = json.loads(model.prompts[-1][len(TASK_RULES) :])
+    state = json.loads(model.prompts[-1][len(MAPPING_RULES) :])
     assert state["notebook"]["pending_verification_inputs"] == ["hbl_no"]
     assert set(state["notebook"]["remaining_inputs"]) == {"hbl_no", "shipper"}
     assert "hbl_no" not in brain.verified
@@ -3197,9 +2634,8 @@ def test_education_retrieval_replans_before_any_provisional_action(tmp_path, rec
             Path(__file__).resolve().parents[1] / "examples/shipment-user-taught-task.json"
         ).read_bytes()
     )
-    meaning = fixture()[-1]
-    request_details = response(meaning, requested_instruction_ids=["save-record"])
-    resolved = response(meaning, operation="stop", steps=[])
+    request_details = named_response(requested_instruction_ids=["save-record"])
+    resolved = named_response(operation="stop", steps=[])
     brain, model, *_ = setup_brain(
         tmp_path, record, [request_details, resolved], task_instruction=taught
     )
@@ -3227,8 +2663,7 @@ def test_education_retrieval_replans_before_any_provisional_action(tmp_path, rec
 def test_compound_claim_survives_before_action_without_becoming_verified(
     tmp_path, record, guard_mode
 ):
-    meaning = fixture()[-1]
-    data = response(meaning, operation="duplicate_clear")
+    data = named_response(operation="duplicate_clear")
     brain, model, *_ = setup_brain(tmp_path, record, [data])
     brain.settings = brain.settings.model_copy(update={"guard_mode": guard_mode})
     brain._observe()
@@ -3268,9 +2703,8 @@ def test_action_owned_control_normalizes_once_and_keeps_cache_contract():
     assert result.steps[0].point == [190.25, 50.75]
     assert ScreenMatch.model_validate_json(result.model_dump_json()) == result
     schema = ScreenMatch.model_json_schema()
-    assert schema["$defs"]["MatchAction"]["properties"]["target"]["$ref"].endswith(
-        "/ControlMeaning"
-    )
+    assert schema["$defs"]["NamedAction"]["properties"]["target"]["type"] == "string"
+    assert "controls" not in schema["properties"]
     assert "maxItems" not in json.dumps(schema)
     stored_schema = ScreenMatch.model_json_schema(mode="serialization")
     assert stored_schema["$defs"]["MatchAction"]["properties"]["target"]["type"] == "integer"
@@ -3292,13 +2726,11 @@ def test_action_owned_control_normalizes_once_and_keeps_cache_contract():
 def test_inline_target_reaches_wire_with_exact_fill_point_without_recovery(
     tmp_path, record, model_created
 ):
-    meaning = fixture()[-1]
-    data = response(meaning)
-    control = data["controls"].pop(0)
-    if model_created:
-        control = {**control, "id": 999, "label_ids": [], "text_ids": []}
-    data["steps"][0].update(target=control, point=[175.25, 30.75])
+    data = named_response()
+    data["steps"][0]["point"] = [175.25, 30.75]
     brain, model, *_ = setup_brain(tmp_path, record, [data])
+    if model_created:
+        brain.visual_perception.detector.read = lambda *args, **kwargs: []
     brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
     brain._observe()
     assert brain._select_node() == "review"
@@ -3308,3 +2740,100 @@ def test_inline_target_reaches_wire_with_exact_fill_point_without_recovery(
     assert wired.root.target.evidence.startswith("image_planned:")
     assert selected.action.source == "hbl_no"
     assert len(model.prompts) == 1  # No target-semantics supplement or coordinate-repair call.
+
+
+def test_semantic_cold_mapping_becomes_observation_and_coordinate_method(tmp_path, record):
+    from brain.cache.methods import MethodLibrary, method_from_match
+    from brain.graph.screen_mapping import ScreenMapping
+    from brain.visual.action_rebind import perceptual_hash
+
+    raw = {
+        "screen_kind": "query",
+        "fields": {"Reference": {"role": "edit", "bbox": [100, 15, 150, 30], "value": ""}},
+        "assignments": {"Reference": "hbl_no"},
+        "steps": [{"target": "Reference", "action": "fill", "intent": "fill", "point": [125, 28]}],
+    }
+    brain, model, _, _, _, _ = setup_brain(tmp_path, record, [raw])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+    brain._observe()
+    target = next(e for e in brain.observation.elements if e.role == "edit")
+    assert target.name == "Reference" and target.bbox == (100, 15, 150, 30)
+    assert brain._select_node() == "review"
+    assert brain.action_plan.actions[0].decision.action.source == "hbl_no"
+    # Raw provider artifact is semantic, executor refs are generated afterwards.
+    artifact = next((tmp_path / "matching").glob("*-semantic-mapping.json"))
+    assert json.loads(artifact.read_text(encoding="utf-8"))["assignments"] == {
+        "Reference": "hbl_no"
+    }
+    assert '"id_namespace"' not in model.prompts[0]
+    assert '"text_regions"' in model.prompts[0]
+    schema = ScreenMatch.model_json_schema()
+    assert schema["$defs"]["NamedAction"]["properties"]["target"]["type"] == "string"
+    screen = brain.visual_perception.planning_context()[0].screen
+    mapping = ScreenMapping.model_validate(raw)
+    payload = mapping.local_payload(screen)
+    learned = method_from_match(screen, payload, method_id="semantic", purpose="Query")
+    assert learned is not None
+    chosen = learned.action_groups[0].targets[0]
+    assert chosen.name == "Reference" and chosen.point == (125, 28)
+    library = MethodLibrary(tmp_path / "coordinate-methods.json", enabled=True)
+    library.upsert(learned)
+    # No OCR text, no detector numbers, and a different input key/value on replay.
+    fresh = {
+        "image_size": [400, 200],
+        "screen_phash": screen["screen_phash"],
+        "ocr": [],
+        "markers": [],
+    }
+    bound = library.bind("semantic", {"hbl_no": "next_number"}, fresh, {"next_number": "NEW-2"})
+    assert bound is not None
+    assert bound["steps"][0]["point"] == [125, 28]
+    assert bound["steps"][0]["source"] == "next_number"
+    assert len(model.prompts) == 1
+    # A different frame or viewport must yield back to model selection.
+    for change in (
+        {"screen_phash": screen["screen_phash"] ^ ((1 << 64) - 1)},
+        {"image_size": [800, 400]},
+    ):
+        assert library.bind("semantic", {}, {**fresh, **change}, {"hbl_no": "NEXT"}) is None
+    assert screen["screen_phash"] == perceptual_hash(
+        next((tmp_path / "visual").glob("*/capture.png"))
+    )
+
+
+@pytest.mark.parametrize("separate", [False, True], ids=["combined", "reused-observation"])
+def test_named_fields_replace_number_recovery_for_mixed_targets(tmp_path, record, separate):
+    first = named_response()
+    data = named_response(
+        fields={
+            "Reference": {"role": "edit", "bbox": [100, 15, 150, 30]},
+            "New reference": {"role": "edit", "bbox": [100, 90, 150, 30]},
+        },
+        assignments={"Reference": "hbl_no", "New reference": "mbl_no"},
+        steps=[
+            {"target": "Reference", "action": "fill", "intent": "fill", "point": [125, 28]},
+            {"target": "New reference", "action": "fill", "intent": "fill", "point": [126, 103]},
+        ],
+    )
+    replies = [first, data] if separate else [data]
+    brain, model, *_ = setup_brain(tmp_path, record, replies)
+    brain._observe()
+    if separate:
+        brain._observe()
+    assert brain._select_node() == "review"
+    assert [a.decision.action.source for a in brain.action_plan.actions] == ["hbl_no", "mbl_no"]
+    assert [
+        brain.visual_points.get(brain.observation, a.decision).point
+        for a in brain.action_plan.actions
+    ] == [(125, 28), (126, 103)]
+    assert len(model.prompts) == len(replies)
+
+
+def test_named_missing_target_fails_without_number_grounding_retry(tmp_path, record):
+    data = named_response()
+    data["steps"][0]["target"] = "Missing field"
+    brain, model, *_ = setup_brain(tmp_path, record, [data])
+    with pytest.raises(KeyError, match="Missing field"):
+        brain._observe()
+    assert len(model.prompts) == 1
+    assert not any(e.kind == "act" for e in brain.log.read_all())

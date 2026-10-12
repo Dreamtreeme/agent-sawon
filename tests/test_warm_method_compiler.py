@@ -2,6 +2,7 @@ import hashlib
 import json
 
 import pytest
+from PIL import Image
 
 from brain.cache.methods import MethodDocument, MethodLibrary
 from brain.cache.visual_match import VisualMatchDocument, VisualMatchEntry
@@ -11,6 +12,8 @@ from brain.demo_learning.warm_methods import (
     compile_warm_method,
     read_warm_candidates,
 )
+from brain.graph.method_runtime import open_method_library
+from brain.graph.screen_mapping import ScreenMapping
 from sawon_runtime.storage import atomic_write_json
 
 
@@ -163,11 +166,22 @@ def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):
             "origin": "manual",
         },
     )
-    match = response(target=90, source="hbl_no")
+    mapping = ScreenMapping.model_validate(
+        {
+            "screen_kind": "editor",
+            "fields": {"Reference": {"role": "edit", "bbox": [150, 280, 180, 40]}},
+            "assignments": {"Reference": "hbl_no"},
+            "steps": [
+                {"target": "Reference", "action": "fill", "intent": "fill", "point": [200, 300]}
+            ],
+        }
+    )
+    match = mapping.local_payload(screen("Shipment editor"))
     visual = case / "visual" / "obs-1"
     atomic_write_json(visual / "markers.json", {"image_size": [800, 600], "markers": []})
     atomic_write_json(visual / "ocr.json", {"blocks": screen("Shipment editor")["ocr"]})
     atomic_write_json(visual / "screen-match.json", match)
+    Image.new("RGB", (800, 600), "white").save(visual / "capture.png")
     education_sha = "c" * 64
     (case / "run_log.jsonl").write_text(
         "\n".join(
@@ -189,7 +203,13 @@ def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):
     cache_path = tmp_path / "visual-cache.json"
     atomic_write_json(
         cache_path,
-        VisualMatchDocument(entries=(VisualMatchEntry(key="a" * 64, response=match),)),
+        VisualMatchDocument(
+            entries=(
+                VisualMatchEntry(
+                    key="a" * 64, response={**match, "mapping": mapping.model_dump(mode="json")}
+                ),
+            )
+        ),
     )
 
     loaded_source, loaded = read_warm_candidates(case, cache_path)
@@ -199,3 +219,37 @@ def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):
     assert [(item.candidate_id, item.cache_key, item.obs_id) for item in loaded] == [
         ("c000", "a" * 64, "obs-1")
     ]
+
+    compiled = compile_warm_method(
+        loaded_source,
+        loaded,
+        {
+            "purpose": "Fill reference",
+            "groups": [
+                {
+                    "candidate_id": "c000",
+                    "purpose": "Fill reference",
+                    "expected_result": "Reference entered",
+                    "context_anchors": [],
+                }
+            ],
+        },
+        method_id="named-warm",
+    )
+    path = tmp_path / "compiled.json"
+    atomic_write_json(path, MethodDocument(methods=[compiled]))
+    current = {
+        "image_size": [800, 600],
+        "screen_kind": "editor",
+        "markers": [],
+        "ocr": [],
+        "screen_phash": loaded[0].screen["screen_phash"],
+    }
+    library = open_method_library(path, tmp_path / "warm", enabled=True, compiled_only=True)
+    bound = library.bind(
+        "named-warm", {}, current, {"hbl_no": "HBL-002"}, group_id=compiled.action_groups[0].id
+    )
+    assert bound is not None
+    assert bound["steps"][0]["point"] == [200, 300]
+    assert bound["steps"][0]["source"] == "hbl_no"
+    assert compiled.action_groups[0].targets[0].anchor_texts == []

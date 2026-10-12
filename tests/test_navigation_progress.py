@@ -368,3 +368,21 @@ def test_failed_target_is_allowed_again_after_a_real_state_change(tmp_path, reco
     assert relay.alternate_count == 1
     assert len(no_progress_failures(brain)) == 1
     assert brain.phase_failures["enter"] == 0
+
+
+def test_visual_navigation_ignores_model_catalog_edits_on_identical_pixels():
+    from test_visual_markers import fixture
+    from test_visual_scene import wire
+
+    from brain.observe.progress import navigation_state
+    from brain.visual.markers import ground_meanings
+    from brain.visual.scene import bind_scene
+
+    blocks, _, markers, meaning = fixture()
+    scene = bind_scene(wire(), blocks, ground_meanings(meaning, markers, blocks))
+    scene = scene.model_copy(update={"capture_phash": 12345})
+    reinterpreted = scene.model_copy(update={"elements": []})
+    assert navigation_state(scene) == navigation_state(reinterpreted)
+    assert navigation_state(scene) != navigation_state(
+        scene.model_copy(update={"capture_phash": 54321})
+    )

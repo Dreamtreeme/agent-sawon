@@ -374,27 +374,22 @@ def test_model_owned_generic_evidence_is_not_invalidated_by_later_screens(tmp_pa
     assert "invoice.number" in brain.verified
 
 
-def test_model_evidence_surface_has_one_active_field_owner(tmp_path):
+def test_business_facts_survive_identical_anonymous_screen_descriptors(tmp_path):
     from brain.graph.transitions import EvidenceLedger
 
     ledger = EvidenceLedger()
-    descriptor = {
-        "role": "Edit",
-        "name": "Reference",
-        "label": "Reference",
-        "context": [{"role": "Group", "name": "Details"}],
+    descriptor = {"role": "edit", "name": "", "label": None, "context": []}
+    assert ledger.record("packages.count", descriptor, "obs-1") == ()
+    assert ledger.record("packages.unit", descriptor, "obs-2") == ()
+    assert {item["field"] for item in ledger.prompt_context()} == {
+        "packages.count",
+        "packages.unit",
     }
-
-    assert ledger.record("first", descriptor, "obs-1") == ()
-    assert ledger.owner(descriptor) == "first"
-    assert ledger.record("second", descriptor, "obs-2") == ("first",)
-    assert ledger.owner(descriptor) == "second"
-    assert ledger.prompt_context() == [
-        {"field": "second", "observation_id": "obs-2", "revision": 2}
-    ]
-    assert [(claim.field, claim.status, claim.reason) for claim in ledger.history] == [
-        ("first", "superseded", "surface_reassigned"),
-        ("second", "active", None),
+    ledger.record("packages.count", {**descriptor, "name": "수량"}, "obs-3")
+    assert [(claim.field, claim.status) for claim in ledger.history] == [
+        ("packages.count", "superseded"),
+        ("packages.unit", "active"),
+        ("packages.count", "active"),
     ]
 
 

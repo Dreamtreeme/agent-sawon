@@ -1,3 +1,4 @@
+import json
 from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
@@ -146,12 +147,12 @@ def test_long_context_cache_write_pricing_and_reservation(tmp_path):
 def test_screen_matching_schema_is_converted_without_changing_local_contract(tmp_path):
     local_schema = deepcopy(ScreenMatch.model_json_schema())
     minimal = {
-        "controls": [{"id": 1, "role": "edit", "confidence": 0.99}],
+        "fields": [{"name": "Reference", "role": "edit", "bbox": [100, 15, 150, 30]}],
         "procedure_step": "fill",
         "operation": "stop",
     }
     expected = ScreenMatch.model_validate(minimal)
-    client, sdk, log = setup(tmp_path, text=expected.model_dump_json())
+    client, sdk, log = setup(tmp_path, text=json.dumps(minimal))
     reply = client.complete_json("screen", ScreenMatch)
     assert reply.response == expected
     assert len(log.read_all()) == sdk.responses.create.call_count == 1

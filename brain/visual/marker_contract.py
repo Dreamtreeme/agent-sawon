@@ -24,7 +24,7 @@ def text_index(screen: dict) -> dict[int, int]:
 def allowed_marker_actions(source: str) -> list[str]:
     """Keep OCR writable-proof while retaining text-only click coordinates."""
 
-    if source == "omniparser":
+    if source in {"omniparser", "model_selected"}:
         return ["fill", "click", "double_click", "key"]
     if source in {"ocr", "ocr_group"}:
         return ["click", "double_click"]
@@ -94,7 +94,10 @@ def local_response[T: BaseModel](response: T, screen: dict) -> T:
                 control[field] = [oid for ref in refs for oid in text_markers[ref]]
     if issues:
         raise MarkerReferenceError(issues)
-    return type(response).model_validate(payload)
+    decoded = type(response).model_validate(payload)
+    if getattr(response, "mapping", None) is not None:
+        decoded = decoded.model_copy(update={"mapping": response.mapping})
+    return decoded
 
 
 def model_controls(controls: list, screen: dict) -> list[dict]:

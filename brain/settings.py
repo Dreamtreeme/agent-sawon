@@ -22,6 +22,7 @@ class MethodSettings(BaseModel):
     path: Path = Path("cases/methods.json")
     promotion_path: Path | None = None
     compiled_only: bool = False
+    max_phash_distance: int = Field(default=6, ge=0, le=64)
 
 
 class BrainSettings(BaseModel):

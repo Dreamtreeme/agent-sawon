@@ -334,7 +334,8 @@ def test_provider_schema_is_compact_but_local_limits_remain():
     for model, extra in [(SemanticDetection, {}), (ScreenMatch, {"procedure_step": "fill"})]:
         schema = json.dumps(model.model_json_schema())
         assert "prefixItems" not in schema and "maxItems" not in schema
-        assert "maxLength" not in schema and "bbox" not in schema
+        assert "maxLength" not in schema
+        assert ("bbox" in schema) == (model is ScreenMatch)
         assert len(model.model_validate({**extra, "controls": [meaning] * 500}).controls) == 500
         bounded = model.model_validate(
             {**extra, "controls": [{**meaning, "visual_description": "x" * 161}]}

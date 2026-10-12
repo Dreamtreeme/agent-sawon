@@ -384,6 +384,20 @@ class VisualPerception:
                     request, correction={"error": str(error), "invalid_links": error.issues}
                 )
                 continue
+            if request.screen.get("selected_fields"):
+                # Geometry was selected by the model, not inferred from marker identity.
+                markers = [
+                    Marker.model_validate(
+                        {
+                            "id": item["id"],
+                            "source": item["source"],
+                            "bbox": item["bbox"],
+                            "text_ids": item.get("text_ids", []),
+                            "confidence": item.get("candidate_confidence", 1),
+                        }
+                    )
+                    for item in request.screen["markers"]
+                ]
             detection_ms += (perf_counter() - detected_at) * 1000
             atomic_write_json(
                 folder / f"meanings-attempt-{attempt}.json", meanings.model_dump(mode="json")
@@ -475,6 +489,9 @@ class VisualPerception:
                 scene = bind_scene(
                     wire, blocks, detection, threshold=self.threshold, secrets=self.secrets
                 )
+                selected = request.screen.get("selected_fields", {})
+                scene = self._apply_field_values(wire, scene, selected)
+                scene = scene.model_copy(update={"capture_phash": request.screen["screen_phash"]})
                 break
             except ValueError as error:
                 # Only local grounding errors are eligible; never retry SDK failures,
@@ -604,6 +621,61 @@ class VisualPerception:
         )
         return request, interpretation
 
+    def _apply_field_values(self, wire, scene, selected):
+        prefix = "e" + str(wire.obs_id.int) + "0"
+        elements = []
+        for element in scene.elements:
+            field = selected.get(element.ref.removeprefix(prefix))
+            if field is not None:
+                value = field.get("value", element.value)
+                for secret in self.secrets:
+                    if secret and value:
+                        value = value.replace(secret, "[REDACTED]")
+                element = element.model_copy(
+                    update={
+                        "name": field["name"],
+                        "label_hint": field["name"],
+                        "value": value or None,
+                    }
+                )
+            elements.append(element)
+        return scene.model_copy(update={"elements": elements})
+
+    def bind_mapping(
+        self, wire: Observation, meanings: SemanticDetection, fields: dict
+    ) -> SceneObservation:
+        """Bind model-selected field geometry on the current capture without detector relookup."""
+        catalog = self._catalog
+        if catalog is None:
+            raise ValueError("visual_interpretation_unavailable")
+        controls = []
+        by_id = {marker.id: marker for marker in catalog.markers}
+        for control in meanings.controls:
+            field = fields[control.visual_description]
+            bbox = field.bbox
+            controls.append({**control.model_dump(), "bbox": bbox})
+            by_id[control.id] = Marker(
+                id=control.id, bbox=tuple(bbox), source="model_selected", confidence=1
+            )
+        detection = Detection(screen_kind=meanings.screen_kind, controls=controls)
+        scene = bind_scene(
+            wire, catalog.blocks, detection, threshold=self.threshold, secrets=self.secrets
+        )
+        scene = self._apply_field_values(
+            wire,
+            scene,
+            {
+                str(control.id): {
+                    "name": control.visual_description,
+                    **fields[control.visual_description].model_dump(),
+                }
+                for control in meanings.controls
+            },
+        )
+        catalog.markers = list(by_id.values())
+        catalog.detection = detection
+        return scene.model_copy(update={"capture_phash": perceptual_hash(catalog.page.image_path)})
+
     def merge_interpretation(
         self, wire: Observation, meanings: SemanticDetection
     ) -> SceneObservation:
@@ -653,7 +725,7 @@ class VisualPerception:
                 "detection": detection.model_dump(mode="json"),
             },
         )
-        return scene
+        return scene.model_copy(update={"capture_phash": perceptual_hash(catalog.page.image_path)})
 
     def _semantic_request(self, page, path, marked_path, markers, blocks) -> SemanticRequest:
         render_markers(path, marked_path, markers)
@@ -661,6 +733,7 @@ class VisualPerception:
             page=page.model_copy(update={"image_path": marked_path}),
             screen={
                 "image_size": [page.width, page.height],
+                "screen_phash": perceptual_hash(path),
                 "minimum_confidence": self.threshold,
                 "ocr": [block.model_dump(mode="json") for block in blocks],
                 "markers": [

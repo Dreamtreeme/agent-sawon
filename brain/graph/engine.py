@@ -284,6 +284,7 @@ class Brain:
             enabled=settings.methods.enabled,
             promotion_path=settings.methods.promotion_path,
             compiled_only=settings.methods.compiled_only,
+            max_phash_distance=settings.methods.max_phash_distance,
         )
         if settings.perception_mode == "visual_only":
             if visual_ocr is None:
@@ -504,7 +505,7 @@ class Brain:
                 atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
                 return self._groundable_interpretation(response, screen)
         if self.settings.screen_matching and not self.settings.separate_observation_decision:
-            screen = dict(request.screen)
+            screen = request.screen
             if request.correction is not None:
                 screen["correction"] = {
                     key: request.correction[key]
@@ -598,6 +599,10 @@ class Brain:
                     self.observation,
                 )
             assert isinstance(self.observation, SceneObservation)
+            if response.mapping is not None and not proposal_reused:
+                self.observation = self.visual_perception.bind_mapping(
+                    self.observation.wire, response.interpretation(), response.mapping.fields
+                )
             prefix = "e" + str(self.observation.obs_id.int) + "0"
             grounded_refs = {element.ref for element in self.observation.elements}
             required_targets = (
@@ -2809,9 +2814,10 @@ class Brain:
         observation: Observation | None = None
         observed_effect = ObservedEffect.UNCHECKED
         new_facts: list[TransitionFact] = []
-        method_effect_verified = False
+        method_effect_verified = None
         try:
             observation = self._observe()
+            method_effect_verified = False
             execution = pending.get("execution")
             if execution is not None and execution.plan.verification == "fields":
                 outcome = self._verify_screen_batch(execution, observation)

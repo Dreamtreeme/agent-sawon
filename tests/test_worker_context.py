@@ -4,11 +4,11 @@ import json
 
 import pytest
 from test_brain import record as record
-from test_screen_matching import fixture, response, setup_brain
+from test_screen_matching import fixture, named_response, setup_brain
 from test_visual_scene import wire
 
-from brain.graph.matching import TASK_RULES
 from brain.graph.schemas import Choice, Decision
+from brain.graph.screen_mapping import MAPPING_RULES
 from brain.task_instruction import TaskInstruction
 from brain.visual.markers import build_markers, ground_meanings
 from brain.visual.scene import bind_scene
@@ -29,7 +29,7 @@ def test_direct_and_screen_matching_receive_identical_execution_context(
     brain, model, *_ = setup_brain(
         tmp_path,
         record,
-        [response(meanings, procedure_step=step, steps=[], operation="stop")],
+        [named_response(procedure_step=step, steps=[], operation="stop")],
     )
     brain.observation = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
     brain.phase = phase
@@ -52,7 +52,7 @@ def test_direct_and_screen_matching_receive_identical_execution_context(
         },
         None,
     )
-    matched = json.loads(model.prompts[-1][len(TASK_RULES) :])
+    matched = json.loads(model.prompts[-1][len(MAPPING_RULES) :])
     expected.update(
         available_inputs=sorted(brain.values),
         remaining_inputs=sorted(set(brain.values) - set(brain.verified)),
@@ -201,25 +201,13 @@ def test_pending_external_selection_anticipates_its_verified_field(tmp_path, rec
 
 def test_pending_external_selection_exposes_only_post_verification_steps(tmp_path, record):
     blocks, boxes, _, meanings = fixture()
-    target = meanings.controls[0].id
-    from brain.visual.marker_contract import model_controls
-
-    controls = model_controls(
-        meanings.controls, {"markers": [marker.model_dump() for marker in fixture()[2]]}
-    )
-    controls[0]["role"] = "button"
-    combined = response(
-        meanings,
+    combined = named_response(
         screen_kind="editor",
         procedure_step="open-additional-entry",
-        controls=[controls[0]],
+        fields={"Additional": {"role": "button", "bbox": [100, 15, 150, 30]}},
+        assignments={},
         steps=[
-            {
-                "target": target,
-                "action": "click",
-                "intent": "select_tab",
-                "point": [175, 30],
-            }
+            {"target": "Additional", "action": "click", "intent": "select_tab", "point": [175, 30]}
         ],
     )
     brain, model, *_ = setup_brain(tmp_path, record, [combined])
@@ -249,7 +237,7 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
         None,
     )
 
-    state = json.loads(model.prompts[-1][len(TASK_RULES) :])
+    state = json.loads(model.prompts[-1][len(MAPPING_RULES) :])
     assert matched.procedure_step == "task-action"
     assert "select_tab" in state["capability"]["actions"]
     assert state["execution"]["pending_actions"] == [{"intent": "select_option", "source": None}]

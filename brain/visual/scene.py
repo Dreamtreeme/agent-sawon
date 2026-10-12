@@ -89,6 +89,7 @@ class SceneObservation(BaseModel):
     evidence_source: Literal["ocr_visual"] = "ocr_visual"
     uncertainties: list[str] = Field(default_factory=list)
     global_uncertainties: list[str] | None = None
+    capture_phash: int | None = None
     uncertain_control_refs: list[str] = Field(default_factory=list)
 
     def uncertainties_for_region(
@@ -267,7 +268,11 @@ def bind_scene(
         label = text(control.label_ids)
         value = text(control.text_ids)
         # Input names remain stable after typing: label, never the entered value.
-        name = label if control.role in {"edit", "combobox"} else (value or label)
+        name = (
+            (label or control.visual_description)
+            if control.role in {"edit", "combobox"}
+            else (value or label)
+        )
         if not name and control.role in {"icon", "button", "checkbox", "tabitem", "menuitem"}:
             name = control.visual_description
         if uncertain:

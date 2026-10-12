@@ -46,6 +46,7 @@ from .execution import GuardStop, PendingAction
 from .model_call import ResponseT, ScreenModelCall
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision, FieldName
+from .screen_mapping import ScreenMapping, ScreenMappingWire, mapping_prompt
 from .visual_turn import adapt_proposal, bind_proposal
 
 
@@ -152,15 +153,34 @@ class ScreenPlan(MethodChoice):
     anthropic_nulls: ClassVar[dict[str, Any]] = {
         "properties/taught_step_id": "",
         "properties/method_id": "",
-        "properties/grid": -1,
-        "properties/row": -1,
+        "properties/grid": "",
+        "properties/row": "",
         "properties/save_result": "",
-        "$defs/MatchAction/properties/source": "",
-        "$defs/MatchAction/properties/keys": "",
-        "$defs/MatchAction/properties/point": [],
+        "$defs/NamedAction/properties/source": "",
+        "$defs/NamedAction/properties/keys": "",
     }
 
     model_config = ConfigDict(extra="forbid")
+    mapping: ScreenMapping | None = Field(default=None, exclude=True)
+
+    @classmethod
+    def model_json_schema(cls, *args, **kwargs):
+        if kwargs.get("mode", "validation") != "serialization":
+            return compact_provider_schema(ScreenMappingWire.model_json_schema())
+        return super().model_json_schema(*args, **kwargs)
+
+    @model_validator(mode="before")
+    @classmethod
+    def semantic_mapping(cls, value):
+        if isinstance(value, dict) and "fields" in value:
+            mapping = ScreenMapping.model_validate(value)
+            payload = mapping.local_payload({})
+            if "controls" not in cls.model_fields:
+                payload.pop("controls", None)
+                payload.pop("screen_kind", None)
+            return {**payload, "mapping": mapping}
+        return value
+
     procedure_step: str
     steps: list[MatchAction] = Field(default_factory=list, max_length=50)
     requested_instruction_ids: list[str] = Field(default_factory=list, max_length=40)
@@ -182,7 +202,6 @@ class ScreenMatch(SemanticDetection, ScreenPlan):
 
     anthropic_nulls: ClassVar[dict[str, Any]] = {
         **ScreenPlan.anthropic_nulls,
-        **SemanticDetection.anthropic_nulls,
     }
 
     evidence: list[MatchEvidence] = Field(
@@ -194,18 +213,6 @@ class ScreenMatch(SemanticDetection, ScreenPlan):
         "final row proof; duplicate checks verify the query input separately.",
     )
     needs_image: bool = False
-
-    @classmethod
-    def model_json_schema(cls, *args, **kwargs):
-        schema = super().model_json_schema(*args, **kwargs)
-        if kwargs.get("mode", "validation") == "serialization":
-            return schema
-        # Only the provider input shape changes. Cache/artifact serialization and
-        # all execution compilers retain the established ID-based contract.
-        action_schema = TargetedMatchAction.model_json_schema()
-        schema["$defs"].update(action_schema.pop("$defs", {}))
-        schema["$defs"]["MatchAction"] = action_schema
-        return compact_provider_schema(schema)
 
     @model_validator(mode="before")
     @classmethod
@@ -1672,6 +1679,10 @@ def select_match_response(
     elif cache_hit is not None:
         _, cached = cache_hit
         response = ScreenMatch.model_validate(cached)
+        if response.mapping is not None:
+            geometry = ScreenMatch.model_validate(response.mapping.local_payload(screen))
+            geometry = local_response(geometry, screen)
+            response = geometry.model_copy(update={"mapping": response.mapping})
         services.log.append(
             "cache_hit",
             payload={
@@ -1701,7 +1712,9 @@ def select_match_response(
             ScreenPlan,
             page=page,
         )
-        response = ScreenMatch.model_validate({**grounded.model_dump(), **plan.model_dump()})
+        response = ScreenMatch.model_validate(
+            {**grounded.model_dump(), **plan.model_dump()}
+        ).model_copy(update={"mapping": plan.mapping})
         write_match_artifact(services, "cached-plan", response)
         services.log.append(
             "verify",
@@ -1953,7 +1966,9 @@ def validate_or_replan(
             ScreenPlan,
             page=request.page,
         )
-        corrected = ScreenMatch.model_validate({**interpretation.model_dump(), **plan.model_dump()})
+        corrected = ScreenMatch.model_validate(
+            {**interpretation.model_dump(), **plan.model_dump()}
+        ).model_copy(update={"mapping": plan.mapping})
         corrected = prepare_match_plan(
             request, services, corrected, prepared.capability, active_fields
         )
@@ -2022,12 +2037,10 @@ def ground_match_response(
                         },
                         ensure_ascii=False,
                     ),
-                    ActionCompletion,
+                    ScreenMatch,
                     page=page if used_image else None,
                 )
-                response = response.model_copy(
-                    update={"operation": completion.operation, "steps": completion.steps}
-                )
+                response = local_response(completion, screen)
                 services.log.append(
                     "verify",
                     payload={
@@ -2062,6 +2075,22 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
             frame=str(request.page.image_path) if request.page else None,
             phase=request.phase,
         ):
+            if schema in {ScreenMatch, ScreenPlan}:
+                model_page = page
+                if page is not None:
+                    capture = page.image_path.parent / "capture.png"
+                    if capture.is_file():
+                        model_page = page.model_copy(update={"image_path": capture})
+                mapped = original_call(mapping_prompt(prompt, screen), schema, page=model_page)
+                if mapped.mapping is not None:
+                    write_match_artifact(services, "semantic-mapping", mapped.mapping)
+                    payload = mapped.mapping.local_payload(screen)
+                    response = ScreenMatch.model_validate(payload).model_copy(
+                        update={"mapping": mapped.mapping}
+                    )
+                    # ScreenPlan callers merge this full interpretation with their old one.
+                    return local_response(response, screen) if schema is ScreenPlan else response
+                return mapped
             return original_call(prompt, schema, page=page)
 
     services = replace(services, call=traced_call)
@@ -2165,7 +2194,14 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
     visual_match_candidate = (
         (
             cache_hit[0] if cache_hit is not None else visual_match_key(state),
-            response.model_dump(mode="json"),
+            {
+                **response.model_dump(mode="json"),
+                **(
+                    {"mapping": response.mapping.model_dump(mode="json")}
+                    if response.mapping
+                    else {}
+                ),
+            },
         )
         if method_proposal is None
         else None

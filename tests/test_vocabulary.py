@@ -1,6 +1,7 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
 Intent schema fixtures were captured from pre-consolidation commit 6ab16c3.
+ScreenMatch/ScreenPlan were intentionally updated for semantic coordinate mapping on 2026-10-12.
 """
 
 import hashlib
@@ -70,10 +71,10 @@ def test_navigation_keys_preserve_the_existing_tuple_subset():
             SemanticDetection,
             "4bb02cfe9fbffb82400d576b99007a631014b3ce54e807dae954cc07a29caa26",
         ),
-        (ScreenMatch, "847c6acfe7362c7e9faa445d6353d989f47e07e2b83f9d505a6b61a1d10dbaea"),
+        (ScreenMatch, "aa27cac19816bb42640fedea61ea441f00a95824c06634441ddb2c0aeefe1ad7"),
     ],
 )
-def test_control_role_schemas_match_preconsolidation_json_and_order(model, digest):
+def test_control_role_schemas_match_recorded_json_and_order(model, digest):
     payload = json.dumps(
         model.model_json_schema(),
         ensure_ascii=False,
@@ -145,8 +146,8 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
             ActionCompletion,
             "382b47754e866a0ea5883240fcbf14f7a714090510376c9e7c12e4b6da1ee4e1",
         ),
-        (ScreenPlan, "3bf71dd3df39f533150dd38bf0aa04ac11adf912386b967a8795de0fb2e1241f"),
-        (ScreenMatch, "847c6acfe7362c7e9faa445d6353d989f47e07e2b83f9d505a6b61a1d10dbaea"),
+        (ScreenPlan, "aa27cac19816bb42640fedea61ea441f00a95824c06634441ddb2c0aeefe1ad7"),
+        (ScreenMatch, "aa27cac19816bb42640fedea61ea441f00a95824c06634441ddb2c0aeefe1ad7"),
         (Decision, "2fcaf3300563865b937899768e96893b5de15ede16e9e71f926926b6994d77e5"),
         (
             WireActDecision,
@@ -174,7 +175,7 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
         ),
     ],
 )
-def test_action_intent_schemas_match_6ab16c3_json_and_order(model, digest):
+def test_action_intent_schemas_match_recorded_json_and_order(model, digest):
     payload = json.dumps(
         model.model_json_schema(),
         ensure_ascii=False,

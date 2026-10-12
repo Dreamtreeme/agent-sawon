@@ -16,6 +16,7 @@ from sawon_interfaces import ShipmentRecord
 from brain.cache.methods import LearnedMethod, MethodDocument, MethodSlot, method_from_match
 from brain.cache.visual_match import VisualMatchDocument
 from brain.demo_learning.methods import read_screen
+from brain.graph.screen_mapping import ScreenMapping
 from brain.observe.values import values_for
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from models.accounting import read_model_accounting
@@ -68,10 +69,12 @@ retries and exploratory actions whose effect is represented by a later successfu
 Retain every business and credential input source, the command that submits login, the final save
 command, and navigation needed to reach those actions. A screen-relative model point is a valid
 learned target when it succeeded in the cold run. For every selected candidate containing such a
-point, context_anchors must contain one or more stable OCR strings visible on that screen that
+point without a reference screenshot, context_anchors must contain stable OCR strings
+visible on that screen that
 distinguish the screen; exclude case values, transient messages, dates, and counters. For detected
 targets, anchors may be empty when labels already distinguish them. Describe only the selected
-batch's purpose and expected immediate result. Return candidate IDs exactly as supplied.
+batch's purpose and expected immediate result. Screenshot-bound coordinates require no OCR anchors.
+Return candidate IDs exactly as supplied.
 """
 
 
@@ -80,7 +83,12 @@ def _read(path: Path) -> dict:
 
 
 def _canonical(value: dict) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        {k: v for k, v in value.items() if k != "mapping"},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _observation_order(case_dir: Path) -> dict[str, int]:
@@ -137,6 +145,7 @@ def read_warm_candidates(case_dir: Path, visual_cache: Path) -> tuple[dict, list
     by_response: dict[str, list[str]] = {}
     for entry in cache.entries:
         by_response.setdefault(_canonical(entry.response), []).append(entry.key)
+    responses = {entry.key: entry.response for entry in cache.entries}
     order = _observation_order(case_dir)
     paths = list((case_dir / "visual").glob("*/screen-match.json"))
     paths.sort(key=lambda path: (order.get(path.parent.name, 10**9), path.parent.name))
@@ -148,6 +157,10 @@ def read_warm_candidates(case_dir: Path, visual_cache: Path) -> tuple[dict, list
         keys = by_response.get(_canonical(response))
         if not keys:
             continue
+        screen = read_screen(case_dir, path.parent.name)
+        mapping = responses[keys[0]].get("mapping")
+        if mapping is not None:
+            response = ScreenMapping.model_validate(mapping).local_payload(screen)
         index = order.get(path.parent.name, len(order) + len(candidates))
         candidates.append(
             WarmCandidate(
@@ -155,7 +168,7 @@ def read_warm_candidates(case_dir: Path, visual_cache: Path) -> tuple[dict, list
                 cache_key=keys[0],
                 obs_id=path.parent.name,
                 trace_index=index,
-                screen=read_screen(case_dir, path.parent.name),
+                screen=screen,
                 response=response,
             )
         )
@@ -259,7 +272,11 @@ def compile_warm_method(
             step["target"] not in raw_ids for step in candidate.response.get("steps", [])
         )
         visible = {str(block["text"]) for block in candidate.screen.get("ocr", [])}
-        if has_model_point and not selection.context_anchors:
+        if (
+            has_model_point
+            and candidate.screen.get("screen_phash") is None
+            and not selection.context_anchors
+        ):
             raise ValueError("warm_method_point_target_requires_context_anchor")
         if any(
             not any(anchor.casefold() in text.casefold() for text in visible)

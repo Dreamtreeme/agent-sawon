@@ -146,15 +146,16 @@ def test_screen_wire_restores_inline_target_nulls_without_losing_zero_or_source(
     raw = {
         "screen_kind": "editor",
         "procedure_step": "task-action",
-        "controls": [],
+        "fields": [{"name": "Reference", "role": "edit", "bbox": [0, 0, 100, 30]}],
+        "assignments": [{"name": "Reference", "source": "hbl_no"}],
         "taught_step_id": "fill-details",
         "method_id": None,
-        "grid": 0,
+        "grid": "Reference",
         "row": None,
         "save_result": None,
         "steps": [
             {
-                "target": {"id": 0, "role": "edit", "confidence": 1, "parent_id": None},
+                "target": "Reference",
                 "action": "fill",
                 "intent": "fill",
                 "source": "hbl_no",
@@ -162,12 +163,12 @@ def test_screen_wire_restores_inline_target_nulls_without_losing_zero_or_source(
                 "point": [0, 0],
             },
             {
-                "target": {"id": 1, "role": "edit", "confidence": 1, "parent_id": 0},
+                "target": "Reference",
                 "action": "key",
                 "intent": "navigate",
                 "source": None,
                 "keys": "tab",
-                "point": None,
+                "point": [5, 5],
             },
         ],
     }
@@ -175,10 +176,9 @@ def test_screen_wire_restores_inline_target_nulls_without_losing_zero_or_source(
     original_schema = ScreenMatch.model_json_schema()
     codec = NullableWireCodec(original_schema, ScreenMatch.anthropic_nulls)
     encoded = codec.convert(raw, encode=True)
-    assert encoded["steps"][0]["target"]["parent_id"] == -1
-    assert encoded["steps"][0]["target"]["id"] == encoded["grid"] == 0
+    assert encoded["steps"][0]["target"] == encoded["grid"] == "Reference"
     assert encoded["steps"][0]["point"] == [0, 0]
-    assert encoded["steps"][1]["point"] == []
+    assert encoded["steps"][1]["point"] == [5, 5]
     assert encoded["steps"][1]["source"] == ""
     sdk.messages.create.return_value.content[0].text = json.dumps(encoded)
     result = client.complete_json("current screen", ScreenMatch)
@@ -192,7 +192,7 @@ def test_screen_wire_restores_inline_target_nulls_without_losing_zero_or_source(
     assert payload["wire_schema_utf8_bytes"] == len(
         json.dumps(sent, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
     )
-    assert sent["$defs"]["MatchAction"]["properties"]["keys"]["enum"][-1] == ""
+    assert sent["$defs"]["NamedAction"]["properties"]["keys"]["enum"][-1] == ""
     assert "x-anthropic-null" not in json.dumps(sent)
     # Invalid nonempty payloads still fail the original domain validation with usage retained.
     encoded["steps"][1]["keys"] = "not-a-key"

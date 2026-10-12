@@ -84,7 +84,7 @@ def test_learned_method_rebinds_new_values_keys_and_current_geometry(tmp_path):
     assert response.evidence == []
     text = library.path.read_text(encoding="utf-8")
     assert "Old customer" not in text
-    assert "bbox" not in text
+    assert all(target.bbox is None for group in learned().action_groups for target in group.targets)
     assert restored.catalog("Prepare a delivery")[0]["id"] == "find-party"
     assert restored.catalog("Unrelated task") == []
 
@@ -419,3 +419,23 @@ def test_completion_recipe_rebinds_labels_and_requires_current_values(tmp_path):
     stored = library.path.read_text(encoding="utf-8")
     assert "New customer B" not in stored
     assert "ORDER-B" not in stored
+
+
+def test_coordinate_method_keeps_each_action_point_and_ignores_numbered_catalog(tmp_path):
+    screen = {"image_size": [400, 200], "screen_phash": 123, "ocr": [], "markers": []}
+    reply = {
+        "screen_kind": "editor",
+        "controls": [],
+        "steps": [
+            {"target": 91, "action": "click", "intent": "navigate", "point": [20, 30]},
+            {"target": 91, "action": "double_click", "intent": "navigate", "point": [21, 31]},
+        ],
+    }
+    # Internal learning consumes the already-executed contract, not a provider reply.
+    method = method_from_match(screen, reply, method_id="points", purpose="Open detail")
+    assert method is not None
+    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
+    library.upsert(method)
+    replay = library.bind("points", {}, screen, {})
+    assert replay is not None
+    assert [step["point"] for step in replay["steps"]] == [[20, 30], [21, 31]]

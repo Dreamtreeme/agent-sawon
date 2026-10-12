@@ -19,7 +19,7 @@ class Marker(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: int = Field(ge=0)
     bbox: tuple[int, int, int, int]
-    source: Literal["ocr", "ocr_group", "omniparser"]
+    source: Literal["ocr", "ocr_group", "omniparser", "model_selected"]
     confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
     text_ids: tuple[int, ...] = ()
 

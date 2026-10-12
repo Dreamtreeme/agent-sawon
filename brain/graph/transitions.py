@@ -78,14 +78,9 @@ class EvidenceLedger:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def record(self, field: str, descriptor: dict, observation_id: str) -> tuple[str, ...]:
-        """Activate a claim and supersede incompatible ownership of its surface."""
+        """Update one business fact; similar screen descriptors cannot erase other facts."""
 
         surface_key = self.surface_key(descriptor)
-        superseded = []
-        for other, claim in tuple(self._active.items()):
-            if other != field and claim.surface_key == surface_key:
-                self.invalidate(other, "surface_reassigned")
-                superseded.append(other)
         self.invalidate(field, "newer_observation")
         claim = EvidenceClaim(
             field=field,
@@ -95,7 +90,7 @@ class EvidenceLedger:
         )
         self._claims.append(claim)
         self._active[field] = claim
-        return tuple(sorted(superseded))
+        return ()
 
     def invalidate(self, field: str, reason: str) -> bool:
         claim = self._active.pop(field, None)
