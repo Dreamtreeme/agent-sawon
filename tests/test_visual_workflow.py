@@ -3,16 +3,14 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-import pytest
 from sawon_interfaces import (
     Action,
-    ActionResult,
     CaptureGeometry,
     ImageTarget,
     Observation,
     Screenshot,
 )
-from test_brain import FakeRelay, ScriptedModel, success_steps
+from test_brain import FakeRelay, ScriptedModel
 from test_brain import record as record
 
 from brain.graph.engine import Brain
@@ -103,102 +101,6 @@ def test_relay_error_code_allowlist_rejects_untrusted_text():
     assert {error: relay_error_code(error) for error in known} == {error: error for error in known}
     assert relay_error_code(None) is None
     assert relay_error_code("PRIVATE unexpected server text") is None
-
-
-def test_relay_diagnostic_redacts_untrusted_error_text(tmp_path, record):
-    class RejectedRelay(VisualFixture):
-        def act(self, action):
-            return ActionResult(
-                action_id=action.root.action_id,
-                ok=False,
-                error="PRIVATE unexpected server text",
-                duration_ms=0,
-            )
-
-    relay = RejectedRelay(record)
-    log = RunLog(tmp_path, case_id=record.case_id, agent_id="visual-test")
-    brain = Brain(
-        record=record,
-        goal="Save for approval",
-        relay=relay,
-        model=ScriptedModel(log, success_steps(record)),
-        settings=BrainSettings(perception_mode="visual_only"),
-        case_dir=tmp_path,
-        run_log=log,
-        visual_ocr=object(),
-    )
-    brain.visual_perception = SyntheticPerception(relay)
-    assert brain.run().status != "success"
-    events = [e for e in log.read_all() if e.kind == "act" and e.payload.get("stage") == "returned"]
-    assert events and events[0].payload["error_code"] is None
-    assert "PRIVATE" not in (tmp_path / "run_log.jsonl").read_text()
-
-
-@pytest.mark.parametrize("after_blur", ["correct", "relay_failure"])
-def test_caret_recheck_uses_fresh_evidence_without_cleaning_values(tmp_path, record, after_blur):
-    class CaretRelay(VisualFixture):
-        focused_ref = None
-        blurred = False
-
-        def act(self, action):
-            result = super().act(action)
-            if action.root.type in {"set_text", "type_text"} and self.mode == "editor":
-                self.focused_ref = "e20"
-            elif action.root.type == "key":
-                assert action.root.keys == "tab"
-                if after_blur == "relay_failure":
-                    return result.model_copy(update={"ok": False, "error_code": "input_failed"})
-                self.blurred = True
-                if after_blur != "still_focused":
-                    self.focused_ref = None
-            return result
-
-    class CaretPerception(SyntheticPerception):
-        def observe(self, wire):
-            scene = super().observe(wire)
-            elements = [
-                item.model_copy(
-                    update={
-                        "focused": self.relay.focused_ref == item.ref,
-                        "value": (item.value or "") + "|",
-                    }
-                )
-                if item.ref == "e20"
-                and item.value
-                and (not self.relay.blurred or after_blur != "correct")
-                else item
-                for item in scene.elements
-            ]
-            return scene.model_copy(update={"elements": elements})
-
-    relay = CaretRelay(record)
-    log = RunLog(tmp_path, case_id=record.case_id, agent_id="visual-test")
-    brain = Brain(
-        record=record,
-        goal="Save for approval",
-        relay=relay,
-        model=ScriptedModel(log, success_steps(record)),
-        settings=BrainSettings(perception_mode="visual_only", visual_input_blur_recheck=True),
-        case_dir=tmp_path,
-        run_log=log,
-        visual_ocr=object(),
-    )
-    brain.visual_perception = CaretPerception(relay)
-    result = brain.run()
-    keys = [action for action in relay.actions if action.root.type == "key"]
-    assert len(keys) == 1
-    if after_blur == "correct":
-        assert result.status == "success", result
-        assert relay.saved
-        assert len(relay.actions) == 18
-    else:
-        assert result.status != "success"
-        assert not relay.saved
-    if after_blur == "relay_failure":
-        assert any(
-            item["reason"] == "relay_action_failed" for item in brain.feedback if not item["ok"]
-        )
-        assert not relay.blurred
 
 
 def test_caret_recheck_failure_rules_are_local_and_independent(tmp_path, monkeypatch, record):

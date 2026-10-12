@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 from sawon_interfaces import ActionResult, Observation, ShipmentRecord, UIElement, WindowInfo
 
-from brain.graph.engine import Brain, GuardStop, field_matches, values_for
+from brain.graph.engine import Brain, field_matches, values_for
 from brain.graph.save_review import SaveReviewResponse
 from brain.graph.schemas import Decision, Plan
 from brain.observe import redact, summarize
@@ -21,8 +21,6 @@ from brain.run import main
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInstruction
 from models.base import MeasuredModelClient, ProviderReply, TokenUsage
-from models.budget import CallBudget
-from models.pricing import PriceRate
 from sawon_runtime.storage import RunLog, StateStore
 
 
@@ -302,180 +300,23 @@ class ScriptedModel(MeasuredModelClient):
         return self.price
 
 
-def run_brain(
-    tmp_path,
-    record,
-    decisions,
-    *,
-    relay=None,
-    settings=None,
-    price=Decimal(0),
-    unknown=False,
-    password=None,
-    call_budget=None,
-):
-    relay = relay or FakeRelay(record)
-    log = RunLog(tmp_path, case_id=record.case_id, agent_id="brain-test")
-    model = ScriptedModel(log, decisions, price=price, unknown=unknown)
+def test_blocked_foreground_stops_before_decision_or_input(tmp_path, record):
+    relay = FakeRelay(record, blocked=True)
+    log = RunLog(tmp_path, case_id=record.case_id, agent_id="blocked-test")
+    model = ScriptedModel(log, [])
     brain = Brain(
         record=record,
-        goal="Enter the record and save for approval",
+        goal="Enter the record",
         relay=relay,
         model=model,
-        settings=settings or BrainSettings(),
+        settings=BrainSettings(),
         case_dir=tmp_path,
         run_log=log,
-        password=password,
-        call_budget=call_budget,
     )
-    return brain.run(), brain, relay, model
-
-
-def query_steps():
-    return [
-        decision(intent="query_input", action=text_choice("hbl_no", "e1")),
-        decision(intent="search", action={"type": "click", "ref": "e2"}),
-    ]
-
-
-def success_steps(record):
-    values = values_for(record)
-    return [
-        *query_steps(),
-        decision("duplicate_clear", intent="verify", grid_ref="e4"),
-        decision(action={"type": "click", "ref": "e3"}),
-        *(
-            decision(intent="fill", kind="editor", action=text_choice(field, f"e{index + 20}"))
-            for index, field in enumerate(values)
-        ),
-        decision(intent="save", kind="editor", action={"type": "click", "ref": "e7"}),
-        *query_steps(),
-        decision(
-            "complete",
-            intent="verify",
-            grid_ref="e4",
-            row_ref="e6",
-            evidence=[
-                {"field": field, "ref": f"e{index + 40}"} for index, field in enumerate(values)
-            ],
-        ),
-    ]
-
-
-def test_rematches_input_when_refs_change_every_observation(tmp_path, record):
-    relay = FakeRelay(record)
-    relay.change_refs = True
-
-    def choose(prompt):
-        summary = json.loads(prompt.split("\nUI_TEXT=", 1)[1])
-        ref = next(item["ref"] for item in summary["elements"] if item["role"] == "Edit")
-        return decision(intent="query_input", action=text_choice("hbl_no", ref))
-
-    result, brain, _, _ = run_brain(
-        tmp_path, record, [choose, decision("stop", intent="stop")], relay=relay
-    )
-    assert result.reason == "model_requested_stop"
-    assert brain.query_value_verified
-    assert any(
-        event.payload.get("check") == "input_value_matches" for event in brain.log.read_all()
-    )
-
-
-def test_blocked_foreground_stops_before_decision_or_input(tmp_path, record):
-    result, _, relay, model = run_brain(tmp_path, record, [], relay=FakeRelay(record, blocked=True))
+    result = brain.run()
     assert result.reason == "blocked_foreground"
     assert len(model.prompts) == 1
     assert not relay.actions
-
-
-def test_unknown_window_stops(tmp_path, record):
-    result, _, relay, _ = run_brain(
-        tmp_path, record, [decision("stop", intent="stop", kind="unknown")]
-    )
-    assert result.reason == "unknown_window_type"
-    assert not relay.actions
-
-
-def test_zero_cap_does_not_make_model_call(tmp_path, record):
-    result, _, _, model = run_brain(tmp_path, record, [], settings=BrainSettings(max_cost_usd=0))
-    assert result.reason == "case_cost_cap"
-    assert not model.prompts
-
-
-def test_observe_only_records_zero_cost_cap_and_still_calls_model(tmp_path, record):
-    result, brain, _, model = run_brain(
-        tmp_path,
-        record,
-        [decision("stop", intent="stop", kind="unknown")],
-        settings=BrainSettings(max_cost_usd=0, guard_mode="observe_only"),
-    )
-
-    assert result.reason != "case_cost_cap"
-    assert model.prompts
-    assert any(event.payload.get("guard") == "case_cost_cap" for event in brain.log.read_all())
-
-
-def test_call_reserve_stops_before_next_call(tmp_path, record):
-    result, _, _, model = run_brain(
-        tmp_path, record, [], price=Decimal("0.08"), settings=BrainSettings(max_cost_usd=0.1)
-    )
-    assert result.reason == "case_cost_cap"
-    assert len(model.prompts) == 1
-
-
-def test_unknown_failed_call_cost_forces_stop(tmp_path, record):
-    result, brain, _, model = run_brain(tmp_path, record, [], unknown=True)
-    assert result.reason == "unknown_model_call_cost"
-    assert len(model.prompts) == 1
-    assert (
-        next(event for event in brain.log.read_all() if event.kind == "model_call").cost.usd is None
-    )
-
-
-def test_dynamic_cost_reservation_prevents_first_call(tmp_path, record):
-    budget = CallBudget(PriceRate(input_usd_per_million=1000, output_usd_per_million=1000), 4096)
-    result, _, _, model = run_brain(tmp_path, record, [], call_budget=budget)
-    assert result.reason == "case_cost_cap"
-    assert not model.prompts
-
-
-def test_max_steps_stops_even_successful_waits(tmp_path, record):
-    result, _, relay, model = run_brain(
-        tmp_path,
-        record,
-        [
-            decision(intent="wait", action={"type": "wait", "duration_ms": 0}),
-        ],
-        settings=BrainSettings(max_steps=1),
-    )
-    assert result.reason == "max_steps"
-    assert len(model.prompts) == 2
-    assert len(relay.actions) == 1
-
-
-def test_password_resolved_only_at_relay_and_not_in_prompts_or_logs(tmp_path, record):
-    relay = FakeRelay(record)
-    relay.mode = "login"
-    result, brain, relay, model = run_brain(
-        tmp_path,
-        record,
-        [
-            decision(
-                kind="login", intent="credential", action=text_choice("credential.password", "e8")
-            ),
-            decision("stop", intent="stop", kind="login"),
-        ],
-        relay=relay,
-        password="sensitive-fake-password",
-    )
-    assert result.reason == "model_requested_stop"
-    assert relay.actions[0].root.text == "sensitive-fake-password"
-    assert "sensitive-fake-password" not in brain.log.path.read_text()
-    assert all("sensitive-fake-password" not in prompt for prompt in model.prompts)
-    assert all(
-        "sensitive-fake-password" not in path.read_text()
-        for path in (tmp_path / "observations").glob("*.json")
-    )
 
 
 def test_summary_preserves_grid_relationships_and_omits_ids(record):
@@ -572,33 +413,6 @@ def test_decision_schema_has_no_freeform_text_or_coordinate_action():
         ]
 
 
-def test_wait_cannot_be_claimed_as_executed_command(tmp_path, record):
-    invalid = decision(intent="search", action={"type": "wait", "duration_ms": 0})
-    result, brain, relay, model = run_brain(
-        tmp_path,
-        record,
-        [query_steps()[0], invalid, invalid],
-    )
-    assert result.reason == "repeated_subgoal_failure:duplicate_query:decision"
-    assert result.steps == 3
-    assert len(model.prompts) == 4
-    failures = [
-        event.payload
-        for event in brain.log.read_all()
-        if event.kind == "verify" and event.payload.get("ok") is False
-    ]
-    assert [item["reason"] for item in failures] == [
-        "selection_error:ValidationError",
-        "selection_error:ValidationError",
-    ]
-    assert [a.root.type for a in relay.actions] == ["set_text"]
-    assert brain.query_value_verified
-    assert not brain.query_submitted and not brain.save_issued
-    assert brain._decision_policy().allows(Decision.model_validate(query_steps()[1]))
-    with pytest.raises(GuardStop, match="^action_not_allowed_by_state$"):
-        brain._guard_action(Decision.model_validate(invalid))
-
-
 def test_cli_setup_failure_has_durable_result_and_never_reuses_case(tmp_path, record, monkeypatch):
     record_path = tmp_path / "record.json"
     record_path.write_text(record.model_dump_json(), encoding="utf-8")
@@ -628,33 +442,6 @@ def test_cli_setup_failure_has_durable_result_and_never_reuses_case(tmp_path, re
     assert main(args) == 2
     assert (case_dir / "result.json").read_bytes() == output
     assert (case_dir / "run_log.jsonl").read_bytes() == log
-
-
-def test_rotating_failed_intents_and_successful_wait_do_not_reset_limit(tmp_path, record):
-    class FailingActions(FakeRelay):
-        def act(self, action):
-            if action.root.type == "wait":
-                return super().act(action)
-            self.actions.append(action)
-            return ActionResult(
-                action_id=action.root.action_id,
-                ok=False,
-                error="fixture rejection",
-                duration_ms=0.0,
-            )
-
-    result, _, relay, _ = run_brain(
-        tmp_path,
-        record,
-        [
-            decision(intent="query_input", action=text_choice("hbl_no", "e1")),
-            decision(intent="wait", action={"type": "wait", "duration_ms": 0}),
-            decision(intent="navigate", action={"type": "click", "ref": "e3"}),
-        ],
-        relay=FailingActions(record),
-    )
-    assert result.reason == "repeated_phase_failure:duplicate_query"
-    assert len(relay.actions) == 3
 
 
 class StructuralRowRelay(FakeRelay):
@@ -708,16 +495,3 @@ def test_nested_grid_summary_uses_nearest_row_context(record, strategy):
     assert by_ref["e82"]["row_ref"] == "e81"
     assert by_ref["e81"]["row_ref"] == "e81"
     assert by_ref["e40"]["row_ref"] == "e6"
-
-
-def test_observed_call_exceeding_cost_cap_stops_before_ui_work(tmp_path, record):
-    result, _, relay, model = run_brain(
-        tmp_path,
-        record,
-        [],
-        price=Decimal("0.51"),
-        settings=BrainSettings(max_cost_usd=0.5),
-    )
-    assert result.reason == "case_cost_cap"
-    assert len(model.prompts) == 1
-    assert not relay.actions

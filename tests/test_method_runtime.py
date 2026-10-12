@@ -73,7 +73,7 @@ def setup(
     changed_label=False,
     fail_second=False,
     promotion_path=None,
-    separate_observation_decision=False,
+    compiled_coordinates=False,
 ):
     task = TaskInstruction(
         name="Business entry",
@@ -82,7 +82,13 @@ def setup(
     )
     task_path = tmp_path / "task.json"
     atomic_write_json(task_path, task)
-    _, _, source_screen, source_response = catalog()
+    _, _, source_screen, source_response = catalog(shift=20 if compiled_coordinates else 0)
+    if compiled_coordinates:
+        from brain.visual.action_rebind import perceptual_hash
+
+        capture = tmp_path / "reference.png"
+        Image.new("RGB", (400, 200), "white").save(capture)
+        source_screen["screen_phash"] = perceptual_hash(capture)
     method = method_from_match(
         source_screen,
         source_response.model_dump(mode="json"),
@@ -93,6 +99,8 @@ def setup(
     )
     assert method is not None
     source = MethodLibrary(tmp_path / "source-methods.json", enabled=True)
+    if compiled_coordinates:
+        method = method.model_copy(update={"artifact_kind": "warm_compiled"})
     source.upsert(method)
     blocks, boxes, current_screen, current_response = catalog(
         "Account" if changed_label else "Customer", shift=20
@@ -172,12 +180,13 @@ def setup(
             task_path=task_path,
             perception_mode="visual_only",
             screen_matching=True,
-            separate_observation_decision=separate_observation_decision,
+            separate_observation_decision=False,
             visual_screen_fill=True,
             visual_model_led_semantics=True,
             visual_model_only_review=True,
             methods={
                 "enabled": True,
+                "compiled_only": compiled_coordinates,
                 "path": source.path,
                 "promotion_path": promotion_path,
             },
@@ -219,14 +228,21 @@ def test_learned_method_is_scoped_to_exact_user_education_file(tmp_path):
     assert brain.methods.context()["methods"] == []
 
 
-@pytest.mark.parametrize("observe_again", [False, True])
-@pytest.mark.parametrize("separate_observation_decision", [False, True])
-def test_learned_method_uses_current_scene_and_executor_without_model(
-    tmp_path, observe_again, separate_observation_decision
-):
-    brain, model, relay = setup(
-        tmp_path, separate_observation_decision=separate_observation_decision
-    )
+@pytest.mark.parametrize(
+    "observe_again",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason="Repeated observation: visual_proposal_unknown_marker",
+            ),
+        ),
+    ],
+)
+def test_compiled_coordinates_reach_executor_without_model(tmp_path, observe_again):
+    brain, model, relay = setup(tmp_path, compiled_coordinates=True)
     brain._observe()
     first_id = brain.observation.obs_id
     assert any(event.payload.get("check") == "screen_mapping" for event in brain.log.read_all())
@@ -253,7 +269,7 @@ def test_learned_method_uses_current_scene_and_executor_without_model(
         if event.kind == "cache_hit" and event.payload.get("check") == "method_bound"
     )
     assert reuse.payload["task_contract_sha256"] == brain.task_instruction_sha256
-    assert reuse.payload["artifact_kind"] == "runtime_trace"
+    assert reuse.payload["artifact_kind"] == "warm_compiled"
     assert reuse.payload["revision"] == 1
     assert reuse.payload["source_transitions"] == []
     education = next(

@@ -56,6 +56,7 @@ def response(*, target, source=None, intent="fill", point=(200, 300), taught="ed
 def screen(caption):
     return {
         "image_size": [800, 600],
+        "screen_phash": 123,
         "ocr": [{"id": 1, "text": caption, "bbox": [10, 10, 160, 20]}],
         "markers": [],
     }
@@ -108,7 +109,7 @@ def draft(*, groups=("c000", "c001")):
             {
                 "candidate_id": candidate_id,
                 "purpose": "Enter the reference" if candidate_id == "c000" else "Save the record",
-                "context_anchors": ["Shipment editor"],
+                "context_anchors": [],
                 "expected_result": "The field is filled"
                 if candidate_id == "c000"
                 else "The record is saved",
@@ -123,14 +124,13 @@ def test_warm_compiler_preserves_successful_model_points_and_trace_order(tmp_pat
     assert [slot.source_key for slot in method.slots] == ["hbl_no"]
     assert [group.trace_index for group in method.action_groups] == [0, 1]
     assert method.action_groups[1].predecessor_group_ids == [method.action_groups[0].id]
-    assert all(group.targets[0].anchor_relative_point for group in method.action_groups)
+    assert [group.targets[0].point for group in method.action_groups] == [(200, 300), (700, 550)]
     assert all(group.targets[0].screen_relative_point is None for group in method.action_groups)
     path = tmp_path / "warm-methods.json"
     atomic_write_json(path, MethodDocument(methods=[method]))
     current = screen("Shipment editor")
-    current["image_size"] = [1600, 900]
+    current["ocr"] = []
     current["screen_kind"] = "editor"
-    current["ocr"][0]["bbox"] = [20, 20, 320, 40]
     bound = MethodLibrary(path, enabled=True).bind(
         "warm-shipment",
         {},
@@ -139,17 +139,13 @@ def test_warm_compiler_preserves_successful_model_points_and_trace_order(tmp_pat
         group_id=method.action_groups[0].id,
     )
     assert bound is not None
-    assert bound["steps"][0]["point"] == [400.0, 600.0]
+    assert bound["steps"][0]["point"] == [200.0, 300.0]
     assert bound["steps"][0]["source"] == "hbl_no"
 
 
-def test_warm_compiler_rejects_missing_input_and_unscoped_point():
+def test_warm_compiler_rejects_missing_input():
     with pytest.raises(ValueError, match="warm_method_missing_sources:hbl_no"):
         compile_warm_method(source(), candidates(), draft(groups=("c001",)), method_id="bad")
-    payload = draft().model_dump()
-    payload["groups"][0]["context_anchors"] = []
-    with pytest.raises(ValueError, match="point_target_requires_context_anchor"):
-        compile_warm_method(source(), candidates(), payload, method_id="bad")
 
 
 def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):

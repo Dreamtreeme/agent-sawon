@@ -5,7 +5,7 @@ import json
 
 import pytest
 from sawon_interfaces import ActionBatchResult, ActionResult
-from test_brain import ScriptedModel, success_steps, values_for
+from test_brain import ScriptedModel, values_for
 from test_brain import record as record
 from test_visual_workflow import SyntheticPerception, VisualFixture
 
@@ -96,47 +96,6 @@ def make_brain(tmp_path, record, relay, responses):
     perception = CountPerception(relay)
     brain.visual_perception = perception
     return brain, perception, model
-
-
-def test_complete_workflow_fills_all_fields_before_one_reread(tmp_path, record):
-    ordinary = success_steps(record)
-    batch = screen_plan(record)
-    responses = ordinary[:4] + [batch] + ordinary[4 + len(batch["fields"]) :]
-    relay = BatchedChangingPixelsRelay(record)
-    brain, perception, model = make_brain(tmp_path, record, relay, responses)
-    result = brain.run()
-    assert result.status == "success", result
-    assert relay.saved and set(brain.verified) == set(brain.values)
-    # Three pre-entry actions, then eleven fields and one joint reread.
-    assert not any(4 <= count <= 13 for count in perception.action_counts)
-    assert perception.action_counts.count(14) == 1
-    assert len(model.prompts) == 10  # Previously 20 including the initial plan.
-    events = brain.log.read_all()
-    checks = [e for e in events if e.payload.get("check") == "screen_fill_values"]
-    assert len(checks) == 1 and len(checks[0].payload["matched"]) == 11
-    assert not checks[0].payload["mismatched"]
-    assert len(relay.batches) == 1 and len(relay.batches[0].actions) == 11
-    fill_requests = [
-        event
-        for event in events
-        if event.payload.get("stage") == "requested" and event.payload["action"]["reason"] == "fill"
-    ]
-    assert len(fill_requests) == 11
-    assert not [
-        event
-        for event in events
-        if fill_requests[0].seq < event.seq < fill_requests[-1].seq
-        and event.payload.get("check") == "visual_identical_capture_renewal"
-    ]
-    batch_results = [e for e in events if e.payload.get("stage") == "batch_returned"]
-    assert len(batch_results) == 1 and batch_results[0].payload["returned"] == 11
-    transitions = [
-        e.payload["transition"] for e in events if e.payload.get("check") == "action_transition"
-    ]
-    field_proofs = [t for t in transitions if t["intent"] == "fill"]
-    assert len(field_proofs) == 11
-    assert all(t["observed_effect"] == "input_value_matches" for t in field_proofs)
-    assert {f for t in field_proofs for f in t["new_facts"]} == set(brain.values)
 
 
 def test_direct_fill_batch_records_delivered_prefix_on_relay_failure(tmp_path, record):

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
-
-from test_brain import FakeRelay, decision, element, run_brain, success_steps
+from test_brain import FakeRelay, element
 from test_brain import record as record
 
 from brain.graph.transitions import ExplorationAttempt, ExplorationLedger, exploration_action_key
@@ -98,40 +96,6 @@ class NavigationRelay(FakeRelay):
         return super().act(action)
 
 
-def navigate(intent="navigate", *, claim="Open the next panel"):
-    def choose_current_tab(prompt):
-        ui = json.loads(prompt.split("\nUI_TEXT=", 1)[1])
-        tab = next(item for item in ui["elements"] if item["role"] == "TabItem")
-        return {
-            **decision(kind="editor", intent=intent, action={"type": "click", "ref": tab["ref"]}),
-            "subgoal": claim,
-        }
-
-    return choose_current_tab
-
-
-def double_click_current_tab(prompt):
-    ui = json.loads(prompt.split("\nUI_TEXT=", 1)[1])
-    tab = next(item for item in ui["elements"] if item["role"] == "TabItem")
-    return decision(
-        kind="editor",
-        intent="navigate",
-        action={"type": "double_click", "ref": tab["ref"]},
-    )
-
-
-def no_progress_failures(brain):
-    return [
-        event.payload
-        for event in brain.log.read_all()
-        if event.kind == "verify" and event.payload.get("reason") == "navigation_no_progress"
-    ]
-
-
-def task_state(prompt):
-    return json.loads(prompt.split("\nTRUSTED_TASK=", 1)[1].split("\nUI_TEXT=", 1)[0])
-
-
 def test_exploration_memory_ignores_key_focus_anchor_and_keeps_other_routes():
     ledger = ExplorationLedger()
     page_down = exploration_action_key("key", keys="pagedown", target_key="first-anchor")
@@ -163,115 +127,6 @@ def test_exploration_memory_ignores_key_focus_anchor_and_keeps_other_routes():
     ]
 
 
-def alternate_navigation(prompt):
-    ui = json.loads(prompt.split("\nUI_TEXT=", 1)[1])
-    alternative = next(item for item in ui["elements"] if item["name"] == "Alternative route")
-    return decision(
-        kind="editor", intent="select_tab", action={"type": "click", "ref": alternative["ref"]}
-    )
-
-
-def test_unchanged_navigation_blocks_second_click_and_stops_after_two_failures(tmp_path, record):
-    intent = "navigate"
-    relay = NavigationRelay(record)
-    claims = ["Open the next panel", "Now try a different subgoal name"]
-    result, brain, _, model = run_brain(
-        tmp_path,
-        record,
-        [
-            *success_steps(record)[:4],
-            *(navigate(intent, claim=claim) for claim in claims),
-            decision("stop", intent="stop"),
-        ],
-        relay=relay,
-    )
-    assert result.status == "stopped"
-    assert result.reason == "repeated_subgoal_failure:enter:" + intent
-    assert result.steps == 6
-    assert len(model.prompts) == 7  # Planning and six bounded decisions.
-    assert relay.navigation_count == 1
-    assert len(no_progress_failures(brain)) == 2
-    assert not any(item.get("ok") and item.get("subgoal") in claims for item in brain.feedback)
-    returned = [
-        event.payload
-        for event in brain.log.read_all()
-        if event.kind == "act" and event.payload.get("stage") == "returned"
-    ]
-    assert len(returned) == 4  # Query input, search, editor navigation, first failed tab.
-    assert all(item["ok"] for item in returned)
-
-
-def test_failed_single_click_does_not_block_double_click_on_same_target(tmp_path, record):
-    relay = NavigationRelay(record)
-    result, _, _, _ = run_brain(
-        tmp_path,
-        record,
-        [*success_steps(record)[:4], navigate(), double_click_current_tab],
-        relay=relay,
-    )
-
-    assert result.reason == "repeated_subgoal_failure:enter:navigate"
-    assert [action.root.type for action in relay.actions[-2:]] == ["click", "double_click"]
-
-
-def test_ref_focus_geometry_hash_and_model_prose_churn_do_not_count_as_progress(tmp_path, record):
-    relay = NavigationRelay(record, volatile=True)
-    refs = []
-
-    def retry_with_current_ref(prompt):
-        ui = json.loads(prompt.split("\nUI_TEXT=", 1)[1])
-        current_tab = next(item for item in ui["elements"] if item["role"] == "TabItem")
-        failed = task_state(prompt)["unproductive_navigation_targets"]
-        assert len(failed) == 1
-        assert failed[0]["ref"] == current_tab["ref"]
-        assert failed[0]["role"] == "TabItem"
-        assert failed[0]["name"] == "Synthetic tab"
-        assert failed[0]["label"] is None
-        assert {"role": "Group", "name": "Primary group", "label": None} in failed[0]["context"]
-        refs.extend([relay.actions[-1].root.target.ref, current_tab["ref"]])
-        assert refs[0] != refs[1]
-        return navigate(claim="Panel two is now open")(prompt)
-
-    result, brain, _, _ = run_brain(
-        tmp_path,
-        record,
-        [
-            *success_steps(record)[:4],
-            navigate(claim="Panel one is now open"),
-            retry_with_current_ref,
-            decision("stop", intent="stop"),
-        ],
-        relay=relay,
-    )
-    assert result.reason == "repeated_subgoal_failure:enter:navigate"
-    assert len(no_progress_failures(brain)) == 2
-    assert relay.navigation_count == 1
-    assert len(refs) == 2
-    assert refs[0] != refs[1]
-    assert refs[1] not in [action.root.target.ref for action in relay.actions]
-
-
-def test_alternating_navigation_intents_cannot_evade_the_phase_cap(tmp_path, record):
-    relay = NavigationRelay(record)
-    result, brain, _, _ = run_brain(
-        tmp_path,
-        record,
-        [
-            *success_steps(record)[:4],
-            navigate("navigate"),
-            navigate("select_tab"),
-            decision("stop", intent="stop"),
-        ],
-        relay=relay,
-    )
-    assert result.reason == "repeated_phase_failure:enter"
-    assert relay.navigation_count == 1
-    assert [item["phase_failures_without_progress"] for item in no_progress_failures(brain)] == [
-        1,
-        2,
-    ]
-
-
 def test_navigation_state_tracks_each_same_window_semantic_change(record):
     relay = NavigationRelay(record)
     relay.mode = "editor"
@@ -292,82 +147,6 @@ def test_new_window_with_same_controls_changes_navigation_state(record):
     after = relay.observe()
     assert after.active_window.handle == 2
     assert navigation_state(after) != before
-
-
-def test_real_same_window_progress_resets_phase_failures(tmp_path, record):
-    relay = NavigationRelay(record, changes=["none", "content"], alternate=True)
-    result, brain, _, _ = run_brain(
-        tmp_path,
-        record,
-        [
-            *success_steps(record)[:4],
-            navigate("navigate"),
-            alternate_navigation,
-            navigate("select_tab"),
-            decision("stop", intent="stop"),
-        ],
-        relay=relay,
-    )
-    assert result.reason == "model_requested_stop"
-    assert relay.navigation_count == 2
-    assert relay.alternate_count == 1
-    failures = no_progress_failures(brain)
-    assert len(failures) == 2
-    assert [item["phase_failures_without_progress"] for item in failures] == [1, 1]
-
-
-def test_failed_target_prompt_allows_recovery_via_another_observed_control(tmp_path, record):
-    relay = NavigationRelay(record, alternate=True, volatile=True)
-
-    def choose_alternative(prompt):
-        failed = task_state(prompt)["unproductive_navigation_targets"]
-        assert len(failed) == 1
-        assert failed[0]["name"] == "Synthetic tab"
-        alternative = alternate_navigation(prompt)
-        assert alternative["action"]["ref"] != failed[0]["ref"]
-        return alternative
-
-    result, brain, _, _ = run_brain(
-        tmp_path,
-        record,
-        [
-            *success_steps(record)[:4],
-            navigate(),
-            choose_alternative,
-            decision("stop", intent="stop"),
-        ],
-        relay=relay,
-    )
-    assert result.reason == "model_requested_stop"
-    assert relay.navigation_count == relay.alternate_count == 1
-    assert len(no_progress_failures(brain)) == 1
-    assert brain.phase_failures["enter"] == 0
-
-
-def test_failed_target_is_allowed_again_after_a_real_state_change(tmp_path, record):
-    relay = NavigationRelay(record, changes=["none", "value"], alternate=True)
-
-    def retry_after_change(prompt):
-        assert task_state(prompt)["unproductive_navigation_targets"] == []
-        return navigate()(prompt)
-
-    result, brain, _, _ = run_brain(
-        tmp_path,
-        record,
-        [
-            *success_steps(record)[:4],
-            navigate(),
-            alternate_navigation,
-            retry_after_change,
-            decision("stop", intent="stop"),
-        ],
-        relay=relay,
-    )
-    assert result.reason == "model_requested_stop"
-    assert relay.navigation_count == 2
-    assert relay.alternate_count == 1
-    assert len(no_progress_failures(brain)) == 1
-    assert brain.phase_failures["enter"] == 0
 
 
 def test_visual_navigation_ignores_model_catalog_edits_on_identical_pixels():

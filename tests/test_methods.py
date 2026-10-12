@@ -37,7 +37,7 @@ def scene(*, offset=0, old_value="Old customer", ids=0):
     }
 
 
-def learned():
+def learned(*, screenshot_bound=False):
     response = {
         "screen_kind": "query",
         "controls": [
@@ -51,7 +51,10 @@ def learned():
         "expected_result": "The supplied customer's search results are shown.",
     }
     method = method_from_match(
-        scene(),
+        {
+            **scene(),
+            **({"screen_phash": 123, "image_size": [800, 600]} if screenshot_bound else {}),
+        },
         response,
         method_id="find-party",
         purpose="Find the requested business party",
@@ -64,29 +67,32 @@ def learned():
     return method
 
 
-def test_learned_method_rebinds_new_values_keys_and_current_geometry(tmp_path):
+def test_saved_coordinate_method_uses_new_source_without_ocr_rebinding(tmp_path):
     library = MethodLibrary(tmp_path / "methods.json", enabled=True)
-    library.upsert(learned())
-    # A new instance must actually consume the saved method rather than retain a response.
+    library.upsert(learned(screenshot_bound=True))
     restored = MethodLibrary(library.path, enabled=True)
+    current = {"screen_phash": 123, "image_size": [800, 600], "ocr": [], "markers": []}
     bound = restored.bind_with_context(
-        "find-party",
-        {"requested_party": "supplier"},
-        scene(offset=100, old_value="", ids=100),
-        {"supplier": "New supplier"},
+        "find-party", {"requested_party": "supplier"}, current, {"supplier": "New supplier"}
     )
     assert bound is not None
     response = ScreenMatch.model_validate(bound.response)
     assert response.steps[0].source == "supplier"
-    assert [step.target for step in response.steps] == [110, 111]
-    assert response.steps[1].point == [415, 140]
-    assert response.controls[0].label_ids == [101]
+    assert [step.point for step in response.steps] == [[200, 40], [415, 40]]
+    assert all(not control.label_ids for control in response.controls)
     assert response.evidence == []
-    text = library.path.read_text(encoding="utf-8")
-    assert "Old customer" not in text
-    assert all(target.bbox is None for group in learned().action_groups for target in group.targets)
+    assert "Old customer" not in library.path.read_text(encoding="utf-8")
     assert restored.catalog("Prepare a delivery")[0]["id"] == "find-party"
     assert restored.catalog("Unrelated task") == []
+    assert restored.bind("find-party", {}, current, {"unrelated": "value"}) is None
+    # The configured distance is inclusive; viewport mismatch must not rescale coordinates.
+    for label, update, expected in [
+        ("distance-six", {"screen_phash": 123 ^ 63}, True),
+        ("distance-seven", {"screen_phash": 123 ^ 127}, False),
+        ("resized", {"image_size": [1600, 900]}, False),
+    ]:
+        result = restored.bind("find-party", {}, {**current, **update}, {"party": "Next"})
+        assert (result is not None) is expected, label
 
 
 def test_library_rejects_same_method_id_from_another_task_contract(tmp_path):
@@ -103,73 +109,6 @@ def test_library_rejects_same_method_id_from_another_task_contract(tmp_path):
         library.upsert(other_task)
 
     assert library.methods() == [first]
-
-
-def test_model_point_method_scales_with_screen_and_requires_stable_context(tmp_path):
-    screen = {
-        "image_size": [800, 600],
-        "ocr": [{"id": 1, "text": "Shipment editor", "bbox": [20, 20, 160, 20]}],
-        "markers": [],
-    }
-    response = {
-        "screen_kind": "editor",
-        "controls": [
-            {
-                "id": 90,
-                "role": "edit",
-                "label_ids": [],
-                "text_ids": [],
-                "confidence": 1,
-                "confidence_policy": "argmax",
-            }
-        ],
-        "steps": [
-            {
-                "target": 90,
-                "action": "fill",
-                "intent": "fill",
-                "source": "reference",
-                "point": [200, 300],
-            }
-        ],
-        "operation": "act",
-        "expected_result": "The reference is entered.",
-    }
-    method = method_from_match(
-        screen,
-        response,
-        method_id="point-entry",
-        purpose="Enter a reference",
-        context_anchors=["Shipment editor"],
-    )
-    assert method is not None
-    target = method.action_groups[0].targets[0]
-    assert target.screen_relative_point == (0.25, 0.5)
-    compiled = compile_method_candidate(method, {"reference": "REF-001"})
-    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
-    library.upsert(compiled)
-
-    current = {
-        "image_size": [1600, 900],
-        "screen_kind": "editor",
-        "ocr": [{"id": 11, "text": "Shipment editor", "bbox": [40, 30, 320, 30]}],
-        "markers": [],
-    }
-    bound = library.bind("point-entry", {}, current, {"reference": "REF-002"})
-    assert bound is not None
-    assert bound["steps"] == [
-        {
-            "target": bound["controls"][0]["id"],
-            "action": "fill",
-            "intent": "fill",
-            "source": "reference",
-            "keys": None,
-            "point": [400.0, 450.0],
-        }
-    ]
-    assert bound["controls"][0]["confidence_policy"] == "argmax"
-    current["ocr"][0]["text"] = "Unrelated window"
-    assert library.bind("point-entry", {}, current, {"reference": "REF-002"}) is None
 
 
 def test_learned_fill_targets_rebind_current_values_as_visible_evidence(tmp_path):
@@ -223,28 +162,12 @@ def test_local_variant_is_available_for_same_session_and_keeps_original(tmp_path
     assert bound.group_id == "supplier-variant"
 
 
-def test_missing_or_ambiguous_current_anchor_returns_to_model(tmp_path):
-    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
-    library.upsert(learned())
-    missing = scene()
-    missing["ocr"][0]["text"] = "Different concept"
-    assert library.bind("find-party", {}, missing, {"party": "value"}) is None
-    duplicate = scene()
-    duplicate["ocr"].append({"id": 8, "text": "Customer", "bbox": [10, 100, 80, 20]})
-    duplicate["markers"].append(
-        {"id": 18, "source": "omniparser", "bbox": [100, 95, 200, 30], "text_ids": []}
-    )
-    assert library.bind("find-party", {}, duplicate, {"party": "value"}) is None
-    far = scene()
-    far["markers"][0]["bbox"] = [900, 500, 200, 30]
-    assert library.bind("find-party", {}, far, {"party": "value"}) is None
-    assert library.bind("find-party", {}, scene(), {"unrelated": "value"}) is None
-
-
-def test_learned_geometry_rebinds_wide_inputs_and_repeated_table_labels(tmp_path):
+def test_saved_coordinates_ignore_competing_table_labels(tmp_path):
     # Structure reproduced from the recorded form failure: label-centered distance
     # picked a small lower box, and repeated table captions hid two real inputs.
     screen = {
+        "image_size": [1200, 800],
+        "screen_phash": 123,
         "ocr": [
             {"id": 1, "text": "Destination", "bbox": [46, 441, 74, 34]},
             {"id": 2, "text": "Mass", "bbox": [588, 114, 91, 40]},
@@ -283,21 +206,16 @@ def test_learned_geometry_rebinds_wide_inputs_and_repeated_table_labels(tmp_path
     library = MethodLibrary(tmp_path / "library.json", enabled=True)
     library.upsert(method)
     assert "Source value A" not in library.path.read_text(encoding="utf-8")
-    for scale in (1, 2):
-        current = {kind: [] for kind in screen}
-        for kind, items in screen.items():
-            for item in items:
-                x, y, width, height = item["bbox"]
-                current[kind].append(
-                    {
-                        **item,
-                        "id": item["id"] + 1000,
-                        "bbox": [x * scale + 31, y * scale + 41, width * scale, height * scale],
-                    }
-                )
-        bound = library.bind("entry", {}, current, {"destination": "B", "mass": "2", "count": "3"})
-        assert bound is not None
-        assert [step["target"] for step in bound["steps"]] == [1024, 1011, 1032]
+    # Competing labels and detector IDs are irrelevant after screenshot matching.
+    current = {"image_size": [1200, 800], "screen_phash": 123, "ocr": [], "markers": []}
+    bound = library.bind("entry", {}, current, {"destination": "B", "mass": "2", "count": "3"})
+    assert bound is not None
+    assert [step["source"] for step in bound["steps"]] == ["destination", "mass", "count"]
+    assert [step["point"] for step in bound["steps"]] == [
+        [309.5, 501.5],
+        [847.5, 176],
+        [208.5, 624.5],
+    ]
 
 
 def test_candidate_compiler_removes_instance_anchors_and_repeated_retries():

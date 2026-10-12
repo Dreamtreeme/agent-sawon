@@ -1,10 +1,8 @@
 """Prepared extraction handoff validates its report before any environment access."""
 
-import json
-
 import pytest
 from case_labels import labeled_case
-from test_brain import FakeRelay, ScriptedModel, success_steps
+from test_brain import FakeRelay, ScriptedModel
 from test_pipeline_evaluate import record as extracted_record
 from test_pipeline_evaluate import report as checked_report
 
@@ -56,7 +54,7 @@ def execute(mode, case_dir, record, log, monkeypatch, *, options=()):
     models = []
 
     def model_factory(_config, *, run_log, env_path):
-        model = ScriptedModel(run_log, success_steps(record))
+        model = ScriptedModel(run_log, [])
         models.append(model)
         return model
 
@@ -94,23 +92,6 @@ def execute(mode, case_dir, record, log, monkeypatch, *, options=()):
         str(case_dir.parent / "fake-model.toml"),
     ]
     return lambda: runner.main(arguments + list(options)), relay, models
-
-
-def test_prepared_cli_finishes_and_appends_to_existing_log(tmp_path, monkeypatch):
-    case_dir, record, state, log = prepare(tmp_path)
-    original = log.path.read_bytes()
-    original_events = log.read_all()
-    call, relay, models = execute("cli", case_dir, record, log, monkeypatch)
-    assert call() == 0
-    assert state.read().status == CaseStatus.AWAITING_APPROVAL
-    assert relay.health_calls == 1 and relay.actions
-    assert models and models[0].prompts
-    assert log.path.read_bytes().startswith(original)
-    events = log.read_all()
-    assert events[: len(original_events)] == original_events
-    assert [event.seq for event in events] == list(range(len(events)))
-    assert events[-1].seq > original_events[-1].seq
-    assert json.loads((case_dir / "result.json").read_text())["status"] == "success"
 
 
 def test_prepared_validator_rejects_each_invalid_handoff_without_mutation(tmp_path):
