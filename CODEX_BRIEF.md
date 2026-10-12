@@ -24,6 +24,12 @@
   작업자·ERP 모두 성공했다. 필드10/10, 저장 행1, 중복0, 비인가 전송0이며
   `task_completed_with_verified_evidence`로 종료했다. 전체 객체 동등성 거절과 HTTP400은
   재발하지 않았다. 이 단일 성공을 다른 회사 일반화나 M1/M2 종료로 확대하지 않는다.
+- 같은 성공 캐시의 웜 파일럿049는 visual cache4건·learned method26개 행동을 사용해 ERP
+  10/10을 저장했지만 작업자는 `repeated_subgoal_failure:task:decision`으로 종료했다.
+  최종 상세 화면에서 기본정보4개와 추가정보6개는 기록했으나 품명 post-save 증거가 빠졌다.
+  모델의 두 완료 제안은 `post_save_model_evidence_incomplete`로 반려됐지만 누락 필드가
+  피드백되지 않았다. 모든 값 확인이라는 명시 완료 조건은 유지하고, 다음 P1 5/7/8에서
+  누락 증거와 재시도 가능한 다음 효과를 구체적으로 전달한다.
 
 ## 2026-10-10 콜드 실행 모델 신뢰 관찰 모드
 
