@@ -12,8 +12,15 @@ from typing import Any
 from anthropic import APIStatusError, transform_schema
 from pydantic import BaseModel
 
-from models.base import EventSink, MeasuredModelClient, ProviderReply, TokenUsage
+from models.base import (
+    EventSink,
+    MeasuredModelClient,
+    ProviderReply,
+    TokenUsage,
+    record_wire_schema,
+)
 from models.pricing import PriceRate
+from models.schema import NullableWireCodec
 
 
 def anthropic_provider_schema(schema: type[BaseModel]) -> dict[str, Any]:
@@ -26,7 +33,15 @@ def anthropic_provider_schema(schema: type[BaseModel]) -> dict[str, Any]:
     grammar branches; local validation still applies defaults, unions and
     cross-field rules to the returned JSON.
     """
-    transformed = transform_schema(schema)
+    return _provider_schema(_screen_codec(schema))
+
+
+def _screen_codec(schema: type[BaseModel]) -> NullableWireCodec:
+    return NullableWireCodec(schema.model_json_schema(), getattr(schema, "anthropic_nulls", {}))
+
+
+def _provider_schema(codec: NullableWireCodec) -> dict[str, Any]:
+    transformed = transform_schema(codec.schema)
 
     def require_properties(node: Any) -> None:
         if isinstance(node, dict):
@@ -77,6 +92,9 @@ class AnthropicClient(MeasuredModelClient):
                 }
             )
         content.append({"type": "text", "text": prompt})
+        codec = _screen_codec(schema)
+        wire_schema = _provider_schema(codec)
+        record_wire_schema(wire_schema, codec=codec.version if codec.fields else "none")
         response = self._sdk.messages.create(
             model=self.model,
             max_tokens=self._max_output_tokens,
@@ -86,7 +104,7 @@ class AnthropicClient(MeasuredModelClient):
                 "effort": self._effort,
                 "format": {
                     "type": "json_schema",
-                    "schema": anthropic_provider_schema(schema),
+                    "schema": wire_schema,
                 },
             },
         )
@@ -100,9 +118,11 @@ class AnthropicClient(MeasuredModelClient):
             cache_write_tokens=cache_write,
         )
         text = "".join(block.text for block in response.content if block.type == "text")
-        # Normalize whitespace only; Pydantic remains the final local contract authority.
+        # Restore the original domain representation before measured local validation.
         if text:
-            text = json.dumps(json.loads(text), ensure_ascii=False, separators=(",", ":"))
+            text = json.dumps(
+                codec.convert(json.loads(text)), ensure_ascii=False, separators=(",", ":")
+            )
         return ProviderReply(
             text=text,
             usage=usage,

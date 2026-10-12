@@ -1,3 +1,5 @@
+import json
+from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,11 +9,13 @@ import pytest
 from PIL import Image
 from pydantic import BaseModel
 
-from brain.graph.matching import ScreenMatch
+from brain.graph.matching import ScreenMatch, ScreenPlan
+from brain.visual.scene import SemanticDetection
 from models.anthropic_client import AnthropicClient, anthropic_provider_schema
 from models.base import TokenUsage
 from models.factory import create_model_client
 from models.pricing import PriceBook
+from models.schema import NullableWireCodec
 from sawon_runtime.storage import RunLog
 
 
@@ -66,8 +70,9 @@ def test_structured_vision_request_and_usage_share_one_measured_call(tmp_path):
     assert sdk.messages.create.call_count == len(log.read_all()) == 1
 
 
-def test_screen_schema_removes_anthropic_optional_grammar_branches():
-    schema = anthropic_provider_schema(ScreenMatch)
+@pytest.mark.parametrize("contract", [ScreenMatch, ScreenPlan, SemanticDetection])
+def test_screen_schema_removes_anthropic_optional_grammar_branches(contract):
+    schema = anthropic_provider_schema(contract)
     optional = []
     unions = []
 
@@ -91,7 +96,7 @@ def test_screen_schema_removes_anthropic_optional_grammar_branches():
 
     inspect(schema)
     assert optional == []
-    assert len(unions) == 9  # Under Anthropic's documented limit of 16.
+    assert unions == []  # Local complexity check; actual provider acceptance is tested separately.
 
 
 def test_long_prompt_tier_changes_all_haiku_rates(tmp_path):
@@ -134,3 +139,100 @@ def test_factory_reads_only_explicit_claude_key_and_disables_retries(tmp_path, m
         "timeout": 60.0,
         "base_url": "https://api.anthropic.com",
     }
+
+
+def test_screen_wire_restores_inline_target_nulls_without_losing_zero_or_source(tmp_path):
+    client, sdk, log = setup(tmp_path)
+    raw = {
+        "screen_kind": "editor",
+        "procedure_step": "task-action",
+        "controls": [],
+        "taught_step_id": "fill-details",
+        "method_id": None,
+        "grid": 0,
+        "row": None,
+        "save_result": None,
+        "steps": [
+            {
+                "target": {"id": 0, "role": "edit", "confidence": 1, "parent_id": None},
+                "action": "fill",
+                "intent": "fill",
+                "source": "hbl_no",
+                "keys": None,
+                "point": [0, 0],
+            },
+            {
+                "target": {"id": 1, "role": "edit", "confidence": 1, "parent_id": 0},
+                "action": "key",
+                "intent": "navigate",
+                "source": None,
+                "keys": "tab",
+                "point": None,
+            },
+        ],
+    }
+    original = deepcopy(raw)
+    original_schema = ScreenMatch.model_json_schema()
+    codec = NullableWireCodec(original_schema, ScreenMatch.anthropic_nulls)
+    encoded = codec.convert(raw, encode=True)
+    assert encoded["steps"][0]["target"]["parent_id"] == -1
+    assert encoded["steps"][0]["target"]["id"] == encoded["grid"] == 0
+    assert encoded["steps"][0]["point"] == [0, 0]
+    assert encoded["steps"][1]["point"] == []
+    assert encoded["steps"][1]["source"] == ""
+    sdk.messages.create.return_value.content[0].text = json.dumps(encoded)
+    result = client.complete_json("current screen", ScreenMatch)
+    assert result.response == ScreenMatch.model_validate(original)
+    assert raw == original
+    assert ScreenMatch.model_json_schema() == original_schema
+    payload = log.read_all()[-1].payload
+    assert payload["wire_schema_codec"] == "nullable-sentinels-v1"
+    assert len(payload["wire_schema_sha256"]) == 64
+    sent = sdk.messages.create.call_args.kwargs["output_config"]["format"]["schema"]
+    assert payload["wire_schema_utf8_bytes"] == len(
+        json.dumps(sent, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    )
+    assert sent["$defs"]["MatchAction"]["properties"]["keys"]["enum"][-1] == ""
+    assert "x-anthropic-null" not in json.dumps(sent)
+    # Invalid nonempty payloads still fail the original domain validation with usage retained.
+    encoded["steps"][1]["keys"] = "not-a-key"
+    sdk.messages.create.return_value.content[0].text = json.dumps(encoded)
+    with pytest.raises(ValueError):
+        client.complete_json("current screen", ScreenMatch)
+    assert log.read_all()[-1].cost.usd is not None
+
+
+def test_wire_metadata_survives_api_failure_and_does_not_leak_to_next_call(tmp_path):
+    import httpx
+    from anthropic import BadRequestError
+
+    client, sdk, log = setup(tmp_path)
+    sdk.messages.create.side_effect = BadRequestError(
+        "grammar too large",
+        response=httpx.Response(400, request=httpx.Request("POST", "https://example.test")),
+        body={"type": "invalid_request_error"},
+    )
+    with pytest.raises(BadRequestError):
+        client.complete_json("screen", ScreenMatch)
+    failed = log.read_all()[-1]
+    assert failed.payload["wire_schema_codec"] == "nullable-sentinels-v1"
+    assert failed.payload["http_status"] == 400
+    assert failed.cost.usd is None
+    assert sdk.messages.create.call_count == 1
+    sdk.messages.create.side_effect = None
+    client.complete_json("number", Answer)
+    succeeded = log.read_all()[-1].payload
+    assert succeeded["wire_schema_codec"] == "none"
+    assert succeeded["wire_schema_sha256"] != failed.payload["wire_schema_sha256"]
+
+
+def test_unannotated_nullable_contract_remains_unchanged():
+    class Document(BaseModel):
+        note: str | None = None
+
+    raw = Document.model_json_schema()
+    codec = NullableWireCodec(raw, {})
+    assert codec.schema == raw
+    assert codec.convert({"note": ""}) == {"note": ""}
+    assert codec.convert({"note": None}) == {"note": None}
+    assert "anyOf" in anthropic_provider_schema(Document)["properties"]["note"]

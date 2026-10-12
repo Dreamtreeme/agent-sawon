@@ -23,6 +23,29 @@ from .validation import safe_validation_errors
 T = TypeVar("T", bound=BaseModel)
 
 _CALL_CONTEXT: ContextVar[dict[str, object] | None] = ContextVar("model_call_context", default=None)
+_REQUEST_METADATA: ContextVar[dict | None] = ContextVar("model_request_metadata", default=None)
+
+
+def record_wire_schema(schema: dict, *, codec: str) -> None:
+    """Record the actual provider schema without exposing prompt or response contents."""
+    metadata = _REQUEST_METADATA.get()
+    if metadata is None:
+        return
+
+    def unions(node) -> int:
+        if isinstance(node, dict):
+            return int("anyOf" in node or isinstance(node.get("type"), list)) + sum(
+                unions(child) for child in node.values()
+            )
+        return sum(unions(child) for child in node) if isinstance(node, list) else 0
+
+    encoded = json.dumps(schema, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    metadata.update(
+        wire_schema_sha256=hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        wire_schema_utf8_bytes=len(encoded.encode("utf-8")),
+        wire_schema_codec=codec,
+        wire_schema_union_count=unions(schema),
+    )
 
 
 @contextmanager
@@ -151,6 +174,8 @@ class MeasuredModelClient(ABC):
             ),
             "cost_basis": "no_api_call" if api_free else "configured_list_price",
         }
+        request_metadata: dict = {}
+        metadata_token = _REQUEST_METADATA.set(request_metadata)
         try:
             payload["request_sha256"] = request_fingerprint(prompt, schema, images)
             reply = self._generate(prompt, schema, images=images)
@@ -169,6 +194,8 @@ class MeasuredModelClient(ABC):
             payload.update(self._failure_metadata(exc))
             raise
         finally:
+            payload.update(request_metadata)
+            _REQUEST_METADATA.reset(metadata_token)
             latency_ms = (perf_counter() - started) * 1000
             payload["usage"] = usage.model_dump() if usage is not None else None
             if reply is not None and reply.output_truncated:

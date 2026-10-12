@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sawon_interfaces import Observation, UIElement
@@ -79,6 +79,10 @@ class Detection(BaseModel):
 
 
 class SemanticDetection(Detection):
+    anthropic_nulls: ClassVar[dict[str, Any]] = {
+        "$defs/ControlMeaning/properties/parent_id": -1,
+    }
+
     controls: list[ControlMeaning] = Field(max_length=500)
     needs_refinement: bool = False
 

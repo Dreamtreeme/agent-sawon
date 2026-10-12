@@ -8,7 +8,7 @@ import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, ClassVar, Literal, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -186,6 +186,17 @@ class MethodChoice(BaseModel):
 class ScreenPlan(MethodChoice):
     """Task decision over a previously grounded screen interpretation."""
 
+    anthropic_nulls: ClassVar[dict[str, Any]] = {
+        "properties/taught_step_id": "",
+        "properties/method_id": "",
+        "properties/grid": -1,
+        "properties/row": -1,
+        "properties/save_result": "",
+        "$defs/MatchAction/properties/source": "",
+        "$defs/MatchAction/properties/keys": "",
+        "$defs/MatchAction/properties/point": [],
+    }
+
     model_config = ConfigDict(extra="forbid")
     procedure_step: str
     steps: list[MatchAction] = Field(default_factory=list, max_length=50)
@@ -205,6 +216,11 @@ class ScreenPlan(MethodChoice):
 
 class ScreenMatch(SemanticDetection, ScreenPlan):
     """Task plan with the same fields, plus current-screen interpretation."""
+
+    anthropic_nulls: ClassVar[dict[str, Any]] = {
+        **ScreenPlan.anthropic_nulls,
+        **SemanticDetection.anthropic_nulls,
+    }
 
     evidence: list[MatchEvidence] = Field(
         default_factory=list,
