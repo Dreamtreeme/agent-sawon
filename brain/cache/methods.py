@@ -630,6 +630,11 @@ class MethodLibrary:
             existing = {item.id: item for item in self.methods()}
             previous = existing.get(method.id)
             if previous is not None:
+                if (
+                    previous.task_contract_sha256 != method.task_contract_sha256
+                    or previous.task_objective != method.task_objective
+                ):
+                    raise ValueError("method_id_task_scope_collision")
                 # The incoming method carries the runtime's successful procedure
                 # order. Runtime promotion may replace obsolete branches with one
                 # fully verified path; import and authoring callers retain variants.

@@ -1,6 +1,7 @@
 """A learned method reaches the existing visual executor with new business inputs."""
 
 import hashlib
+import json
 from uuid import uuid4
 
 import pytest
@@ -229,6 +230,15 @@ def test_learned_method_uses_current_scene_and_executor_without_model(
     ]
     assert model.prompts == []
     assert not any(event.kind == "model_call" for event in brain.log.read_all())
+    reuse = next(
+        event
+        for event in brain.log.read_all()
+        if event.kind == "cache_hit" and event.payload.get("check") == "method_bound"
+    )
+    assert reuse.payload["task_contract_sha256"] == brain.task_instruction_sha256
+    assert reuse.payload["artifact_kind"] == "runtime_trace"
+    assert reuse.payload["revision"] == 1
+    assert reuse.payload["source_transitions"] == []
     education = next(
         event
         for event in brain.log.read_all()
@@ -352,6 +362,19 @@ def test_successful_candidate_installs_versioned_live_library(tmp_path, business
     assert MethodDocument.model_validate_json(
         (brain.case_dir / "method-candidate.json").read_bytes()
     ).methods == [installed]
+    learning_result = json.loads(
+        (brain.case_dir / "method-learning-result.json").read_text(encoding="utf-8")
+    )
+    assert learning_result["task_contract_sha256"] == brain.task_instruction_sha256
+    assert learning_result["methods"] == [
+        {
+            "id": installed.id,
+            "task_contract_sha256": installed.task_contract_sha256,
+            "artifact_kind": installed.artifact_kind,
+            "revision": installed.revision,
+            "source_transitions": installed.source_transitions,
+        }
+    ]
 
     # The next task prefers the successful live revision over the immutable seed.
     library = open_method_library(

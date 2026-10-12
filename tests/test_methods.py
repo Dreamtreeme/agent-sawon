@@ -89,6 +89,22 @@ def test_learned_method_rebinds_new_values_keys_and_current_geometry(tmp_path):
     assert restored.catalog("Unrelated task") == []
 
 
+def test_library_rejects_same_method_id_from_another_task_contract(tmp_path):
+    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
+    first = learned()
+    library.upsert(first)
+    other_task = first.model_copy(
+        update={
+            "task_contract_sha256": "f" * 64,
+        }
+    )
+
+    with pytest.raises(ValueError, match="method_id_task_scope_collision"):
+        library.upsert(other_task)
+
+    assert library.methods() == [first]
+
+
 def test_model_point_method_scales_with_screen_and_requires_stable_context(tmp_path):
     screen = {
         "image_size": [800, 600],

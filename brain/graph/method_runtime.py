@@ -328,6 +328,9 @@ class MethodRuntime:
                 payload={
                     "check": "method_completion_bound",
                     "method_id": method.id,
+                    "task_contract_sha256": method.task_contract_sha256,
+                    "artifact_kind": method.artifact_kind,
+                    "revision": method.revision,
                     "purpose": self.state.purpose,
                     "slot_map": mapping,
                     "evidence_fields": [item.field for item in response.evidence],
@@ -379,6 +382,10 @@ class MethodRuntime:
             payload={
                 "check": "method_bound",
                 "method_id": method.id,
+                "task_contract_sha256": method.task_contract_sha256,
+                "artifact_kind": method.artifact_kind,
+                "revision": method.revision,
+                "source_transitions": method.source_transitions,
                 "group_id": bound.group_id,
                 "purpose": self.state.purpose,
                 "slot_map": mapping,
@@ -404,6 +411,9 @@ class MethodRuntime:
         self.state.blocked_method_ids.add(method.id)
         event = {
             "method_id": method.id,
+            "task_contract_sha256": method.task_contract_sha256,
+            "artifact_kind": method.artifact_kind,
+            "revision": method.revision,
             "group_id": group_id,
             "purpose": self.state.purpose or method.purpose,
             "origin": pending["origin"],
@@ -712,7 +722,18 @@ class MethodRuntime:
             {
                 "status": "candidate" if success and methods else "incomplete",
                 "business_success": success,
+                "task_contract_sha256": self.task_context.task_sha256,
                 "method_count": len(methods),
+                "methods": [
+                    {
+                        "id": method.id,
+                        "task_contract_sha256": method.task_contract_sha256,
+                        "artifact_kind": method.artifact_kind,
+                        "revision": method.revision,
+                        "source_transitions": method.source_transitions,
+                    }
+                    for method in installed_methods or promoted_methods or methods
+                ],
                 "action_group_count": sum(len(item.action_groups) for item in promoted_methods),
                 "completion_count": sum(item.completion is not None for item in promoted_methods),
                 "promoted": promoted,
