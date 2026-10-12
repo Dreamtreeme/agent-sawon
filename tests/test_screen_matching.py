@@ -44,7 +44,6 @@ from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
 from brain.graph.screen_mapping import MAPPING_RULES
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInstruction
-from brain.visual.perception import DETECTION_RULES
 from brain.visual.scene import SceneObservation, SemanticDetection
 from sawon_runtime.storage import RunLog
 
@@ -128,9 +127,7 @@ def test_ocr_text_click_proxy_is_actionable_without_claiming_a_control_role(tmp_
     assert BrainStub.log.read_all() == []
 
 
-def setup_brain(
-    tmp_path, record, responses, *, task_instruction=None, separate_observation_decision=False
-):
+def setup_brain(tmp_path, record, responses, *, task_instruction=None):
     """Initialize through the same task loader used by the screen worker."""
     blocks, boxes, _, meaning = fixture()
 
@@ -189,9 +186,7 @@ def setup_brain(
         relay=relay,
         model=model,
         settings=BrainSettings(
-            perception_mode="visual_only",
             screen_matching=True,
-            separate_observation_decision=separate_observation_decision,
             visual_screen_fill=True,
             task_path=task_path,
         ),
@@ -333,32 +328,6 @@ def test_task_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path, reco
         "e" + str(brain.observation.obs_id.int)
     )
     assert "secret-user" not in model.prompts[0] and "secret-pw" not in model.prompts[0]
-
-
-def test_observation_semantics_are_reconciled_before_a_separate_task_plan(
-    tmp_path, record, task_instruction
-):
-    meaning = fixture()[-1].model_copy(update={"screen_kind": "query"})
-    brain, model, _, _, _, _ = setup_brain(
-        tmp_path,
-        record,
-        [meaning.model_dump(), named_response()],
-        separate_observation_decision=True,
-        task_instruction=task_instruction,
-    )
-
-    brain._observe()
-    assert len(model.prompts) == 1
-    assert model.prompts[0].startswith(DETECTION_RULES)
-    assert brain.visual_proposal is None
-
-    assert brain._select_node() == "review"
-    assert len(model.prompts) == 2
-    assert model.prompts[1].startswith(MAPPING_RULES)
-    assert any(
-        event.payload.get("check") == "grounded_interpretation_planned"
-        for event in brain.log.read_all()
-    )
 
 
 def test_named_current_evidence_is_bound_without_a_second_grounding_call(

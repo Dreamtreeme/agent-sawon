@@ -21,7 +21,7 @@ class MethodSettings(BaseModel):
     enabled: bool = False
     path: Path = Path("cases/methods.json")
     promotion_path: Path | None = None
-    compiled_only: bool = False
+    compiled_only: bool = True
     max_phash_distance: int = Field(default=6, ge=0, le=64)
 
 
@@ -58,9 +58,6 @@ class BrainSettings(BaseModel):
     methods: MethodSettings = Field(default_factory=MethodSettings)
     recovery_enabled: bool = False
 
-    # 시각 좌표 클릭 메인 + 최소 OS 신호 보조
-    perception_mode: Literal["legacy_uia", "visual_only", "hybrid"] = "legacy_uia"
-
     visual_min_confidence: float = Field(default=0.8, ge=0, le=1, allow_inf_nan=False)
     visual_input_blur_recheck: bool = True
     visual_click_refinement: bool = True
@@ -68,16 +65,10 @@ class BrainSettings(BaseModel):
     visual_model_led_semantics: bool = False
     visual_model_only_review: bool = False
     visual_action_phash_distance: int = Field(default=16, ge=0, le=64)
-    screen_matching: bool = False
-    separate_observation_decision: bool = True
+    screen_matching: bool
     task_path: Path | None = None
     visual_detector: DetectorSettings = Field(default_factory=DetectorSettings)
     visual_merge: MergeSettings = Field(default_factory=MergeSettings)
-
-    @property
-    def is_visual(self) -> bool:
-        """순수 비전 또는 하이브리드 시각 모드 활성화 여부."""
-        return self.perception_mode in {"visual_only", "hybrid"}
 
     @classmethod
     def load(cls, path: Path) -> "BrainSettings":

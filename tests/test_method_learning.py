@@ -25,6 +25,7 @@ def source_trace():
         "task": {"objective": "Enter the requested record."},
         "screen": {
             "image_size": [800, 600],
+            "screen_phash": 123,
             "ocr": [{"id": 4, "text": "Reference", "bbox": [10, 40, 70, 20]}],
             "markers": [{"id": 10, "source": "omniparser", "bbox": [90, 38, 150, 25]}],
         },
@@ -59,7 +60,7 @@ def source_trace():
     }
 
 
-def test_learned_method_rebinds_new_source_and_geometry_without_another_call(tmp_path):
+def test_learned_method_reuses_saved_coordinate_with_new_source_without_another_call(tmp_path):
     trace = source_trace()
     draft = MethodMeaning(
         purpose="Enter a record reference in its labeled field",
@@ -88,13 +89,15 @@ def test_learned_method_rebinds_new_source_and_geometry_without_another_call(tmp
         max_cost_usd=Decimal(0),
     )
     current = {
-        "ocr": [{"id": 80, "text": "Reference", "bbox": [70, 120, 70, 20]}],
-        "markers": [{"id": 90, "source": "omniparser", "bbox": [150, 118, 150, 25]}],
+        "image_size": [800, 600],
+        "screen_phash": 123,
+        "ocr": [],
+        "markers": [],
     }
     bound = MethodLibrary(path, enabled=True).bind(
         method.id, {"reference": "new_key"}, current, {"new_key": "NEW-REFERENCE-B"}
     )
-    assert bound["steps"][0]["target"] == 90
+    assert bound["steps"][0]["point"] == [165.0, 50.5]
     assert bound["steps"][0]["source"] == "new_key"
     assert method.source_transitions == [
         "recorded-case/run_log.jsonl:5",

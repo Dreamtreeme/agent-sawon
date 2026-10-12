@@ -19,9 +19,8 @@ from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import ControlMeaning, contains
 from sawon_runtime.storage import atomic_write_json
 
-# Relative label-to-control geometry is scale invariant. A large score means the
-# only same-label marker belongs to a different part of the form, so method reuse
-# must yield to visual cache or the model instead of selecting the least-bad box.
+# Completion evidence still binds visible values through label-to-control geometry.
+# A large score means the matching label belongs to a different part of the form.
 MAX_RELATIVE_GEOMETRY_SCORE = 2.0
 
 
@@ -40,8 +39,6 @@ class MethodTarget(BaseModel):
     relation: Literal["inside", "right", "left", "below", "above"] | None = None
     marker_source: str | None = None
     anchor_geometry: tuple[float, float, float, float] | None = None
-    screen_relative_point: tuple[float, float] | None = None
-    anchor_relative_point: tuple[float, float] | None = None
     point: tuple[float, float] | None = None
     bbox: tuple[int, int, int, int] | None = None
 
@@ -49,16 +46,8 @@ class MethodTarget(BaseModel):
     def has_rebind_strategy(self):
         if self.point is not None and self.bbox is not None:
             return self
-        if self.anchor_relative_point is not None:
-            if not self.anchor_texts:
-                raise ValueError("method_anchor_relative_point_requires_anchor")
-            return self
-        if self.screen_relative_point is not None:
-            if any(coordinate < 0 or coordinate > 1 for coordinate in self.screen_relative_point):
-                raise ValueError("method_relative_point_outside_screen")
-            return self
         if not self.anchor_texts or self.relation is None:
-            raise ValueError("method_target_requires_anchor_relation_or_screen_point")
+            raise ValueError("method_target_requires_coordinate_or_anchor_relation")
         return self
 
 
@@ -69,7 +58,6 @@ class MethodAction(BaseModel):
     intent: str
     slot: str | None = None
     keys: str | None = None
-    relative_point: tuple[float, float] | None = None
     point: tuple[float, float] | None = None
 
 
@@ -176,27 +164,15 @@ def compile_method_candidate(
     groups = []
     signatures = set()
     for group in method.action_groups:
-        targets = []
-        for target in group.targets:
-            anchors = [text for text in target.anchor_texts if not instance_text(text)]
-            if (
-                target.point is None
-                and target.screen_relative_point is None
-                and target.anchor_relative_point is None
-                and (
-                    not anchors
-                    or not any(
-                        len(normalize(text)) >= 2 or not normalize(text).isdigit()
-                        for text in anchors
-                    )
-                )
-            ):
-                break
-            targets.append(target.model_copy(update={"anchor_texts": anchors}))
-        else:
+        if (
+            group.screen_phash is not None
+            and group.image_size is not None
+            and all(
+                target.point is not None and target.bbox is not None for target in group.targets
+            )
+        ):
             compiled = group.model_copy(
                 update={
-                    "targets": targets,
                     "purpose": redact(group.purpose),
                     "expected_result": redact(group.expected_result),
                 }
@@ -211,10 +187,6 @@ def compile_method_candidate(
                             "role": target.role,
                             "point": target.point,
                             "bbox": target.bbox,
-                            "anchors": target.anchor_texts,
-                            "relation": target.relation,
-                            "screen_relative_point": target.screen_relative_point,
-                            "anchor_relative_point": target.anchor_relative_point,
                         }
                         for target in compiled.targets
                     ],
@@ -345,13 +317,14 @@ def method_from_match(
     task_objective: str = "",
     task_contract_sha256: str = "",
 ) -> LearnedMethod | None:
-    """Retain a model's meaning; replace its observed handles with label relations.
+    """Retain executed screen-bound coordinates and parameterize their input sources.
 
-    The caller supplies model-extracted purpose and input roles. Geometry and source
-    bindings come from actual executed actions, not a second model reconstruction.
+    The caller supplies model-extracted purpose and input roles. Coordinates, screenshot
+    identity and source bindings come from executed actions, not a second reconstruction.
     """
+    if screen.get("screen_phash") is None or not screen.get("image_size"):
+        return None
     markers = {item["id"]: item for item in screen.get("markers", [])}
-    blocks = {item["id"]: item for item in screen.get("ocr", [])}
     controls = {item["id"]: item for item in response.get("controls", [])}
     steps = response.get("steps", [])
     if not steps or response.get("operation", "act") != "act":
@@ -373,75 +346,26 @@ def method_from_match(
             return None
         target_id = step["target"]
         if target_id not in targets:
-            if screen.get("screen_phash") is not None and screen.get("image_size"):
-                point = step.get("point")
-                if point is None and marker is not None:
-                    x, y, width, height = marker["bbox"]
-                    point = [x + width / 2, y + height / 2]
-                if point is None:
-                    return None
-                selected = screen.get("selected_fields", {}).get(str(target_id), {})
-                bbox = selected.get("bbox") or (
-                    marker["bbox"] if marker else [int(point[0]), int(point[1]), 1, 1]
-                )
-                target = MethodTarget(
-                    name=selected.get("name")
-                    or source
-                    or control.get("visual_description")
-                    or f"target_{len(targets) + 1}",
-                    role=control["role"],
-                    point=tuple(point),
-                    bbox=tuple(bbox),
-                )
-            elif marker is None:
-                point = step.get("point")
-                image_size = screen.get("image_size")
-                if (
-                    point is None
-                    or not image_size
-                    or len(image_size) != 2
-                    or image_size[0] <= 0
-                    or image_size[1] <= 0
-                ):
-                    return None
-                label_ids = control.get("label_ids", [])
-                target = MethodTarget(
-                    name=f"target_{len(targets) + 1}",
-                    role=control["role"],
-                    anchor_texts=[
-                        blocks[item]["text"]
-                        for item in label_ids
-                        if item in blocks and blocks[item]["text"].strip()
-                    ],
-                    marker_source="model_point",
-                    screen_relative_point=(
-                        point[0] / image_size[0],
-                        point[1] / image_size[1],
-                    ),
-                )
-            else:
-                target = _method_target(
-                    name=f"target_{len(targets) + 1}",
-                    marker=marker,
-                    control=control,
-                    blocks=blocks,
-                    allow_literal_anchor=True,
-                )
-            if target is None:
+            point = step.get("point")
+            if point is None and marker is not None:
+                x, y, width, height = marker["bbox"]
+                point = [x + width / 2, y + height / 2]
+            if point is None:
                 return None
+            selected = screen.get("selected_fields", {}).get(str(target_id), {})
+            bbox = selected.get("bbox") or (
+                marker["bbox"] if marker else [int(point[0]), int(point[1]), 1, 1]
+            )
+            target = MethodTarget(
+                name=selected.get("name")
+                or source
+                or control.get("visual_description")
+                or f"target_{len(targets) + 1}",
+                role=control["role"],
+                point=tuple(point),
+                bbox=tuple(bbox),
+            )
             targets[target_id] = target
-        point = None
-        if (
-            targets[target_id].point is None
-            and marker is not None
-            and step["action"] in {"click", "double_click"}
-        ):
-            if step.get("point") is None:
-                return None
-            x, y, w, h = marker["bbox"]
-            point = ((step["point"][0] - x) / w, (step["point"][1] - y) / h)
-            if not all(0 <= coordinate <= 1 for coordinate in point):
-                return None
         actions.append(
             MethodAction(
                 target=targets[target_id].name,
@@ -449,8 +373,7 @@ def method_from_match(
                 intent=step["intent"],
                 slot=by_source.get(source),
                 keys=step.get("keys"),
-                relative_point=point,
-                point=step.get("point") if targets[target_id].point is not None else None,
+                point=step.get("point") or targets[target_id].point,
             )
         )
     group = MethodActionGroup(
@@ -560,35 +483,6 @@ def _candidate_score(box: list | tuple, anchors: list[dict], relation: str) -> f
 def _bind_target(target: MethodTarget, screen: dict) -> tuple[dict, list[int]] | None:
     if target.point is not None:
         return None  # Group-level image match is required; coordinates alone are not value proof.
-    if target.anchor_relative_point is not None or target.screen_relative_point is not None:
-        anchors = []
-        for text in target.anchor_texts:
-            found = [
-                block
-                for block in screen.get("ocr", [])
-                if normalize(block["text"]) == normalize(text)
-            ]
-            if len(found) != 1:
-                return None
-            anchors.append(found[0])
-        label_ids = [anchor["id"] for anchor in anchors]
-        if target.anchor_relative_point is not None:
-            left, top, width, height = _anchor_box(anchors)
-            x = left + target.anchor_relative_point[0] * width
-            y = top + target.anchor_relative_point[1] * height
-        else:
-            image_size = screen.get("image_size")
-            if not image_size or len(image_size) != 2 or image_size[0] <= 0 or image_size[1] <= 0:
-                return None
-            x = target.screen_relative_point[0] * image_size[0]
-            y = target.screen_relative_point[1] * image_size[1]
-        marker_id = 1_000_000_000 + int(hashlib.sha256(target.name.encode()).hexdigest()[:8], 16)
-        return {
-            "id": marker_id,
-            "source": "learned_point",
-            "bbox": [x - 1, y - 1, 2, 2],
-            "text_ids": [],
-        }, label_ids
     matches = []
     for text in target.anchor_texts:
         found = [b for b in screen["ocr"] if normalize(b["text"]) == normalize(text)]
@@ -630,6 +524,34 @@ def _marker_text_ids(marker: dict, screen: dict) -> list[int]:
     if marker["source"] == "ocr":
         return list(marker.get("text_ids", []))
     return [block["id"] for block in screen["ocr"] if contains(marker["bbox"], block["bbox"])]
+
+
+def _coordinate_bindings(
+    group: MethodActionGroup, screen: dict, max_phash_distance: int
+) -> dict[str, tuple[dict, list[int]]] | None:
+    current_hash = screen.get("screen_phash")
+    if (
+        group.screen_phash is None
+        or current_hash is None
+        or tuple(screen.get("image_size", ())) != group.image_size
+        or hash_distance(group.screen_phash, current_hash) > max_phash_distance
+    ):
+        return None
+    first_id = max((marker["id"] for marker in screen.get("markers", [])), default=0) + 1
+    if any(target.point is None or target.bbox is None for target in group.targets):
+        return None
+    return {
+        target.name: (
+            {
+                "id": first_id + index,
+                "source": "learned_point",
+                "bbox": list(target.bbox),
+                "text_ids": [],
+            },
+            [],
+        )
+        for index, target in enumerate(group.targets)
+    }
 
 
 class MethodLibrary:
@@ -733,7 +655,6 @@ class MethodLibrary:
         if method is None:
             return None
         sources = {slot.name: slot_map.get(slot.name, slot.source_key) for slot in method.slots}
-        visible_text = {normalize(block["text"]) for block in screen.get("ocr", [])}
         for group in method.action_groups:
             if group_id is not None and group.id != group_id:
                 continue
@@ -744,37 +665,8 @@ class MethodLibrary:
                 and current_kind != group.screen_kind
             ):
                 continue
-            if group.screen_phash is not None:
-                current_hash = screen.get("screen_phash")
-                if (
-                    current_hash is None
-                    or tuple(screen.get("image_size", ())) != group.image_size
-                    or hash_distance(group.screen_phash, current_hash) > self.max_phash_distance
-                ):
-                    continue
-                first_id = max((m["id"] for m in screen.get("markers", [])), default=0) + 1
-                bound = {
-                    target.name: (
-                        {
-                            "id": first_id + i,
-                            "source": "learned_point",
-                            "bbox": list(target.bbox),
-                            "text_ids": [],
-                        },
-                        [],
-                    )
-                    if target.point is not None and target.bbox is not None
-                    else None
-                    for i, target in enumerate(group.targets)
-                }
-            else:
-                if any(
-                    not any(normalize(anchor) in text for text in visible_text)
-                    for anchor in group.context_anchors
-                ):
-                    continue
-                bound = {target.name: _bind_target(target, screen) for target in group.targets}
-            if any(value is None for value in bound.values()):
+            bound = _coordinate_bindings(group, screen, self.max_phash_distance)
+            if bound is None:
                 continue
             if len({value[0]["id"] for value in bound.values()}) != len(bound):
                 continue
@@ -791,22 +683,8 @@ class MethodLibrary:
                         else [b["id"] for b in screen["ocr"] if contains(marker["bbox"], b["bbox"])]
                     ),
                     confidence=1,
-                    confidence_policy=(
-                        "argmax"
-                        if target.point is not None
-                        or target.screen_relative_point is not None
-                        or target.anchor_relative_point is not None
-                        else "threshold"
-                    ),
-                    visual_description=(
-                        target.name
-                        if target.point is not None
-                        else "learned screen-relative point"
-                        if target.screen_relative_point is not None
-                        else "learned anchor-relative point"
-                        if target.anchor_relative_point is not None
-                        else ""
-                    ),
+                    confidence_policy="argmax",
+                    visual_description=target.name,
                 ).model_dump(mode="json")
             for action in group.actions:
                 marker, _ = bound[action.target]
@@ -816,15 +694,8 @@ class MethodLibrary:
                 target = next(item for item in group.targets if item.name == action.target)
                 chosen = action.point or target.point
                 point = list(chosen) if chosen is not None else None
-                if point is None and (
-                    target.screen_relative_point is not None
-                    or target.anchor_relative_point is not None
-                ):
-                    x, y, width, height = marker["bbox"]
-                    point = [x + width / 2, y + height / 2]
-                if point is None and action.relative_point is not None:
-                    x, y, w, h = marker["bbox"]
-                    point = [x + action.relative_point[0] * w, y + action.relative_point[1] * h]
+                if point is None:
+                    break
                 steps.append(
                     {
                         "target": marker["id"],
@@ -836,17 +707,16 @@ class MethodLibrary:
                     }
                 )
             else:
-                if group.screen_phash is not None:
-                    for target in group.targets:
-                        marker, _ = bound[target.name]
-                        screen.setdefault("markers", []).append(
-                            {**marker, "source": "model_selected", "candidate_confidence": 1}
-                        )
-                        screen.setdefault("selected_fields", {})[str(marker["id"])] = {
-                            "name": target.name,
-                            "bbox": list(target.bbox),
-                            "role": target.role,
-                        }
+                for target in group.targets:
+                    marker, _ = bound[target.name]
+                    screen.setdefault("markers", []).append(
+                        {**marker, "source": "model_selected", "candidate_confidence": 1}
+                    )
+                    screen.setdefault("selected_fields", {})[str(marker["id"])] = {
+                        "name": target.name,
+                        "bbox": list(target.bbox),
+                        "role": target.role,
+                    }
                 return BoundMethod(
                     method.id,
                     group.id,
@@ -880,6 +750,9 @@ class MethodLibrary:
         controls: dict[int, dict] = {}
         evidence: dict[str, dict] = {}
         for group in method.action_groups:
+            bound = _coordinate_bindings(group, screen, self.max_phash_distance)
+            if bound is None:
+                continue
             targets = {target.name: target for target in group.targets}
             for action in group.actions:
                 if action.action != "fill" or action.slot is None:
@@ -888,10 +761,7 @@ class MethodLibrary:
                 target = targets.get(action.target)
                 if source is None or source not in values or target is None or source in evidence:
                     continue
-                bound = _bind_target(target, screen)
-                if bound is None:
-                    continue
-                marker, label_ids = bound
+                marker, label_ids = bound[target.name]
                 text_ids = _marker_text_ids(marker, screen)
                 visible = [blocks[text_id]["text"] for text_id in text_ids if text_id in blocks]
                 if visible:

@@ -125,7 +125,6 @@ def test_warm_compiler_preserves_successful_model_points_and_trace_order(tmp_pat
     assert [group.trace_index for group in method.action_groups] == [0, 1]
     assert method.action_groups[1].predecessor_group_ids == [method.action_groups[0].id]
     assert [group.targets[0].point for group in method.action_groups] == [(200, 300), (700, 550)]
-    assert all(group.targets[0].screen_relative_point is None for group in method.action_groups)
     path = tmp_path / "warm-methods.json"
     atomic_write_json(path, MethodDocument(methods=[method]))
     current = screen("Shipment editor")
@@ -146,6 +145,10 @@ def test_warm_compiler_preserves_successful_model_points_and_trace_order(tmp_pat
 def test_warm_compiler_rejects_missing_input():
     with pytest.raises(ValueError, match="warm_method_missing_sources:hbl_no"):
         compile_warm_method(source(), candidates(), draft(groups=("c001",)), method_id="bad")
+    without_capture = candidates()
+    without_capture[0].screen.pop("screen_phash")
+    with pytest.raises(ValueError, match="warm_method_candidate_requires_reference_screenshot"):
+        compile_warm_method(source(), without_capture, draft(), method_id="bad")
 
 
 def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):

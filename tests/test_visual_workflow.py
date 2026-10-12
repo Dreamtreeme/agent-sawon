@@ -145,7 +145,8 @@ def test_caret_recheck_failure_rules_are_local_and_independent(tmp_path, monkeyp
             relay=relay,
             model=ScriptedModel(log, []),
             settings=BrainSettings(
-                perception_mode="visual_only", visual_input_blur_recheck=enabled
+                screen_matching=False,
+                visual_input_blur_recheck=enabled,
             ),
             case_dir=case_dir,
             run_log=log,

@@ -36,7 +36,10 @@ def arguments(tmp_path):
         encoding="utf-8",
     )
     brain_config = tmp_path / "brain.toml"
-    brain_config.write_text("max_cost_usd = 0.4\n", encoding="utf-8")
+    brain_config.write_text(
+        "screen_matching = false\nmax_cost_usd = 0.4\n",
+        encoding="utf-8",
+    )
     pipeline_config = tmp_path / "pipeline.toml"
     pipeline_config.write_text("max_cost_usd = 0.5\n", encoding="utf-8")
     return [

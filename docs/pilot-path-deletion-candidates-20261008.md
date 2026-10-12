@@ -1,5 +1,8 @@
 # 현재 파일럿 밖 코드의 삭제 후보 검토
 
+> 역사 기록: 이 문서의 분리 관찰 옵션과 구형 UIA/하이브리드 모드 선택은
+> 2026-10-12에 삭제됐다. 현재 실행기는 항상 비주얼 릴레이와 OCR을 구성한다.
+
 후속 상태: 구형 Procedure 진입 경로와 전용 필터·프롬프트 제거를 완료했다.
 아래 이관 중간 기록의 보류 항목 중 해당 범위는 해소됐으며,
 [1단계 완료 기록](refactor-task-only-20261008.md)을 거쳐 단일 `ActionCapability`로
@@ -59,7 +62,6 @@ core 및 bench의 Python 소스에서 이름 참조를 검색하고 core 설정 
 | 구형 절차 후보 필터와 프롬프트 | matching.py RULES/PLAN_RULES, exclude_current_navigation_step:1274, match_screen의 procedure 분기:1393 부근 | task 경로는 task_action_contract로 후보 생성, TASK_RULES 사용 | 구형 Procedure 폐기와 묶어서 제거. **ProcedureStep은 task_action_contract:1301도 반환하므로 삭제 대상 아님**. procedure라는 문자열을 일괄 삭제하면 현재 사용자 교육까지 손상 |
 | 구형 단계별 업무 상태·지시 | graph/context.py의 duplicate_query/enter/final_query 지시; graph/policy.py의 해당 규칙; engine의 task_instruction 없는 분기 | 현재 phase=task, 사용자 교육 기반 경로 | 공통 정책·자격증명·저장 결과 전이와 섞여 있음. 파일 전체 삭제 금지. tests/test_brain.py 및 구형 matching 테스트의 보장 내용을 현재 task 테스트로 이관한 뒤 구형 분기만 제거 |
 | 비 screen_matching 결정/상위 모델 복구 분기 | engine.py:1357 _choose_decision의 screen_matching 조기 반환 이후; brain.run의 recovery-model 설정 | screen_matching=true, recovery_enabled=false | 현 파일럿에서는 배제되나 공개 설정으로 도달 가능. 지원 종료 여부 보류. **이미지 좌표 보완과 다른 기능**이므로 refinement 모듈을 함께 지우면 안 됨 |
-| legacy_uia 및 hybrid 모드 선택 | settings.py:59,88; relay.py visual 분기; engine 초기화 | visual_only 실행 | legacy 지원 종료 시 조건부 정리. hybrid는 is_visual에는 포함되지만 engine.py:369 perception 생성 조건은 visual_only만 허용하여 경로 불일치도 있음. 이를 ‘미사용이므로 안전’으로 처리하면 안 됨 |
 | flat_fields 비교 옵션 | observe/summary.py:114–163; settings.py:29; brain.run summary CLI | label_grouped 지정 | 테스트와 이전 비교 프로토콜에서 사용. 요약 비교 기능 폐기 확정 전 보류. summarize 전체는 공통 함수라 유지 |
 
 조건부 후보는 ‘아무도 호출하지 않는 코드’가 아니다. 현재 제품 방향과 다른 경로를 유지하고 있어 삭제 검토 대상으로 등록한 것이다. 현재 task 경로로 회귀 검증을 옮기기 전에 연관 테스트를 통째로 지우지 않는다.
@@ -85,7 +87,7 @@ core 및 bench의 Python 소스에서 이름 참조를 검색하고 core 설정 
 
 1. 소비자 없는 설정 4개를 작은 변경으로 정리하되 외부 설정 호환성 확인.
 2. 구형 --procedure 입력 및 해당 프롬프트/후보 필터 폐기를 하나의 범위로 다룸. 현재 task가 재사용하는 ProcedureStep 등은 보존.
-3. 이후 구형 업무 phase와 non-screen_matching/legacy_uia를 각각 별도 변경으로 검토. 공통 함수까지 확대 삭제하지 않음.
+3. 이후 구형 업무 phase와 non-screen_matching을 각각 별도 변경으로 검토. 공통 함수까지 확대 삭제하지 않음.
 4. 현재 중단 원인인 증거 제거·잘못된 화면 의미 재사용은 별도 결함 수정. 이들은 이번 실행에서 실제 사용되므로 레거시 삭제로 해결될 문제가 아님.
 
 최초 조사에서는 코드 삭제, 테스트 삭제, 유료 재실행, 커밋을 수행하지 않았다. 전체 테스트도 문서 조사만으로는 재실행하지 않았다.
@@ -96,8 +98,8 @@ core 및 bench의 Python 소스에서 이름 참조를 검색하고 core 설정 
 
 동일 동작인 중복 조건도 두 곳 정리했다.
 
-- brain/run.py: `is_visual or perception_mode == visual_only`를 `is_visual`로 단순화. is_visual이 이미 visual_only/hybrid를 포함한다.
-- brain/graph/engine.py: visual_only 분기 내부의 항상 참인 is_visual 검사를 제거. OCR 필수 검사와 기존 perception 생성 범위는 유지한다. hybrid 경로 불일치는 이번 정리에서 수정하지 않았다.
+- 후속 변경에서 모드 선택 필드와 파생 속성을 삭제했다. `brain.run`은 비주얼 릴레이와
+  OCR을 항상 구성하고, 화면 매칭은 task와 OCR 주입을 함께 요구한다.
 
 구형 Procedure 경로는 아직 제거하지 않았다. tests/test_screen_matching.py의 공통 setup_brain이 procedure_path를 사용하여 입력·좌표·저장 등 공유 동작도 검증한다. 이를 함께 지우면 현재 task 경로의 검증까지 잃을 수 있다. 먼저 공유 동작 테스트를 TaskInstruction 기반으로 이관하고 구형 계약 전용 테스트를 분리하는 후속 변경이 필요하다. ProcedureStep 등 현재 코드에서 사용 중인 계약은 그대로 둔다.
 

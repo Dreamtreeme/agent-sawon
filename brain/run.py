@@ -101,17 +101,15 @@ def main(argv: list[str] | None = None) -> int:
             os.environ.get("SAWON_RELAY_TOKEN", ""),
             timeout=settings.http_timeout_seconds,
             max_depth=settings.observation_max_depth,
-            visual=settings.is_visual,
+            visual=True,
         )
 
-        visual_ocr = None
-        if settings.is_visual:
-            if args.visual_ocr_config is None:
-                raise ValueError("Visual mode requires --visual-ocr-config")
-            from pipeline.ocr import PaddleOcrEngine
-            from pipeline.schemas import PipelineSettings
+        if args.visual_ocr_config is None:
+            raise ValueError("Visual execution requires --visual-ocr-config")
+        from pipeline.ocr import PaddleOcrEngine
+        from pipeline.schemas import PipelineSettings
 
-            visual_ocr = PaddleOcrEngine(PipelineSettings.load(args.visual_ocr_config))
+        visual_ocr = PaddleOcrEngine(PipelineSettings.load(args.visual_ocr_config))
 
         model = create_model_client(args.model_config, run_log=log, env_path=args.env_path)
         recovery_model = (

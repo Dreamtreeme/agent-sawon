@@ -65,14 +65,15 @@ def execute(mode, case_dir, record, log, monkeypatch, *, options=()):
             goal="Enter checked extraction",
             relay=relay,
             model=model,
-            settings=BrainSettings(),
+            settings=BrainSettings(screen_matching=False),
             case_dir=case_dir,
             run_log=log,
             prepared_case=True,
+            visual_ocr=object(),
         )
         return brain.run, relay, models
     settings = case_dir.parent / "brain.toml"
-    settings.write_text("", encoding="utf-8")
+    settings.write_text("screen_matching = false\n", encoding="utf-8")
     monkeypatch.setattr(runner, "HttpRelay", lambda *args, **kwargs: relay)
     monkeypatch.setattr(runner, "create_model_client", model_factory)
     monkeypatch.setattr(runner.CallBudget, "from_config", lambda _path: None)

@@ -67,13 +67,10 @@ that run: select candidates and stable screen context only; never invent, edit, 
 action, target, input source, coordinate, or marker. Preserve increasing trace order. Remove only
 retries and exploratory actions whose effect is represented by a later successful candidate.
 Retain every business and credential input source, the command that submits login, the final save
-command, and navigation needed to reach those actions. A screen-relative model point is a valid
-learned target when it succeeded in the cold run. For every selected candidate containing such a
-point without a reference screenshot, context_anchors must contain stable OCR strings
-visible on that screen that
-distinguish the screen; exclude case values, transient messages, dates, and counters. For detected
-targets, anchors may be empty when labels already distinguish them. Describe only the selected
-batch's purpose and expected immediate result. Screenshot-bound coordinates require no OCR anchors.
+command, and navigation needed to reach those actions. Retain the exact successful coordinates;
+the runtime requires the same viewport and a screenshot pHash within its configured distance.
+context_anchors are explanatory only; exclude case values, transient messages, dates, and counters.
+Describe only the selected batch's purpose and expected immediate result.
 Return candidate IDs exactly as supplied.
 """
 
@@ -267,17 +264,9 @@ def compile_warm_method(
     previous_id = None
     refs = []
     for selection, candidate in zip(assembly.groups, selected, strict=True):
-        raw_ids = {item["id"] for item in candidate.screen.get("markers", [])}
-        has_model_point = any(
-            step["target"] not in raw_ids for step in candidate.response.get("steps", [])
-        )
+        if candidate.screen.get("screen_phash") is None:
+            raise ValueError("warm_method_candidate_requires_reference_screenshot")
         visible = {str(block["text"]) for block in candidate.screen.get("ocr", [])}
-        if (
-            has_model_point
-            and candidate.screen.get("screen_phash") is None
-            and not selection.context_anchors
-        ):
-            raise ValueError("warm_method_point_target_requires_context_anchor")
         if any(
             not any(anchor.casefold() in text.casefold() for text in visible)
             for anchor in selection.context_anchors
@@ -306,44 +295,8 @@ def compile_warm_method(
         )
         if fragment is None:
             raise ValueError("warm_method_candidate_could_not_be_compiled")
-        compiled_targets = []
-        for target in fragment.action_groups[0].targets:
-            if target.screen_relative_point is None:
-                compiled_targets.append(target)
-                continue
-            anchors = []
-            for anchor in selection.context_anchors:
-                found = [
-                    block
-                    for block in candidate.screen.get("ocr", [])
-                    if anchor.casefold() in str(block["text"]).casefold()
-                ]
-                if len(found) != 1:
-                    raise ValueError("warm_method_point_anchor_must_be_unique")
-                anchors.append(found[0])
-            left = min(item["bbox"][0] for item in anchors)
-            top = min(item["bbox"][1] for item in anchors)
-            right = max(item["bbox"][0] + item["bbox"][2] for item in anchors)
-            bottom = max(item["bbox"][1] + item["bbox"][3] for item in anchors)
-            point = (
-                target.screen_relative_point[0] * candidate.screen["image_size"][0],
-                target.screen_relative_point[1] * candidate.screen["image_size"][1],
-            )
-            compiled_targets.append(
-                target.model_copy(
-                    update={
-                        "anchor_texts": [str(item["text"]) for item in anchors],
-                        "screen_relative_point": None,
-                        "anchor_relative_point": (
-                            (point[0] - left) / max(1, right - left),
-                            (point[1] - top) / max(1, bottom - top),
-                        ),
-                    }
-                )
-            )
         group = fragment.action_groups[0].model_copy(
             update={
-                "targets": compiled_targets,
                 "trace_index": candidate.trace_index,
                 "predecessor_group_ids": [] if previous_id is None else [previous_id],
             }

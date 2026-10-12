@@ -29,8 +29,8 @@ python -m brain.demo_learning.warm_methods --source-case cases/cold/case --visua
 
 The model selects and orders immutable cached batches; local code retains their exact actions and
 input keys. Compilation requires a successful source result, covers every observed input source and
-login/save intent, and rejects unscoped temporary points. Successful model-created coordinates are
-stored relative to stable OCR context so a moved or scaled layout can be rebound before execution.
+login/save intent, and rejects candidates without a reference screenshot. Successful coordinates
+are reused only when viewport size and screenshot pHash match the recorded screen.
 The result is marked `warm_compiled`; configure `methods.compiled_only=true` so partial cold trace
 fragments are not replayed as finished warm methods. The compilation directory records its input,
 request, model draft, cost, and result for review.

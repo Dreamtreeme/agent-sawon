@@ -19,6 +19,11 @@ from brain.task_instruction import TaskInputRecord, TaskInstruction
 from sawon_runtime.storage import RunLog
 
 
+class PassthroughPerception:
+    def observe(self, observation):
+        return observation
+
+
 def test_shipment_task_declares_duplicate_identity_input():
     task = TaskInstruction.model_validate_json(
         (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_bytes()
@@ -177,9 +182,13 @@ def test_generic_task_policy_uses_evidence_ledger_to_authorize_save(tmp_path):
         goal="Save the supplied invoice.",
         relay=relay,
         model=ScriptedModel(log, []),
-        settings=BrainSettings(visual_model_only_review=True),
+        settings=BrainSettings(
+            screen_matching=False,
+            visual_model_only_review=True,
+        ),
         case_dir=tmp_path,
         run_log=log,
+        visual_ocr=object(),
     )
     brain.phase = "task"
     brain.task_instruction = TaskInstruction(
@@ -250,9 +259,10 @@ def test_generic_search_does_not_require_or_mutate_legacy_query_state(tmp_path):
         goal="Find the supplied invoice in the current business system.",
         relay=relay,
         model=ScriptedModel(log, []),
-        settings=BrainSettings(),
+        settings=BrainSettings(screen_matching=False),
         case_dir=tmp_path,
         run_log=log,
+        visual_ocr=object(),
     )
     brain.phase = "task"
     brain.task_instruction = TaskInstruction(
@@ -292,9 +302,13 @@ def test_model_only_review_accepts_model_bound_completion_without_value_recheck(
         goal="Save the supplied invoice.",
         relay=relay,
         model=ScriptedModel(log, []),
-        settings=BrainSettings(visual_model_only_review=True),
+        settings=BrainSettings(
+            screen_matching=False,
+            visual_model_only_review=True,
+        ),
         case_dir=tmp_path,
         run_log=log,
+        visual_ocr=object(),
     )
     brain.phase = "task"
     brain.task_instruction = TaskInstruction(
@@ -337,9 +351,13 @@ def test_model_owned_generic_evidence_is_not_invalidated_by_later_screens(tmp_pa
         goal="Save the supplied invoice.",
         relay=relay,
         model=ScriptedModel(log, []),
-        settings=BrainSettings(visual_model_only_review=True),
+        settings=BrainSettings(
+            screen_matching=False,
+            visual_model_only_review=True,
+        ),
         case_dir=tmp_path,
         run_log=log,
+        visual_ocr=object(),
     )
     brain.phase = "task"
     brain.task_instruction = TaskInstruction(
@@ -350,6 +368,7 @@ def test_model_owned_generic_evidence_is_not_invalidated_by_later_screens(tmp_pa
     brain._invalidate_editor_evidence = lambda: pytest.fail(
         "generic model-owned evidence must survive a screen change"
     )
+    brain.visual_perception = PassthroughPerception()
 
     brain._observe()
     recorded = []
@@ -406,9 +425,13 @@ def test_task_fill_cannot_overwrite_surface_owned_by_another_input(tmp_path):
         goal="Save the supplied invoice.",
         relay=relay,
         model=ScriptedModel(log, []),
-        settings=BrainSettings(visual_model_only_review=True),
+        settings=BrainSettings(
+            screen_matching=False,
+            visual_model_only_review=True,
+        ),
         case_dir=tmp_path,
         run_log=log,
+        visual_ocr=object(),
     )
     brain.phase = "task"
     brain.task_instruction = TaskInstruction(
@@ -455,9 +478,13 @@ def test_surface_conflict_during_plan_preflight_reobserves_for_recovery(tmp_path
         goal="Save the supplied invoice.",
         relay=relay,
         model=ScriptedModel(log, []),
-        settings=BrainSettings(visual_model_only_review=True),
+        settings=BrainSettings(
+            screen_matching=False,
+            visual_model_only_review=True,
+        ),
         case_dir=tmp_path,
         run_log=log,
+        visual_ocr=object(),
     )
     brain.phase = "task"
     brain.task_instruction = TaskInstruction(

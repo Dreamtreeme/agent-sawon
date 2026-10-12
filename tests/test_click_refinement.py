@@ -82,7 +82,10 @@ def setup(
         goal="Open the second panel",
         relay=relay,
         model=model,
-        settings=BrainSettings(perception_mode="visual_only", visual_click_refinement=enabled),
+        settings=BrainSettings(
+            screen_matching=False,
+            visual_click_refinement=enabled,
+        ),
         case_dir=tmp_path,
         run_log=log,
         visual_ocr=object(),

@@ -196,9 +196,10 @@ def test_generic_task_save_enters_shared_save_review(tmp_path, record):
         goal="Register a shipment",
         relay=relay,
         model=model,
-        settings=BrainSettings(),
+        settings=BrainSettings(screen_matching=False),
         case_dir=tmp_path,
         run_log=log,
+        visual_ocr=object(),
     )
     brain.phase = "task"
     brain.observation = relay.observe()
@@ -232,9 +233,10 @@ def test_save_review_returns_to_the_owning_workflow(tmp_path, record, generic_ta
         goal="Register a shipment",
         relay=relay,
         model=ScriptedModel(log, []),
-        settings=BrainSettings(),
+        settings=BrainSettings(screen_matching=False),
         case_dir=tmp_path,
         run_log=log,
+        visual_ocr=object(),
     )
     brain.phase = "save_result"
     brain.task_instruction = (
@@ -309,9 +311,10 @@ def test_blocked_foreground_stops_before_decision_or_input(tmp_path, record):
         goal="Enter the record",
         relay=relay,
         model=model,
-        settings=BrainSettings(),
+        settings=BrainSettings(screen_matching=False),
         case_dir=tmp_path,
         run_log=log,
+        visual_ocr=object(),
     )
     result = brain.run()
     assert result.reason == "blocked_foreground"
@@ -417,7 +420,12 @@ def test_cli_setup_failure_has_durable_result_and_never_reuses_case(tmp_path, re
     record_path = tmp_path / "record.json"
     record_path.write_text(record.model_dump_json(), encoding="utf-8")
     config = tmp_path / "brain.toml"
-    config.write_text('schema_version = "0.1"\n', encoding="utf-8")
+    config.write_text(
+        'schema_version = "0.1"\nscreen_matching = false\n',
+        encoding="utf-8",
+    )
+    ocr_config = tmp_path / "pipeline.toml"
+    ocr_config.write_text('schema_version = "0.1"\n', encoding="utf-8")
     case_dir = tmp_path / "new-case"
     monkeypatch.setenv("SAWON_RELAY_TOKEN", "fake-token")
     args = [
@@ -433,6 +441,8 @@ def test_cli_setup_failure_has_durable_result_and_never_reuses_case(tmp_path, re
         str(config),
         "--model-config",
         str(tmp_path / "missing.toml"),
+        "--visual-ocr-config",
+        str(ocr_config),
     ]
     assert main(args) == 2
     output = (case_dir / "result.json").read_bytes()

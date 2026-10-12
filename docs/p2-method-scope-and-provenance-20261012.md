@@ -6,7 +6,7 @@
 현재 화면 재결합, 성공 후 승격까지 같은 slot/target/action/group 표현을 사용한다. 런타임은
 메서드의 `task_objective`와 사용자 작업지시서 원본의 SHA-256이 모두 일치할 때만 자동
 재생한다. 입력값은 이 범위 키에 포함하지 않으므로 같은 교육에서 다른 업무 값은 재사용할 수
-있고, 화면 좌표는 현재 OCR/OmniParser 증거로 다시 결합한다.
+있고, 화면 좌표는 같은 크기의 pHash 유사 화면에서 저장 좌표로 재사용한다.
 
 이번 단계에서는 새 상태 머신이나 생성 코드를 만들지 않았다. 확인된 결함 하나와 재사용
 설명 가능성만 보완했다.
@@ -36,9 +36,9 @@
 
 | 구분 | 현재 동작 | 검증 |
 |---|---|---|
-| 같은 교육, 다른 입력값 | slot을 새 record key/value에 연결 | `test_learned_method_uses_current_scene_and_executor_without_model` |
+| 같은 교육, 다른 입력값 | slot을 새 record key/value에 연결 | `test_compiled_coordinates_reach_executor_without_model` |
 | 교육 파일 변경 | 원본 바이트 SHA-256 불일치로 후보 제외 | `test_learned_method_is_scoped_to_exact_user_education_file` |
-| 화면 위치 변경 | 현재 OCR/마커의 라벨 관계로 target 재결합 | `test_learned_method_rebinds_new_values_keys_and_current_geometry` |
+| 동일 화면 재사용 | pHash·화면 크기 일치 후 저장 좌표 사용 | `test_saved_coordinate_method_uses_new_source_without_ocr_rebinding` |
 | 재결합 실패 | 해당 실행에서 메서드를 막고 모델 판단으로 폴백 | `test_rejected_method_edge_is_blocked_before_delivery` 계열 |
 | 승격 | 전체 업무 성공일 때만 라이브러리에 설치 | `test_successful_candidate_installs_versioned_live_library` |
 | 다른 교육의 동일 ID | 조용한 병합을 거절하고 기존 자료 보존 | `test_library_rejects_same_method_id_from_another_task_contract` |

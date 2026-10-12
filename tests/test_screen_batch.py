@@ -88,7 +88,10 @@ def make_brain(tmp_path, record, relay, responses):
         goal="Save for approval",
         relay=relay,
         model=model,
-        settings=BrainSettings(perception_mode="visual_only", visual_screen_fill=True),
+        settings=BrainSettings(
+            screen_matching=False,
+            visual_screen_fill=True,
+        ),
         case_dir=tmp_path,
         run_log=log,
         visual_ocr=object(),

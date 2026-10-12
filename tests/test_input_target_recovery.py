@@ -78,5 +78,8 @@ def test_retry_limit_has_both_lower_and_upper_bounds():
     for limit in (-1, 4):
         with labeled_case(limit):
             with pytest.raises(ValidationError) as raised:
-                BrainSettings(max_input_target_retries=limit)
+                BrainSettings(
+                    screen_matching=False,
+                    max_input_target_retries=limit,
+                )
             assert raised.value.errors()

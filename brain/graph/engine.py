@@ -253,11 +253,12 @@ class Brain:
             settings.visual_match_cache.path,
             enabled=settings.visual_match_cache.enabled,
         )
-        self.visual_perception = None
+        if visual_ocr is None:
+            raise ValueError("visual_ocr_required")
         self.task_instruction = None
         self.task_instruction_sha256: str | None = None
         if settings.screen_matching:
-            if not settings.is_visual or settings.task_path is None:
+            if settings.task_path is None:
                 raise ValueError("screen_matching_requires_visual_task")
             task_bytes = settings.task_path.read_bytes()
             self.task_instruction = TaskInstruction.model_validate_json(task_bytes)
@@ -286,22 +287,19 @@ class Brain:
             compiled_only=settings.methods.compiled_only,
             max_phash_distance=settings.methods.max_phash_distance,
         )
-        if settings.perception_mode == "visual_only":
-            if visual_ocr is None:
-                raise ValueError("visual_ocr_required")
-            self.visual_perception = VisualPerception(
-                relay,
-                visual_ocr,
-                self.case_dir,
-                self.log,
-                self._detect_visual,
-                secrets=self.secrets,
-                threshold=settings.visual_min_confidence,
-                detector=OmniParserDetector(settings.visual_detector, self.log),
-                merge_settings=settings.visual_merge,
-                reuse_identical=settings.screen_matching,
-                model_led_semantics=settings.visual_model_led_semantics,
-            )
+        self.visual_perception = VisualPerception(
+            relay,
+            visual_ocr,
+            self.case_dir,
+            self.log,
+            self._detect_visual,
+            secrets=self.secrets,
+            threshold=settings.visual_min_confidence,
+            detector=OmniParserDetector(settings.visual_detector, self.log),
+            merge_settings=settings.visual_merge,
+            reuse_identical=settings.screen_matching,
+            model_led_semantics=settings.visual_model_led_semantics,
+        )
 
     @property
     def identity_input_key(self) -> str | None:
@@ -496,15 +494,7 @@ class Brain:
         )
 
     def _detect_visual(self, request: SemanticRequest) -> SemanticDetection:
-        if self.settings.screen_matching and self.settings.separate_observation_decision:
-            screen = request.screen
-            response = self.methods.apply(screen) if request.correction is None else None
-            if response is not None:
-                response = self._match_visual(screen, request.page, proposal=response)
-                self.visual_proposal = response
-                atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
-                return self._groundable_interpretation(response, screen)
-        if self.settings.screen_matching and not self.settings.separate_observation_decision:
+        if self.settings.screen_matching:
             screen = request.screen
             if request.correction is not None:
                 screen["correction"] = {
@@ -554,8 +544,6 @@ class Brain:
                 compile_match,
                 compile_screen_action_plan,
             )
-
-            assert self.visual_perception is not None
 
             response, self.visual_proposal = self.visual_proposal, None
             proposal_reused = (
@@ -1171,7 +1159,7 @@ class Brain:
 
     def _observe(self) -> Observation:
         observation = redact(self.relay.observe(), self.secrets)
-        if self.visual_perception is not None and not observation.blocked_reason:
+        if not observation.blocked_reason:
             self.visual_proposal = None
             observation = self.visual_perception.observe(observation)
             self.visual_proposal_obs_id = observation.obs_id

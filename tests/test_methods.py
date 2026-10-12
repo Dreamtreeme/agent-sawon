@@ -14,6 +14,8 @@ from brain.graph.matching import ScreenMatch
 
 def scene(*, offset=0, old_value="Old customer", ids=0):
     return {
+        "image_size": [800, 600],
+        "screen_phash": 123,
         "ocr": [
             {"id": 1 + ids, "text": "Customer", "bbox": [10, 30 + offset, 80, 20]},
             {"id": 2 + ids, "text": old_value, "bbox": [110, 30 + offset, 120, 20]},
@@ -37,7 +39,7 @@ def scene(*, offset=0, old_value="Old customer", ids=0):
     }
 
 
-def learned(*, screenshot_bound=False):
+def learned():
     response = {
         "screen_kind": "query",
         "controls": [
@@ -51,10 +53,7 @@ def learned(*, screenshot_bound=False):
         "expected_result": "The supplied customer's search results are shown.",
     }
     method = method_from_match(
-        {
-            **scene(),
-            **({"screen_phash": 123, "image_size": [800, 600]} if screenshot_bound else {}),
-        },
+        scene(),
         response,
         method_id="find-party",
         purpose="Find the requested business party",
@@ -69,7 +68,7 @@ def learned(*, screenshot_bound=False):
 
 def test_saved_coordinate_method_uses_new_source_without_ocr_rebinding(tmp_path):
     library = MethodLibrary(tmp_path / "methods.json", enabled=True)
-    library.upsert(learned(screenshot_bound=True))
+    library.upsert(learned())
     restored = MethodLibrary(library.path, enabled=True)
     current = {"screen_phash": 123, "image_size": [800, 600], "ocr": [], "markers": []}
     bound = restored.bind_with_context(
@@ -111,10 +110,10 @@ def test_library_rejects_same_method_id_from_another_task_contract(tmp_path):
     assert library.methods() == [first]
 
 
-def test_learned_fill_targets_rebind_current_values_as_visible_evidence(tmp_path):
+def test_saved_fill_coordinates_bind_current_values_as_visible_evidence(tmp_path):
     library = MethodLibrary(tmp_path / "methods.json", enabled=True)
     library.upsert(learned())
-    current = scene(offset=100, old_value="New supplier", ids=100)
+    current = scene(old_value="New supplier", ids=100)
 
     controls, evidence = library.bind_visible_value_evidence(
         "find-party",
@@ -123,8 +122,8 @@ def test_learned_fill_targets_rebind_current_values_as_visible_evidence(tmp_path
         {"supplier": "New supplier"},
     )
 
-    assert evidence == [{"field": "supplier", "target": 110}]
-    assert controls[0]["id"] == 110
+    assert evidence == [{"field": "supplier", "target": 112}]
+    assert controls[0]["id"] == 112
     assert 102 in controls[0]["text_ids"]
     assert library.bind_visible_value_evidence(
         "find-party",
@@ -141,25 +140,6 @@ def test_trace_graph_rejects_unknown_predecessor():
 
     with pytest.raises(ValidationError, match="method_predecessor_unknown"):
         LearnedMethod.model_validate(payload)
-
-
-def test_local_variant_is_available_for_same_session_and_keeps_original(tmp_path):
-    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
-    original = learned()
-    library.upsert(original)
-    old_group = original.action_groups[0]
-    target = old_group.targets[0].model_copy(update={"anchor_texts": ["Supplier"]})
-    group = old_group.model_copy(
-        update={"id": "supplier-variant", "targets": [target, old_group.targets[1]]}
-    )
-    updated = library.upsert(original.model_copy(update={"action_groups": [group]}))
-    assert updated.revision == 2
-    assert len(updated.action_groups) == 2
-    current = scene()
-    current["ocr"][0]["text"] = "Supplier"
-    bound = library.bind_with_context("find-party", {}, current, {"party": "A new party"})
-    assert bound is not None
-    assert bound.group_id == "supplier-variant"
 
 
 def test_saved_coordinates_ignore_competing_table_labels(tmp_path):

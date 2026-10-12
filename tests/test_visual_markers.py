@@ -375,6 +375,7 @@ def test_settings_resolve_local_weights_relative_to_config(tmp_path):
 
     config = tmp_path / "brain.toml"
     config.write_text(
+        "screen_matching=true\n"
         '[visual_detector]\nweights="weights/model.pt"\npython="venv/python.exe"',
         encoding="utf-8",
     )
@@ -388,6 +389,7 @@ def test_settings_resolve_method_promotion_path_relative_to_config(tmp_path):
 
     config = tmp_path / "brain.toml"
     config.write_text(
+        "screen_matching=true\n"
         '[methods]\nenabled=true\npath="seed.json"\npromotion_path="live/methods.json"',
         encoding="utf-8",
     )

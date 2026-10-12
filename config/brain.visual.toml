@@ -1,13 +1,8 @@
 schema_version = "0.1"
-perception_mode = "visual_only"
 visual_screen_fill = true
 visual_model_led_semantics = true
 visual_model_only_review = true
 screen_matching = true
-# Keep graph responsibilities separate while reusing one grounded screen-match
-# response across Observation and Decision. The split model-call mode can omit
-# current-field evidence and doubles paid screen-worker calls.
-separate_observation_decision = false
 task_path = "../examples/shipment-task.json"
 summary_strategy = "label_grouped"
 max_steps = 80

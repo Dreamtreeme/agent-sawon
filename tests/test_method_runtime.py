@@ -22,6 +22,8 @@ from brain.visual.scene import ControlMeaning
 from pipeline.schemas import OcrBlock
 from sawon_runtime.storage import RunLog, atomic_write_json
 
+TEST_SCREEN_PHASH = 10945075410289642384  # 400x200 white fixture capture.
+
 
 def test_compiled_only_library_does_not_replay_raw_cold_trace(tmp_path):
     cold = learned()
@@ -47,6 +49,7 @@ def catalog(label="Customer", shift=0):
     inputs = [marker for marker in markers if marker.source == "omniparser"]
     screen = {
         "image_size": [400, 200],
+        "screen_phash": TEST_SCREEN_PHASH,
         "ocr": [block.model_dump(mode="json") for block in blocks],
         "markers": [marker.model_dump(mode="json") for marker in markers],
     }
@@ -73,7 +76,6 @@ def setup(
     changed_label=False,
     fail_second=False,
     promotion_path=None,
-    compiled_coordinates=False,
 ):
     task = TaskInstruction(
         name="Business entry",
@@ -82,13 +84,7 @@ def setup(
     )
     task_path = tmp_path / "task.json"
     atomic_write_json(task_path, task)
-    _, _, source_screen, source_response = catalog(shift=20 if compiled_coordinates else 0)
-    if compiled_coordinates:
-        from brain.visual.action_rebind import perceptual_hash
-
-        capture = tmp_path / "reference.png"
-        Image.new("RGB", (400, 200), "white").save(capture)
-        source_screen["screen_phash"] = perceptual_hash(capture)
+    _, _, source_screen, source_response = catalog(shift=20)
     method = method_from_match(
         source_screen,
         source_response.model_dump(mode="json"),
@@ -99,8 +95,7 @@ def setup(
     )
     assert method is not None
     source = MethodLibrary(tmp_path / "source-methods.json", enabled=True)
-    if compiled_coordinates:
-        method = method.model_copy(update={"artifact_kind": "warm_compiled"})
+    method = method.model_copy(update={"artifact_kind": "warm_compiled"})
     source.upsert(method)
     blocks, boxes, current_screen, current_response = catalog(
         "Account" if changed_label else "Customer", shift=20
@@ -178,15 +173,13 @@ def setup(
         model=model,
         settings=BrainSettings(
             task_path=task_path,
-            perception_mode="visual_only",
             screen_matching=True,
-            separate_observation_decision=False,
             visual_screen_fill=True,
             visual_model_led_semantics=True,
             visual_model_only_review=True,
             methods={
                 "enabled": True,
-                "compiled_only": compiled_coordinates,
+                "compiled_only": True,
                 "path": source.path,
                 "promotion_path": promotion_path,
             },
@@ -242,7 +235,7 @@ def test_learned_method_is_scoped_to_exact_user_education_file(tmp_path):
     ],
 )
 def test_compiled_coordinates_reach_executor_without_model(tmp_path, observe_again):
-    brain, model, relay = setup(tmp_path, compiled_coordinates=True)
+    brain, model, relay = setup(tmp_path)
     brain._observe()
     first_id = brain.observation.obs_id
     assert any(event.payload.get("check") == "screen_mapping" for event in brain.log.read_all())
@@ -442,6 +435,7 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
     submit = controls_by_box[(100, 120, 100, 30)]
     screen = {
         "image_size": [400, 200],
+        "screen_phash": TEST_SCREEN_PHASH,
         "ocr": [block.model_dump(mode="json") for block in blocks],
         "markers": [marker.model_dump(mode="json") for marker in markers],
     }
@@ -477,7 +471,7 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
             },
         ],
     )
-    brain._observe()
+    brain.observation = wire()
     brain.task_instruction = TaskInstruction.model_validate(
         {
             **brain.task_instruction.model_dump(),
@@ -552,6 +546,7 @@ def test_taught_method_selects_the_only_branch_that_binds_current_screen(tmp_pat
         update={"id": "customer-screen", "taught_step_id": "customer"}
     )
     _, _, account_screen, account_response = catalog("Account", shift=20)
+    account_screen["screen_phash"] ^= (1 << 64) - 1
     account_method = method_from_match(
         account_screen,
         account_response.model_dump(mode="json"),
@@ -657,7 +652,6 @@ def test_unproductive_reused_edge_is_consumed_for_the_current_run(tmp_path):
             "action": "click",
             "intent": "navigate",
             "slot": None,
-            "relative_point": (0.5, 0.5),
         }
     )
     group = group.model_copy(update={"actions": [action]})
@@ -716,7 +710,6 @@ def test_successful_fallback_keeps_untried_followup_in_the_same_taught_step(tmp_
                 "action": "click",
                 "intent": "navigate",
                 "slot": None,
-                "relative_point": (0.5, 0.5),
             }
         )
     )
