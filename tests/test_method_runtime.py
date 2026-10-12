@@ -7,12 +7,13 @@ import pytest
 from PIL import Image
 from sawon_interfaces import ActionResult
 from test_brain import ScriptedModel
-from test_methods import completion_response, completion_scene
+from test_methods import completion_response, completion_scene, learned
 from test_visual_scene import wire
 
 from brain.cache.methods import MethodDocument, MethodLibrary, method_from_match
 from brain.graph.engine import Brain
 from brain.graph.matching import MethodBinding, ScreenMatch
+from brain.graph.method_runtime import open_method_library
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from brain.visual.marker_contract import model_controls
@@ -20,6 +21,17 @@ from brain.visual.markers import Marker, build_markers
 from brain.visual.scene import ControlMeaning
 from pipeline.schemas import OcrBlock
 from sawon_runtime.storage import RunLog, atomic_write_json
+
+
+def test_compiled_only_library_does_not_replay_raw_cold_trace(tmp_path):
+    cold = learned()
+    warm = cold.model_copy(update={"id": "compiled", "artifact_kind": "warm_compiled"})
+    source = tmp_path / "source.json"
+    atomic_write_json(source, MethodDocument(methods=[cold, warm]))
+
+    library = open_method_library(source, tmp_path / "case", enabled=True, compiled_only=True)
+
+    assert [method.id for method in library.methods()] == ["compiled"]
 
 
 def catalog(label="Customer", shift=0):

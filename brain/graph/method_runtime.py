@@ -49,7 +49,12 @@ class MethodState:
 
 
 def open_method_library(
-    path: Path, case_dir: Path, *, enabled: bool, promotion_path: Path | None = None
+    path: Path,
+    case_dir: Path,
+    *,
+    enabled: bool,
+    promotion_path: Path | None = None,
+    compiled_only: bool = False,
 ) -> MethodLibrary:
     library = MethodLibrary(case_dir / "methods-working.json", enabled=enabled)
     if enabled:
@@ -57,7 +62,10 @@ def open_method_library(
             promotion_path if promotion_path is not None and promotion_path.exists() else path
         )
         source = MethodLibrary(selected, enabled=True)
-        atomic_write_json(library.path, MethodDocument(methods=source.methods()))
+        methods = source.methods()
+        if compiled_only:
+            methods = [method for method in methods if method.artifact_kind == "warm_compiled"]
+        atomic_write_json(library.path, MethodDocument(methods=methods))
     return library
 
 
@@ -541,6 +549,8 @@ class MethodRuntime:
             task_contract_sha256=(self.task_context.task_sha256 or "") if task else "",
         )
         if method is not None:
+            if previous is not None:
+                method = method.model_copy(update={"artifact_kind": previous.artifact_kind})
             self.state.pending = {
                 "method": method,
                 "group_id": method.action_groups[0].id,
@@ -701,6 +711,7 @@ class MethodRuntime:
                 slots.update({slot.name: slot for slot in candidate.slots})
                 candidate = candidate.model_copy(
                     update={
+                        "artifact_kind": previous.artifact_kind,
                         "action_groups": list(groups.values()),
                         "slots": list(slots.values()),
                         "completion": candidate.completion or previous.completion,

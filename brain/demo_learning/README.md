@@ -17,3 +17,20 @@ the same extraction after a compiler change without another paid request. Inspec
 screens, execution outcome and the generated method before configuring it for reuse. This
 learner currently extracts one visible input batch, not every branch of the source workflow.
 See [method runtime configuration](../cache/README.md).
+
+## Compile a successful cold run into a warm method
+
+Cold execution and warm replay are separate stages. After a cold case reaches business success and
+its visual cache is promoted, compile the complete successful path with one measured model call:
+
+```powershell
+python -m brain.demo_learning.warm_methods --source-case cases/cold/case --visual-cache cases/visual-match-cache.json --case-dir cases/warm-compilation/run-001 --method-id shipment-entry --model-config config/models.toml --env-path .env --max-cost-usd 0.1 --output cases/methods/warm.json
+```
+
+The model selects and orders immutable cached batches; local code retains their exact actions and
+input keys. Compilation requires a successful source result, covers every observed input source and
+login/save intent, and rejects unscoped temporary points. Successful model-created coordinates are
+stored relative to stable OCR context so a moved or scaled layout can be rebound before execution.
+The result is marked `warm_compiled`; configure `methods.compiled_only=true` so partial cold trace
+fragments are not replayed as finished warm methods. The compilation directory records its input,
+request, model draft, cost, and result for review.

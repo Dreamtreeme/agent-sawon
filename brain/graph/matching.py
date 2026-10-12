@@ -1583,7 +1583,13 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
     # User education is the semantic source of truth for field-to-input bindings.
     # Omitting it left the model with input keys and pixels but no company-specific
     # explanation of what each visible field means.
-    state["task"] = request.task_instruction.model_dump(mode="json")
+    # The focused procedure window below already carries the applicable user
+    # teaching. Repeating every distant step here wastes context and lets stale
+    # routes compete with the current screen.
+    state["task"] = {
+        **request.task_instruction.model_dump(mode="json", exclude={"procedure"}),
+        "procedure": [],
+    }
     # The digest is the user-education contract boundary.  Two companies can
     # show identical pixels, and one company's memo can later be revised
     # without changing its display name.  Neither case may reuse a decision

@@ -283,6 +283,7 @@ class Brain:
             self.case_dir,
             enabled=settings.methods.enabled,
             promotion_path=settings.methods.promotion_path,
+            compiled_only=settings.methods.compiled_only,
         )
         if settings.perception_mode == "visual_only":
             if visual_ocr is None:

@@ -34,3 +34,4 @@ path = "../cases/visual-match-cache.json"
 enabled = true
 path = "../cases/methods.json"
 promotion_path = "../cases/methods.json"
+compiled_only = true

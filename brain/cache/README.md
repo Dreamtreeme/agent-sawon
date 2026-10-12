@@ -15,8 +15,9 @@ Paths resolve relative to the configuration file. The source is copied into each
 `methods-working.json`; it is never changed in place. Reuse is scoped to the exact user-education
 digest and task objective. Each fresh observation binds learned labels and label-relative geometry
 to current OCR/control candidates, then generates ScreenMatch without a semantic-model call.
-Existing scene binding, ActionPlan and execution handle it. No absolute historical coordinates,
-input values or marker IDs are execution targets.
+Existing scene binding, ActionPlan and execution handle it. Detected targets retain semantic label
+geometry. A successful model-created temporary point may be compiled separately into OCR
+anchor-relative geometry; raw historical pixels, input values and marker IDs are not replayed.
 
 When current targets do not bind, the screen model plans the current action. A successful run
 promotes only its delivered trace, including login, navigation, lookup, input, save and review
@@ -32,6 +33,11 @@ never business success, and failed runs promote neither methods nor visual decis
 This does not establish compatibility with every ERP workflow. Generated methods and their source
 traces belong in ignored private storage. See the learning CLI in
 [demo_learning](../demo_learning/README.md).
+
+`compiled_only=true` loads only methods produced by the separate successful-cold-cache compiler.
+Runtime trace fragments remain useful compiler evidence but cannot preempt visual-cache/model
+fallback during a warm run. A compiled method that does not bind to the current screen is suspended
+for that run and the ordinary visual cache/model path continues.
 
 ## 화면 매칭 캐시
 

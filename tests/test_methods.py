@@ -89,6 +89,73 @@ def test_learned_method_rebinds_new_values_keys_and_current_geometry(tmp_path):
     assert restored.catalog("Unrelated task") == []
 
 
+def test_model_point_method_scales_with_screen_and_requires_stable_context(tmp_path):
+    screen = {
+        "image_size": [800, 600],
+        "ocr": [{"id": 1, "text": "Shipment editor", "bbox": [20, 20, 160, 20]}],
+        "markers": [],
+    }
+    response = {
+        "screen_kind": "editor",
+        "controls": [
+            {
+                "id": 90,
+                "role": "edit",
+                "label_ids": [],
+                "text_ids": [],
+                "confidence": 1,
+                "confidence_policy": "argmax",
+            }
+        ],
+        "steps": [
+            {
+                "target": 90,
+                "action": "fill",
+                "intent": "fill",
+                "source": "reference",
+                "point": [200, 300],
+            }
+        ],
+        "operation": "act",
+        "expected_result": "The reference is entered.",
+    }
+    method = method_from_match(
+        screen,
+        response,
+        method_id="point-entry",
+        purpose="Enter a reference",
+        context_anchors=["Shipment editor"],
+    )
+    assert method is not None
+    target = method.action_groups[0].targets[0]
+    assert target.screen_relative_point == (0.25, 0.5)
+    compiled = compile_method_candidate(method, {"reference": "REF-001"})
+    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
+    library.upsert(compiled)
+
+    current = {
+        "image_size": [1600, 900],
+        "screen_kind": "editor",
+        "ocr": [{"id": 11, "text": "Shipment editor", "bbox": [40, 30, 320, 30]}],
+        "markers": [],
+    }
+    bound = library.bind("point-entry", {}, current, {"reference": "REF-002"})
+    assert bound is not None
+    assert bound["steps"] == [
+        {
+            "target": bound["controls"][0]["id"],
+            "action": "fill",
+            "intent": "fill",
+            "source": "reference",
+            "keys": None,
+            "point": [400.0, 450.0],
+        }
+    ]
+    assert bound["controls"][0]["confidence_policy"] == "argmax"
+    current["ocr"][0]["text"] = "Unrelated window"
+    assert library.bind("point-entry", {}, current, {"reference": "REF-002"}) is None
+
+
 def test_learned_fill_targets_rebind_current_values_as_visible_evidence(tmp_path):
     library = MethodLibrary(tmp_path / "methods.json", enabled=True)
     library.upsert(learned())

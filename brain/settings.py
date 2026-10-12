@@ -21,6 +21,7 @@ class MethodSettings(BaseModel):
     enabled: bool = False
     path: Path = Path("cases/methods.json")
     promotion_path: Path | None = None
+    compiled_only: bool = False
 
 
 class BrainSettings(BaseModel):
