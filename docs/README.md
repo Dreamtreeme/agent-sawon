@@ -8,7 +8,7 @@
 
 | 문서 | 역할 |
 |---|---|
-| [코드 실행 흐름](code-flow.md) | 현재 Luna/visual-only 작업자의 네 책임 노드와 호출 순서 |
+| [코드 실행 흐름](code-flow.md) | 현재 visual-only 작업자의 네 책임 노드와 호출 순서 |
 | [일반 ERP 업무 계약](generic-task-runtime-20261003.md) | TaskInstruction, 단일 ActionCapability, 재사용 경계 |
 | [런타임 잔여 문제 수정](runtime-residual-fixes-20261008.md) | 최신 계약 정리와 677개 회귀 기준 |
 | [OmniParser v2 파일럿](omniparser-v2-pilot-20261008.md) | 최신 실제 화면 결과와 미해결 탭 반복 |
@@ -35,3 +35,6 @@
 `CODEX_BRIEF.md`는 범위·불변 규칙과 날짜별 이력을 함께 보존한다. 0.1절의 최신 개정이
 아래 과거 절의 충돌하는 설명보다 우선한다. 외부 벤치의 진행률과 증거는 sibling
 `agent-sawon-bench/docs/progress.md`에서 관리한다.
+
+`AGENTS.md`는 현재 실행 지침만 담는다. 2026-10-12 전면 재작성 직전의
+원문은 [AGENTS 아카이브](archive/AGENTS-20261012-before-rewrite.md)에 보존했다.
