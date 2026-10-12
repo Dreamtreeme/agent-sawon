@@ -21,8 +21,10 @@ The relay may restore an allowlisted ERP before visual capture/input; foreground
 does not require a new confirmation. Observation-only recording stays passive.
 The user removed duplicate screenshot password overlays on 2026-09-30. Preserve the app's
 rendered password bullets; do not reinstate white/black control paint-over in the relay.
-V1 isolation and V2/V3 visual perception/brain integration are implemented with fake tests; real visual completion is unverified.
-Visual cache/demo provenance and notebook/human/scoreboard tools are implemented. The user confirmed HTTP400 billing review and authorized paid resumption within the existing total $50 cap on 2026-09-30. Preserve historical unknown-cost records; run bounded visual pilots before scaling.
+V1 isolation and V2/V3 visual perception/brain integration are implemented. A bounded seed-23 cold
+pilot completed save and final-query verification on 2026-10-12; broader M1 measurements and milestone
+exit remain open.
+Visual cache/demo provenance and notebook/human/scoreboard tools are implemented. The user confirmed HTTP400 billing review and authorized paid resumption on 2026-09-30. The user removed the cumulative total-cost ceiling on 2026-10-11; keep the configurable $3 per-case limit, pre-call reservations, and known/unknown cost accounting. Preserve historical unknown-cost records and run bounded visual pilots before scaling.
 See ../agent-sawon-bench/docs/visual-v1-contract-20260930.md. Preserve previous UIA evidence; do not auto-resume old runs.
 
 - Core may import only the public `sawon_interfaces` contract from bench.
@@ -39,7 +41,16 @@ See ../agent-sawon-bench/docs/visual-v1-contract-20260930.md. Preserve previous 
 
 The user selected Luna as the primary screen-worker path on 2026-10-02.
 Follow ../agent-sawon-bench/docs/luna-primary-plan-20261002.md.
-Preserve Gemini and Jev as comparison profiles; prioritize actual save/final-query completion.
+The later Haiku 5.5 work was a bounded comparison pilot and did not replace this primary path.
+`config/models.toml` must remain the Luna production profile; use evidence-local profiles for provider comparisons.
+Preserve Gemini, Haiku and Jev adapters as comparison paths; prioritize actual save/final-query completion.
+
+On 2026-10-12 the first project-wide methodology change (P0) split compact education focus from
+on-demand step details, preserved compound observation claims while executing their actions, and added
+model-call purpose/decision/frame/context-size logging. Keep user-taught order as guidance rather than
+marking earlier steps complete merely because a later step was selected. Do not restore the removed
+`MethodRuntime.procedure_prompt_context` duplicate channel. Validate these changes with bounded cold and
+warm ERP pilots before introducing a larger FSM or step-cache promotion policy.
 
 On 2026-10-08 the user removed legacy UIA semantic-cache and observation-delta demonstration learning. Do not restore their modules, CLI flags or cache formats. Keep visual_match, learned methods and visual recording; prepared document handoff lives in pipeline.handoff.
 

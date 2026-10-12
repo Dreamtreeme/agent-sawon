@@ -60,12 +60,12 @@ OpenAI: `OPENAI_API_KEY`, Anthropic: `CLAUDE_API_KEY`). 부모 폴더 검색, �
 
 ## Claude Haiku 5.5 화면 작업자
 
-`config/models.toml`은 `claude-haiku-5-5`, Messages API structured outputs,
+Haiku 비교 프로필은 `claude-haiku-5-5`, Messages API structured outputs,
 adaptive thinking low, 출력 8192, 요청 제한 120초를 사용한다. 원본 크기 이미지를 base64로 전달하며
 Pydantic 스키마는 Anthropic SDK의 `transform_schema`로 지원 형식에 맞춘 뒤 로컬에서
 원래 계약을 다시 검증한다. 100K 입력 토큰 초과 시 공식 장문 단가를 적용한다.
 
-## 보존된 Luna 어댑터
+## 기본 Luna 화면 작업자
 
 `config/models.toml`은 `gpt-5.6-luna`, Responses API, reasoning low, 출력8192를 사용한다.
 화면 작업자는 `brain.run --model-config config/models.toml`로 실행한다.
