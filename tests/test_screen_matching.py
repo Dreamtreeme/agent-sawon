@@ -1030,6 +1030,36 @@ def test_post_save_exploration_failures_are_scoped_by_review_stage(
     )
 
 
+def test_post_save_completion_rejection_names_missing_evidence_and_scope(
+    tmp_path, record, task_instruction
+):
+    from brain.graph.schemas import Decision
+
+    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
+    brain.observation = SceneObservation(wire=wire(), screen_kind="editor", elements=[])
+    brain.save_issued = True
+    brain.post_save_query_identity_verified = True
+    brain.model_saved_detail_review = True
+    brain.post_save_verified = set(brain.values) - {"description"}
+    decision = Decision(
+        screen_kind="editor",
+        operation="complete",
+        intent="verify",
+        subgoal="verify persisted values",
+        reason="visible persisted values match",
+    )
+    brain.decision = decision
+
+    assert brain._check_complete(decision) == "observation"
+
+    feedback = brain._current_feedback()[-1]
+    assert feedback["missing_fields"] == ["description"]
+    assert "Do not refill or save" in feedback["required_response"]
+    assert feedback["subgoal_key"] == "task:post_save_detail:description"
+    event = brain.log.read_all()[-1]
+    assert event.payload["subgoal_key"] == "task:post_save_detail:description"
+
+
 def test_education_focus_can_revisit_steps_without_inventing_completion(tmp_path, record):
     taught = TaskInstruction.model_validate_json(
         (

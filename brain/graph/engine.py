@@ -857,17 +857,20 @@ class Brain:
             and reason in {"navigation_no_progress", "navigation_cycle"}
             and self._last_exploration_failure_key is not None
         )
-        key = (
-            self.phase + ":explore:" + self._last_exploration_failure_key
-            if exploration_failure
-            else self.phase
-            + ":"
-            + (
-                (decision.action.source or decision.intent)
-                if decision and decision.action
-                else "decision"
+        if reason == "post_save_model_evidence_incomplete":
+            key = self.phase + ":" + self._exploration_goal_key()
+        else:
+            key = (
+                self.phase + ":explore:" + self._last_exploration_failure_key
+                if exploration_failure
+                else self.phase
+                + ":"
+                + (
+                    (decision.action.source or decision.intent)
+                    if decision and decision.action
+                    else "decision"
+                )
             )
-        )
         self.failures[key] = self.failures.get(key, 0) + 1
         if exploration_failure:
             self.phase_failures.setdefault(self.phase, 0)
@@ -906,6 +909,13 @@ class Brain:
                 "Completion was NOT accepted. Provide every final_required_field exactly "
                 "once, using CURRENT cells in the SAME query row. If missing columns are "
                 "hidden, choose observed navigation and reobserve. Never infer missing refs."
+            )
+        elif reason == "post_save_model_evidence_incomplete":
+            feedback["missing_fields"] = sorted(set(self.values) - self.post_save_verified)
+            feedback["required_response"] = (
+                "Completion was NOT accepted because persisted evidence is still missing for "
+                "missing_fields. Use observed navigation or tabs to expose those saved values, "
+                "then provide CURRENT evidence for them. Do not refill or save the record again."
             )
         elif reason in {"navigation_no_progress", "navigation_cycle"}:
             feedback["required_response"] = (
