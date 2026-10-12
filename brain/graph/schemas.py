@@ -4,6 +4,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from brain.vocabulary import KeyInput
+
 FieldName = Annotated[
     str,
     Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.-]+$"),
@@ -180,19 +182,7 @@ class TextChoice(WireModel):
 class KeyChoice(WireModel):
     type: Literal["key"]
     ref: NonemptyRef
-    keys: Literal[
-        "enter",
-        "tab",
-        "shift+tab",
-        "esc",
-        "down",
-        "up",
-        "space",
-        "pagedown",
-        "pageup",
-        "home",
-        "end",
-    ]
+    keys: KeyInput
 
 
 class SourceOptionChoice(WireModel):

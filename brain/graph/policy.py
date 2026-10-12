@@ -31,6 +31,7 @@ from brain.graph.schemas import (
     WireStopDecision,
     WireTaskCompleteDecision,
 )
+from brain.vocabulary import NAVIGATION_KEY_INPUTS
 
 Phase = Literal["task", "duplicate_query", "enter", "save_result", "final_query"]
 CredentialSource = Literal["credential.username", "credential.password"]
@@ -46,18 +47,6 @@ CurrentStep = Literal[
 ]
 
 _SCREENS = ("login", "menu", "query", "editor", "partner", "dialog")
-_NAVIGATION_KEYS = (
-    "tab",
-    "shift+tab",
-    "esc",
-    "down",
-    "up",
-    "space",
-    "pagedown",
-    "pageup",
-    "home",
-    "end",
-)
 
 
 @dataclass(frozen=True)
@@ -169,12 +158,14 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
                 "navigate",
                 screens,
                 click_types=("click", "double_click"),
-                keys=_NAVIGATION_KEYS,
+                keys=NAVIGATION_KEY_INPUTS,
                 focus=True,
             ),
             _ActionRule("cancel", screens, click_types=("click",), keys=("esc",)),
             _ActionRule("wait", screens, wait=True),
-            _ActionRule("select_tab", work_screens, click_types=("click",), keys=_NAVIGATION_KEYS),
+            _ActionRule(
+                "select_tab", work_screens, click_types=("click",), keys=NAVIGATION_KEY_INPUTS
+            ),
         ]
         if facts.remaining_credentials:
             rules.append(
@@ -218,7 +209,7 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
             "navigate",
             screens,
             click_types=("click", "double_click"),
-            keys=_NAVIGATION_KEYS,
+            keys=NAVIGATION_KEY_INPUTS,
             focus=True,
         ),
         _ActionRule("cancel", screens, click_types=("click",), keys=("esc",)),
@@ -241,7 +232,7 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
                 "select_tab",
                 ("menu", "query", "editor", "partner", "dialog"),
                 click_types=("click",),
-                keys=_NAVIGATION_KEYS,
+                keys=NAVIGATION_KEY_INPUTS,
             )
         )
     if facts.phase == "enter" and facts.duplicate_clear and not facts.save_issued:

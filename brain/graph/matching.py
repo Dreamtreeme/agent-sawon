@@ -31,6 +31,7 @@ from brain.visual.marker_contract import (
 )
 from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import ControlMeaning, SemanticDetection, contains, overlap
+from brain.vocabulary import KeyInput
 from models.base import model_call_context
 from models.schema import compact_provider_schema
 from sawon_runtime.storage import RunLog, atomic_write_json
@@ -94,22 +95,7 @@ class MatchAction(BaseModel):
         "select_option",
         "cancel",
     ]
-    keys: (
-        Literal[
-            "enter",
-            "tab",
-            "shift+tab",
-            "esc",
-            "down",
-            "up",
-            "space",
-            "pagedown",
-            "pageup",
-            "home",
-            "end",
-        ]
-        | None
-    ) = None
+    keys: KeyInput | None = None
     point: list[float] | None = Field(
         default=None,
         min_length=2,
