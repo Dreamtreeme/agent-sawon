@@ -347,11 +347,9 @@ def write_match_artifact(services: MatchServices, kind: str, value: BaseModel) -
 
 
 SCREEN_BOUNDARY_BATCH_RULES = """
-Return exactly one CURRENT-screen action boundary. A login boundary is one atomic batch: fill
-every remaining credential source into its grounded input, then click the grounded login command
-as the final step. Credential fills without that final login click are incomplete. Other valid
-batches are direct business fills only, same-intent navigation only, or consecutive option-row and
-confirmation clicks. Do not mix unrelated boundaries.
+Return ordered actions grounded in the CURRENT screen. Inputs may precede a submit/search command.
+Do not invent targets or outcomes revealed only after a screen change; observe them next turn.
+For login, fill the available remaining credentials and then submit the login command.
 """
 
 
@@ -374,7 +372,7 @@ TASK_PLAN_RULES = (
 Use the user task description, input data and runtime notebook to choose the next action from the
 execution contract. The task description is business intent, not a UI route. Do not assume labels,
 menus, tabs, coordinates or screen order that are absent from the current interpretation. Return one
-screen-boundary batch and do not mix direct fills with navigation or selection. For complete, map
+ordered current-screen batch. For complete, map
 CURRENT visible proof to the applicable zero-based user completion condition in completion_evidence;
 map visible business values separately in evidence. notebook.inputs is the canonical input map:
 every data-bound step.source and evidence.field MUST be one exact key from notebook.inputs, without
@@ -457,10 +455,8 @@ the saved record; do not fill or save again. Navigate only to expose remaining_i
 remaining inputs exist, use CURRENT visible evidence for the applicable completion condition and
 return operation=complete instead of revisiting a previously reviewed tab.
 The execution contract is the complete list of actions currently allowed by code. Return one
-screen-boundary action batch: direct fills only, login credentials plus login, same-intent
-navigation clicks, or consecutive select_option row/confirmation clicks. Do not mix fills with
-navigation or selection. A
-field-bound lookup navigation must map the current field input in evidence so its selected value
+current-screen action batch, preserving the requested order of inputs and commands.
+A field-bound lookup navigation must map the current field input in evidence so its selected value
 can be checked on return. Complete only when CURRENT visible evidence supports an applicable
 user-authored completion condition. Map each supporting marker to its zero-based condition_index
 in completion_evidence; map visible business values separately in evidence. Follow all constraints
@@ -952,7 +948,6 @@ _REPLANNABLE_MATCH_ERRORS = {
     "screen_match_login_batch_incomplete",
     "screen_match_completion_decision_required",
     "screen_match_model_point_required",
-    "screen_match_mixed_boundary_actions",
     "screen_match_step_not_executable",
     "screen_match_task_surface_mismatch",
     "screen_match_taught_step_required",
@@ -969,7 +964,6 @@ _EXECUTOR_CONTRACT_ERRORS = {
     "screen_match_login_batch_incomplete",
     "screen_match_completion_decision_required",
     "screen_match_model_point_required",
-    "screen_match_mixed_boundary_actions",
     "screen_match_step_not_executable",
 }
 
@@ -1149,24 +1143,6 @@ def _validate_step_contract(
             raise ValueError("screen_match_model_point_required")
 
 
-def _valid_multi_action_boundary(steps: list[MatchAction]) -> bool:
-    intents = {action.intent for action in steps}
-    if _is_login_batch(steps) or intents == {"fill"}:
-        return True
-    if intents == {"select_option"} and all(action.action == "click" for action in steps):
-        return True
-    selection_then_navigation = steps[-1].intent == "navigate" and all(
-        action.intent == "select_option" for action in steps[:-1]
-    )
-    if selection_then_navigation and all(
-        action.action in {"click", "double_click"} and action.source is None for action in steps
-    ):
-        return True
-    return intents in ({"navigate"}, {"select_tab"}) and all(
-        action.source is None for action in steps
-    )
-
-
 def _validate_action_boundary(
     response: ScreenMatch,
     capability: ActionCapability,
@@ -1179,8 +1155,6 @@ def _validate_action_boundary(
         action.intent not in allowed_intents for action in response.steps
     ):
         raise ValueError("screen_match_action_outside_procedure")
-    if len(response.steps) > 1 and not _valid_multi_action_boundary(response.steps):
-        raise ValueError("screen_match_mixed_boundary_actions")
 
 
 def _validate_input_scope(response: ScreenMatch, capability: ActionCapability) -> None:
@@ -2231,6 +2205,8 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
 
 
 def compile_match(response: ScreenMatch, observation, schema):
+    from .schemas import DecisionResponse
+
     def ref(target):
         return None if target is None else f"m{target}"
 
@@ -2274,7 +2250,9 @@ def compile_match(response: ScreenMatch, observation, schema):
     credentials = [s for s in fills if (s.source or "").startswith("credential.")]
     if response.operation != "act" and response.steps:
         raise ValueError("screen_match_proof_with_actions")
-    if credentials:
+    if schema is DecisionResponse and len(response.steps) <= 1:
+        data = decision(response.steps[0] if response.steps else None)
+    elif credentials:
         if len(credentials) != len(fills) or not _is_login_batch(response.steps):
             raise ValueError("screen_match_invalid_login_batch")
         command = response.steps[-1]
@@ -2321,68 +2299,31 @@ def compile_match(response: ScreenMatch, observation, schema):
     return adapt_proposal(bound, schema)
 
 
-def compile_selection_plan(response: ScreenMatch, observation):
-    """Compile row selection and confirmation through the existing action executor."""
+def compile_screen_action_plan(response: ScreenMatch, observation):
+    """Preserve the model's ordered current-screen actions in the shared executor."""
     from .execution import ActionPlan, PlannedAction
     from .schemas import DecisionResponse
 
     if response.operation != "act" or not response.steps:
         return None
-    if not all(s.intent == "select_option" and s.action == "click" for s in response.steps):
+    if _is_login_batch(response.steps) or all(step.action == "fill" for step in response.steps):
+        # Retain the existing credential and direct-field verification/transport paths.
         return None
-    if response.steps[-1].source is None or response.steps[-1].source.startswith("credential."):
-        raise ValueError("selection_effect_source_required")
+    if len(response.steps) == 1 and response.steps[0].intent != "select_option":
+        return None
     actions = tuple(
         PlannedAction(
             compile_match(
                 response.model_copy(update={"steps": [step]}), observation, DecisionResponse
             ).to_decision(),
-            effect_source=step.source if index == len(response.steps) - 1 else None,
+            effect_source=step.source
+            if step.intent == "select_option" and index == len(response.steps) - 1
+            else None,
         )
         for index, step in enumerate(response.steps)
     )
     return ActionPlan(
         actions,
         "single",
-        {
-            "check": "selection_screen_plan",
-            "actions": len(actions),
-        },
-    )
-
-
-def compile_screen_action_plan(response: ScreenMatch, observation):
-    """Compile same-screen preparation clicks before one navigation boundary."""
-    from .execution import ActionPlan, PlannedAction
-    from .schemas import DecisionResponse
-
-    if response.operation != "act" or len(response.steps) <= 1:
-        return None
-    if all(step.intent == "select_option" for step in response.steps):
-        return None
-    intents = {step.intent for step in response.steps}
-    selection_then_navigation = response.steps[-1].intent == "navigate" and all(
-        step.intent == "select_option" for step in response.steps[:-1]
-    )
-    if (intents not in ({"navigate"}, {"select_tab"}) and not selection_then_navigation) or any(
-        step.action not in {"click", "double_click", "key"} or step.source is not None
-        for step in response.steps
-    ):
-        return None
-    actions = tuple(
-        PlannedAction(
-            compile_match(
-                response.model_copy(update={"steps": [step]}), observation, DecisionResponse
-            ).to_decision()
-        )
-        for step in response.steps
-    )
-    return ActionPlan(
-        actions,
-        "single",
-        {
-            "check": "same_screen_action_plan",
-            "actions": len(actions),
-            "intent": "select_then_navigate" if selection_then_navigation else next(iter(intents)),
-        },
+        {"check": "same_screen_action_plan", "actions": len(actions)},
     )

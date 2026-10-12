@@ -553,7 +553,6 @@ class Brain:
             from .matching import (
                 compile_match,
                 compile_screen_action_plan,
-                compile_selection_plan,
             )
 
             assert self.visual_perception is not None
@@ -731,14 +730,8 @@ class Brain:
                 self._bind_saved_evidence(response)
                 self._remember_model_task_evidence(response)
             self.visual_points.bind(self.observation, response.steps)
-            selection_plan = compile_selection_plan(response, self.observation)
-            screen_action_plan = selection_plan or compile_screen_action_plan(
-                response, self.observation
-            )
-            if screen_action_plan is not None:
-                self.action_plan = screen_action_plan
-                response = response.model_copy(update={"steps": response.steps[:1]})
-            result = compile_match(response, self.observation, schema)
+            screen_action_plan = compile_screen_action_plan(response, self.observation)
+            result = screen_action_plan or compile_match(response, self.observation, schema)
             self.log.append(
                 "select",
                 payload={
@@ -1589,10 +1582,11 @@ class Brain:
             + summary
         )
 
-    def _choose_decision(self, prompt: str, schema: type[BaseModel]) -> Decision:
+    def _choose_decision(self, prompt: str, schema: type[BaseModel]) -> Decision | ActionPlan:
         """Recover with an explicitly configured measured model, at most once."""
         if self.settings.screen_matching:
-            return self._selection_call("", schema).to_decision()
+            selected = self._selection_call("", schema)
+            return selected if isinstance(selected, ActionPlan) else selected.to_decision()
         recover = self.settings.recovery_enabled and self.recovery_model is not None
         if recover and self._current_review().status == "needs_more":
             self.log.append(

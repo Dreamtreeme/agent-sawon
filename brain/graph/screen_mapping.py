@@ -213,7 +213,9 @@ OCR captions identify meaning, not necessarily the writable location. assignment
 to exact input keys. The executor supplies current values; source must not contain literal data.
 Read current values first and report matches in evidence; do not retype already matching values.
 Preserve the taught route and completion conditions. Requested instruction IDs retrieve details.
-Batch consecutive work possible on this screen, including login. If inputs are offscreen, navigate
+Batch ordered work grounded in this screen, including inputs followed by a submit/search command.
+Do not guess targets or results revealed only after a screen change; observe them in the next turn.
+If inputs are offscreen, navigate
 or scroll to expose them. Complete only from the user's required saved/requeried evidence.
 Use current evidence and prior verified inputs; absence on this screen does not erase memory.
 operation=act requires actions unless requesting details. Stop only if unable to proceed.

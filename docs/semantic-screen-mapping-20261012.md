@@ -46,3 +46,28 @@ filled distance was 4; save-dialog distances were 16–20. The configurable warm
 separates those examples. This is not calibration across all layouts or proof of GUI success.
 The existing legacy screenshot-free methods and other run-056 exploration/pruning behavior
 have not been established as fixed by a new live pilot.
+
+
+## Follow-up: ordered action compilation
+
+Pilot 057 failed before query input: its valid named fill/search response was rejected by
+an intent-combination whitelist even with observe_only enabled. Bypassing that check exposed
+a second failure in the old field-only compiler. The selection call also stored multi-action
+plans as a side effect that select_candidate's result could overwrite.
+
+Removed the mixed-boundary whitelist/error and consolidated selection/navigation compilation
+into compile_screen_action_plan. Nonhomogeneous current-screen actions now retain order in an
+ActionPlan returned explicitly through SelectionResult. Login and homogeneous field batches
+continue to use their existing verification and transport paths. Sequential delivery still
+stops at the first transport failure and observes afterward; delivery alone is not value proof.
+No new ERP-specific combination allowlist was introduced.
+
+Removed the obsolete mixed-field rejection expectation and intent-specific audit expectations;
+updated selection-effect tests to cover the common compiler. Added three end-to-end fake cases
+(input then search/save/navigation) and two partial-failure cases. They verify exact points,
+current source values, complete plan handoff, one initial decision call, subsequent observation,
+and absence of fabricated input verification. Replayed the saved 057 response locally: it now
+compiles to set_text(hbl_no) then click(search).
+
+Validation: 657 passed in 52.41 seconds; after the final logging change, 109 matching tests passed
+in 7.42 seconds. Ruff check, format check and diff check passed. No paid or GUI rerun performed.

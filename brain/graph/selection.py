@@ -37,8 +37,8 @@ class SelectionRequest:
 
 @dataclass(frozen=True)
 class SelectionServices:
-    selection_call: Callable[[str, type[BaseModel]], BaseModel]
-    choose_decision: Callable[[str, type[BaseModel]], Decision]
+    selection_call: Callable[[str, type[BaseModel]], BaseModel | ActionPlan]
+    choose_decision: Callable[[str, type[BaseModel]], Decision | ActionPlan]
 
 
 @dataclass(frozen=True)
@@ -81,19 +81,27 @@ def select_candidate(
     schema: type[BaseModel],
     services: SelectionServices,
 ) -> SelectionResult:
+    if schema in {SaveReviewResponse, LoginScreenPlan, ScreenFillPlan}:
+        guidance = (
+            LOGIN_GUIDANCE
+            if schema is LoginScreenPlan
+            else (SCREEN_FILL_GUIDANCE if schema is ScreenFillPlan else "")
+        )
+        selected = services.selection_call(request.prompt + guidance, schema)
+    else:
+        selected = services.choose_decision(request.prompt, schema)
+    if isinstance(selected, ActionPlan):
+        return SelectionResult(action_plan=selected)
     if schema is SaveReviewResponse:
-        review = services.selection_call(request.prompt, schema)
-        return SelectionResult(save_review=review)
+        return SelectionResult(save_review=selected)
     if schema is LoginScreenPlan:
-        plan = services.selection_call(request.prompt + LOGIN_GUIDANCE, schema)
-        if plan.fields:
+        if selected.fields:
             return SelectionResult(
-                action_plan=prepare_login_plan(request.observation, plan, request.policy)
+                action_plan=prepare_login_plan(request.observation, selected, request.policy)
             )
-        return SelectionResult(decision=plan.next_decision.to_decision())
+        return SelectionResult(decision=selected.next_decision.to_decision())
     if schema is ScreenFillPlan:
-        plan = services.selection_call(request.prompt + SCREEN_FILL_GUIDANCE, schema)
-        if plan.fields:
-            return SelectionResult(action_plan=prepare_screen_fill(request.observation, plan))
-        return SelectionResult(decision=plan.next_decision.to_decision())
-    return SelectionResult(decision=services.choose_decision(request.prompt, schema))
+        if selected.fields:
+            return SelectionResult(action_plan=prepare_screen_fill(request.observation, selected))
+        return SelectionResult(decision=selected.next_decision.to_decision())
+    return SelectionResult(decision=selected)

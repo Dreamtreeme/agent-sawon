@@ -1568,12 +1568,6 @@ def test_login_and_record_arrays_compile_to_existing_batches(tmp_path, record):
     assert query_decision.intent == "query_input"
     assert query_decision.action is not None
     assert query_decision.action.ref == prefix + "1"
-    with pytest.raises(ValueError, match="mixed_field_batch"):
-        compile_match(
-            fields.model_copy(update={"steps": [*fields.steps, login.steps[-1]]}),
-            scene,
-            ScreenFillPlan,
-        )
     stop = ScreenMatch(
         screen_kind="query", controls=[], procedure_step="check-duplicate", operation="stop"
     )
@@ -1629,13 +1623,10 @@ def test_login_and_record_arrays_compile_to_existing_batches(tmp_path, record):
 
 
 @pytest.mark.parametrize(
-    ("intents", "audit_intent"),
-    [
-        (("navigate", "navigate"), "navigate"),
-        (("select_option", "navigate"), "select_then_navigate"),
-    ],
+    "intents",
+    [("navigate", "navigate"), ("select_option", "navigate")],
 )
-def test_same_screen_navigation_clicks_compile_to_one_action_plan(intents, audit_intent):
+def test_same_screen_navigation_clicks_compile_to_one_action_plan(intents):
     from test_brain import element
 
     observed = wire()
@@ -1668,11 +1659,11 @@ def test_same_screen_navigation_clicks_compile_to_one_action_plan(intents, audit
     plan = compile_screen_action_plan(response, scene)
 
     assert plan is not None
+    assert tuple(item.decision.intent for item in plan.actions) == intents
     assert [item.decision.action.ref for item in plan.actions] == [prefix + "31", prefix + "44"]
     assert plan.audit == {
         "check": "same_screen_action_plan",
         "actions": 2,
-        "intent": audit_intent,
     }
 
 
@@ -2021,7 +2012,7 @@ def test_selection_row_and_confirmation_compile_to_existing_executor():
     from types import SimpleNamespace
     from uuid import uuid4
 
-    from brain.graph.matching import compile_selection_plan
+    from brain.graph.matching import compile_screen_action_plan
 
     obs_id = uuid4()
     prefix = "e" + str(obs_id.int) + "0"
@@ -2051,7 +2042,7 @@ def test_selection_row_and_confirmation_compile_to_existing_executor():
             ],
         }
     )
-    plan = compile_selection_plan(match, scene)
+    plan = compile_screen_action_plan(match, scene)
     assert [a.decision.action.ref for a in plan.actions] == [prefix + "20", prefix + "31"]
     assert all(a.decision.action.source is None for a in plan.actions)
     assert [a.effect_source for a in plan.actions] == [None, "consignee"]
@@ -2059,14 +2050,17 @@ def test_selection_row_and_confirmation_compile_to_existing_executor():
     mixed = match.model_copy(
         update={"steps": [match.steps[0], match.steps[1].model_copy(update={"intent": "navigate"})]}
     )
-    assert compile_selection_plan(mixed, scene) is None
+    assert [a.decision.intent for a in compile_screen_action_plan(mixed, scene).actions] == [
+        "select_option",
+        "navigate",
+    ]
 
 
-def test_selection_plan_requires_and_preserves_final_record_effect():
+def test_selection_plan_preserves_optional_final_record_effect():
     from types import SimpleNamespace
     from uuid import uuid4
 
-    from brain.graph.matching import compile_selection_plan
+    from brain.graph.matching import compile_screen_action_plan
 
     obs_id = uuid4()
     prefix = "e" + str(obs_id.int) + "0"
@@ -2086,12 +2080,11 @@ def test_selection_plan_requires_and_preserves_final_record_effect():
             ],
         }
     )
-    with pytest.raises(ValueError, match="selection_effect_source_required"):
-        compile_selection_plan(match, scene)
+    assert compile_screen_action_plan(match, scene).actions[0].effect_source is None
     sourced = match.model_copy(
         update={"steps": [match.steps[0].model_copy(update={"source": "shipper"})]}
     )
-    plan = compile_selection_plan(sourced, scene)
+    plan = compile_screen_action_plan(sourced, scene)
     assert plan.actions[0].effect_source == "shipper"
 
 
@@ -2837,3 +2830,94 @@ def test_named_missing_target_fails_without_number_grounding_retry(tmp_path, rec
         brain._observe()
     assert len(model.prompts) == 1
     assert not any(e.kind == "act" for e in brain.log.read_all())
+
+
+@pytest.mark.parametrize("terminal", ["search", "save", "navigate"])
+def test_named_input_then_command_executes_and_observes_once(tmp_path, record, terminal):
+    from sawon_interfaces import ActionResult
+
+    data = named_response(
+        fields={
+            "Reference": {"role": "edit", "bbox": [100, 15, 150, 30]},
+            "Command": {"role": "button", "bbox": [270, 15, 90, 30]},
+        },
+        steps=[
+            {"target": "Reference", "action": "fill", "intent": "fill", "point": [125, 28]},
+            {"target": "Command", "action": "click", "intent": terminal, "point": [310, 28]},
+        ],
+    )
+    after = named_response(operation="stop", steps=[], evidence=[])
+    brain, model, relay, *_ = setup_brain(tmp_path, record, [data, after])
+    brain.settings = brain.settings.model_copy(
+        update={"guard_mode": "observe_only", "visual_model_only_review": True}
+    )
+    brain._observe()
+    assert brain._select_node() == "review"
+    assert [a.decision.intent for a in brain.action_plan.actions] == ["fill", terminal]
+    assert brain._review_node() == "execution"
+    sent = []
+
+    def act(action):
+        sent.append(action.root)
+        if action.root.type == "click":
+            relay.color = "black"
+        return ActionResult(
+            action_id=action.root.action_id,
+            ok=True,
+            duration_ms=0,
+            post_obs_id=relay.current.obs_id,
+        )
+
+    relay.act = act
+    assert brain._act_node() == "observation"
+    assert [a.type for a in sent] == ["set_text", "click"]
+    assert sent[0].text == brain.values["hbl_no"]
+    assert [a.target.image_point for a in sent] == [(125.0, 28.0), (310.0, 28.0)]
+    assert len(model.prompts) == 1
+    assert "hbl_no" not in brain.verified
+    assert len(brain.pending["execution"].delivered) == 2
+    assert brain._verify_node() == "review"
+    assert len(model.prompts) == 2
+    assert brain.pending is None
+    assert "hbl_no" not in brain.verified
+
+
+@pytest.mark.parametrize("failure_index", [0, 1], ids=["input-fails", "command-fails"])
+def test_named_mixed_plan_failure_records_only_delivered_prefix(tmp_path, record, failure_index):
+    from sawon_interfaces import ActionResult
+
+    data = named_response(
+        fields={
+            "Reference": {"role": "edit", "bbox": [100, 15, 150, 30]},
+            "Command": {"role": "button", "bbox": [270, 15, 90, 30]},
+        },
+        steps=[
+            {"target": "Reference", "action": "fill", "intent": "fill", "point": [125, 28]},
+            {"target": "Command", "action": "click", "intent": "search", "point": [310, 28]},
+        ],
+    )
+    brain, model, relay, *_ = setup_brain(tmp_path, record, [data])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+    brain._observe()
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    sent = []
+
+    def act(action):
+        sent.append(action.root)
+        ok = len(sent) - 1 != failure_index
+        return ActionResult(
+            action_id=action.root.action_id,
+            ok=ok,
+            duration_ms=0,
+            error=None if ok else "action_failed",
+            post_obs_id=relay.current.obs_id,
+        )
+
+    relay.act = act
+    brain._act_node()
+    assert len(sent) == failure_index + 1
+    assert len(model.prompts) == 1
+    assert brain.pending is None
+    assert "hbl_no" not in brain.verified
+    assert any(e.payload.get("reason") == "relay_action_failed" for e in brain.log.read_all())
