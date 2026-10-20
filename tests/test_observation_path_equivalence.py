@@ -109,7 +109,7 @@ def semantic_memory(brain):
     }
 
 
-def run_route(path, record, route):
+def run_route(path, record, route, *, mutate=None):
     raw = observed_response(record)
     responses = [raw]
     if route == "empty-action-recovery":
@@ -179,10 +179,14 @@ def run_route(path, record, route):
     elif compiled is not None:
         brain.method_library = MethodLibrary(path / "compiled.json", enabled=True)
         brain.method_library.upsert(compiled)
+    if mutate is not None:
+        mutate("before-observe", brain)
     brain._observe()
     if route == "identical-capture":
         first_id = brain.observation.obs_id
         first_hash = brain.observation.capture_phash
+        if mutate is not None:
+            mutate("before-reobserve", brain)
         brain._observe()
         assert brain.observation.obs_id != first_id
         assert brain.observation.capture_phash == first_hash
@@ -190,6 +194,14 @@ def run_route(path, record, route):
 
     # Assert value receipt BEFORE verification, so later helpers cannot conceal loss.
     observed = semantic_memory(brain)
+    if mutate is not None and route in {
+        "empty-action-recovery",
+        "identical-capture",
+        "cold-to-warm-cache",
+    }:
+        # Compare memory itself, before prerequisite assertions or target lookup
+        # can mask the missing update with an unrelated exception.
+        return observed
     assert any(
         e.value == record.fields.hbl_no.value and e.role == "edit"
         for e in brain.observation.elements
@@ -247,6 +259,8 @@ def run_route(path, record, route):
         )
         assert outcome is None, route
         brain._record_action_verification(decision, choice, None, None, effect, facts)
+    if mutate is not None:
+        return semantic_memory(brain)
     expected_calls = (
         0 if route.startswith("cold-to-warm") else 2 if route == "empty-action-recovery" else 1
     )
@@ -279,8 +293,8 @@ def run_route(path, record, route):
                 strict=True,
                 raises=MissingWarmEvidence,
                 reason=(
-                    "Stage 3: compiled action target 3 / evidence target 4; "
-                    "current value received but memo empty"
+                    "Synthetic compiled candidate bypasses read_warm_candidates; "
+                    "action 3 / evidence 4 loses memo; live occurrence unconfirmed"
                 ),
             ),
         ),
@@ -291,6 +305,49 @@ def test_synthetic_same_facts_reach_same_memory(tmp_path, record, route):
     actual = run_route(tmp_path / route, record, route)
     assert actual == reference, f"route={route}: semantic memory differs"
     assert actual["recent_actions"][-1]["target_summary"] == "set_text:hbl_no"
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "single-action",
+        "field-batch",
+        "empty-action-recovery",
+        "identical-capture",
+        "cold-to-warm-cache",
+    ],
+)
+def test_baseline_detects_disabled_memory_update(tmp_path, record, monkeypatch, route):
+    reference = run_route(tmp_path / "reference", record, "single-action")
+    invoked = []
+
+    def disable(stage, brain):
+        if route == "identical-capture":
+            if stage == "before-reobserve":
+
+                def omit_values(wire, scene, selected):
+                    invoked.append("_apply_field_values")
+                    return scene
+
+                monkeypatch.setattr(brain.visual_perception, "_apply_field_values", omit_values)
+        elif stage == "before-observe":
+            name = {
+                "single-action": "_record_action_verification",
+                "field-batch": "_remember_action_effect",
+                "empty-action-recovery": "_remember_model_task_evidence",
+                "cold-to-warm-cache": "_remember_model_task_evidence",
+            }[route]
+
+            def omit_memory(*args, **kwargs):
+                invoked.append(name)
+
+            monkeypatch.setattr(brain, name, omit_memory)
+
+    with pytest.raises(AssertionError, match="semantic memory differs"):
+        actual = run_route(tmp_path / route, record, route, mutate=disable)
+        assert actual == reference, f"route={route}: semantic memory differs"
+        assert actual["recent_actions"][-1]["target_summary"] == "set_text:hbl_no"
+    assert invoked, f"route={route}: mutation was never exercised"
 
 
 @pytest.mark.parametrize("variant", ["description", "long-description", "field-order"])
