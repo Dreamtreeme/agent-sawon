@@ -18,6 +18,7 @@
 | 시각 공용 자료형 | `sawon_runtime/visual.py` | OCR·탐지·pipeline | 렌더 페이지와 OCR block 계약 |
 | 공개 record/action/observation/event | `../agent-sawon-bench/interfaces/sawon_interfaces/contracts.py` | core와 bench | 두 저장소가 공유하는 버전 있는 Pydantic 계약 |
 | 공개 스키마 export | `../agent-sawon-bench/interfaces/sawon_interfaces/export_schemas.py` | 외부 소비자·검사 | `sawon_interfaces` JSON Schema 생성 |
+| 실행·웜 재현 측정 | `../agent-sawon-bench/harness/reproduction.py` | bench metrics, runner, summary | 신규 결과에 실행 상태 3값과 호출·캐시·메서드 원시 집계를 추가. 기존 결과 필드는 유지하며 과거 기록은 재판정하지 않음 |
 
 core가 bench 구현에서 직접 import할 수 있는 것은 `sawon_interfaces`뿐입니다. 화면 캡처, 입력,
 창 관리는 relay HTTP 경계 뒤에 둡니다. `WorkerState`에는 SDK client, relay, 열린 파일 같은
@@ -81,3 +82,15 @@ flowchart LR
 사용하지 않으므로 값은 null과 미사용 사유로 표시한다. HTTP 오류 응답에는 원문을 노출하지 않는다.
 진단 파일·이벤트 저장 실패는 기존 거절·재시도·종료 결과를 변경하지 않는다. 다만 기존 필수
 비용 로그의 저장 실패 정책은 그대로다. 이 산출물은 Git에 포함하지 않는다.
+
+## 신규 실행 측정 계약
+
+bench 외부 에이전트 설정의 `execution_phase`로 cold/warm/unknown을 명시한다.
+신규 trial 결과의 `execution_outcomes`는 ERP 채점, 작업자 정상 성공 종료, 웜 성공,
+웜 재현을 분리하며 `true`, `false`, `unknown` 문자열로 저장한다. 화면 캐시 허용·비허용
+재현값을 모두 보존하고 공식 정책을 임의로 선택하지 않는다. `execution_trace`에는 purpose별
+호출, 호출 분류, 캐시 선택, origin별 메서드 중단·전달 수를 남긴다.
+검토 호출은 모델 개입으로 집계하고 문서 추출·로컬 탐지는 별도로 센다.
+정의와 생산자·소비자는 bench `harness/README.md`, `reproduction.py`, `metrics.py`,
+`runner.py`, `run.py`, 회귀 검증은 `tests/test_reproduction.py`가 소유한다.
+이 측정은 종료 후 하네스 집계이며 작업자의 행동·종료 판정이나 공개 RunEvent 계약은 바꾸지 않는다.
