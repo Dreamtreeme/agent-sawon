@@ -229,8 +229,8 @@ def test_method_grounding_failure_retries_visual_cache_or_model_once(
     def select(_request, _services, _prepared, *, allow_method=True):
         selections.append(allow_method)
         if allow_method:
-            return MatchSelection(method_response, None, method_response, False)
-        return MatchSelection(fallback_response, ("f" * 64, {}), None, False)
+            return MatchSelection(method_response, None, method_response, False, _prepared)
+        return MatchSelection(fallback_response, ("f" * 64, {}), None, False, _prepared)
 
     def ground(response, *_args, **_kwargs):
         if response is method_response:
@@ -2736,6 +2736,48 @@ def test_education_retrieval_replans_before_any_provisional_action(tmp_path, rec
         "education_retrieval",
     ]
     assert calls[0].payload["context"]["decision_id"] == calls[1].payload["context"]["decision_id"]
+
+
+def test_synthetic_education_expansion_survives_empty_action_recovery(tmp_path, record):
+    # Synthetic D-1 replay using the existing fake, not a recorded pilot response.
+    taught = TaskInstruction.model_validate_json(
+        (
+            Path(__file__).resolve().parents[1] / "examples/shipment-user-taught-task.json"
+        ).read_bytes()
+    )
+    brain, model, *_ = setup_brain(
+        tmp_path,
+        record,
+        [
+            named_response(requested_instruction_ids=["save-record"]),
+            named_response(operation="act", steps=[]),
+            named_response(operation="stop", steps=[]),
+        ],
+        task_instruction=taught,
+    )
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+
+    brain._observe()
+
+    purposes = [
+        event.payload["context"]["purpose"]
+        for event in brain.log.read_all()
+        if event.kind == "model_call"
+    ]
+    assert purposes == ["screen_decision", "education_retrieval", "missing_actions_recovery"]
+    initial, expanded, recovered = [
+        json.loads(prompt[len(MAPPING_RULES) :]) for prompt in model.prompts
+    ]
+    assert [step["id"] for step in initial["taught_procedure_progress"]["steps"]] == [
+        "login",
+        "open-query",
+    ]
+    expected = next(step for step in taught.procedure if step.id == "save-record")
+    assert expanded["taught_procedure_progress"]["steps"][-1] == expected.model_dump(mode="json")
+    assert recovered["taught_procedure_progress"] == expanded["taught_procedure_progress"]
+    assert brain.visual_proposal.operation == "stop"
+    assert brain.completed_taught_steps == set()
+    assert not any(event.kind == "act" for event in brain.log.read_all())
 
 
 def test_supplied_education_preserves_actions_without_another_model_call(tmp_path, record):

@@ -329,6 +329,7 @@ class MatchSelection:
     cache_hit: tuple[str, dict] | None
     method_proposal: ScreenMatch | None
     used_image: bool
+    prepared: MatchPromptContext
 
 
 def _call_match(
@@ -1853,7 +1854,7 @@ def select_match_response(
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
     response = bind_value_evidence_to_controls(services, response, screen)
-    return MatchSelection(response, cache_hit, method_proposal, used_image)
+    return MatchSelection(response, cache_hit, method_proposal, used_image, prepared)
 
 
 def validate_or_replan(
@@ -2199,7 +2200,7 @@ def match_screen(
                 response,
                 request,
                 services,
-                prepared,
+                selection.prepared,
                 used_image=used_image,
             )
         except ValueError as error:
@@ -2241,7 +2242,7 @@ def match_screen(
                 response,
                 fallback_request,
                 services,
-                prepared,
+                selection.prepared,
                 used_image=used_image,
             )
         observation_claim = None
