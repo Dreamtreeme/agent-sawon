@@ -2780,6 +2780,77 @@ def test_synthetic_education_expansion_survives_empty_action_recovery(tmp_path, 
     assert not any(event.kind == "act" for event in brain.log.read_all())
 
 
+def test_synthetic_fallback_education_survives_empty_action_recovery(tmp_path, record):
+    # Synthetic input using the existing fake: supply an invalid cached proposal
+    # at the method boundary, but run selection, validation and recovery unchanged.
+    taught = TaskInstruction.model_validate_json(
+        (
+            Path(__file__).resolve().parents[1] / "examples/shipment-user-taught-task.json"
+        ).read_bytes()
+    )
+    brain, model, *_ = setup_brain(
+        tmp_path,
+        record,
+        [
+            named_response(requested_instruction_ids=["save-record"]),
+            named_response(operation="act", steps=[]),
+            named_response(operation="stop", steps=[]),
+        ],
+        task_instruction=taught,
+    )
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+    blocks, _, markers, _ = fixture()
+    label = next(marker for marker in markers if marker.source == "ocr")
+    screen = {
+        "image_size": [400, 200],
+        "ocr": [block.model_dump() for block in blocks],
+        "markers": [marker.model_dump() for marker in markers],
+    }
+    proposal = ScreenMatch.model_validate(
+        {
+            "screen_kind": "query",
+            "procedure_step": "task-action",
+            "controls": [{"id": label.id, "role": "edit", "confidence": 1}],
+            "steps": [
+                {
+                    "target": label.id,
+                    "action": "fill",
+                    "intent": "query_input",
+                    "source": "hbl_no",
+                    "point": [40, 27],
+                }
+            ],
+        }
+    )
+    request, services = matching_contract(brain, screen)
+
+    result = match_screen(replace(request, proposal=proposal), services)
+
+    events = brain.log.read_all()
+    fallback = [event for event in events if event.payload.get("check") == "method_fallback"]
+    assert len(fallback) == 1
+    assert fallback[0].payload["reason"] == "screen_match_action_surface_mismatch"
+    calls = [event for event in events if event.kind == "model_call"]
+    assert fallback[0].seq < calls[0].seq
+    assert [event.payload["context"]["purpose"] for event in calls] == [
+        "screen_decision",
+        "education_retrieval",
+        "missing_actions_recovery",
+    ]
+    initial, expanded, recovered = [
+        json.loads(prompt[len(MAPPING_RULES) :]) for prompt in model.prompts
+    ]
+    assert "save-record" not in {
+        step["id"] for step in initial["taught_procedure_progress"]["steps"]
+    }
+    expected = next(step for step in taught.procedure if step.id == "save-record")
+    assert expanded["taught_procedure_progress"]["steps"][-1] == expected.model_dump(mode="json")
+    assert recovered["taught_procedure_progress"] == expanded["taught_procedure_progress"]
+    assert result.response.operation == "stop"
+    assert result.response.steps == []
+    assert not any(event.kind == "act" for event in events)
+
+
 def test_supplied_education_preserves_actions_without_another_model_call(tmp_path, record):
     # Synthetic reduction of 066 calls 17/21: requested details already supplied.
     taught = TaskInstruction.model_validate_json(
