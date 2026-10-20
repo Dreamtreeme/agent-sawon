@@ -8,17 +8,105 @@ coordination, not the distributed lease mechanism planned for M3.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import shutil
 import tempfile
 import time
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 import portalocker
 from pydantic import AwareDatetime, BaseModel, ConfigDict, JsonValue, ValidationError
 from sawon_interfaces import EventCost, RunEvent
+
+
+def diagnostic_artifact(log, name: str, value) -> str | None:
+    """Best-effort private evidence; never replace the caller's result or exception."""
+    try:
+        directory = getattr(log, "case_dir", None)
+        if directory is None:
+            return None
+        path = Path(directory) / "diagnostics" / name
+        atomic_write_json(path, value)
+        return str(path)
+    except Exception:
+        logging.getLogger(__name__).warning("diagnostic_artifact_unavailable")
+        return None
+
+
+def record_rejection(
+    log, validator: str, error: Exception, *, response=None, context=None, captures=()
+) -> None:
+    """Record the failed boundary and original exception without enforcing new policy.
+
+    Response is the value received by THIS boundary (a normalized model at later
+    stages). Exact provider text is stored separately by MeasuredModelClient.
+    """
+    try:
+        rejection_id = uuid4().hex
+        frames = []
+        trace = error.__traceback__
+        while trace is not None:
+            frames.append(
+                {
+                    "file": trace.tb_frame.f_code.co_filename,
+                    "function": trace.tb_frame.f_code.co_name,
+                    "line": trace.tb_lineno,
+                }
+            )
+            trace = trace.tb_next
+        copied = []
+        directory = getattr(log, "case_dir", None)
+        if captures and directory is not None:
+            folder = Path(directory) / "diagnostics" / rejection_id
+            folder.mkdir(parents=True, exist_ok=True)
+            for index, capture in enumerate(captures):
+                source = Path(capture)
+                destination = folder / f"{index}-{source.name}"
+                shutil.copyfile(source, destination)
+                copied.append({"source": str(source), "copy": str(destination)})
+        artifact = diagnostic_artifact(
+            log,
+            f"{rejection_id}.json",
+            {
+                "validator": validator,
+                "reason": str(error),
+                "error_type": type(error).__name__,
+                "response": response.model_dump(mode="json")
+                if isinstance(response, BaseModel)
+                else response,
+                "context": context,
+                "trace": frames,
+                "captures": copied,
+            },
+        )
+        log.append(
+            "verify",
+            payload={
+                "check": "rejection_evidence",
+                "validator": validator,
+                "error_type": type(error).__name__,
+                "artifact": artifact,
+                "origin": frames[-1] if frames else None,
+            },
+        )
+    except Exception:
+        logging.getLogger(__name__).warning("rejection_evidence_unavailable")
+
+
+@contextmanager
+def rejection_evidence(log, validator: str, *, response=None, context=None):
+    """Observe a throwing validation boundary; preserve exception identity and routing."""
+    try:
+        yield
+    except Exception as error:
+        record_rejection(log, validator, error, response=response, context=context)
+        raise
 
 
 class LogIntegrityError(ValueError):

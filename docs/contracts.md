@@ -58,3 +58,19 @@ flowchart LR
 
 서비스에 전체 `Brain`을 넘기거나 같은 상태를 별도 객체에 반복 복사해 새 계약처럼 만들지
 않습니다. 이미 존재하는 공용 계약을 확장할 수 있는지 먼저 확인합니다.
+
+## 거절 진단 산출물
+
+거절 기록은 판단 계약이 아니라 비공개 진단 산출물이다. `sawon_runtime/storage.py`의
+`record_rejection`은 기존 `verify` 이벤트에 검증 경계·예외 발생 위치·산출물 경로를 추가한다.
+`case/diagnostics/*.json`에는 거절 이유, 해당 경계가 받은 응답, 문맥과 예외 위치를 저장한다.
+이 응답은 이미 정규화된 객체일 수 있으므로 공급자 원문과 구분한다.
+공급자 원문은 `models/base.py`가 `diagnostics/model-<call_id>.json`에 보관하며,
+`model_call` 이벤트의 `call_id`, `context`, `response_artifact`로 추적한다.
+
+화면 비교 거절은 `brain/visual/perception.py`가 실제 비교한 두 캡처와 pHash·거리·기준을
+기록한다. bench의 `relay/service.py`와 `relay/api.py`는 relay artifact 디렉터리의
+`diagnostics/<id>/rejection.json`에 요청과 이유를 기록한다. relay는 현재 pHash를 판정에
+사용하지 않으므로 값은 null과 미사용 사유로 표시한다. HTTP 오류 응답에는 원문을 노출하지 않는다.
+진단 파일·이벤트 저장 실패는 기존 거절·재시도·종료 결과를 변경하지 않는다. 다만 기존 필수
+비용 로그의 저장 실패 정책은 그대로다. 이 산출물은 Git에 포함하지 않는다.

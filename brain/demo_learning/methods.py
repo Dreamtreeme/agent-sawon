@@ -18,7 +18,7 @@ from models.accounting import read_model_accounting
 from models.base import ModelClient
 from models.budget import CallBudget
 from models.factory import create_model_client
-from sawon_runtime.storage import RunLog, atomic_write_json
+from sawon_runtime.storage import RunLog, atomic_write_json, rejection_evidence
 
 
 class MethodMeaning(BaseModel):
@@ -244,12 +244,13 @@ def learn_method(
     result = model.complete_json(prompt, MethodMeaning)
     draft = result.response
     atomic_write_json(log.case_dir / "method-draft.json", draft)
-    method = method_from_draft(
-        trace,
-        draft,
-        method_id=method_id,
-        source_receipt=str((log.case_dir / "method-draft.json").resolve()),
-    )
+    with rejection_evidence(log, "methods.method_from_draft", response=draft):
+        method = method_from_draft(
+            trace,
+            draft,
+            method_id=method_id,
+            source_receipt=str((log.case_dir / "method-draft.json").resolve()),
+        )
     MethodLibrary(output, enabled=True).upsert(method)
     log.append(
         "verify",

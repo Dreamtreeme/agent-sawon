@@ -13,7 +13,13 @@ from sawon_interfaces import ShipmentRecord
 
 from models.accounting import read_model_accounting
 from models.base import MeasuredModelClient
-from sawon_runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
+from sawon_runtime.storage import (
+    CaseStatus,
+    RunLog,
+    StateStore,
+    atomic_write_json,
+    record_rejection,
+)
 
 from .checks import can_enter, cross_validate
 from .extract import Reservation, extract_page, extraction_prompt
@@ -196,6 +202,12 @@ def prepare_case(
                         },
                     )
     except Exception as exc:
+        record_rejection(
+            log,
+            "pipeline.document_extraction",
+            exc,
+            context={"raw_responses": "diagnostics/model-*.json"},
+        )
         error_type = type(exc).__name__
         if isinstance(exc, (PipelineDependencyError, PipelineBudgetError)):
             error_detail = str(exc)

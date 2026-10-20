@@ -596,6 +596,11 @@ def test_low_confidence_action_target_is_rejected_before_execution(
 
     with pytest.raises(ValueError, match="action_target_uncertain"):
         validate_match_plan(response, capability, request, services, set(brain.values))
+    event = brain.log.read_all()[-1]
+    assert event.payload["validator"] == "matching.validate_match_plan"
+    rejected = json.loads(Path(event.payload["artifact"]).read_text(encoding="utf-8"))
+    assert rejected["response"] == response.model_dump(mode="json")
+    assert rejected["reason"] == "screen_match_action_target_uncertain"
 
 
 def test_taught_direct_input_is_not_written_into_a_detected_grid_cell(tmp_path, record):
@@ -1513,6 +1518,10 @@ def test_stop_is_rejected_when_current_review_has_all_required_evidence(tmp_path
             services,
             set(brain.values),
         )
+    event = brain.log.read_all()[-1]
+    rejected = json.loads(Path(event.payload["artifact"]).read_text(encoding="utf-8"))
+    assert rejected["response"] == proposal.model_dump(mode="json")
+    assert rejected["reason"] == "screen_match_completion_decision_required"
 
 
 def test_model_may_complete_from_current_evidence_before_the_last_taught_step(tmp_path, record):

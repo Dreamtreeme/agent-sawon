@@ -18,6 +18,8 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sawon_interfaces import EventCost, RunEvent
 
+from sawon_runtime.storage import diagnostic_artifact
+
 from .validation import safe_validation_errors
 
 T = TypeVar("T", bound=BaseModel)
@@ -179,6 +181,17 @@ class MeasuredModelClient(ABC):
         try:
             payload["request_sha256"] = request_fingerprint(prompt, schema, images)
             reply = self._generate(prompt, schema, images=images)
+            # Keep exact text even when parsing succeeds but a later local guard rejects it.
+            payload["response_artifact"] = diagnostic_artifact(
+                self._run_log,
+                f"model-{payload['call_id']}.json",
+                {
+                    "call_id": payload["call_id"],
+                    "context": payload["context"],
+                    "schema": schema.__name__,
+                    "text": reply.text,
+                },
+            )
             usage = reply.usage
             if usage is None:
                 raise UsageUnavailableError("Provider response did not include usage metadata")
@@ -189,6 +202,7 @@ class MeasuredModelClient(ABC):
             payload["error_type"] = type(exc).__name__
             if isinstance(exc, ValidationError):
                 payload["validation_errors"] = safe_validation_errors(exc, schema)
+                payload["validator"] = f"{schema.__module__}.{schema.__name__}.model_validate_json"
             # Provider adapters may expose a small allowlisted metadata set, but
             # never exception messages, response bodies, URLs, or request headers.
             payload.update(self._failure_metadata(exc))

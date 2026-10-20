@@ -39,7 +39,13 @@ from models.accounting import read_model_accounting
 from models.base import ModelClient
 from models.budget import CallBudget, ImageCallBudget
 from models.validation import safe_validation_errors
-from sawon_runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
+from sawon_runtime.storage import (
+    CaseStatus,
+    RunLog,
+    StateStore,
+    atomic_write_json,
+    record_rejection,
+)
 from sawon_runtime.visual import OcrEngine, RenderedPage
 
 from .action_preparation import (
@@ -887,6 +893,13 @@ class Brain:
 
     def _fail(self, reason: str, *, validation_errors: list[dict] | None = None) -> WorkerNode:
         decision = self.decision
+        record_rejection(
+            self.log,
+            "engine.retry",
+            ValueError(reason),
+            response=decision,
+            context={"validation_errors": validation_errors, "phase": self.phase},
+        )
         exploration_failure = (
             self.phase == "task"
             and reason in {"navigation_no_progress", "navigation_cycle", "semantic_target_repeated"}
@@ -1301,10 +1314,28 @@ class Brain:
             self._observe()
             return "review"
         except VisualGroundingError as exc:
+            record_rejection(
+                self.log,
+                "engine._observe_node",
+                exc,
+                response=self.visual_proposal or self.decision,
+            )
             return self._finish("failed", "visual_grounding:" + str(exc))
         except GuardStop as exc:
+            record_rejection(
+                self.log,
+                "engine._observe_node",
+                exc,
+                response=self.visual_proposal or self.decision,
+            )
             return self._finish("stopped", str(exc))
         except Exception as exc:
+            record_rejection(
+                self.log,
+                "engine._observe_node",
+                exc,
+                response=self.visual_proposal or self.decision,
+            )
             self.log.append(
                 "verify",
                 payload={
@@ -1411,6 +1442,13 @@ class Brain:
                 self._stage_visual_match_candidate()
                 return self._complete_saved_evidence()
             if review.status == "blocked":
+                record_rejection(
+                    self.log,
+                    "engine.review.blocked",
+                    ValueError(review.reason),
+                    response=self.decision,
+                    context=review.model_dump(mode="json"),
+                )
                 self.review_execution = False
                 self.execution_authorized = False
                 self.action_plan = None
@@ -1421,6 +1459,9 @@ class Brain:
                 return "execution"
             return "decision"
         except GuardStop as exc:
+            record_rejection(
+                self.log, "engine._review_node", exc, response=self.visual_proposal or self.decision
+            )
             self.review_execution = False
             self.execution_authorized = False
             self.action_plan = None
@@ -1431,6 +1472,9 @@ class Brain:
                 return self._fail("duplicate_evidence_required")
             return self._finish("stopped", str(exc))
         except Exception as exc:
+            record_rejection(
+                self.log, "engine._review_node", exc, response=self.visual_proposal or self.decision
+            )
             self.review_execution = False
             self.execution_authorized = False
             self.action_plan = None
@@ -1768,6 +1812,9 @@ class Brain:
             self.review_execution = True
             return "review"
         except GuardStop as exc:
+            record_rejection(
+                self.log, "engine._select_node", exc, response=self.visual_proposal or self.decision
+            )
             if (
                 str(exc) == "target_not_text_input"
                 and self.pending is None
@@ -1790,8 +1837,14 @@ class Brain:
                 return self._fail("duplicate_evidence_required")
             return self._finish("stopped", str(exc))
         except VisualGroundingError as exc:
+            record_rejection(
+                self.log, "engine._select_node", exc, response=self.visual_proposal or self.decision
+            )
             return self._finish("failed", "visual_grounding:" + str(exc))
         except ValidationError as exc:
+            record_rejection(
+                self.log, "engine._select_node", exc, response=self.visual_proposal or self.decision
+            )
             return self._fail(
                 "duplicate_evidence_required"
                 if duplicate_checkpoint
@@ -1803,8 +1856,14 @@ class Brain:
                 validation_errors=safe_validation_errors(exc, schema),
             )
         except ValueError as exc:
+            record_rejection(
+                self.log, "engine._select_node", exc, response=self.visual_proposal or self.decision
+            )
             return self._fail("selection_error:" + str(exc))
         except Exception as exc:
+            record_rejection(
+                self.log, "engine._select_node", exc, response=self.visual_proposal or self.decision
+            )
             return self._fail("selection_error:" + type(exc).__name__)
 
     def _grid(self, decision: Decision) -> list[UIElement]:
@@ -2261,6 +2320,12 @@ class Brain:
     def _act_node(self) -> WorkerNode:
         assert self.decision is not None or self.action_plan is not None
         if not self.execution_authorized:
+            record_rejection(
+                self.log,
+                "engine.execution.authorization",
+                ValueError("execution_review_required"),
+                response=self.decision,
+            )
             return self._finish("stopped", "execution_review_required")
         self.execution_authorized = False
         plan = self.action_plan or ActionPlan.single(self.decision)
@@ -2273,6 +2338,9 @@ class Brain:
                 self.pending["visual_match_candidate"] = visual_candidate
             return outcome
         except GuardStop as exc:
+            record_rejection(
+                self.log, "engine._act_node", exc, response=self.visual_proposal or self.decision
+            )
             if str(exc) in {
                 "record_input_scope_mismatch",
                 "input_surface_claimed_by_other_field",
@@ -2280,6 +2348,9 @@ class Brain:
                 return self._fail(str(exc))
             return self._finish("stopped", str(exc))
         except Exception as exc:
+            record_rejection(
+                self.log, "engine._act_node", exc, response=self.visual_proposal or self.decision
+            )
             return self._fail("action_error:" + type(exc).__name__)
 
     def _prepare_actions(self, plan: ActionPlan, *, batch: bool):
@@ -2903,10 +2974,19 @@ class Brain:
             # UIA keeps its cheap fresh-state read before the next selection.
             return "review" if isinstance(observation, SceneObservation) else "observation"
         except VisualGroundingError as exc:
+            record_rejection(
+                self.log, "engine._verify_node", exc, response=self.visual_proposal or self.decision
+            )
             return self._finish("failed", "visual_grounding:" + str(exc))
         except GuardStop as exc:
+            record_rejection(
+                self.log, "engine._verify_node", exc, response=self.visual_proposal or self.decision
+            )
             return self._finish("stopped", str(exc))
         except Exception as exc:
+            record_rejection(
+                self.log, "engine._verify_node", exc, response=self.visual_proposal or self.decision
+            )
             self.log.append(
                 "verify",
                 payload={
@@ -3021,6 +3101,12 @@ class Brain:
                     model_only_review=self.settings.visual_model_only_review,
                 )
             except CompletionRetry as error:
+                record_rejection(
+                    self.log,
+                    "engine._check_complete",
+                    error,
+                    response=self.visual_proposal or self.decision,
+                )
                 return self._fail(str(error))
             if not self.settings.visual_model_only_review:
                 for field, element in result.fields:
@@ -3046,6 +3132,12 @@ class Brain:
                 self._grid(decision),
             )
         except CompletionRetry as error:
+            record_rejection(
+                self.log,
+                "engine._check_complete",
+                error,
+                response=self.visual_proposal or self.decision,
+            )
             return self._fail(str(error))
         self.log.append("verify", payload=payload)
         return self._finish("success", "saved_and_verified_awaiting_approval")

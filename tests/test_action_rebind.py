@@ -1,6 +1,8 @@
 """Execution-time target rebinding uses fresh local visual evidence."""
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -111,6 +113,45 @@ def test_changed_scene_family_is_rejected_before_reusing_visible_caption(tmp_pat
             blocks=[OcrBlock(id=0, text="저장", confidence=1, bbox=(150, 120, 120, 36))],
             markers=[],
         )
+
+
+def test_perception_rejection_preserves_the_two_compared_images_and_hashes(tmp_path):
+    old_path, fresh_path = same_form_images(tmp_path)
+    with Image.open(fresh_path) as source:
+        changed = source.copy()
+    ImageDraw.Draw(changed).rectangle((0, 0, 599, 150), fill="black")
+    changed.save(fresh_path)
+    target = UIElement(ref="e2", role="button", name="Save", bbox=(100, 100, 80, 30))
+    scene = SceneObservation(wire=wire(), elements=[target])
+    planned = tmp_path / "visual" / str(scene.obs_id) / "capture.png"
+    planned.parent.mkdir(parents=True)
+    planned.write_bytes(old_path.read_bytes())
+    log = RunLog(tmp_path, case_id="rejected-pair", agent_id="test")
+    captures = []
+
+    class Relay:
+        def screenshot(self, observation, path):
+            captures.append(observation.obs_id)
+            path.parent.mkdir(parents=True)
+            path.write_bytes(fresh_path.read_bytes())
+            return path
+
+    # Neither OCR, detector nor model should be reached on this branch.
+    perception = VisualPerception(Relay(), None, tmp_path, log, None, detector=None)
+    fresh = wire(600, 240)
+    with pytest.raises(ValueError, match="^visual_scene_family_changed$"):
+        perception.rebind_action(scene, target, fresh)
+    assert captures == [fresh.obs_id]
+    event = log.read_all()[-1]
+    preserved = json.loads(Path(event.payload["artifact"]).read_text(encoding="utf-8"))
+    assert [Path(item["copy"]).read_bytes() for item in preserved["captures"]] == [
+        old_path.read_bytes(),
+        fresh_path.read_bytes(),
+    ]
+    context = preserved["context"]
+    assert int(context["old_phash"]) == perceptual_hash(old_path)
+    assert int(context["fresh_phash"]) == perceptual_hash(fresh_path)
+    assert context["distance"] > context["max_distance"] == 16
 
 
 def test_duplicate_caption_does_not_guess_a_coordinate(tmp_path):

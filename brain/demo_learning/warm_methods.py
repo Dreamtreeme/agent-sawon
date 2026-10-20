@@ -24,7 +24,7 @@ from models.accounting import read_model_accounting
 from models.base import ModelClient
 from models.budget import CallBudget
 from models.factory import create_model_client
-from sawon_runtime.storage import RunLog, atomic_write_json
+from sawon_runtime.storage import RunLog, atomic_write_json, rejection_evidence
 
 
 class WarmGroupSelection(BaseModel):
@@ -479,55 +479,63 @@ def assemble_warm_method(
     max_cost_usd: Decimal,
     budget: CallBudget | None = None,
 ) -> LearnedMethod:
-    prompt = assembly_prompt(source, candidates)
-    atomic_write_json(
-        log.case_dir / "assembly-input.json",
-        {
-            "source": source,
-            "candidates": [
-                {
-                    "candidate_id": item.candidate_id,
-                    "cache_key": item.cache_key,
-                    "obs_id": item.obs_id,
-                    "trace_index": item.trace_index,
-                    "screen": item.screen,
-                    "response": item.response,
-                    "observed_transitions": item.observed_transitions,
-                    "already_satisfied": item.satisfied_actions,
-                }
-                for item in candidates
-            ],
+    with rejection_evidence(
+        log,
+        "warm_methods.assemble_warm_method",
+        context={
+            "draft": str(log.case_dir / "assembly-draft.json"),
+            "input": str(log.case_dir / "assembly-input.json"),
         },
-    )
-    atomic_write_json(log.case_dir / "assembly-request.json", {"prompt": prompt})
-    accounting = read_model_accounting(log)
-    if accounting.unknown:
-        raise ValueError("unknown_model_call_cost")
-    reserved = budget(prompt, WarmMethodAssembly) if budget is not None else Decimal(0)
-    if accounting.known_usd + reserved > max_cost_usd:
-        raise ValueError("warm_method_assembly_cost_cap")
-    draft = model.complete_json(prompt, WarmMethodAssembly).response
-    draft_path = log.case_dir / "assembly-draft.json"
-    atomic_write_json(draft_path, draft)
-    method = compile_warm_method(
-        source,
-        candidates,
-        draft,
-        method_id=method_id,
-        source_receipt=str(draft_path.resolve()),
-    )
-    atomic_write_json(output, MethodDocument(methods=[method]))
-    log.append(
-        "verify",
-        payload={
-            "check": "warm_method_compiled",
-            "method_id": method.id,
-            "groups": len(method.action_groups),
-            "sources": [slot.source_key for slot in method.slots],
-            "output": str(output.resolve()),
-        },
-    )
-    return method
+    ):
+        prompt = assembly_prompt(source, candidates)
+        atomic_write_json(
+            log.case_dir / "assembly-input.json",
+            {
+                "source": source,
+                "candidates": [
+                    {
+                        "candidate_id": item.candidate_id,
+                        "cache_key": item.cache_key,
+                        "obs_id": item.obs_id,
+                        "trace_index": item.trace_index,
+                        "screen": item.screen,
+                        "response": item.response,
+                        "observed_transitions": item.observed_transitions,
+                        "already_satisfied": item.satisfied_actions,
+                    }
+                    for item in candidates
+                ],
+            },
+        )
+        atomic_write_json(log.case_dir / "assembly-request.json", {"prompt": prompt})
+        accounting = read_model_accounting(log)
+        if accounting.unknown:
+            raise ValueError("unknown_model_call_cost")
+        reserved = budget(prompt, WarmMethodAssembly) if budget is not None else Decimal(0)
+        if accounting.known_usd + reserved > max_cost_usd:
+            raise ValueError("warm_method_assembly_cost_cap")
+        draft = model.complete_json(prompt, WarmMethodAssembly).response
+        draft_path = log.case_dir / "assembly-draft.json"
+        atomic_write_json(draft_path, draft)
+        method = compile_warm_method(
+            source,
+            candidates,
+            draft,
+            method_id=method_id,
+            source_receipt=str(draft_path.resolve()),
+        )
+        atomic_write_json(output, MethodDocument(methods=[method]))
+        log.append(
+            "verify",
+            payload={
+                "check": "warm_method_compiled",
+                "method_id": method.id,
+                "groups": len(method.action_groups),
+                "sources": [slot.source_key for slot in method.slots],
+                "output": str(output.resolve()),
+            },
+        )
+        return method
 
 
 def main(argv: list[str] | None = None) -> int:

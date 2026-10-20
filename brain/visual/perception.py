@@ -12,7 +12,7 @@ from time import perf_counter
 from sawon_interfaces import Observation, UIElement
 
 from brain.relay import HttpRelay
-from sawon_runtime.storage import RunLog, atomic_write_json
+from sawon_runtime.storage import RunLog, atomic_write_json, record_rejection
 from sawon_runtime.visual import OcrBlock, OcrEngine, RenderedPage
 
 from .action_rebind import (
@@ -275,8 +275,22 @@ class VisualPerception:
             folder = self.case_dir / "action-renewal" / key
             path = self.relay.screenshot(fresh, folder / "capture.png")
             self._action_captures[key] = path
-        distance = hash_distance(perceptual_hash(old_path), perceptual_hash(path))
+        old_hash, fresh_hash = perceptual_hash(old_path), perceptual_hash(path)
+        distance = hash_distance(old_hash, fresh_hash)
         if distance > max_phash_distance:
+            record_rejection(
+                self.log,
+                "perception.rebind_action.phash",
+                ValueError("visual_scene_family_changed"),
+                response=target,
+                captures=(old_path, path),
+                context={
+                    "old_phash": str(old_hash),
+                    "fresh_phash": str(fresh_hash),
+                    "distance": distance,
+                    "max_distance": max_phash_distance,
+                },
+            )
             raise ValueError("visual_scene_family_changed")
         if (fresh.screenshot.width, fresh.screenshot.height) == (
             scene.screenshot.width,
@@ -338,17 +352,33 @@ class VisualPerception:
                 },
             )
         path, blocks, markers = cached
-        return rebind_action_target(
-            scene,
-            target,
-            old_capture=old_path,
-            fresh_capture=path,
-            fresh_size=(fresh.screenshot.width, fresh.screenshot.height),
-            blocks=blocks,
-            markers=markers,
-            planned_point=planned_point,
-            max_phash_distance=max_phash_distance,
-        )
+        try:
+            return rebind_action_target(
+                scene,
+                target,
+                old_capture=old_path,
+                fresh_capture=path,
+                fresh_size=(fresh.screenshot.width, fresh.screenshot.height),
+                blocks=blocks,
+                markers=markers,
+                planned_point=planned_point,
+                max_phash_distance=max_phash_distance,
+            )
+        except ValueError as error:
+            record_rejection(
+                self.log,
+                "perception.rebind_action.target",
+                error,
+                response=target,
+                captures=(old_path, path),
+                context={
+                    "old_phash": str(old_hash),
+                    "fresh_phash": str(fresh_hash),
+                    "distance": distance,
+                    "max_distance": max_phash_distance,
+                },
+            )
+            raise
 
     def _resolve(
         self,
@@ -370,6 +400,12 @@ class VisualPerception:
             try:
                 meanings = self.detect(request)
             except MarkerReferenceError as error:
+                record_rejection(
+                    self.log,
+                    "perception.marker_links",
+                    error,
+                    context={"obs_id": str(wire.obs_id), "attempt": attempt},
+                )
                 self.log.append(
                     "verify",
                     payload={
@@ -498,6 +534,13 @@ class VisualPerception:
                 scene = scene.model_copy(update={"capture_phash": request.screen["screen_phash"]})
                 break
             except ValueError as error:
+                record_rejection(
+                    self.log,
+                    "perception.ground_meanings",
+                    error,
+                    response=meanings,
+                    context={"obs_id": str(wire.obs_id), "attempt": attempt},
+                )
                 # Only local grounding errors are eligible; never retry SDK failures,
                 # unknown-cost calls or arbitrary exception bodies. detect remains
                 # the normal measured/budgeted callback on both attempts.

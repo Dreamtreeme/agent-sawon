@@ -39,7 +39,7 @@ from brain.vocabulary import (
 )
 from models.base import model_call_context
 from models.schema import compact_provider_schema
-from sawon_runtime.storage import RunLog, atomic_write_json
+from sawon_runtime.storage import RunLog, atomic_write_json, rejection_evidence
 from sawon_runtime.visual import RenderedPage
 
 from .execution import GuardStop, PendingAction
@@ -1193,63 +1193,72 @@ def validate_match_plan(
     active_fields: set[str],
 ) -> ScreenMatch:
     """Validate task actions separately from an already grounded screen interpretation."""
-    response = _normalize_match_actions(response, request, services)
-    _validate_step_contract(response, request, services)
-    if services.settings.guard_mode == "enforce":
-        _validate_taught_step(response, request)
-        response = _validate_completion_annotations(response, request, services)
-        _validate_saved_row_navigation_target(response, request)
-        _validate_login_boundary(response, request)
-        _validate_action_boundary(response, capability, request)
-    else:
-        checks = (
-            ("taught_step", lambda: _validate_taught_step(response, request)),
-            (
-                "completion_annotations",
-                lambda: _validate_completion_annotations(response, request, services),
-            ),
-            (
-                "saved_row_navigation_target",
-                lambda: _validate_saved_row_navigation_target(response, request),
-            ),
-            ("login_boundary", lambda: _validate_login_boundary(response, request)),
-            ("action_boundary", lambda: _validate_action_boundary(response, capability, request)),
-        )
-        for check, validate in checks:
-            try:
-                validate()
-            except ValueError as error:
-                services.log.append(
-                    "verify",
-                    payload={
-                        "check": "guard_observe_only",
-                        "guard": check,
-                        "would_reject": str(error),
-                    },
-                )
-                if str(error) in _EXECUTOR_CONTRACT_ERRORS:
-                    raise
-    response = bind_selection_effect(response, capability, active_fields)
-    if services.settings.guard_mode == "enforce":
-        _validate_input_scope(response, capability)
-        _validate_action_targets_executable(response, services)
-    else:
-        for check, validate in (
-            ("input_scope", lambda: _validate_input_scope(response, capability)),
-            ("action_target", lambda: _validate_action_targets_executable(response, services)),
-        ):
-            try:
-                validate()
-            except ValueError as error:
-                services.log.append(
-                    "verify",
-                    payload={
-                        "check": "guard_observe_only",
-                        "guard": check,
-                        "would_reject": str(error),
-                    },
-                )
-    return response
+    with rejection_evidence(
+        services.log,
+        "matching.validate_match_plan",
+        response=response,
+        context={"phase": request.phase},
+    ):
+        response = _normalize_match_actions(response, request, services)
+        _validate_step_contract(response, request, services)
+        if services.settings.guard_mode == "enforce":
+            _validate_taught_step(response, request)
+            response = _validate_completion_annotations(response, request, services)
+            _validate_saved_row_navigation_target(response, request)
+            _validate_login_boundary(response, request)
+            _validate_action_boundary(response, capability, request)
+        else:
+            checks = (
+                ("taught_step", lambda: _validate_taught_step(response, request)),
+                (
+                    "completion_annotations",
+                    lambda: _validate_completion_annotations(response, request, services),
+                ),
+                (
+                    "saved_row_navigation_target",
+                    lambda: _validate_saved_row_navigation_target(response, request),
+                ),
+                ("login_boundary", lambda: _validate_login_boundary(response, request)),
+                (
+                    "action_boundary",
+                    lambda: _validate_action_boundary(response, capability, request),
+                ),
+            )
+            for check, validate in checks:
+                try:
+                    validate()
+                except ValueError as error:
+                    services.log.append(
+                        "verify",
+                        payload={
+                            "check": "guard_observe_only",
+                            "guard": check,
+                            "would_reject": str(error),
+                        },
+                    )
+                    if str(error) in _EXECUTOR_CONTRACT_ERRORS:
+                        raise
+        response = bind_selection_effect(response, capability, active_fields)
+        if services.settings.guard_mode == "enforce":
+            _validate_input_scope(response, capability)
+            _validate_action_targets_executable(response, services)
+        else:
+            for check, validate in (
+                ("input_scope", lambda: _validate_input_scope(response, capability)),
+                ("action_target", lambda: _validate_action_targets_executable(response, services)),
+            ):
+                try:
+                    validate()
+                except ValueError as error:
+                    services.log.append(
+                        "verify",
+                        payload={
+                            "check": "guard_observe_only",
+                            "guard": check,
+                            "would_reject": str(error),
+                        },
+                    )
+        return response
 
 
 def _action_targets_have_groundable_roles(response: ScreenMatch, screen: dict) -> bool:
@@ -1461,47 +1470,53 @@ def prepare_match_plan(
     active_fields: set[str],
 ):
     """Compile every proposal through the same task and write-surface contract."""
-    response = response.model_copy(
-        update={
-            "purpose": (response.purpose or response.procedure_step)[:160],
-            "procedure_step": capability.capability_id,
-        }
-    )
-    if (
-        request.phase == "task"
-        and response.operation in {"duplicate_clear", "duplicate_found"}
-        and response.steps
+    with rejection_evidence(
+        services.log,
+        "matching.prepare_match_plan",
+        response=response,
+        context={"screen": request.screen, "phase": request.phase},
     ):
-        # A combined task response may report what the current query proves and
-        # also choose the next visible action.  The proof operation cannot carry
-        # actions in the executor contract, so retain the model's executable
-        # choice as an ordinary task action instead of discarding it and paying
-        # for an identical follow-up decision.
-        services.log.append(
-            "verify",
-            payload={
-                "check": "compound_response_normalized",
-                "guard": "proof_with_actions",
-                "reported_operation": response.operation,
-                "outcome": "normalized_to_action",
-                "retained_actions": len(response.steps),
-            },
+        response = response.model_copy(
+            update={
+                "purpose": (response.purpose or response.procedure_step)[:160],
+                "procedure_step": capability.capability_id,
+            }
         )
-        response = response.model_copy(update={"operation": "act", "grid": None, "row": None})
-    elif response.operation != "act" and response.steps:
-        services.log.append(
-            "verify",
-            payload={
-                "check": "compound_response_normalized",
-                "guard": "proof_with_actions",
-                "accepted_operation": response.operation,
-                "ignored_actions": len(response.steps),
-            },
-        )
-        response = response.model_copy(update={"steps": []})
-    response = validate_action_surfaces(services, response, request.screen)
-    response = enforce_taught_input_surfaces(request, services, response)
-    return validate_match_plan(response, capability, request, services, active_fields)
+        if (
+            request.phase == "task"
+            and response.operation in {"duplicate_clear", "duplicate_found"}
+            and response.steps
+        ):
+            # A combined task response may report what the current query proves and
+            # also choose the next visible action.  The proof operation cannot carry
+            # actions in the executor contract, so retain the model's executable
+            # choice as an ordinary task action instead of discarding it and paying
+            # for an identical follow-up decision.
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "compound_response_normalized",
+                    "guard": "proof_with_actions",
+                    "reported_operation": response.operation,
+                    "outcome": "normalized_to_action",
+                    "retained_actions": len(response.steps),
+                },
+            )
+            response = response.model_copy(update={"operation": "act", "grid": None, "row": None})
+        elif response.operation != "act" and response.steps:
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "compound_response_normalized",
+                    "guard": "proof_with_actions",
+                    "accepted_operation": response.operation,
+                    "ignored_actions": len(response.steps),
+                },
+            )
+            response = response.model_copy(update={"steps": []})
+        response = validate_action_surfaces(services, response, request.screen)
+        response = enforce_taught_input_surfaces(request, services, response)
+        return validate_match_plan(response, capability, request, services, active_fields)
 
 
 def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchPromptContext:
@@ -2025,84 +2040,90 @@ def ground_match_response(
     used_image: bool,
 ) -> ScreenMatch:
     """Ground referenced controls and recover one unresolved action batch."""
-
-    screen, page = request.screen, request.page
-    required = request.required_verification
-    response = omit_nonblocking_refinement(services, response, screen)
-    if not response.needs_refinement:
-        response = sanitize_unused_controls(services, request.phase, response, screen, required)
-        response = retain_action_targets(services, response, screen, page)
-        response = retain_verification(
+    with rejection_evidence(
+        services.log,
+        "matching.ground_match_response",
+        response=response,
+        context={"screen": request.screen, "phase": request.phase},
+    ):
+        screen, page = request.screen, request.page
+        required = request.required_verification
+        response = omit_nonblocking_refinement(services, response, screen)
+        if not response.needs_refinement:
+            response = sanitize_unused_controls(services, request.phase, response, screen, required)
+            response = retain_action_targets(services, response, screen, page)
+            response = retain_verification(
+                services,
+                response,
+                screen,
+                required,
+                page if used_image else None,
+            )
+            response = sanitize_unused_controls(services, request.phase, response, screen, required)
+            if response.operation == "act" and not response.steps:
+                completion = _call_match(
+                    services,
+                    "missing_actions_recovery",
+                    "The current form was matched but operation=act had no executable steps. "
+                    "Return only the missing steps for this procedure goal using these CURRENT "
+                    "control IDs and source keys. Never infer that an action already happened. "
+                    "If no valid action is available, return operation=stop and steps=[].\n"
+                    + json.dumps(
+                        {
+                            **prepared.state,
+                            "recovery": {
+                                "reason": "missing_actions",
+                                "instruction": (
+                                    "The current observation is already available. Choose the next "
+                                    "unfinished action using the user task and education. Do not "
+                                    "repeat observed matching inputs or discard the current "
+                                    "evidence."
+                                ),
+                                "matched_inputs": [item.field for item in response.evidence],
+                            },
+                            "controls": model_controls(response.controls, screen),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    ScreenMatch,
+                    page=page if used_image else None,
+                )
+                if response.mapping is not None and completion.mapping is not None:
+                    # No action or capture occurred during this repair. Preserve the
+                    # observed fields when the reply supplies only the next action.
+                    mapping = completion.mapping.model_copy(
+                        update={
+                            "fields": {**response.mapping.fields, **completion.mapping.fields},
+                            "assignments": {
+                                **response.mapping.assignments,
+                                **completion.mapping.assignments,
+                            },
+                            "evidence": [*response.mapping.evidence, *completion.mapping.evidence],
+                        }
+                    )
+                    completion = ScreenMatch.model_validate(
+                        mapping.local_payload(screen, request.values)
+                    ).model_copy(update={"mapping": mapping})
+                response = local_response(completion, screen)
+                services.log.append(
+                    "verify",
+                    payload={
+                        "check": "missing_match_actions_completed",
+                        "operation": response.operation,
+                        "steps": len(response.steps),
+                    },
+                )
+        response = prepare_match_plan(
+            request,
             services,
             response,
-            screen,
-            required,
-            page if used_image else None,
+            prepared.capability,
+            set(prepared.active_fields),
         )
-        response = sanitize_unused_controls(services, request.phase, response, screen, required)
-        if response.operation == "act" and not response.steps:
-            completion = _call_match(
-                services,
-                "missing_actions_recovery",
-                "The current form was matched but operation=act had no executable steps. "
-                "Return only the missing steps for this procedure goal using these CURRENT "
-                "control IDs and source keys. Never infer that an action already happened. "
-                "If no valid action is available, return operation=stop and steps=[].\n"
-                + json.dumps(
-                    {
-                        **prepared.state,
-                        "recovery": {
-                            "reason": "missing_actions",
-                            "instruction": (
-                                "The current observation is already available. Choose the next "
-                                "unfinished action using the user task and education. Do not "
-                                "repeat observed matching inputs or discard the current evidence."
-                            ),
-                            "matched_inputs": [item.field for item in response.evidence],
-                        },
-                        "controls": model_controls(response.controls, screen),
-                    },
-                    ensure_ascii=False,
-                ),
-                ScreenMatch,
-                page=page if used_image else None,
-            )
-            if response.mapping is not None and completion.mapping is not None:
-                # No action or capture occurred during this repair. Preserve the
-                # observed fields when the reply supplies only the next action.
-                mapping = completion.mapping.model_copy(
-                    update={
-                        "fields": {**response.mapping.fields, **completion.mapping.fields},
-                        "assignments": {
-                            **response.mapping.assignments,
-                            **completion.mapping.assignments,
-                        },
-                        "evidence": [*response.mapping.evidence, *completion.mapping.evidence],
-                    }
-                )
-                completion = ScreenMatch.model_validate(
-                    mapping.local_payload(screen, request.values)
-                ).model_copy(update={"mapping": mapping})
-            response = local_response(completion, screen)
-            services.log.append(
-                "verify",
-                payload={
-                    "check": "missing_match_actions_completed",
-                    "operation": response.operation,
-                    "steps": len(response.steps),
-                },
-            )
-    response = prepare_match_plan(
-        request,
-        services,
-        response,
-        prepared.capability,
-        set(prepared.active_fields),
-    )
-    if not response.needs_refinement:
-        response = retain_action_targets(services, response, screen, page)
-        response = sanitize_unused_controls(services, request.phase, response, screen, required)
-    return response
+        if not response.needs_refinement:
+            response = retain_action_targets(services, response, screen, page)
+            response = sanitize_unused_controls(services, request.phase, response, screen, required)
+        return response
 
 
 def match_screen(
@@ -2110,181 +2131,190 @@ def match_screen(
 ) -> MatchResult:
     screen = request.screen
     decision_id = uuid4().hex
-    original_call = services.call
+    with rejection_evidence(
+        services.log,
+        "matching.match_screen",
+        context={"screen": request.screen, "phase": request.phase, "decision_id": decision_id},
+    ):
+        original_call = services.call
 
-    def traced_call(
-        prompt: str, schema: type[ResponseT], *, page: RenderedPage | None = None
-    ) -> ResponseT:
-        with model_call_context(
-            decision_id=decision_id,
-            frame=str(request.page.image_path) if request.page else None,
-            phase=request.phase,
-        ):
-            if schema in {ScreenMatch, ScreenPlan}:
-                model_page = page
-                if page is not None:
-                    capture = page.image_path.parent / "capture.png"
-                    if capture.is_file():
-                        model_page = page.model_copy(update={"image_path": capture})
-                mapped = original_call(mapping_prompt(prompt, screen), schema, page=model_page)
-                if mapped.mapping is not None:
-                    write_match_artifact(services, "semantic-mapping", mapped.mapping)
-                    payload = mapped.mapping.local_payload(screen, request.values)
-                    if screen.get("unresolved_annotations"):
-                        services.log.append(
-                            "verify",
-                            payload={
-                                "check": "unresolved_mapping_annotations_omitted",
-                                "annotations": screen["unresolved_annotations"],
-                            },
+        def traced_call(
+            prompt: str, schema: type[ResponseT], *, page: RenderedPage | None = None
+        ) -> ResponseT:
+            with model_call_context(
+                decision_id=decision_id,
+                frame=str(request.page.image_path) if request.page else None,
+                phase=request.phase,
+            ):
+                if schema in {ScreenMatch, ScreenPlan}:
+                    model_page = page
+                    if page is not None:
+                        capture = page.image_path.parent / "capture.png"
+                        if capture.is_file():
+                            model_page = page.model_copy(update={"image_path": capture})
+                    mapped = original_call(mapping_prompt(prompt, screen), schema, page=model_page)
+                    if mapped.mapping is not None:
+                        write_match_artifact(services, "semantic-mapping", mapped.mapping)
+                        payload = mapped.mapping.local_payload(screen, request.values)
+                        if screen.get("unresolved_annotations"):
+                            services.log.append(
+                                "verify",
+                                payload={
+                                    "check": "unresolved_mapping_annotations_omitted",
+                                    "annotations": screen["unresolved_annotations"],
+                                },
+                            )
+                        response = ScreenMatch.model_validate(payload).model_copy(
+                            update={"mapping": mapped.mapping}
                         )
-                    response = ScreenMatch.model_validate(payload).model_copy(
-                        update={"mapping": mapped.mapping}
-                    )
-                    # ScreenPlan callers merge this full interpretation with their old one.
-                    return local_response(response, screen) if schema is ScreenPlan else response
-                return mapped
-            return original_call(prompt, schema, page=page)
+                        # ScreenPlan callers merge this full interpretation with their old one.
+                        return (
+                            local_response(response, screen) if schema is ScreenPlan else response
+                        )
+                    return mapped
+                return original_call(prompt, schema, page=page)
 
-    services = replace(services, call=traced_call)
-    services.log.append(
-        "select",
-        payload={
-            "check": "screen_decision_started",
-            "decision_id": decision_id,
-            "frame": str(request.page.image_path) if request.page else None,
-        },
-    )
-    prepared = build_match_prompt(request, services)
-    state = prepared.state
-    capability = prepared.capability
-    prompt = prepared.prompt
-    selection = select_match_response(request, services, prepared)
-    response = selection.response
-    cache_hit = selection.cache_hit
-    method_proposal = selection.method_proposal
-    used_image = selection.used_image
-    reported_response = response
-    try:
-        response = validate_or_replan(response, request, services, prepared)
-        response = ground_match_response(
-            response,
-            request,
-            services,
-            prepared,
-            used_image=used_image,
-        )
-    except ValueError as error:
-        if method_proposal is None:
-            if defer_plan_errors and str(error).startswith("screen_match_"):
-                # Keep the observed fields even when the next action is unusable.
-                # No rejected proposal may become a cache candidate.
-                return MatchResult(reported_response, None, plan_error=str(error))
-            raise
-        rejected = services.methods.reject_pending(reason=str(error))
+        services = replace(services, call=traced_call)
         services.log.append(
-            "verify",
+            "select",
             payload={
-                "check": "method_fallback",
-                "method_id": None if rejected is None else rejected["method_id"],
-                "group_id": None if rejected is None else rejected["group_id"],
-                "reason": str(error)[:160],
-                "next": "visual_cache_or_model",
+                "check": "screen_decision_started",
+                "decision_id": decision_id,
+                "frame": str(request.page.image_path) if request.page else None,
             },
         )
-        # Rebuild method memory while keeping the caller-owned education focus.
-        # A failed cache binding must not reset or invent teaching progress.
-        fallback_request = replace(
-            request,
-            proposal=None,
-        )
-        prepared = build_match_prompt(fallback_request, services)
+        prepared = build_match_prompt(request, services)
         state = prepared.state
-        selection = select_match_response(fallback_request, services, prepared, allow_method=False)
+        capability = prepared.capability
+        prompt = prepared.prompt
+        selection = select_match_response(request, services, prepared)
         response = selection.response
-        reported_response = response
         cache_hit = selection.cache_hit
-        method_proposal = None
+        method_proposal = selection.method_proposal
         used_image = selection.used_image
-        response = validate_or_replan(response, fallback_request, services, prepared)
-        response = ground_match_response(
-            response,
-            fallback_request,
-            services,
-            prepared,
-            used_image=used_image,
-        )
-    observation_claim = None
-    if reported_response.operation != "act" and reported_response.steps:
-        observation_claim = {
-            "operation": reported_response.operation,
-            "grid": reported_response.grid,
-            "row": reported_response.row,
-            "evidence": [item.model_dump(mode="json") for item in reported_response.evidence],
-            "frame": str(request.page.image_path) if request.page else None,
-            "planned_operation": response.operation,
-        }
+        reported_response = response
+        try:
+            response = validate_or_replan(response, request, services, prepared)
+            response = ground_match_response(
+                response,
+                request,
+                services,
+                prepared,
+                used_image=used_image,
+            )
+        except ValueError as error:
+            if method_proposal is None:
+                if defer_plan_errors and str(error).startswith("screen_match_"):
+                    # Keep the observed fields even when the next action is unusable.
+                    # No rejected proposal may become a cache candidate.
+                    return MatchResult(reported_response, None, plan_error=str(error))
+                raise
+            rejected = services.methods.reject_pending(reason=str(error))
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "method_fallback",
+                    "method_id": None if rejected is None else rejected["method_id"],
+                    "group_id": None if rejected is None else rejected["group_id"],
+                    "reason": str(error)[:160],
+                    "next": "visual_cache_or_model",
+                },
+            )
+            # Rebuild method memory while keeping the caller-owned education focus.
+            # A failed cache binding must not reset or invent teaching progress.
+            fallback_request = replace(
+                request,
+                proposal=None,
+            )
+            prepared = build_match_prompt(fallback_request, services)
+            state = prepared.state
+            selection = select_match_response(
+                fallback_request, services, prepared, allow_method=False
+            )
+            response = selection.response
+            reported_response = response
+            cache_hit = selection.cache_hit
+            method_proposal = None
+            used_image = selection.used_image
+            response = validate_or_replan(response, fallback_request, services, prepared)
+            response = ground_match_response(
+                response,
+                fallback_request,
+                services,
+                prepared,
+                used_image=used_image,
+            )
+        observation_claim = None
+        if reported_response.operation != "act" and reported_response.steps:
+            observation_claim = {
+                "operation": reported_response.operation,
+                "grid": reported_response.grid,
+                "row": reported_response.row,
+                "evidence": [item.model_dump(mode="json") for item in reported_response.evidence],
+                "frame": str(request.page.image_path) if request.page else None,
+                "planned_operation": response.operation,
+            }
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "observation_claim_preserved",
+                    "status": "reported_not_independently_verified",
+                    **observation_claim,
+                },
+            )
         services.log.append(
             "verify",
             payload={
-                "check": "observation_claim_preserved",
-                "status": "reported_not_independently_verified",
-                **observation_claim,
+                "check": "match_context_size",
+                "frame": str(request.page.image_path) if request.page else None,
+                "sections_utf8_bytes": {
+                    key: len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+                    for key, value in prepared.state.items()
+                },
+                "selection_source": "method"
+                if method_proposal is not None
+                else "visual_cache"
+                if cache_hit is not None
+                else "model",
             },
         )
-    services.log.append(
-        "verify",
-        payload={
-            "check": "match_context_size",
-            "frame": str(request.page.image_path) if request.page else None,
-            "sections_utf8_bytes": {
-                key: len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
-                for key, value in prepared.state.items()
-            },
-            "selection_source": "method"
-            if method_proposal is not None
-            else "visual_cache"
-            if cache_hit is not None
-            else "model",
-        },
-    )
-    visual_match_candidate = (
-        (
-            cache_hit[0] if cache_hit is not None else visual_match_key(state),
-            {
-                **response.model_dump(mode="json"),
-                **(
-                    {"mapping": response.mapping.model_dump(mode="json")}
-                    if response.mapping
-                    else {}
-                ),
+        visual_match_candidate = (
+            (
+                cache_hit[0] if cache_hit is not None else visual_match_key(state),
+                {
+                    **response.model_dump(mode="json"),
+                    **(
+                        {"mapping": response.mapping.model_dump(mode="json")}
+                        if response.mapping
+                        else {}
+                    ),
+                },
+            )
+            if method_proposal is None
+            else None
+        )
+        services.log.append(
+            "select",
+            payload={
+                "check": "screen_mapping",
+                "decision_id": decision_id,
+                "frame": str(request.page.image_path) if request.page else None,
+                "phase": request.phase,
+                "procedure_step": capability.capability_id,
+                "steps": len(response.steps),
+                "expected_result": response.expected_result,
+                "purpose": response.purpose,
+                "method_id": response.method_id,
+                "prompt_chars": len(prompt),
             },
         )
-        if method_proposal is None
-        else None
-    )
-    services.log.append(
-        "select",
-        payload={
-            "check": "screen_mapping",
-            "decision_id": decision_id,
-            "frame": str(request.page.image_path) if request.page else None,
-            "phase": request.phase,
-            "procedure_step": capability.capability_id,
-            "steps": len(response.steps),
-            "expected_result": response.expected_result,
-            "purpose": response.purpose,
-            "method_id": response.method_id,
-            "prompt_chars": len(prompt),
-        },
-    )
-    if services.methods.enabled and response != method_proposal:
-        services.methods.remember(screen, response)
-    return MatchResult(
-        response=response,
-        visual_match_candidate=visual_match_candidate,
-        observation_claim=observation_claim,
-    )
+        if services.methods.enabled and response != method_proposal:
+            services.methods.remember(screen, response)
+        return MatchResult(
+            response=response,
+            visual_match_candidate=visual_match_candidate,
+            observation_claim=observation_claim,
+        )
 
 
 def compile_match(response: ScreenMatch, observation, schema):
