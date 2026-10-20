@@ -6,6 +6,11 @@ Agent Sawon은 문서에서 업무 데이터를 추출하고, 사용자 교육�
 Windows ERP를 조작하는 Python 프로젝트다. 이 저장소는 판단·모델·문서 처리 코어이며,
 옆의 `../agent-sawon-bench`가 공개 인터페이스, relay, Mock ERP, 실행 하네스와 채점을 제공한다.
 
+현재 모델·비용·실행 경계는 `docs/current-runtime.md`를 기준으로 한다. 상태 계약과 저장소
+인터페이스는 `docs/contracts.md`, 실제 그래프 흐름은 `docs/code-flow.md`를 따른다.
+`CODEX_BRIEF.md`는 이 현행 문서들의 짧은 진입점이다. `docs/archive/`의 과거 brief와 날짜별
+보고서는 역사·측정 기록이며 현재 설정의 근거로 사용하지 않는다.
+
 ## Repository layout
 
 - `brain/run.py`: 업무 실행 CLI. 입력 record, task, relay와 설정을 연결한다.
@@ -85,6 +90,8 @@ GUI 의존성까지 필요하면 `-Gui`를 전달한다. 이 스크립트는 GPU
   특정 회사나 시드의 경로를 하드코딩하지 않는다.
 - 상태는 `WorkerState`, 실행 인계는 `ExecutionRequest`/`ExecutionResult`를 사용한다.
   기존 공용 기능을 재사용하고 서비스에 전체 `Brain`을 넘기는 결합을 추가하지 않는다.
+- 계약을 바꿀 때는 `docs/contracts.md`의 소유 파일과 생산자·소비자 목록을 먼저 확인하고,
+  계약 코드와 문서를 같은 변경에서 갱신한다.
 - 모델 호출은 `models`의 공용 계측 경계를 사용한다. SDK 직접 호출로 비용·지연·실패 기록을
   우회하지 않는다. 공급자별 요청 변환은 어댑터에 둔다.
 - 로그는 `RunLog`로 추가하고 상태 파일은 공용 atomic write를 사용한다.
@@ -113,5 +120,6 @@ GUI 의존성까지 필요하면 `-Gui`를 전달한다. 이 스크립트는 GPU
 - 키, 실제 업무 데이터, 원본 문서, 비공개 화면·로그·캐시는 커밋하지 않는다.
   `.gitignore`에 포함된 실행 산출물을 강제로 추가하지 않는다.
 - 커밋에는 해당 작업의 변경만 포함한다. 설명에는 변경 이유, 검증 결과와 남은 한계를 적는다.
-- 실행 이력과 장기 계획은 `docs/` 및 `../agent-sawon-bench/docs/progress.md`에서 관리한다.
+- 실행 이력과 장기 계획은 `docs/archive/`, `docs/test-cleanup/` 및
+  `../agent-sawon-bench/docs/progress.md`에서 관리한다.
   이 파일에는 날짜별 실험 결과나 일시적인 오류 해결 계획을 누적하지 않는다.

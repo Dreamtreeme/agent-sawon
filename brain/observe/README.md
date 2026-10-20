@@ -5,7 +5,7 @@ This module documents the retained non-screen-matching/UIA summary path. The pri
 allowlisted ERP window and uses PaddleOCR, OmniParser and the visual marker contract
 described in [brain/visual/README.md](../visual/README.md). The deterministic
 same-row completion rule below therefore applies to the retained non-screen path,
-not to Luna's model-led visual evidence policy.
+not to the configured screen model's visual evidence policy.
 
 `flat_fields` lists visible interactive elements with refs, role, name, value,
 label hint and parent ref. `label_grouped` additionally derives a nearby label

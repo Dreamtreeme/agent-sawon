@@ -8,8 +8,8 @@ There is no separate legacy Procedure loader.
 ## Ownership and flow
 
 - `WorkerState` owns observations, proposals, pending execution, review flags,
-  lifecycle, progress/evidence histories and method-learning state. Handoffs copy
-  this data; clients, credentials, configuration and file stores remain outside.
+  lifecycle, progress/evidence histories and method-learning state. The four nodes
+  update the same run-local state; clients, credentials, configuration and file stores remain outside.
   The notebook and model context are projections of these facts.
 - Observation obtains evidence through relay HTTP and joins pending delivery to
   its subsequent screen. Local OCR/control detection supplies the marker catalog.
@@ -53,5 +53,6 @@ measured ModelClient and existing cost budgets. Secrets resolve only when wiring
 relay action and are redacted from action logs. Logs remain append-only, status
 writes atomic, and success leaves the case awaiting human approval.
 
-Validation and stage commits: [2026-10-08 runtime refactor](../../docs/refactor-runtime-stages-20261008.md)
-and [residual contract cleanup](../../docs/runtime-residual-fixes-20261008.md).
+The current ownership map is [the contract guide](../../docs/contracts.md). Historical validation
+is preserved in the [2026-10-08 runtime refactor](../../docs/archive/reports/refactor-runtime-stages-20261008.md)
+and [residual contract cleanup](../../docs/archive/reports/runtime-residual-fixes-20261008.md) reports.
