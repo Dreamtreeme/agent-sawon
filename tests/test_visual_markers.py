@@ -712,6 +712,29 @@ def test_ocr_rows_feed_existing_final_review_without_inventing_values(clipped, e
         ground_meanings(invalid, markers, blocks)
 
 
+def test_auto_cell_parent_uses_same_containment_threshold_as_scene_validation():
+    from brain.visual.markers import Marker, ground_meanings
+    from brain.visual.scene import SemanticDetection
+
+    blocks = [OcrBlock(id=0, text="가상누리수입", confidence=0.99, bbox=(635, 170, 129, 34))]
+    markers = [
+        Marker(id=1, bbox=(30, 171, 1202, 32), source="model_selected", confidence=1),
+        Marker(id=2, bbox=blocks[0].bbox, source="ocr", confidence=0.99, text_ids=(0,)),
+    ]
+    meanings = SemanticDetection.model_validate(
+        {
+            "screen_kind": "query",
+            "controls": [{"id": 1, "role": "row", "confidence": 1}],
+        }
+    )
+
+    detection = ground_meanings(meanings, markers, blocks)
+
+    text = next(control for control in detection.controls if control.id == 2)
+    assert text.role == "text"
+    assert text.parent_id is None
+
+
 def test_row_groups_require_repeated_columns_inside_measured_container():
     from brain.visual.row_candidates import row_candidates
 

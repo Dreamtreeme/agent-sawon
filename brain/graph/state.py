@@ -82,6 +82,8 @@ class ProgressState:
     save_issued: bool = False
     post_save_query_identity_verified: bool = False
     model_saved_detail_review: bool = False
+    saved_detail_transition_pending: bool = False
+    saved_detail_transition_step: str | None = None
     post_save_verified: set[str] = field(default_factory=set)
     saved_evidence: SavedEvidence = field(default_factory=SavedEvidence)
     saved_bindings: tuple[str, dict[str, str]] | None = None
@@ -103,6 +105,7 @@ class ProgressState:
     visual_match_candidate: tuple[str, dict] | None = None
     input_target_retries: int = 0
     deferred_field_checks: dict[str, dict] = field(default_factory=dict)
+    visual_plan_error: str | None = None
     visual_proposal: ScreenMatch | None = None
     visual_proposal_obs_id: UUID | None = None
     procedure_step: str | None = None

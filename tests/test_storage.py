@@ -145,23 +145,33 @@ def test_append_validation_cost_and_interleaved_writers(tmp_path, monkeypatch, s
     assert events[20].agent_id == "vm2"
 
 
-@pytest.mark.parametrize("change", ["middle", "replace", "truncate"])
+@pytest.mark.parametrize("change", ["middle", "replace", "truncate", "unchanged_metadata_strict"])
 def test_cached_append_revalidates_changed_file(tmp_path, change):
-    log = RunLog(tmp_path, case_id="synthetic-case", agent_id="vm1")
+    log = RunLog(
+        tmp_path,
+        case_id="synthetic-case",
+        agent_id="vm1",
+        verify_each_append=change == "unchanged_metadata_strict",
+    )
     for _ in range(3):
         log.append("observe")
     raw = log.path.read_bytes()
     corrupted = raw.replace(b'"seq":1', b'"seq":9', 1)
+    assert corrupted != raw and len(corrupted) == len(raw)
+    stat = log.path.stat()
     if change == "replace":
         replacement = tmp_path / "replacement.jsonl"
         replacement.write_bytes(corrupted)
-        stat = log.path.stat()
         os.utime(replacement, ns=(stat.st_atime_ns, stat.st_mtime_ns))
         os.replace(replacement, log.path)
     elif change == "truncate":
         log.path.write_bytes(raw[:-1])
     else:
         log.path.write_bytes(corrupted)
+        # Test the cache contract, not whether the filesystem timestamp ticked
+        # during this short write. Unchanged metadata requires strict auditing.
+        mtime = stat.st_mtime_ns + (2_000_000_000 if change == "middle" else 0)
+        os.utime(log.path, ns=(stat.st_atime_ns, mtime))
     before = log.path.read_bytes()
     with pytest.raises(LogIntegrityError):
         log.append("stop")

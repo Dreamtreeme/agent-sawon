@@ -81,6 +81,13 @@ class EvidenceLedger:
         """Update one business fact; similar screen descriptors cannot erase other facts."""
 
         surface_key = self.surface_key(descriptor)
+        current = self._active.get(field)
+        if (
+            current is not None
+            and current.observation_id == observation_id
+            and current.surface_key == surface_key
+        ):
+            return ()
         self.invalidate(field, "newer_observation")
         claim = EvidenceClaim(
             field=field,

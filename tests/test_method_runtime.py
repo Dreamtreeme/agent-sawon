@@ -873,3 +873,69 @@ def test_next_observation_error_does_not_discard_delivered_method(tmp_path):
     )
     assert event.payload["success"] is None
     assert event.payload["reason"] == "observation_unavailable"
+
+
+@pytest.mark.parametrize("verified", [False, True], ids=["no-effect", "observed-effect"])
+def test_bound_edge_replaced_without_dispatch_unblocks_only_after_effect(tmp_path, verified):
+    brain, _, _ = setup(tmp_path)
+    runtime = brain.methods
+    method = runtime.library.methods()[0]
+    first = method.action_groups[0].model_copy(update={"trace_index": 0})
+    next_hash = first.screen_phash ^ 1023
+    followup = first.model_copy(
+        update={
+            "id": "next-edge",
+            "screen_phash": next_hash,
+            "predecessor_group_ids": [first.id],
+            "trace_index": 1,
+        }
+    )
+    runtime.library.upsert(method.model_copy(update={"action_groups": [first, followup]}))
+    _, _, screen, _ = catalog(shift=20)
+    bound = runtime.apply(screen)
+    assert bound is not None
+    original = runtime.state.pending
+    old_edge = (original["method"].id, original["group_id"])
+    assert old_edge not in runtime.state.used
+    fallback = bound.model_copy(
+        update={
+            "method_id": None,
+            "purpose": "Model reviewed current values",
+            "steps": [
+                s.model_copy(update={"point": [s.point[0] + 4, s.point[1]]}) for s in bound.steps
+            ],
+        }
+    )
+    runtime.remember(screen, fallback)
+    assert runtime.state.pending["replaced_edge"] == old_edge
+    runtime.delivered(complete=True)
+    _, _, next_screen, _ = catalog(shift=20)
+    next_screen["screen_phash"] = next_hash
+    assert runtime.apply(next_screen) is not None  # Conditional plan before effect commit.
+    assert runtime.state.pending["group_id"] == "next-edge"
+    assert old_edge not in runtime.state.used
+    runtime.verify_delivery(success=verified)
+    assert (old_edge in runtime.state.used) is verified
+    _, _, next_screen, _ = catalog(shift=20)
+    next_screen["screen_phash"] = next_hash
+    assert (runtime.apply(next_screen) is not None) is verified
+
+
+def test_same_frame_and_sources_do_not_make_another_control_the_same_edge(tmp_path):
+    brain, _, _ = setup(tmp_path)
+    runtime = brain.methods
+    _, _, screen, _ = catalog(shift=20)
+    bound = runtime.apply(screen)
+    # Move Customer into Reference's region on the identical screenshot.
+    fallback = bound.model_copy(
+        update={
+            "method_id": None,
+            "steps": [
+                step.model_copy(update={"point": [step.point[0], step.point[1] + 70]})
+                for step in bound.steps
+            ],
+        }
+    )
+    runtime.remember(screen, fallback)
+    assert runtime.state.pending.get("replaced_edge") is None
+    assert not runtime.state.used

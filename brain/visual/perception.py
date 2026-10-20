@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import perf_counter
 
@@ -106,6 +106,7 @@ class _SceneCatalog:
     markers: list[Marker]
     detection: Detection | None = None
     refined: bool = False
+    selected_fields: dict[str, dict] = field(default_factory=dict)
 
 
 class VisualPerception:
@@ -177,6 +178,8 @@ class VisualPerception:
                 threshold=self.threshold,
                 secrets=self.secrets,
             )
+            scene = self._apply_field_values(wire, scene, previous.selected_fields)
+            scene = scene.model_copy(update={"capture_phash": perceptual_hash(path)})
             self._catalog = replace(previous, page=page)
             self._catalogs[cache_key] = self._catalog
             self.log.append(
@@ -491,6 +494,7 @@ class VisualPerception:
                 )
                 selected = request.screen.get("selected_fields", {})
                 scene = self._apply_field_values(wire, scene, selected)
+                catalog.selected_fields = selected
                 scene = scene.model_copy(update={"capture_phash": request.screen["screen_phash"]})
                 break
             except ValueError as error:
@@ -661,17 +665,14 @@ class VisualPerception:
         scene = bind_scene(
             wire, catalog.blocks, detection, threshold=self.threshold, secrets=self.secrets
         )
-        scene = self._apply_field_values(
-            wire,
-            scene,
-            {
-                str(control.id): {
-                    "name": control.visual_description,
-                    **fields[control.visual_description].model_dump(),
-                }
-                for control in meanings.controls
-            },
-        )
+        catalog.selected_fields = {
+            str(control.id): {
+                "name": control.visual_description,
+                **fields[control.visual_description].model_dump(),
+            }
+            for control in meanings.controls
+        }
+        scene = self._apply_field_values(wire, scene, catalog.selected_fields)
         catalog.markers = list(by_id.values())
         catalog.detection = detection
         return scene.model_copy(update={"capture_phash": perceptual_hash(catalog.page.image_path)})
@@ -716,6 +717,7 @@ class VisualPerception:
         )
         catalog.detection = detection
         self._catalogs[catalog.key] = catalog
+        scene = self._apply_field_values(wire, scene, catalog.selected_fields)
         atomic_write_json(
             catalog.page.image_path.parent / "perception.json",
             {

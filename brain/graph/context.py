@@ -270,7 +270,11 @@ def execution_context(request: ExecutionContextRequest) -> dict:
         )
     if proposal is not actual:
         contract["condition"] = (
-            "ONLY after code verifies the pending action from the CURRENT screen. "
+            "The next-action options assume the pending inputs match the CURRENT screen. "
+            "Report observed matches as evidence before choosing the next action; "
+            "if they do not match, plan a repair. Anticipated values are not verified facts."
+            if request.phase == "task"
+            else "ONLY after code verifies the pending action from the CURRENT screen. "
             "A failed verification discards this proposal. These are not completed facts."
         )
     if request.phase == "save_result":

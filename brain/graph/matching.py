@@ -309,6 +309,7 @@ class MatchResult:
     response: ScreenMatch
     visual_match_candidate: tuple[str, dict] | None
     observation_claim: dict | None = None
+    plan_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1041,12 +1042,6 @@ def _normalize_match_actions(
 
     normalized = []
     for item in response.steps:
-        source = normalize_action_source(
-            intent=item.intent,
-            candidate=item.source,
-            inputs=request.values,
-        )
-        item = item.model_copy(update={"source": source})
         if (
             request.phase == "task"
             and item.action == "fill"
@@ -1054,19 +1049,26 @@ def _normalize_match_actions(
             and not item.source.startswith("credential.")
         ):
             item = item.model_copy(update={"intent": "fill"})
-        elif item.action == "key" and item.intent == "fill" and item.source is None:
-            item = item.model_copy(update={"intent": "navigate"})
+        elif item.action != "fill" and item.intent in {"fill", "query_input", "credential"}:
+            item = item.model_copy(update={"intent": "navigate", "source": None})
             services.log.append(
                 "verify",
                 payload={
                     "check": "nonwriting_fill_intent_normalized",
-                    "action": "key",
+                    "action": item.action,
                     "keys": item.keys,
                     "target": item.target,
                     "intent": "navigate",
                 },
             )
-        normalized.append(item)
+        # Resolve the concrete write action before pruning sources by intent;
+        # a fill described as "search" must not lose its supplied input key.
+        source = normalize_action_source(
+            intent=item.intent,
+            candidate=item.source,
+            inputs=request.values,
+        )
+        normalized.append(item.model_copy(update={"source": source}))
     evidence = [
         item.model_copy(
             update={"field": resolve_input_key(item.field, request.values) or item.field}
@@ -1336,6 +1338,18 @@ def validate_action_surfaces(
             and control.role not in ACTION_CONTROL_ROLES[step.action]
         ):
             reason = "role_not_actionable"
+        if reason == "role_not_actionable" and services.settings.guard_mode == "observe_only":
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "guard_observe_only",
+                    "guard": "action_control_role",
+                    "target": step.target,
+                    "role": control.role,
+                    "action": step.action,
+                },
+            )
+            continue
         if reason is not None:
             rejected.append(
                 {
@@ -1453,7 +1467,11 @@ def prepare_match_plan(
             "procedure_step": capability.capability_id,
         }
     )
-    if request.phase == "task" and response.operation == "duplicate_clear" and response.steps:
+    if (
+        request.phase == "task"
+        and response.operation in {"duplicate_clear", "duplicate_found"}
+        and response.steps
+    ):
         # A combined task response may report what the current query proves and
         # also choose the next visible action.  The proof operation cannot carry
         # actions in the executor contract, so retain the model's executable
@@ -1507,14 +1525,12 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
     contract = {
         **contract,
         "available_inputs": available_inputs,
-        "remaining_inputs": remaining_inputs,
     }
     # Pending fields remain in the prompt so the current pixels can verify
     # them, but the conditional next action assumes that verification passes.
     # Re-adding them to action eligibility lets a fallback plan repeat work
     # that the executor has already delivered.
     active_fields = set(available_inputs)
-    verified_fields = set(request.verified_fields)
     capability = task_action_contract(
         request.phase, request.task_instruction, contract, active_fields
     )
@@ -1537,16 +1553,29 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
         notebook.update(
             {
                 "verified_inputs": sorted(request.verified_fields),
+                "evidence_scope": (
+                    "saved_detail"
+                    if request.workflow_flags.get("post_save_detail_review")
+                    else "saved_detail_candidate"
+                    if request.workflow_flags.get("saved_result_open_pending")
+                    else "entry"
+                ),
                 "evidence_claims": list(request.evidence_claims),
                 "failed_transitions": list(request.failed_transitions),
                 "anticipated_verified_inputs": (
-                    sorted(verified_fields) if contract["conditional"] else []
+                    sorted(set(request.values) - set(contract["remaining_inputs"]))
+                    if contract["conditional"]
+                    else []
                 ),
                 "remaining_inputs": remaining_inputs,
                 "available_inputs": available_inputs,
                 "pending_verification_inputs": pending_verification_fields,
                 MODEL_INPUTS_NAME: record,
-                "workflow_state": dict(request.workflow_flags),
+                "workflow_state": {
+                    key: value
+                    for key, value in request.workflow_flags.items()
+                    if key not in {"duplicate_clear", "query_value_verified", "query_submitted"}
+                },
             }
         )
         if request.saved_record_review is not None:
@@ -1560,7 +1589,9 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
             {
                 "verified_fields": sorted(request.verified_fields),
                 "anticipated_verified_fields": (
-                    sorted(verified_fields) if contract["conditional"] else []
+                    sorted(set(request.values) - set(contract["remaining_fields"]))
+                    if contract["conditional"]
+                    else []
                 ),
                 "remaining_fields": remaining_inputs,
                 "pending_verification_fields": pending_verification_fields,
@@ -1640,13 +1671,12 @@ def select_match_response(
 
     screen, page = request.screen, request.page
     method_proposal = request.proposal if allow_method else None
-    if (
-        allow_method
-        and method_proposal is None
-        and request.phase != "save_result"
-        and "correction" not in screen
-    ):
+    if allow_method and method_proposal is None and "correction" not in screen:
         method_proposal = services.methods.apply(screen)
+        if request.phase == "save_result" and method_proposal is not None:
+            # Keep the bound edge as fallback provenance, but ask the model to
+            # review the current save result before dispatching its action.
+            method_proposal = None
     cache_hit = services.cache.lookup(prepared.state) if method_proposal is None else None
     if method_proposal is not None:
         response = method_proposal
@@ -1654,7 +1684,9 @@ def select_match_response(
         _, cached = cache_hit
         response = ScreenMatch.model_validate(cached)
         if response.mapping is not None:
-            geometry = ScreenMatch.model_validate(response.mapping.local_payload(screen))
+            geometry = ScreenMatch.model_validate(
+                response.mapping.local_payload(screen, request.values)
+            )
             geometry = local_response(geometry, screen)
             response = geometry.model_copy(update={"mapping": response.mapping})
         services.log.append(
@@ -1718,11 +1750,27 @@ def select_match_response(
         requested = list(dict.fromkeys(response.requested_instruction_ids))
         if any(step_id not in by_id for step_id in requested):
             raise ValueError("unknown_requested_instruction")
+        supplied = {
+            step["id"]: step for step in prepared.state["taught_procedure_progress"]["steps"]
+        }
+        missing = [step_id for step_id in requested if step_id not in supplied]
+        if not missing:
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "resolved_education_request_ignored",
+                    "step_ids": requested,
+                    "accepted_actions": len(response.steps),
+                },
+            )
+            response = response.model_copy(update={"requested_instruction_ids": []})
+    if response.requested_instruction_ids:
+        supplied.update({step_id: by_id[step_id].model_dump(mode="json") for step_id in missing})
         expanded = {
             **prepared.state,
             "taught_procedure_progress": {
                 **request.taught_procedure_progress,
-                "steps": [by_id[step_id].model_dump(mode="json") for step_id in requested],
+                "steps": list(supplied.values()),
                 "retrieved_step_ids": requested,
             },
         }
@@ -1756,7 +1804,17 @@ def select_match_response(
         write_match_artifact(services, "education-plan", response)
         response = local_response(response, screen)
         if response.requested_instruction_ids:
-            raise ValueError("education_retrieval_unresolved")
+            if not response.steps:
+                raise ValueError("education_retrieval_unresolved")
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "resolved_education_request_ignored",
+                    "step_ids": response.requested_instruction_ids,
+                    "accepted_actions": len(response.steps),
+                },
+            )
+            response = response.model_copy(update={"requested_instruction_ids": []})
         cache_hit = None
         method_proposal = None
     response = omit_nonblocking_image_request(services, response, screen)
@@ -1966,7 +2024,7 @@ def ground_match_response(
     *,
     used_image: bool,
 ) -> ScreenMatch:
-    """Ground referenced controls and revalidate writes without hidden model retries."""
+    """Ground referenced controls and recover one unresolved action batch."""
 
     screen, page = request.screen, request.page
     required = request.required_verification
@@ -1983,46 +2041,57 @@ def ground_match_response(
         )
         response = sanitize_unused_controls(services, request.phase, response, screen, required)
         if response.operation == "act" and not response.steps:
-            if services.settings.guard_mode == "observe_only":
-                services.log.append(
-                    "verify",
-                    payload={
-                        "check": "guard_observe_only",
-                        "guard": "empty_action_completion_call",
-                        "outcome": "disabled",
-                    },
-                )
-                raise ValueError("screen_match_empty_action")
-            else:
-                completion = _call_match(
-                    services,
-                    "missing_actions_recovery",
-                    "The current form was matched but operation=act had no executable steps. "
-                    "Return only the missing steps for this procedure goal using these CURRENT "
-                    "control IDs and source keys. Never infer that an action already happened. "
-                    "If no valid action is available, return operation=stop and steps=[].\n"
-                    + json.dumps(
-                        {
-                            "capability": prepared.capability.model_dump(),
-                            "notebook": prepared.state["notebook"],
-                            "execution": prepared.state["execution"],
-                            "screen": prepared.state["screen"],
-                            "controls": model_controls(response.controls, screen),
+            completion = _call_match(
+                services,
+                "missing_actions_recovery",
+                "The current form was matched but operation=act had no executable steps. "
+                "Return only the missing steps for this procedure goal using these CURRENT "
+                "control IDs and source keys. Never infer that an action already happened. "
+                "If no valid action is available, return operation=stop and steps=[].\n"
+                + json.dumps(
+                    {
+                        **prepared.state,
+                        "recovery": {
+                            "reason": "missing_actions",
+                            "instruction": (
+                                "The current observation is already available. Choose the next "
+                                "unfinished action using the user task and education. Do not "
+                                "repeat observed matching inputs or discard the current evidence."
+                            ),
+                            "matched_inputs": [item.field for item in response.evidence],
                         },
-                        ensure_ascii=False,
-                    ),
-                    ScreenMatch,
-                    page=page if used_image else None,
-                )
-                response = local_response(completion, screen)
-                services.log.append(
-                    "verify",
-                    payload={
-                        "check": "missing_match_actions_completed",
-                        "operation": response.operation,
-                        "steps": len(response.steps),
+                        "controls": model_controls(response.controls, screen),
                     },
+                    ensure_ascii=False,
+                ),
+                ScreenMatch,
+                page=page if used_image else None,
+            )
+            if response.mapping is not None and completion.mapping is not None:
+                # No action or capture occurred during this repair. Preserve the
+                # observed fields when the reply supplies only the next action.
+                mapping = completion.mapping.model_copy(
+                    update={
+                        "fields": {**response.mapping.fields, **completion.mapping.fields},
+                        "assignments": {
+                            **response.mapping.assignments,
+                            **completion.mapping.assignments,
+                        },
+                        "evidence": [*response.mapping.evidence, *completion.mapping.evidence],
+                    }
                 )
+                completion = ScreenMatch.model_validate(
+                    mapping.local_payload(screen, request.values)
+                ).model_copy(update={"mapping": mapping})
+            response = local_response(completion, screen)
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "missing_match_actions_completed",
+                    "operation": response.operation,
+                    "steps": len(response.steps),
+                },
+            )
     response = prepare_match_plan(
         request,
         services,
@@ -2036,7 +2105,9 @@ def ground_match_response(
     return response
 
 
-def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
+def match_screen(
+    request: MatchRequest, services: MatchServices, *, defer_plan_errors: bool = False
+) -> MatchResult:
     screen = request.screen
     decision_id = uuid4().hex
     original_call = services.call
@@ -2058,7 +2129,15 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
                 mapped = original_call(mapping_prompt(prompt, screen), schema, page=model_page)
                 if mapped.mapping is not None:
                     write_match_artifact(services, "semantic-mapping", mapped.mapping)
-                    payload = mapped.mapping.local_payload(screen)
+                    payload = mapped.mapping.local_payload(screen, request.values)
+                    if screen.get("unresolved_annotations"):
+                        services.log.append(
+                            "verify",
+                            payload={
+                                "check": "unresolved_mapping_annotations_omitted",
+                                "annotations": screen["unresolved_annotations"],
+                            },
+                        )
                     response = ScreenMatch.model_validate(payload).model_copy(
                         update={"mapping": mapped.mapping}
                     )
@@ -2097,6 +2176,10 @@ def match_screen(request: MatchRequest, services: MatchServices) -> MatchResult:
         )
     except ValueError as error:
         if method_proposal is None:
+            if defer_plan_errors and str(error).startswith("screen_match_"):
+                # Keep the observed fields even when the next action is unusable.
+                # No rejected proposal may become a cache candidate.
+                return MatchResult(reported_response, None, plan_error=str(error))
             raise
         rejected = services.methods.reject_pending(reason=str(error))
         services.log.append(

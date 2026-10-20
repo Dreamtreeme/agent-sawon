@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sawon_runtime.visual import OcrBlock
 
 from .row_candidates import row_candidates
-from .scene import Detection, SemanticDetection, VisualControl, contains, overlap
+from .scene import Detection, SemanticDetection, VisualControl, contains, mostly_contains, overlap
 
 
 class Marker(BaseModel):
@@ -265,7 +265,7 @@ def ground_meanings(
 
     for marker in markers:
         if marker.id not in used and marker.source == "ocr":
-            rows = [c for c in controls if c.role == "row" and contains(c.bbox, marker.bbox)]
+            rows = [c for c in controls if c.role == "row" and mostly_contains(c.bbox, marker.bbox)]
             controls.append(
                 VisualControl(
                     id=marker.id,

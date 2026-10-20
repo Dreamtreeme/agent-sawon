@@ -28,7 +28,6 @@ from brain.observe.evidence import (
 )
 from brain.observe.progress import navigation_state, navigation_target, semantic_target_key
 from brain.observe.values import field_matches as field_matches
-from brain.observe.values import normalize as normalize_value
 from brain.observe.values import values_for as values_for
 from brain.relay import Relay
 from brain.settings import BrainSettings
@@ -55,7 +54,6 @@ from .action_preparation import (
 from .click_refinement import ClickRefinementRequest, ClickRefinementServices
 from .completion import (
     CompletionRetry,
-    element_value,
     evaluate_final_query_completion,
     evaluate_task_completion,
     subtree,
@@ -191,6 +189,8 @@ class Brain:
     save_issued = progress_property("save_issued")
     post_save_query_identity_verified = progress_property("post_save_query_identity_verified")
     model_saved_detail_review = progress_property("model_saved_detail_review")
+    saved_detail_transition_pending = progress_property("saved_detail_transition_pending")
+    saved_detail_transition_step = progress_property("saved_detail_transition_step")
     post_save_verified = progress_property("post_save_verified")
     saved_evidence = progress_property("saved_evidence")
     saved_bindings = progress_property("saved_bindings")
@@ -212,6 +212,7 @@ class Brain:
     visual_match_candidate = progress_property("visual_match_candidate")
     input_target_retries = progress_property("input_target_retries")
     deferred_field_checks = progress_property("deferred_field_checks")
+    visual_plan_error = progress_property("visual_plan_error")
     visual_proposal = progress_property("visual_proposal")
     visual_proposal_obs_id = progress_property("visual_proposal_obs_id")
     procedure_step = progress_property("procedure_step")
@@ -333,14 +334,27 @@ class Brain:
 
         assert self.task_instruction is not None
         assert self.task_instruction_sha256 is not None
+        opening_saved_detail = bool(
+            self.settings.visual_model_only_review
+            and self.save_issued
+            and self.saved_detail_transition_pending
+            and not self.model_saved_detail_review
+        )
+        model_verified = (
+            set()
+            if opening_saved_detail
+            else set(self.post_save_verified)
+            if self.model_saved_detail_review
+            else set(self.verified)
+        )
         policy = self._decision_policy()
+        policy = DecisionPolicy(
+            replace(policy.facts, verified_field_names=tuple(sorted(model_verified)))
+        )
         contract = self._execution_context(policy, anticipate=True)
         pending_execution = None if self.pending is None else self.pending.get("execution")
         post_action_review = bool(
             pending_execution is not None and pending_execution.plan.verification == "fields"
-        )
-        model_verified = (
-            self.post_save_verified if self.model_saved_detail_review else set(self.verified)
         )
         context_layers = self.rolling_context.export_prompt_context(
             current_goal=self.goal,
@@ -367,6 +381,7 @@ class Brain:
                 "save_issued": self.save_issued,
                 "post_save_query_identity_verified": self.post_save_query_identity_verified,
                 "post_save_detail_review": self.model_saved_detail_review,
+                "saved_result_open_pending": self.saved_detail_transition_pending,
             },
             context_layers=context_layers,
             recent_feedback=tuple(
@@ -375,7 +390,11 @@ class Brain:
             available_credentials=tuple(
                 sorted(key for key, value in self.credentials.items() if value)
             ),
-            evidence_claims=tuple(self.evidence_ledger.prompt_context()),
+            evidence_claims=tuple(
+                claim
+                for claim in self.evidence_ledger.prompt_context()
+                if claim["field"] in model_verified
+            ),
             failed_transitions=tuple(self._failed_exploration_transitions()),
             saved_record_review=saved_record_review,
             taught_procedure_progress=self._taught_procedure_progress(),
@@ -404,7 +423,9 @@ class Brain:
             )
         )
 
-    def _match_visual(self, screen: dict, page, *, interpretation=None, proposal=None):
+    def _match_visual(
+        self, screen: dict, page, *, interpretation=None, proposal=None, defer_plan_errors=False
+    ):
         from .matching import MatchServices, match_screen
 
         request = self._screen_match_request(
@@ -423,7 +444,9 @@ class Brain:
                 cache=self.visual_match_cache,
                 methods=self.methods,
             ),
+            defer_plan_errors=defer_plan_errors,
         )
+        self.visual_plan_error = result.plan_error
         if result.observation_claim is not None:
             self.feedback.append(
                 {
@@ -435,6 +458,16 @@ class Brain:
         self.procedure_step = result.response.procedure_step
         self._advance_taught_procedure(result.response.taught_step_id)
         self.visual_match_candidate = result.visual_match_candidate
+        if page is not None:
+            self.log.append(
+                "select",
+                payload={
+                    "check": "screen_plan_proposed",
+                    "obs_id": page.image_path.parent.name,
+                    "response": result.response.model_dump(mode="json"),
+                    "plan_error": result.plan_error,
+                },
+            )
         return result.response
 
     def _taught_procedure_progress(self) -> dict:
@@ -502,7 +535,7 @@ class Brain:
                     for key in ("error", "invalid_text_links", "invalid_links", "instruction")
                     if key in request.correction
                 }
-            response = self._match_visual(screen, request.page)
+            response = self._match_visual(screen, request.page, defer_plan_errors=True)
             self.visual_proposal = response
             atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
             return self._groundable_interpretation(response, screen)
@@ -545,6 +578,10 @@ class Brain:
                 compile_screen_action_plan,
             )
 
+            if self.visual_plan_error is not None:
+                error, self.visual_plan_error = self.visual_plan_error, None
+                self.visual_proposal = None
+                raise ValueError(error)
             response, self.visual_proposal = self.visual_proposal, None
             proposal_reused = (
                 response is not None and self.visual_proposal_obs_id == self.observation.obs_id
@@ -852,8 +889,11 @@ class Brain:
         decision = self.decision
         exploration_failure = (
             self.phase == "task"
-            and reason in {"navigation_no_progress", "navigation_cycle"}
+            and reason in {"navigation_no_progress", "navigation_cycle", "semantic_target_repeated"}
             and self._last_exploration_failure_key is not None
+        )
+        selection_failure = reason.startswith(
+            ("selection_error:", "verification_error:", "action_error:")
         )
         if reason == "post_save_model_evidence_incomplete":
             key = self.phase + ":" + self._exploration_goal_key()
@@ -869,8 +909,10 @@ class Brain:
                     else "decision"
                 )
             )
+        if reason.startswith(("selection_error:", "verification_error:", "action_error:")):
+            key += ":" + reason
         self.failures[key] = self.failures.get(key, 0) + 1
-        if exploration_failure:
+        if exploration_failure or selection_failure:
             self.phase_failures.setdefault(self.phase, 0)
         else:
             self.phase_failures[self.phase] = self.phase_failures.get(self.phase, 0) + 1
@@ -991,6 +1033,7 @@ class Brain:
             return self._finish("stopped", "repeated_subgoal_failure:" + key)
         if (
             not exploration_failure
+            and not selection_failure
             and self.phase_failures[self.phase] >= self.settings.max_subgoal_failures
         ):
             return self._finish("stopped", "repeated_phase_failure:" + self.phase)
@@ -1161,10 +1204,13 @@ class Brain:
         observation = redact(self.relay.observe(), self.secrets)
         if not observation.blocked_reason:
             self.visual_proposal = None
+            self.visual_plan_error = None
             observation = self.visual_perception.observe(observation)
             self.visual_proposal_obs_id = observation.obs_id
         self.observation = observation
         self.review = None
+        if isinstance(observation, SceneObservation):
+            self._begin_saved_detail_review(observation.screen_kind)
         # In combined visual mode the model grounds the current screen while it is
         # being observed.  Publish that observation evidence before the Review
         # node runs.  Previously the bindings were delayed until Selection, so the
@@ -1334,10 +1380,7 @@ class Brain:
             if self.review_decision:
                 self.review_decision = False
                 assert self.decision is not None
-                if self.decision.operation in {"duplicate_clear", "duplicate_found"}:
-                    outcome = self._check_duplicate(self.decision)
-                else:
-                    outcome = self._check_complete(self.decision)
+                outcome = self._check_complete(self.decision)
                 self._stage_visual_match_candidate()
                 return outcome
             review = self._current_review()
@@ -1701,7 +1744,21 @@ class Brain:
                 raise GuardStop("unknown_window_type")
             if decision.operation == "stop":
                 return self._finish("stopped", "model_requested_stop")
-            if decision.operation in {"duplicate_clear", "duplicate_found", "complete"}:
+            if decision.operation in {"duplicate_clear", "duplicate_found"}:
+                claim = {
+                    "check": "query_result_observed",
+                    "operation": decision.operation,
+                    "obs_id": str(self.observation.obs_id),
+                    "reason": decision.reason,
+                    "next": "Choose the next taught action from this observed result.",
+                }
+                self.feedback.append(claim)
+                self.log.append("verify", payload=claim)
+                self._collect_editor_evidence(decision)
+                self.visual_proposal = None
+                self.visual_match_candidate = None
+                return "decision"
+            if decision.operation == "complete":
                 self.review_decision = True
                 return "review"
             if self.phase == "task" or (decision.screen_kind == "editor" and self.phase == "enter"):
@@ -1766,53 +1823,10 @@ class Brain:
             self.observation, SceneObservation
         ) and self.observation.uncertainties_for_region(
             grid.ref,
-            # Empty-result proof uses structured table state/confidence and the
-            # row checks below; prose about header labels is not a veto.
-            include_general_warnings=decision.operation != "duplicate_clear",
+            include_general_warnings=True,
         ):
             raise GuardStop("visual_query_evidence_uncertain")
         return subtree(self.observation, grid.ref)
-
-    def _check_duplicate(self, decision: Decision) -> WorkerNode:
-        identity_field = self.identity_input_key
-        if identity_field is None:
-            raise GuardStop("identity_input_not_configured")
-        if (
-            self.phase != "duplicate_query"
-            or not self.query_submitted
-            or not self.query_value_verified
-        ):
-            raise GuardStop("duplicate_query_not_executed")
-        if not self._current_query_matches():
-            raise GuardStop("query_value_changed")
-        grid = self._grid(decision)
-        matching = [
-            item for item in grid if field_matches(identity_field, element_value(item), self.values)
-        ]
-        if matching:
-            return self._finish("stopped", "duplicate_record")
-        if decision.operation == "duplicate_found":
-            return self._fail("ungrounded_duplicate_claim")
-        data_roles = {"dataitem", "listitem", "row", "cell"}
-        if any(item.role.casefold() in data_roles for item in grid):
-            return self._fail("query_not_empty")
-        self.duplicate_clear = True
-        self._record_progress("duplicate_clear")
-        self.phase = "enter"
-        self.query_submitted = self.query_value_verified = False
-        self.query_descriptor = None
-        self.query_window_handle = None
-        self.log.append(
-            "verify",
-            payload={
-                "ok": True,
-                "check": "duplicate_clear",
-                "grid_ref": decision.grid_ref,
-                "obs_id": str(self.observation.obs_id),
-            },
-        )
-        self.feedback.append({"ok": True, "phase": self.phase, "check": "duplicate_clear"})
-        return "observation"
 
     def _invalidate_editor_evidence(self) -> None:
         assert self.observation is not None
@@ -1865,6 +1879,9 @@ class Brain:
         )
         if not surface_allowed or not field_matches(source, element.value, self.values):
             return False
+        if self.task_instruction is not None and self.settings.visual_model_only_review:
+            self._record_model_evidence(source, element)
+            return True
         self.verified[source] = describe(element, self.observation.elements)
         self._record_progress("field:" + source)
         return True
@@ -1877,21 +1894,15 @@ class Brain:
         for evidence in decision.evidence:
             item = by_ref.get(evidence.ref)
             if item is not None and item.role.casefold() in TEXT_INPUT_ROLES:
-                if self.settings.visual_model_only_review:
-                    self._record_model_evidence(evidence.field, item)
-                else:
-                    self._record_verified_field(evidence.field, item)
+                self._record_verified_field(evidence.field, item)
 
     def _remember_model_task_evidence(self, response) -> None:
         """Persist the screen model's current editor evidence as task progress.
 
-        Model-only review intentionally avoids a second code value judge. The
-        previous compiler also discarded evidence while creating screen batches,
-        so every task input stayed "remaining" forever. After entry, a detector
-        may retain the literal value only as OCR text even though its input border
-        is no longer classified. The model's field-to-marker mapping is still the
-        review decision; accepting that readable editor evidence does not make the
-        text writable, declare completion, or authorize an action.
+        The model owns visual reading and semantic binding. Observed values use
+        the same comparison as no-op input elimination, before batch review.
+        Missing fields preserve memory; visible mismatches replace stale claims.
+        Reading a field does not make its surface writable or finish the task.
         """
         if self.task_instruction is None or not self.settings.visual_model_only_review:
             return
@@ -1900,21 +1911,23 @@ class Brain:
         by_ref = {item.ref: item for item in self.observation.elements}
         recorded = []
         superseded = []
-        pending_fill_sources = {
-            step.source
-            for step in response.steps
-            if step.action == "fill" and step.source is not None
-        }
-        deferred = []
+        if response.mapping is not None:
+            for name, source in response.mapping.observed_bindings(self.values).items():
+                if not field_matches(source, response.mapping.fields[name].value, self.values):
+                    self.verified.pop(source, None)
+                    self.post_save_verified.discard(source)
+                    self.evidence_ledger.invalidate(source, "current_observed_value_differs")
         for evidence in response.evidence:
-            if evidence.field in pending_fill_sources:
-                deferred.append(evidence.field)
-                continue
             element = by_ref.get(prefix + str(evidence.target))
             readable_roles = {"edit", "combobox"}
             if response.screen_kind == "editor":
                 readable_roles.update({"text", "cell"})
             if element is None or element.role.casefold() not in readable_roles:
+                continue
+            if not field_matches(evidence.field, element.value, self.values):
+                self.verified.pop(evidence.field, None)
+                self.post_save_verified.discard(evidence.field)
+                self.evidence_ledger.invalidate(evidence.field, "current_observed_value_differs")
                 continue
             superseded.extend(self._record_model_evidence(evidence.field, element))
             recorded.append(evidence.field)
@@ -1926,15 +1939,6 @@ class Brain:
                     "reviewer": "screen_model",
                     "fields": sorted(set(recorded)),
                     "superseded_fields": sorted(set(superseded)),
-                    "obs_id": str(self.observation.obs_id),
-                },
-            )
-        if deferred:
-            self.log.append(
-                "verify",
-                payload={
-                    "check": "model_task_evidence_deferred_until_reread",
-                    "fields": sorted(set(deferred)),
                     "obs_id": str(self.observation.obs_id),
                 },
             )
@@ -2189,22 +2193,20 @@ class Brain:
         if choice.type in {"click", "double_click"} and choice.ref is not None:
             target = next(item for item in self.observation.elements if item.ref == choice.ref)
             pending["click_target"] = navigation_target(target, self.observation)
-            identity_field = self.identity_input_key
-            if (
-                self.phase == "task"
-                and self.save_issued
-                and decision.screen_kind == "query"
-                and decision.intent == "navigate"
-                and identity_field is not None
-                and target.role.casefold() not in {"edit", "combobox"}
-                and normalize_value(self.values[identity_field])
-                in normalize_value(target.value or target.name)
-            ):
-                pending["post_save_identity_result_target"] = True
-                if self.visual_proposal is not None and self.visual_proposal.taught_step_id:
-                    pending["taught_step_id"] = self.visual_proposal.taught_step_id
-                elif self.active_taught_step is not None:
-                    pending["taught_step_id"] = self.active_taught_step
+        if (
+            self.phase == "task"
+            and self.save_issued
+            and decision.screen_kind == "query"
+            and choice.type in {"click", "double_click", "key"}
+        ):
+            # This is a transition candidate, not proof of opening or identity.
+            # The next observed editor starts review for row, button and keyboard
+            # routes alike; a query that remains visible does not start it.
+            self.saved_detail_transition_pending = True
+            if self.visual_proposal is not None and self.visual_proposal.taught_step_id:
+                self.saved_detail_transition_step = self.visual_proposal.taught_step_id
+            else:
+                self.saved_detail_transition_step = self.active_taught_step
         if choice.type in {"set_text", "type_text"}:
             target = next(item for item in self.observation.elements if item.ref == choice.ref)
             pending["descriptor"] = describe(target, self.observation.elements)
@@ -2245,6 +2247,8 @@ class Brain:
             self.post_save_verified.clear()
         if decision.intent == "save":
             self.save_issued = True
+            self.saved_detail_transition_pending = False
+            self.saved_detail_transition_step = None
             self.post_save_query_identity_verified = False
             self.model_saved_detail_review = False
             self.post_save_verified.clear()
@@ -2548,6 +2552,7 @@ class Brain:
         if self._try_click_refinement(pending, observation, failure="semantic_target_repeated"):
             self.execution_authorized = True
             return "execution"
+        self._last_exploration_failure_key = pending.get("exploration_action_key")
         return self._fail("semantic_target_repeated")
 
     def _verify_text_input(
@@ -2651,7 +2656,6 @@ class Brain:
 
     def _record_action_verification(
         self,
-        pending: PendingAction,
         decision: Decision,
         choice: Choice,
         effect_source: str | None,
@@ -2671,6 +2675,23 @@ class Brain:
                 "check": "navigation_observed_change" if navigation_change else "action_delivered",
             }
         )
+        self._remember_action_effect(
+            decision,
+            choice,
+            observed_effect,
+            bool(navigation_change or observed_effect != ObservedEffect.NO_CHANGE),
+            new_facts,
+        )
+        self._begin_saved_detail_review(self.observation.screen_kind)
+
+    def _remember_action_effect(
+        self,
+        decision: Decision,
+        choice: Choice,
+        observed_effect: ObservedEffect,
+        success: bool,
+        new_facts: list[TransitionFact],
+    ) -> None:
         target_desc = (
             choice.source or (choice.keys if choice.type == "key" else choice.ref) or "unknown"
         )
@@ -2680,29 +2701,29 @@ class Brain:
             target_summary=f"{choice.type}:{target_desc}",
             action_type=choice.type,
             observed_effect=str(observed_effect),
-            success=bool(navigation_change or observed_effect != ObservedEffect.NO_CHANGE),
+            success=success,
             checkpoint=self._decision_policy().current_step,
         )
         for fact in new_facts:
             self.rolling_context.mark_milestone(f"검증 완료: {fact}")
+
+    def _begin_saved_detail_review(self, screen_kind: str) -> None:
         if (
             self.phase == "task"
             and self.save_issued
             and self.settings.visual_model_only_review
-            and decision.screen_kind == "query"
-            and decision.intent == "navigate"
-            and choice.type in {"click", "double_click"}
-            and navigation_change
-            and pending.get("post_save_identity_result_target", False)
-            and self.observation is not None
-            and self.observation.screen_kind != decision.screen_kind
+            and not self.model_saved_detail_review
+            and self.saved_detail_transition_pending
+            and screen_kind == "editor"
         ):
             # Start a distinct model-owned review ledger after the saved result
             # row opens. Pre-save entry evidence must not satisfy this review.
             self.post_save_query_identity_verified = True
             self.model_saved_detail_review = True
             self.post_save_verified.clear()
-            self._complete_taught_procedure_step(pending.get("taught_step_id"))
+            self._complete_taught_procedure_step(self.saved_detail_transition_step)
+            self.saved_detail_transition_pending = False
+            self.saved_detail_transition_step = None
             self.log.append(
                 "verify",
                 payload={
@@ -2773,6 +2794,18 @@ class Brain:
             ),
         )
         execution.matched_refs.update(result.matched_refs)
+        for delivered in execution.delivered:
+            if (
+                delivered["choice"].source is not None
+                and delivered["choice"].ref in result.matched_refs
+            ):
+                self._remember_action_effect(
+                    delivered["decision"],
+                    delivered["choice"],
+                    ObservedEffect.INPUT_VALUE_MATCHES,
+                    True,
+                    [delivered["choice"].source],
+                )
         for source in result.clear_verified:
             self.verified.pop(source, None)
         self.log.append("verify", payload={**result.payload, "obs_id": str(observation.obs_id)})
@@ -2854,7 +2887,6 @@ class Brain:
                 return outcome
             self._begin_saved_query_proof(pending, decision)
             self._record_action_verification(
-                pending,
                 decision,
                 choice,
                 effect_source,
@@ -2936,6 +2968,8 @@ class Brain:
         elif review.result == "rejected":
             self.phase = "task" if self.task_instruction is not None else "enter"
             self.save_issued = False
+            self.saved_detail_transition_pending = False
+            self.saved_detail_transition_step = None
             self.post_save_query_identity_verified = False
             self.model_saved_detail_review = False
             self.post_save_verified.clear()

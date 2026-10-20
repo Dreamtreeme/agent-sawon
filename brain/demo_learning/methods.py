@@ -55,7 +55,20 @@ def _read(path: Path) -> dict:
 
 def read_screen(case_dir: Path, obs_id: str) -> dict:
     folder = case_dir / "visual" / obs_id
-    markers = _read(folder / "markers.json")
+    catalog = folder
+    if not (folder / "markers.json").exists():
+        # Identical-capture reuse writes the new capture/plan but retains the
+        # original OCR catalog. Recover only byte-identical recorded pixels.
+        capture = (folder / "capture.png").read_bytes()
+        catalog = next(
+            (
+                path.parent
+                for path in sorted((case_dir / "visual").glob("*/markers.json"))
+                if (path.parent / "capture.png").read_bytes() == capture
+            ),
+            folder,
+        )
+    markers = _read(catalog / "markers.json")
     return {
         **(
             {"screen_phash": perceptual_hash(folder / "capture.png")}
@@ -63,7 +76,7 @@ def read_screen(case_dir: Path, obs_id: str) -> dict:
             else {}
         ),
         "image_size": markers["image_size"],
-        "ocr": _read(folder / "ocr.json")["blocks"],
+        "ocr": _read(catalog / "ocr.json")["blocks"],
         "markers": markers["markers"],
     }
 

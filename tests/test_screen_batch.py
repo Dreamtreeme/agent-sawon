@@ -504,7 +504,9 @@ def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
     current = scene.model_copy(
         update={
             "elements": [
-                original.model_copy(update={"ref": prefix + str(target), "value": "WRONG"})
+                original.model_copy(
+                    update={"ref": prefix + str(target), "value": brain.values[source]}
+                )
                 if element is original
                 else element
                 for element in scene.elements
@@ -540,8 +542,8 @@ def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
     plan = ActionPlan.single(fill)
     execution = PlanExecution(plan, scene)
     execution.delivered = [
-        {"choice": fill.action, "descriptor": {}},
-        {"choice": boundary.action, "descriptor": {}},
+        {"choice": fill.action, "decision": fill, "descriptor": {}},
+        {"choice": boundary.action, "decision": boundary, "descriptor": {}},
     ]
 
     def observe_with_proposal(wire):
@@ -572,6 +574,15 @@ def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
     assert event.payload["matched"] == [source]
     assert event.payload["ok"] is True
     assert brain.visual_proposal is proposal
+    turns = brain.rolling_context.recent_turns
+    assert len(turns) == 1
+    assert turns[0].target_summary == "set_text:hbl_no"
+    assert turns[0].observed_effect == "input_value_matches"
+    assert turns[0].success
+    memo = brain.rolling_context.export_prompt_context(
+        current_goal=brain.goal, verified_inputs=[source], remaining_inputs=[]
+    )
+    assert memo["scratchpad"]["completed_milestones"] == ["검증 완료: hbl_no"]
 
 
 def test_save_policy_uses_current_verified_evidence(tmp_path, record):

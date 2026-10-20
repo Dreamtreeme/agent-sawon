@@ -116,7 +116,7 @@ def test_query_uncertainty_is_scoped_without_ignoring_model_warnings(inside):
 
 
 @pytest.mark.parametrize("table_state", ["empty", "uncertain", "rows"])
-def test_empty_grid_uses_structured_evidence_not_header_notes(table_state):
+def test_final_grid_requires_unambiguous_structured_evidence(table_state):
     from brain.graph.engine import Brain, GuardStop
     from brain.graph.schemas import Decision
     from brain.graph.state import create_worker_state
@@ -140,7 +140,7 @@ def test_empty_grid_uses_structured_evidence_not_header_notes(table_state):
         ),
     )
     decision = Decision(
-        operation="duplicate_clear",
+        operation="complete",
         intent="verify",
         screen_kind="query",
         subgoal="Check empty results",
@@ -148,9 +148,8 @@ def test_empty_grid_uses_structured_evidence_not_header_notes(table_state):
         grid_ref=brain.observation.elements[0].ref,
     )
     if table_state == "empty":
-        assert brain._grid(decision)
         with pytest.raises(GuardStop, match="visual_query_evidence_uncertain"):
-            brain._grid(decision.model_copy(update={"operation": "complete"}))
+            brain._grid(decision)
     else:
         with pytest.raises(GuardStop, match="missing_query_grid_evidence"):
             brain._grid(decision)

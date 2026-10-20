@@ -55,7 +55,6 @@ def test_direct_and_screen_matching_receive_identical_execution_context(
     matched = json.loads(model.prompts[-1][len(MAPPING_RULES) :])
     expected.update(
         available_inputs=sorted(brain.values),
-        remaining_inputs=sorted(set(brain.values) - set(brain.verified)),
     )
     assert matched["execution"] == expected
 
@@ -243,6 +242,13 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
     assert state["execution"]["pending_actions"] == [{"intent": "select_option", "source": None}]
     assert "shipper" not in brain.verified
     assert state["execution"]["pending_actions"][0]["intent"] == "select_option"
+    assert "shipper" in state["notebook"]["anticipated_verified_inputs"]
+    assert "shipper" not in state["execution"]["remaining_inputs"]
+    assert "shipper" in state["notebook"]["remaining_inputs"]
+    assert "shipper" not in state["notebook"]["verified_inputs"]
+    assert not {"duplicate_clear", "query_value_verified", "query_submitted"} & set(
+        state["notebook"]["workflow_state"]
+    )
 
 
 def test_pending_login_proposes_post_authentication_work_without_resubmitting_credentials(
@@ -272,3 +278,33 @@ def test_pending_login_proposes_post_authentication_work_without_resubmitting_cr
     assert "login" not in proposed["allowed_intents"]
     assert "Use the user task description" in proposed["guidance"]
     assert brain._decision_policy().facts.available_credential_sources
+
+
+def test_opening_saved_detail_scopes_request_without_erasing_entry_on_failed_navigation(
+    tmp_path, record
+):
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    brain.save_issued = True
+    entry = {field: f"entry-{field}" for field in brain.values}
+    brain.verified = dict(entry)
+    brain.saved_detail_transition_pending = True
+    brain.pending = {
+        "decision": Decision(
+            screen_kind="query",
+            operation="act",
+            intent="navigate",
+            subgoal="open",
+            reason="open saved detail",
+            action=Choice(type="double_click", ref="row"),
+        ),
+    }
+    request = brain._screen_match_request({}, None)
+    assert not request.verified_fields
+    assert not request.policy.facts.verified_field_names
+    assert not request.evidence_claims
+    assert set(request.execution_contract["remaining_inputs"]) == set(brain.values)
+    brain._begin_saved_detail_review("query")
+    assert not brain.model_saved_detail_review
+    assert brain.verified == entry
+    assert not brain.post_save_verified

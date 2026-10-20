@@ -247,7 +247,7 @@ class MethodRuntime:
             )
         return {
             "methods": methods,
-            "current_purpose": self.state.purpose,
+            "previous_action_purpose": self.state.purpose,
             "active_method_id": self.state.active_method_id,
             "slot_bindings": {
                 method_id: bindings
@@ -261,6 +261,9 @@ class MethodRuntime:
         from .matching import ScreenMatch
 
         self.state.pending = None
+        pending_predecessor = (
+            self.state.unverified.get("replaced_edge") if self.state.unverified else None
+        )
         task = self.task_context.task
         if not self.enabled or task is None:
             return None
@@ -293,6 +296,7 @@ class MethodRuntime:
                     for group in remaining
                     if all(
                         (method.id, predecessor) in self.state.used
+                        or (method.id, predecessor) == pending_predecessor
                         for predecessor in group.predecessor_group_ids
                     )
                 ]
@@ -383,6 +387,7 @@ class MethodRuntime:
             "group_id": bound.group_id,
             "origin": "reuse",
             "pruned_group_ids": pruned_group_ids,
+            "response": response,
         }
         self.log.append(
             "cache_hit",
@@ -439,6 +444,7 @@ class MethodRuntime:
         return event
 
     def remember(self, screen: dict, response: ScreenMatch) -> None:
+        bound_pending = self.state.pending
         self.state.pending = None
         if not self.enabled:
             return
@@ -446,6 +452,41 @@ class MethodRuntime:
         self.state.purpose = self._redact_credentials(response.purpose[:160])
         known = {method.id: method for method in self.library.methods()}
         previous = known.get(response.method_id)
+        replaced_edge = None
+        if bound_pending is not None and bound_pending.get("response") is not None:
+            bound_response = bound_pending["response"]
+
+            # Only the same concrete actions on this frame replace a bound edge.
+            # Semantic labels, explanations and transient marker IDs may differ.
+            def same_action(actual, expected):
+                if (actual.action, actual.source, actual.keys) != (
+                    expected.action,
+                    expected.source,
+                    expected.keys,
+                ):
+                    return False
+                if actual.point == expected.point and actual.point is not None:
+                    return True
+                region = screen.get("selected_fields", {}).get(str(expected.target), {}).get("bbox")
+                if region is not None and actual.point is not None:
+                    x, y, width, height = region
+                    return x <= actual.point[0] <= x + width and y <= actual.point[1] <= y + height
+                return (
+                    actual.point is None
+                    and expected.point is None
+                    and actual.target == expected.target
+                )
+
+            if (
+                response.steps
+                and len(response.steps) == len(bound_response.steps)
+                and all(
+                    same_action(actual, expected)
+                    for actual, expected in zip(response.steps, bound_response.steps, strict=True)
+                )
+            ):
+                previous = bound_pending["method"]
+                replaced_edge = (previous.id, bound_pending["group_id"])
         if previous is not None and task is not None and not self._matches_current_task(previous):
             previous = None
         if response.operation == "complete":
@@ -523,6 +564,7 @@ class MethodRuntime:
                 "group_id": method.action_groups[0].id,
                 "origin": "adaptation" if previous else "learned",
                 "taught_step_id": response.taught_step_id,
+                "replaced_edge": replaced_edge,
             }
 
     def _stage(self, method) -> None:
@@ -583,6 +625,7 @@ class MethodRuntime:
                 "origin": pending["origin"],
                 "pruned_group_ids": pending.get("pruned_group_ids", []),
                 "history_index": len(self.state.history) - 1,
+                "replaced_edge": pending.get("replaced_edge"),
             }
         self.log.append("verify", payload={"check": "method_execution", **event})
         atomic_write_json(self.case_dir / "method-progress.json", self.context())
@@ -609,6 +652,17 @@ class MethodRuntime:
             )
             return
         if success:
+            if delivered.get("replaced_edge") is not None:
+                self.state.used.add(delivered["replaced_edge"])
+                self.log.append(
+                    "verify",
+                    payload={
+                        "check": "method_edge_replaced",
+                        "method_id": delivered["replaced_edge"][0],
+                        "group_id": delivered["replaced_edge"][1],
+                        "replacement_group_id": group_id,
+                    },
+                )
             self.log.append(
                 "verify",
                 payload={

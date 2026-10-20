@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -34,6 +35,13 @@ class WarmGroupSelection(BaseModel):
     purpose: str = Field(min_length=1, max_length=160)
     context_anchors: list[str] = Field(default_factory=list, max_length=8)
     expected_result: str = Field(min_length=1, max_length=240)
+    review_reason: str = ""
+
+
+class RemovedWarmGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    candidate_id: str
+    reason: str
 
 
 class WarmMethodAssembly(BaseModel):
@@ -42,6 +50,7 @@ class WarmMethodAssembly(BaseModel):
     model_config = ConfigDict(extra="forbid")
     purpose: str = Field(min_length=1, max_length=160)
     groups: list[WarmGroupSelection] = Field(min_length=1, max_length=80)
+    removed_groups: list[RemovedWarmGroup] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def unique_candidates(self):
@@ -59,19 +68,27 @@ class WarmCandidate:
     trace_index: int
     screen: dict
     response: dict
+    observed_transitions: tuple[dict, ...] = ()
+    satisfied_actions: tuple[dict, ...] = ()
 
 
-ASSEMBLY_RULES = """Build a reusable warm GUI method from successful cold-run cache entries.
-The entire source run reached business success. Each candidate is an immutable action batch from
-that run: select candidates and stable screen context only; never invent, edit, or duplicate an
-action, target, input source, coordinate, or marker. Preserve increasing trace order. Remove only
-retries and exploratory actions whose effect is represented by a later successful candidate.
-Retain every business and credential input source, the command that submits login, the final save
-command, and navigation needed to reach those actions. Retain the exact successful coordinates;
-the runtime requires the same viewport and a screenshot pHash within its configured distance.
-context_anchors are explanatory only; exclude case values, transient messages, dates, and counters.
-Describe only the selected batch's purpose and expected immediate result.
-Return candidate IDs exactly as supplied.
+ASSEMBLY_RULES = """Act as the Critic of this successful cold execution graph.
+Walk candidates in execution order: observation -> proposal -> delivered actions -> observed result.
+A candidate contains only actions actually delivered; already_satisfied and nonexecuted_plans
+are observation facts, not actions to replay. Do not add them back.
+For each candidate, retain it in groups with review_reason, or explain its removal
+in removed_groups.
+Remove redundant retries and exploration only when the retained route still reaches each required
+screen and task goal. Explain how the retained predecessor can reach the next retained candidate;
+do not confuse unchanged pixels with an action failure, or delivery with business success.
+Use observed_transitions and after_screen_ocr as result evidence. original_expected_result is only
+the planner's prediction. Missing result evidence is unknown, not automatically a failed action.
+Retain required business/credential inputs, login submission, save, and navigation dependencies.
+The whole source run succeeded, but not every proposal was useful. Prefer effective transitions
+over earlier attempts that only selected a row. Never invent/edit/duplicate an action, input source,
+coordinate or marker. Return candidate IDs in increasing execution order.
+The runtime reuses exact successful points under matching viewport and screenshot similarity.
+context_anchors must exclude instance values, transient messages, dates and counters.
 """
 
 
@@ -88,16 +105,35 @@ def _canonical(value: dict) -> str:
     )
 
 
-def _observation_order(case_dir: Path) -> dict[str, int]:
-    order: dict[str, int] = {}
-    log_path = case_dir / "run_log.jsonl"
-    if log_path.exists():
-        for line in log_path.read_text(encoding="utf-8").splitlines():
-            event = json.loads(line)
-            obs_id = event.get("payload", {}).get("obs_id")
-            if event.get("kind") == "observe" and obs_id and obs_id not in order:
-                order[obs_id] = len(order)
-    return order
+def _recorded_plans(case_dir: Path, events: list[dict]) -> list[dict]:
+    plans = [
+        {"seq": seq, **event["payload"]}
+        for seq, event in enumerate(events)
+        if event.get("payload", {}).get("check") == "screen_plan_proposed"
+    ]
+    if plans:
+        return plans
+    # Older runs persisted two proposal files per frame instead of each decision.
+    # Locate their decision events; do not use the frame ordinal as execution order.
+    for name in ("screen-match.json", "screen-plan.json"):
+        for path in (case_dir / "visual").glob(f"*/{name}"):
+            response = _read(path)
+            matches = [
+                seq
+                for seq, event in enumerate(events)
+                if event.get("payload", {}).get("check") == "screen_mapping"
+                and Path(event["payload"].get("frame", "")).parent.name == path.parent.name
+                and event["payload"].get("purpose") == response.get("purpose")
+                and event["payload"].get("steps") == len(response.get("steps", []))
+            ]
+            plans.append(
+                {
+                    "seq": matches[-1] if matches else -1,
+                    "obs_id": path.parent.name,
+                    "response": response,
+                }
+            )
+    return sorted(plans, key=lambda plan: plan["seq"])
 
 
 def _task_contract_sha256(case_dir: Path) -> str:
@@ -130,7 +166,7 @@ def _case_values(case_dir: Path) -> dict[str, str]:
 
 
 def read_warm_candidates(case_dir: Path, visual_cache: Path) -> tuple[dict, list[WarmCandidate]]:
-    """Join promoted cache responses to their successful cold-run screens in trace order."""
+    """Join delivered actions to successful cold-run screens and promoted geometry."""
 
     case_dir = Path(case_dir)
     result = _read(case_dir / "result.json")
@@ -143,36 +179,122 @@ def read_warm_candidates(case_dir: Path, visual_cache: Path) -> tuple[dict, list
     for entry in cache.entries:
         by_response.setdefault(_canonical(entry.response), []).append(entry.key)
     responses = {entry.key: entry.response for entry in cache.entries}
-    order = _observation_order(case_dir)
-    paths = list((case_dir / "visual").glob("*/screen-match.json"))
-    paths.sort(key=lambda path: (order.get(path.parent.name, 10**9), path.parent.name))
-    candidates = []
-    for path in paths:
-        response = _read(path)
-        if response.get("operation", "act") != "act" or not response.get("steps"):
+    events = [
+        json.loads(line)
+        for line in (case_dir / "run_log.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    plans = _recorded_plans(case_dir, events)
+    action_order = {
+        event["payload"]["action"]["action_id"]: seq
+        for seq, event in enumerate(events)
+        if event.get("kind") == "act" and event.get("payload", {}).get("stage") == "requested"
+    }
+    transitions = {}
+    satisfied = []
+    for seq, event in enumerate(events):
+        payload = event.get("payload", {})
+        if payload.get("check") == "observed_actions_already_satisfied":
+            satisfied.append((seq, payload))
+        transition = payload.get("transition", {})
+        if transition.get("delivery") == "delivered":
+            transitions[transition["action_id"]] = (
+                action_order.get(transition["action_id"], seq),
+                transition,
+            )
+    candidates, nonexecuted = [], []
+    seen = set()
+    for plan in plans:
+        response, obs_id = plan["response"], plan["obs_id"]
+        if (
+            plan.get("plan_error")
+            or response.get("operation", "act") != "act"
+            or not response.get("steps")
+        ):
             continue
+        end = next(
+            (p["seq"] for p in plans if p["obs_id"] == obs_id and p["seq"] > plan["seq"]),
+            len(events),
+        )
+        available = [
+            (seq, transition)
+            for seq, transition in transitions.values()
+            if transition["before_obs_id"] == obs_id and plan["seq"] <= seq < end
+        ]
+        skipped = [
+            action
+            for seq, payload in satisfied
+            if payload["obs_id"] == obs_id and plan["seq"] <= seq < end
+            for action in payload["actions"]
+        ]
+        delivered, retained, already = [], [], []
+        for step in response["steps"]:
+            key = (step["intent"], step.get("source"))
+            match = next(
+                (
+                    item
+                    for item in available
+                    if (item[1].get("intent"), item[1].get("source")) == key
+                ),
+                None,
+            )
+            if match is not None:
+                available.remove(match)
+                delivered.append(match)
+                retained.append(step)
+            elif any((a["intent"], a.get("source")) == key for a in skipped):
+                already.append(step)
+        if not delivered:
+            nonexecuted.append(
+                {
+                    "obs_id": obs_id,
+                    "purpose": response.get("purpose"),
+                    "already_satisfied": already,
+                    "replayable": False,
+                }
+            )
+            continue
+        # A partial/failed batch is not silently turned into a complete replay candidate.
+        if len(retained) + len(already) != len(response["steps"]):
+            continue
+        delivery_ids = tuple(item[1]["action_id"] for item in delivered)
+        if delivery_ids in seen:
+            continue
+        seen.add(delivery_ids)
         keys = by_response.get(_canonical(response))
-        if not keys:
-            continue
-        screen = read_screen(case_dir, path.parent.name)
-        mapping = responses[keys[0]].get("mapping")
+        key = (
+            keys[0]
+            if keys
+            else "trace:" + hashlib.sha256(_canonical(response).encode()).hexdigest()
+        )
+        screen = read_screen(case_dir, obs_id)
+        mapping = responses[key].get("mapping") if keys else None
         if mapping is not None:
-            response = ScreenMapping.model_validate(mapping).local_payload(screen)
-        index = order.get(path.parent.name, len(order) + len(candidates))
+            normalized = ScreenMapping.model_validate(mapping).local_payload(screen)
+            # Normalize geometry without restoring skipped actions from the provider plan.
+            response = {**normalized, "operation": response.get("operation", "act")}
+        response = {**response, "steps": retained}
         candidates.append(
             WarmCandidate(
-                candidate_id=f"c{len(candidates):03d}",
-                cache_key=keys[0],
-                obs_id=path.parent.name,
-                trace_index=index,
+                candidate_id="",
+                cache_key=key,
+                obs_id=obs_id,
+                trace_index=min(seq for seq, _ in delivered),
                 screen=screen,
                 response=response,
+                observed_transitions=tuple(transition for _, transition in delivered),
+                satisfied_actions=tuple(already),
             )
         )
+    candidates.sort(key=lambda candidate: candidate.trace_index)
+    candidates = [
+        replace(candidate, candidate_id=f"c{index:03d}")
+        for index, candidate in enumerate(candidates)
+    ]
     if not candidates:
         raise ValueError("successful_run_has_no_joined_visual_cache_actions")
     return {
         "source_case": str(case_dir.resolve()),
+        "nonexecuted_plans": nonexecuted,
         "task": task.model_dump(mode="json"),
         # Runtime scoping uses the original user-education file bytes. The case
         # copy is normalized JSON and may have a different byte hash.
@@ -184,19 +306,43 @@ def read_warm_candidates(case_dir: Path, visual_cache: Path) -> tuple[dict, list
 def assembly_prompt(source: dict, candidates: list[WarmCandidate]) -> str:
     values = source["values"]
     summaries = []
-    for candidate in candidates:
+    for index, candidate in enumerate(candidates):
         response = candidate.response
         raw_markers = {item["id"] for item in candidate.screen.get("markers", [])}
+        observed = [
+            {
+                key: transition.get(key)
+                for key in ("intent", "source", "observed_effect", "new_facts")
+            }
+            for transition in candidate.observed_transitions
+        ]
+        after_id = next(
+            (
+                item.get("after_obs_id")
+                for item in reversed(candidate.observed_transitions)
+                if item.get("after_obs_id")
+            ),
+            None,
+        )
+        after = {}
+        if after_id and (Path(source["source_case"]) / "visual" / after_id).is_dir():
+            after = read_screen(Path(source["source_case"]), after_id)
         summaries.append(
             {
                 "candidate_id": candidate.candidate_id,
                 "trace_index": candidate.trace_index,
+                "previous_candidate_id": candidates[index - 1].candidate_id if index else None,
                 "screen_kind": response.get("screen_kind", "unknown"),
                 "taught_step_id": response.get("taught_step_id"),
                 "ocr": [
                     _redact(str(block["text"]), values) for block in candidate.screen.get("ocr", [])
                 ],
                 "actions": response["steps"],
+                "observed_transitions": observed,
+                "already_satisfied": list(candidate.satisfied_actions),
+                "after_screen_ocr": [
+                    _redact(str(block["text"]), values) for block in after.get("ocr", [])
+                ],
                 "model_point_targets": sorted(
                     {
                         step["target"]
@@ -208,7 +354,14 @@ def assembly_prompt(source: dict, candidates: list[WarmCandidate]) -> str:
                 "original_expected_result": _redact(response.get("expected_result", ""), values),
             }
         )
-    payload = {"task": source["task"], "candidates": summaries}
+    payload = {
+        "task": source["task"],
+        "candidates": summaries,
+        "nonexecuted_plans": [
+            {**plan, "purpose": _redact(plan.get("purpose") or "", values)}
+            for plan in source.get("nonexecuted_plans", [])
+        ],
+    }
     return ASSEMBLY_RULES + json.dumps(payload, ensure_ascii=False)
 
 
@@ -267,17 +420,12 @@ def compile_warm_method(
         if candidate.screen.get("screen_phash") is None:
             raise ValueError("warm_method_candidate_requires_reference_screenshot")
         visible = {str(block["text"]) for block in candidate.screen.get("ocr", [])}
-        if any(
-            not any(anchor.casefold() in text.casefold() for text in visible)
+        context_anchors = [
+            anchor
             for anchor in selection.context_anchors
-        ):
-            raise ValueError("warm_method_context_anchor_not_visible")
-        if any(
-            value and value in anchor
-            for anchor in selection.context_anchors
-            for value in source["values"].values()
-        ):
-            raise ValueError("warm_method_context_anchor_contains_instance_value")
+            if any(anchor.casefold() in text.casefold() for text in visible)
+            and not any(value and value in anchor for value in source["values"].values())
+        ]
         response = {
             **candidate.response,
             "purpose": selection.purpose,
@@ -289,12 +437,14 @@ def compile_warm_method(
             method_id=method_id,
             purpose=assembly.purpose,
             slots=slots,
-            context_anchors=selection.context_anchors,
+            context_anchors=context_anchors,
             task_objective=source["task"]["objective"],
             task_contract_sha256=source["task_sha256"],
         )
         if fragment is None:
-            raise ValueError("warm_method_candidate_could_not_be_compiled")
+            raise ValueError(
+                "warm_method_candidate_could_not_be_compiled:" + candidate.candidate_id
+            )
         group = fragment.action_groups[0].model_copy(
             update={
                 "trace_index": candidate.trace_index,
@@ -342,6 +492,8 @@ def assemble_warm_method(
                     "trace_index": item.trace_index,
                     "screen": item.screen,
                     "response": item.response,
+                    "observed_transitions": item.observed_transitions,
+                    "already_satisfied": item.satisfied_actions,
                 }
                 for item in candidates
             ],

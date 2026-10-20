@@ -365,20 +365,17 @@ def test_model_owned_generic_evidence_is_not_invalidated_by_later_screens(tmp_pa
         objective="Save the supplied invoice.",
         completion_conditions=["A visible result confirms that the invoice was saved."],
     )
-    brain._invalidate_editor_evidence = lambda: pytest.fail(
-        "generic model-owned evidence must survive a screen change"
-    )
     brain.visual_perception = PassthroughPerception()
 
     brain._observe()
-    recorded = []
-    original_record = brain._record_model_evidence
-
-    def record_evidence(field, element):
-        recorded.append((field, element.ref))
-        return original_record(field, element)
-
-    brain._record_model_evidence = record_evidence
+    brain.observation = brain.observation.model_copy(
+        update={
+            "elements": [
+                e.model_copy(update={"value": "INV-17"}) if e.ref == "e1" else e
+                for e in brain.observation.elements
+            ]
+        }
+    )
     passive = DecisionResponse.model_validate(
         {
             "decision": decision(
@@ -389,8 +386,13 @@ def test_model_owned_generic_evidence_is_not_invalidated_by_later_screens(tmp_pa
         }
     ).to_decision()
     brain._collect_editor_evidence(passive)
-    assert recorded == [("invoice.number", "e1")]
     assert "invoice.number" in brain.verified
+
+    claims = brain.evidence_ledger.history
+    brain.observation = brain.observation.model_copy(update={"elements": []})
+    brain._collect_editor_evidence(passive.model_copy(update={"evidence": []}))
+    assert "invoice.number" in brain.verified
+    assert brain.evidence_ledger.history == claims
 
 
 def test_business_facts_survive_identical_anonymous_screen_descriptors(tmp_path):
