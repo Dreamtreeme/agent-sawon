@@ -2730,6 +2730,7 @@ def test_education_retrieval_replans_before_any_provisional_action(tmp_path, rec
 
 
 def test_supplied_education_preserves_actions_without_another_model_call(tmp_path, record):
+    # Synthetic reduction of 066 calls 17/21: requested details already supplied.
     taught = TaskInstruction.model_validate_json(
         (
             Path(__file__).resolve().parents[1] / "examples/shipment-user-taught-task.json"
@@ -2742,6 +2743,11 @@ def test_supplied_education_preserves_actions_without_another_model_call(tmp_pat
     brain._observe()
 
     assert len(model.prompts) == 1
+    sent = json.loads(model.prompts[0][len(MAPPING_RULES) :])
+    supplied = {step["id"]: step for step in sent["taught_procedure_progress"]["steps"]}
+    assert supplied["login"] == next(
+        step for step in taught.procedure if step.id == "login"
+    ).model_dump(mode="json")
     assert brain.visual_proposal.steps
     assert brain.visual_proposal.requested_instruction_ids == []
     check = next(
@@ -2774,7 +2780,11 @@ def test_compound_claim_survives_before_action_without_becoming_verified(
     assert not any(event.kind == "act" for event in brain.log.read_all())
 
 
-def test_action_owned_control_normalizes_once_and_keeps_cache_contract():
+@pytest.mark.parametrize(
+    "metadata", ["supporting-role", "confidence", "description", "long-description", "field-order"]
+)
+def test_action_owned_control_normalizes_once_and_keeps_cache_contract(metadata):
+    # Synthetic counterexamples from the 044--047 report; actual 047 response was not retained.
     import copy
 
     control = {"id": 8, "role": "edit", "confidence": 1, "label_ids": [3]}
@@ -2805,15 +2815,22 @@ def test_action_owned_control_normalizes_once_and_keeps_cache_contract():
     assert "maxItems" not in json.dumps(schema)
     stored_schema = ScreenMatch.model_json_schema(mode="serialization")
     assert stored_schema["$defs"]["MatchAction"]["properties"]["target"]["type"] == "integer"
-    raw["controls"] = [
-        {
-            **control,
-            "role": "button",
-            "confidence": 0.1,
-            "visual_description": "supporting observation",
-        }
-    ]
+    raw["controls"] = [dict(control)]
+    if metadata == "supporting-role":
+        raw["controls"][0].update(
+            role="button", confidence=0.1, visual_description="supporting observation"
+        )
+    elif metadata == "confidence":
+        raw["controls"][0]["confidence"] = 0.95
+    elif metadata == "description":
+        raw["controls"][0]["visual_description"] = "The same input described differently"
+    elif metadata == "long-description":
+        raw["controls"][0]["visual_description"] = "Supporting observation. " * 20
+    else:
+        raw = dict(reversed(list(raw.items())))
+        raw["controls"][0] = dict(reversed(list(raw["controls"][0].items())))
     normalized = ScreenMatch.model_validate(raw)
+    assert normalized.steps == result.steps
     assert normalized.controls[0].role == "edit"
     assert normalized.controls[0].confidence == 1
     assert normalized.controls[0].visual_description == ""
