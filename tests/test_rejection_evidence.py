@@ -1,11 +1,10 @@
-"""Synthetic faults test diagnostic non-interference, not new acceptance rules."""
+"""Diagnostic non-interference and approved ancillary-response normalization."""
 
 import json
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from brain.demo_learning.warm_methods import WarmMethodAssembly
 from models.base import MeasuredModelClient, ProviderReply, TokenUsage
@@ -60,8 +59,8 @@ def test_recording_preserves_exception_identity_and_caller_recovery(tmp_path, mo
 
 
 @pytest.mark.parametrize("broken_storage", [False, True])
-def test_ninth_compiler_anchor_preserves_raw_response_and_same_validation_error(
-    tmp_path, monkeypatch, broken_storage
+def test_ninth_compiler_anchor_warns_and_preserves_raw_response(
+    tmp_path, monkeypatch, caplog, broken_storage
 ):
     log = storage.RunLog(tmp_path, case_id="anchors", agent_id="test")
     raw = json.dumps(
@@ -85,15 +84,18 @@ def test_ninth_compiler_anchor_preserves_raw_response_and_same_validation_error(
             raise OSError("synthetic diagnostic write failure")
 
         monkeypatch.setattr(storage, "atomic_write_json", fail)
-    with pytest.raises(ValidationError) as caught:
-        client.complete_json("synthetic input", WarmMethodAssembly)
-    assert [(item["loc"], item["type"]) for item in caught.value.errors()] == [
-        (("groups", 0, "context_anchors"), "too_long")
-    ]
+    result = client.complete_json("synthetic input", WarmMethodAssembly)
+    assert result.response.groups[0].context_anchors == [f"anchor {index}" for index in range(8)]
+    anchor_schema = WarmMethodAssembly.model_json_schema()["$defs"]["WarmGroupSelection"][
+        "properties"
+    ]["context_anchors"]
+    assert "maxItems" not in anchor_schema
+    assert "warm_context_anchors_truncated retained=8 discarded=1" in caplog.text
     assert client.calls == 1
     (event,) = log.read_all()
     assert event.kind == "model_call" and event.cost.usd == 0
-    assert event.payload["validator"].endswith("WarmMethodAssembly.model_validate_json")
+    assert event.payload["status"] == "success"
+    assert "validator" not in event.payload
     if broken_storage:
         assert event.payload["response_artifact"] is None
     else:

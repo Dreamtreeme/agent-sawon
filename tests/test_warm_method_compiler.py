@@ -1,5 +1,7 @@
 import hashlib
 import json
+from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -9,12 +11,13 @@ from brain.cache.visual_match import VisualMatchDocument, VisualMatchEntry
 from brain.demo_learning.warm_methods import (
     WarmCandidate,
     WarmMethodAssembly,
+    assemble_warm_method,
     compile_warm_method,
     read_warm_candidates,
 )
 from brain.graph.method_runtime import open_method_library
 from brain.graph.screen_mapping import ScreenMapping
-from sawon_runtime.storage import atomic_write_json
+from sawon_runtime.storage import RunLog, atomic_write_json
 
 
 def response(*, target, source=None, intent="fill", point=(200, 300), taught="edit"):
@@ -149,6 +152,74 @@ def test_warm_compiler_keeps_only_visible_non_instance_context_anchors():
     method = compile_warm_method(source(), candidates(), selected, method_id="warm-shipment")
 
     assert method.action_groups[0].context_anchors == ["Shipment"]
+
+
+@pytest.mark.parametrize("unknown_candidate", [False, True], ids=["accepted", "bad-target-id"])
+def test_anchor_overflow_records_warning_without_relaxing_candidate_ids(
+    tmp_path, caplog, unknown_candidate
+):
+    raw = draft().model_dump()
+    anchors = [f"Caption {index}" for index in range(9)]
+    raw["groups"][0]["context_anchors"] = anchors
+    if unknown_candidate:
+        raw["groups"][0]["candidate_id"] = "not-in-source"
+    inputs = candidates()
+    inputs[0].screen["ocr"][0]["text"] = " / ".join(anchors)
+    model = SimpleNamespace(
+        complete_json=lambda prompt, schema: SimpleNamespace(response=schema.model_validate(raw))
+    )
+    log = RunLog(tmp_path, case_id="anchor-warning", agent_id="test")
+
+    def assemble():
+        return assemble_warm_method(
+            source(),
+            inputs,
+            model=model,
+            log=log,
+            method_id="warning-test",
+            output=tmp_path / "method.json",
+            max_cost_usd=Decimal(0),
+        )
+
+    if unknown_candidate:
+        with pytest.raises(ValueError, match="warm_method_selected_unknown_candidate"):
+            assemble()
+        assert not (tmp_path / "method.json").exists()
+    else:
+        method = assemble()
+        assert method.action_groups[0].context_anchors == anchors[:8]
+        assert method.action_groups[0].targets[0].point == (200, 300)
+        assert method.action_groups[0].actions[0].slot == "hbl_no"
+        raw["groups"][0]["context_anchors"] = anchors[:8]
+        expected = compile_warm_method(source(), inputs, raw, method_id="warning-test")
+        assert method.action_groups == expected.action_groups
+    warnings = [
+        event.payload
+        for event in log.read_all()
+        if event.payload.get("check") == "warm_context_anchors_truncated"
+    ]
+    assert warnings == [
+        {
+            "check": "warm_context_anchors_truncated",
+            "level": "warning",
+            "group_index": 0,
+            "retained": 8,
+            "discarded": 1,
+        }
+    ]
+    assert "warm_context_anchors_truncated retained=8 discarded=1" in caplog.text
+
+
+def test_anchor_overflow_does_not_discard_invalid_trailing_item():
+    from pydantic import ValidationError
+
+    raw = draft().model_dump()
+    raw["groups"][0]["context_anchors"] = ["valid"] * 8 + [None]
+    with pytest.raises(ValidationError) as caught:
+        WarmMethodAssembly.model_validate(raw)
+    assert [(error["loc"], error["type"]) for error in caught.value.errors()] == [
+        (("groups", 0, "context_anchors", 8), "string_type")
+    ]
 
 
 def test_warm_compiler_rejects_missing_input():

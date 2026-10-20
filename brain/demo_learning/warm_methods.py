@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import math
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from sawon_interfaces import ShipmentRecord
 
 from brain.cache.methods import LearnedMethod, MethodDocument, MethodSlot, method_from_match
@@ -33,9 +34,21 @@ class WarmGroupSelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     candidate_id: str
     purpose: str = Field(min_length=1, max_length=160)
-    context_anchors: list[str] = Field(default_factory=list, max_length=8)
+    context_anchors: list[str] = Field(default_factory=list)
     expected_result: str = Field(min_length=1, max_length=240)
     review_reason: str = ""
+    _discarded_context_anchors: int = PrivateAttr(default=0)
+
+    @model_validator(mode="after")
+    def bound_context_anchors(self):
+        if len(self.context_anchors) > 8:
+            self._discarded_context_anchors = len(self.context_anchors) - 8
+            self.context_anchors = self.context_anchors[:8]
+            logging.getLogger(__name__).warning(
+                "warm_context_anchors_truncated retained=8 discarded=%d",
+                self._discarded_context_anchors,
+            )
+        return self
 
 
 class RemovedWarmGroup(BaseModel):
@@ -515,6 +528,18 @@ def assemble_warm_method(
         if accounting.known_usd + reserved > max_cost_usd:
             raise ValueError("warm_method_assembly_cost_cap")
         draft = model.complete_json(prompt, WarmMethodAssembly).response
+        for index, group in enumerate(draft.groups):
+            if group._discarded_context_anchors:
+                log.append(
+                    "verify",
+                    payload={
+                        "check": "warm_context_anchors_truncated",
+                        "level": "warning",
+                        "group_index": index,
+                        "retained": 8,
+                        "discarded": group._discarded_context_anchors,
+                    },
+                )
         draft_path = log.case_dir / "assembly-draft.json"
         atomic_write_json(draft_path, draft)
         method = compile_warm_method(

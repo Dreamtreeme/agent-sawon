@@ -13,6 +13,7 @@
 | 그래프 라우팅 | `brain/graph/workflow.py` | LangGraph | `lifecycle.route`를 다음 책임 노드 또는 `finish`로 연결 |
 | `ExecutionRequest`/`ExecutionResult` | `brain/graph/execution.py` | `engine.py`, relay adapter | 준비된 행동 전달과 relay가 확인한 결과. 업무 성공을 판정하지 않음 |
 | 화면 의미 매핑 | `brain/graph/screen_mapping.py` | matching, method runtime | 의미 이름·bbox·입력 key·행동 point의 모델 경계 |
+| 웜 편찬 응답 | `brain/demo_learning/warm_methods.py`의 `WarmMethodAssembly` / `WarmGroupSelection` | 모델 클라이언트, `compile_warm_method` | 후보 ID로 성공 행동을 선택. context_anchors는 타입 검증 후 첫 8개를 보존하고 초과분 경고 기록 |
 | 시각 공용 자료형 | `sawon_runtime/visual.py` | OCR·탐지·pipeline | 렌더 페이지와 OCR block 계약 |
 | 공개 record/action/observation/event | `../agent-sawon-bench/interfaces/sawon_interfaces/contracts.py` | core와 bench | 두 저장소가 공유하는 버전 있는 Pydantic 계약 |
 | 공개 스키마 export | `../agent-sawon-bench/interfaces/sawon_interfaces/export_schemas.py` | 외부 소비자·검사 | `sawon_interfaces` JSON Schema 생성 |
@@ -58,6 +59,11 @@ flowchart LR
 
 서비스에 전체 `Brain`을 넘기거나 같은 상태를 별도 객체에 반복 복사해 새 계약처럼 만들지
 않습니다. 이미 존재하는 공용 계약을 확장할 수 있는지 먼저 확인합니다.
+
+웜 편찬의 앵커 절단 경고는 logging과 편찬 실행의 RunLog verify 이벤트
+`warm_context_anchors_truncated`에 남긴다. 이벤트에는 group_index, retained, discarded를
+기록하고 앵커 원문은 넣지 않는다. 앵커 리스트의 원래 순서를 유지하며, 후보 ID·행동·좌표·
+입력 출처 검증 및 다른 응답 필드의 제한은 이 경고 정책으로 완화하지 않는다.
 
 ## 거절 진단 산출물
 
