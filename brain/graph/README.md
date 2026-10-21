@@ -5,6 +5,14 @@
 `--task`/`task_path`; `TaskInstruction.procedure` preserves user-taught steps.
 There is no separate legacy Procedure loader.
 
+## Runtime responsibilities
+
+Scanning (`ScreenScanner.scan`) observes the screen. Pattern Matching searches stored screen/task
+patterns. Memory Retrieval (`MemoryRetrieval.retrieve`) supplies bound methods. Context Recall
+(`recall_context`) combines observations, memory, education and current task progress. These names
+are responsibilities within the existing worker graph; callback order and eligibility are unchanged.
+See [the terminology guide](../../docs/runtime-terminology.md) for the remaining coupling.
+
 ## Ownership and flow
 
 - `WorkerState` owns observations, proposals, pending execution, review flags,
@@ -28,7 +36,7 @@ There is no separate legacy Procedure loader.
   Sequential actions renew captures lazily; direct fill batches share one capture.
   Delivery is not proof of input correctness, authentication or persistence.
 
-`MethodRuntime` receives explicit task/input context, `WorkerState.methods`, and
+`MemoryRetrieval` receives explicit task/input context, `WorkerState.methods`, and
 library/output services. It proposes a `ScreenMatch`; it cannot dispatch actions.
 Methods stay within the education hash and rebind their targets to the current
 screen. Only successful runs promote learned candidates. An unchanged reuse keeps

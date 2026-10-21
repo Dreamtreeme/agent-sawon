@@ -7,7 +7,7 @@ import pytest
 from sawon_interfaces import ActionBatchResult, ActionResult
 from test_brain import ScriptedModel, values_for
 from test_brain import record as record
-from test_visual_workflow import SyntheticPerception, VisualFixture
+from test_visual_workflow import SyntheticScanner, VisualFixture
 
 from brain.graph.engine import Brain
 from brain.settings import BrainSettings
@@ -42,14 +42,14 @@ class BatchedChangingPixelsRelay(ChangingPixelsRelay):
         )
 
 
-class CountPerception(SyntheticPerception):
+class CountingScanner(SyntheticScanner):
     def __init__(self, relay):
         super().__init__(relay)
         self.action_counts = []
 
-    def observe(self, wire):
+    def scan(self, wire):
         self.action_counts.append(len(self.relay.actions))
-        scene = super().observe(wire)
+        scene = super().scan(wire)
         return scene.model_copy(update={"screen_kind": self.relay.mode})
 
     def rebind_action(self, scene, target, fresh, *, planned_point=None, max_phash_distance=16):
@@ -96,8 +96,8 @@ def make_brain(tmp_path, record, relay, responses):
         run_log=log,
         visual_ocr=object(),
     )
-    perception = CountPerception(relay)
-    brain.visual_perception = perception
+    perception = CountingScanner(relay)
+    brain.screen_scanner = perception
     return brain, perception, model
 
 
@@ -192,7 +192,7 @@ def test_wrong_field_is_not_verified_and_only_that_field_is_replanned(tmp_path, 
 
 
 def test_shared_source_verifies_and_repairs_each_delivered_target(tmp_path, record):
-    from brain.graph.matching import ScreenMatch
+    from brain.graph.context_recall import ScreenMatch
 
     for wrong_ref in ("e20", "e21", None):
         relay = ChangingPixelsRelay(record)
@@ -202,7 +202,7 @@ def test_shared_source_verifies_and_repairs_each_delivered_target(tmp_path, reco
             "next_decision": None,
         }
         brain, perception, _ = make_brain(tmp_path / str(wrong_ref), record, relay, [plan])
-        original = perception.observe
+        original = perception.scan
         staged = []
         brain._stage_visual_match_candidate = lambda pending, staged=staged: staged.append(pending)
 
@@ -232,7 +232,7 @@ def test_shared_source_verifies_and_repairs_each_delivered_target(tmp_path, reco
                 )
             return scene
 
-        perception.observe = observe
+        perception.scan = observe
         brain.phase, brain.duplicate_clear = "enter", True
         brain._observe()
         assert brain._select_node() == "review"
@@ -448,7 +448,7 @@ def test_joint_verification_survives_corrected_visual_label(tmp_path, record, wr
     relay = ChangingPixelsRelay(record)
     relay.mode = "editor"
     brain, perception, _ = make_brain(tmp_path, record, relay, [screen_plan(record)])
-    original = perception.observe
+    original = perception.scan
 
     def corrected_labels(wire):
         scene = original(wire)
@@ -467,7 +467,7 @@ def test_joint_verification_survives_corrected_visual_label(tmp_path, record, wr
             )
         return scene
 
-    perception.observe = corrected_labels
+    perception.scan = corrected_labels
     brain.phase, brain.duplicate_clear = "enter", True
     brain._observe()
     assert brain._select_node() == "review"
@@ -481,8 +481,8 @@ def test_joint_verification_survives_corrected_visual_label(tmp_path, record, wr
 
 
 def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
+    from brain.graph.context_recall import ScreenMatch
     from brain.graph.execution import ActionPlan, PlanExecution
-    from brain.graph.matching import ScreenMatch
     from brain.graph.schemas import Choice, Decision
     from brain.task_instruction import TaskInstruction
 
@@ -550,7 +550,7 @@ def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
         brain.visual_proposal = proposal
         return current
 
-    brain.visual_perception.observe = observe_with_proposal
+    brain.screen_scanner.scan = observe_with_proposal
     assert brain._observe() is current
     claims = brain.evidence_ledger.history
     assert len(claims) == 1

@@ -8,6 +8,7 @@ Windows ERP를 조작하는 Python 프로젝트다. 이 저장소는 판단·모
 
 현재 모델·비용·실행 경계는 `docs/current-runtime.md`를 기준으로 한다. 상태 계약과 저장소
 인터페이스는 `docs/contracts.md`, 실제 그래프 흐름은 `docs/code-flow.md`를 따른다.
+화면 처리 단계의 이름과 코드 대응은 `docs/runtime-terminology.md`를 따른다.
 `CODEX_BRIEF.md`는 이 현행 문서들의 짧은 진입점이다. `docs/archive/`의 과거 brief와 날짜별
 보고서는 역사·측정 기록이며 현재 설정의 근거로 사용하지 않는다.
 
@@ -17,7 +18,7 @@ Windows ERP를 조작하는 Python 프로젝트다. 이 저장소는 판단·모
 - `brain/graph/`: LangGraph 작업자, `WorkerState`, 판단·실행·검토와 문맥 구성.
   네 책임 노드의 다음 경로는 상태의 `lifecycle.route`로 결정된다.
 - `brain/visual/`, `brain/observe/`: 화면 탐지·OCR 기하, 대상 연결, 관찰과 증거 처리.
-- `brain/cache/`, `brain/demo_learning/`: 화면 캐시, 실행 기록 학습, 웜 메서드 편찬.
+- `brain/cache/`, `brain/demo_learning/`: 화면 캐시, 실행 기록 학습, 기억 편찬.
 - `models/`: 공급자 어댑터, 공용 호출 계측, 스키마 변환, 단가와 비용 예약.
 - `pipeline/`: 문서 렌더링·OCR·추출·검증 및 실행 전 데이터 인계.
 - `sawon_runtime/`: 공용 저장소, 시각 계약, 지속 워커와 프로세스 관리.
@@ -48,7 +49,7 @@ GUI 의존성까지 필요하면 `-Gui`를 전달한다. 이 스크립트는 GPU
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-- 변경 영역을 먼저 확인할 때: `.\.venv\Scripts\python.exe -m pytest tests/test_screen_matching.py -q`
+- 변경 영역을 먼저 확인할 때: `.\.venv\Scripts\python.exe -m pytest tests/test_context_recall.py -q`
 - 선택적 병렬 실행: `.\scripts\test-parallel.ps1` (`-n 4`, 기본은 순차 실행).
 - core와 bench를 함께 검사할 때: `.\scripts\check.ps1`.
 - 기본 pytest는 `gui` 테스트를 제외한다. 실제 Windows 데스크톱이 필요한 테스트에는
@@ -73,7 +74,7 @@ GUI 의존성까지 필요하면 `-Gui`를 전달한다. 이 스크립트는 GPU
 ```powershell
 .\.venv\Scripts\python.exe -m brain.run --help
 .\.venv\Scripts\python.exe -m pipeline.run --help
-.\.venv\Scripts\python.exe -m brain.demo_learning.warm_methods --help
+.\.venv\Scripts\python.exe -m brain.demo_learning.memory_compilation --help
 ```
 
 화면 작업에는 업무별 `--task`, 입력 record와 실행 중인 relay가 필요하다. 새 실행은 새 case

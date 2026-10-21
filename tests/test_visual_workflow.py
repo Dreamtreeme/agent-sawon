@@ -68,13 +68,13 @@ class VisualFixture(FakeRelay):
         return result
 
 
-class SyntheticPerception:
+class SyntheticScanner:
     """Perception output fixture. No desktop/UIA is accessed in this test."""
 
     def __init__(self, relay):
         self.relay = relay
 
-    def observe(self, wire):
+    def scan(self, wire):
         return SceneObservation(wire=wire, elements=self.relay.items)
 
 

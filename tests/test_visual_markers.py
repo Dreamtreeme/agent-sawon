@@ -15,8 +15,8 @@ from brain.visual.markers import (
     build_markers,
     ground_meanings,
 )
-from brain.visual.perception import VisualPerception
 from brain.visual.refinement import refinement_regions
+from brain.visual.scanning import ScreenScanner
 from brain.visual.scene import SemanticDetection, bind_scene
 from models.base import TokenUsage
 from pipeline.schemas import OcrBlock, RenderedPage
@@ -351,14 +351,14 @@ def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_pat
         return meaning
 
     log = RunLog(tmp_path, case_id="markers", agent_id="test")
-    perception = VisualPerception(Relay(), Ocr(), tmp_path, log, interpret, detector=Detector())
+    perception = ScreenScanner(Relay(), Ocr(), tmp_path, log, interpret, detector=Detector())
     if outcome == "provider_error":
         with pytest.raises(ValueError):
-            perception.observe(wire())
+            perception.scan(wire())
         assert len(calls) == 1
         assert not (calls[0].image_path.parent / "perception.json").exists()
         return
-    scene = perception.observe(wire())
+    scene = perception.scan(wire())
     assert len(calls) == 1
     assert any(e.role == "edit" for e in scene.elements)
     if outcome in {"invalid", "corrected"}:
@@ -475,7 +475,7 @@ def test_perception_refines_only_after_basic_detection_reports_failure(
     log = RunLog(tmp_path, case_id="refinement", agent_id="test")
     calls = []
     clock = [0.0]
-    monkeypatch.setattr("brain.visual.perception.perf_counter", lambda: clock[0])
+    monkeypatch.setattr("brain.visual.scanning.perf_counter", lambda: clock[0])
 
     class Detector(OmniParserDetector):
         def read(self, page, *, ocr_boxes=()):
@@ -508,17 +508,17 @@ def test_perception_refines_only_after_basic_detection_reports_failure(
             update={"needs_refinement": missing and calls.count("meaning") == 1 + on_rematch}
         )
 
-    perception = VisualPerception(
+    perception = ScreenScanner(
         Relay(), Ocr(), tmp_path, log, interpret, detector=Detector(DetectorSettings(), log)
     )
     current = wire()
-    perception.observe(current)
+    perception.scan(current)
     if on_rematch:
         perception.rematch(current)
     assert calls == ["full", "meaning"] + (["meaning"] if on_rematch else []) + (
         ["refine", "meaning"] if missing else []
     )
-    event = [e for e in log.read_all() if e.payload.get("stage") == "visual_perception"][-1]
+    event = [e for e in log.read_all() if e.payload.get("stage") == "screen_scanner"][-1]
     assert event.payload["detection_ms"] == (2000 if missing else 1000)
     assert event.payload["local_detector_ms"] == (
         (10000 if missing else 0) + (0 if on_rematch else 2000)
@@ -574,7 +574,7 @@ def test_failed_refinement_returns_navigation_semantics_to_decision_graph(tmp_pa
             }
         )
 
-    perception = VisualPerception(
+    perception = ScreenScanner(
         Relay(),
         Ocr(),
         tmp_path,
@@ -582,7 +582,7 @@ def test_failed_refinement_returns_navigation_semantics_to_decision_graph(tmp_pa
         interpret,
         detector=Detector(DetectorSettings(), RunLog(tmp_path, case_id="d", agent_id="test")),
     )
-    scene = perception.observe(wire())
+    scene = perception.scan(wire())
     assert calls == ["full", "meaning", "refine", "meaning", "meaning"]
     assert any(element.role == "group" for element in scene.elements)
     assert "required input extent missing" in scene.uncertainties
@@ -621,7 +621,7 @@ def test_same_screen_rematch_corrects_and_updates_cached_meaning_without_new_ocr
             )
         )
 
-    perception = VisualPerception(
+    perception = ScreenScanner(
         Relay(),
         Ocr(),
         tmp_path,
@@ -630,16 +630,16 @@ def test_same_screen_rematch_corrects_and_updates_cached_meaning_without_new_ocr
         detector=Detector(),
         reuse_identical=True,
     )
-    assert perception.observe(wire()).elements[0].role == "edit"
+    assert perception.scan(wire()).elements[0].role == "edit"
     current = wire()
-    assert perception.observe(current).elements[0].role == "edit"
+    assert perception.scan(current).elements[0].role == "edit"
     before_rematch = calls.copy()
     corrected = perception.rematch(current)
     assert calls == before_rematch  # Rematching must not capture or run local models.
     assert corrected.obs_id == current.obs_id and corrected.elements[0].role == "combobox"
     assert requests[1].correction is None
     assert "control:0:value_outside_local_marker" in corrected.global_uncertainties
-    assert perception.observe(wire()).elements[0].role == "combobox"
+    assert perception.scan(wire()).elements[0].role == "combobox"
     assert calls == {"capture": 3, "ocr": 1, "detector": 1}
     assert len(requests) == 2
 

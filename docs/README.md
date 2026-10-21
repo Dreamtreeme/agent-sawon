@@ -1,5 +1,8 @@
 # 문서 인덱스
 
+[화면 처리 용어와 코드 대응](runtime-terminology.md)은 Scanning, Pattern Matching,
+Memory Retrieval, Context Recall과 Memory Compilation의 현재 구현 위치를 정리합니다.
+
 이 디렉터리는 **현행 기준**과 **역사 기록**을 분리합니다. 현재 구현을 바꾸기 전에 아래
 현행 문서를 먼저 읽습니다. 역사 보고서의 모델명, 비용, 경로, 미해결 목록은 당시 측정값이며
 현재 동작을 복원하라는 요구사항이 아닙니다.

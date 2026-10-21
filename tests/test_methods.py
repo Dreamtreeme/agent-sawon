@@ -9,7 +9,7 @@ from brain.cache.methods import (
     method_completion_from_match,
     method_from_match,
 )
-from brain.graph.matching import ScreenMatch
+from brain.graph.context_recall import ScreenMatch
 
 
 def scene(*, offset=0, old_value="Old customer", ids=0):

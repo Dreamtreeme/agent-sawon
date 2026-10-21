@@ -24,17 +24,21 @@ Luna, Gemini, Jev와 replay 어댑터는 비교·재생 코드일 수 있으며 
 
 ## 실행 경로
 
+화면 처리 책임은 Scanning → Pattern Matching → Memory Retrieval → Context Recall로
+부른다. 성공 기록 정제는 Memory Compilation이다. 현재 구현의 책임 중첩과 저장 형식의
+기존 이름은 [용어와 코드 대응](runtime-terminology.md)에 명시한다.
+
 1. `pipeline`이 문서를 렌더링하고 GPU OCR·추출·교차 검증을 수행합니다.
 2. `brain.run`이 `TaskInstruction`, 입력 record, 설정과 relay를 연결합니다.
 3. 작업자 그래프가 `WorkerState` 하나를 `Observation`, `Decision`, `Review`, `Execution`
    책임 노드 사이에 전달합니다. 다음 노드는 `lifecycle.route`가 결정합니다.
 4. 환경 관찰과 입력은 `sawon_interfaces` 계약을 사용하는 relay HTTP로만 수행합니다.
-5. 전체 성공한 콜드 실행만 화면 캐시와 웜 메서드 편찬의 승격 근거가 됩니다.
+5. 전체 성공한 원본 실행만 화면 캐시와 기억 편찬의 승격 근거가 됩니다.
 
-웜 편찬 응답의 `context_anchors`가 8개를 넘으면 원래 순서의 첫 8개를 보존하고 초과분은
+기억 편찬 응답의 `context_anchors`가 8개를 넘으면 원래 순서의 첫 8개를 보존하고 초과분은
 경고로 기록합니다. 후보 ID와 실행 필드의 검증은 유지합니다. 계약 위치와 경고 형식은
 [계약 지도](contracts.md)를 참고합니다.
-편찬 전체 설명문 `WarmMethodAssembly.purpose`는 300자까지 허용하고 산출물에 원문을
+편찬 전체 설명문 `MemoryAssembly.purpose`는 300자까지 허용하고 산출물에 원문을
 보존합니다. 그룹별 설명문과 다른 필드의 제한은 변경하지 않습니다.
 
 업무별 버튼명, 좌표, 탭 순서는 프로덕션 코드에 넣지 않습니다. 사용자가 가르친 절차는
@@ -51,10 +55,10 @@ Luna, Gemini, Jev와 replay 어댑터는 비교·재생 코드일 수 있으며 
   있습니다. 이 번호는 화면 요소의 영구 식별자가 아닙니다.
 - 업무 판단 단계의 `ScreenMapping`은 스크린샷, OCR 텍스트+bbox, 컨트롤 bbox와 작업 상태를
   받아 `수량`, `포장정보/단위` 같은 보이는 의미 이름, 입력 key, 행동 point를 반환합니다.
-  지속 상태와 웜 메서드는 detector 번호를 업무 key로 저장하지 않습니다.
-- 성공한 좌표는 같은 viewport와 허용 pHash 거리에서만 웜 메서드로 재결합합니다. 결합에
+  지속 상태와 편찬된 기억은 detector 번호를 업무 key로 저장하지 않습니다.
+- 성공한 좌표는 같은 viewport와 허용 pHash 거리에서만 편찬된 기억로 재결합합니다. 결합에
   실패하면 현재 화면 모델 경로로 돌아갑니다.
-- 웜 입력 증거도 현재 화면의 대상 목록에 등록하여 관찰·메모 갱신까지 전달합니다.
+- 인출된 입력 증거도 현재 화면의 대상 목록에 등록하여 관찰·메모 갱신까지 전달합니다.
   현재 OCR에서 입력값이 일치한 경우에만 증거가 되며 행동 전달만으로 확인 처리하지 않습니다.
 - 편찬된 저장 결과는 분류, 메시지 이름·위치·텍스트, 수정 필드를 함께 보관합니다.
   현재 화면에서 메시지가 재결합되면 `save_result` 단계도 같은 메서드를 사용합니다.

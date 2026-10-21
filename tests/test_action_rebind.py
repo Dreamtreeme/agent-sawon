@@ -11,7 +11,7 @@ from sawon_interfaces import CaptureGeometry, Observation, Screenshot, UIElement
 
 from brain.visual.action_rebind import hash_distance, perceptual_hash, rebind_action_target
 from brain.visual.markers import Marker
-from brain.visual.perception import VisualPerception
+from brain.visual.scanning import ScreenScanner
 from brain.visual.scene import SceneObservation
 from pipeline.schemas import OcrBlock
 from sawon_runtime.storage import RunLog
@@ -137,7 +137,7 @@ def test_perception_rejection_preserves_the_two_compared_images_and_hashes(tmp_p
             return path
 
     # Neither OCR, detector nor model should be reached on this branch.
-    perception = VisualPerception(Relay(), None, tmp_path, log, None, detector=None)
+    perception = ScreenScanner(Relay(), None, tmp_path, log, None, detector=None)
     fresh = wire(600, 240)
     with pytest.raises(ValueError, match="^visual_scene_family_changed$"):
         perception.rebind_action(scene, target, fresh)
@@ -205,7 +205,7 @@ def test_perception_reuses_one_local_catalog_and_never_calls_semantic_model(tmp_
     def semantic_model(_request):
         raise AssertionError("execution-time rebinding must remain local")
 
-    perception = VisualPerception(
+    perception = ScreenScanner(
         Relay(),
         Ocr(),
         tmp_path,

@@ -12,7 +12,7 @@
 | OmniParser v2 | 현재 캡처 | 조작 후보 bbox | 현재 관찰 |
 | 로컬 의미 탐지 | 스크린샷, OCR, 후보 marker | role·label 관계를 가진 `Detection` | marker ID는 현재 catalog 안에서만 유효 |
 | 업무 화면 매핑 | 사용자 교육, notebook, 스크린샷, text/control bbox | 의미 이름, 입력 key, 행동 point의 `ScreenMapping` | 의미 이름은 현재 화면 계약, point는 현재 캡처 |
-| 웜 메서드 | 성공 trace, OCR anchor, pHash | 현재 화면에 재결합한 행동 | 교육 digest와 화면 유사도 범위 |
+| 편찬된 기억 | 성공 trace, OCR anchor, pHash | 현재 화면에 재결합한 행동 | 교육 digest와 화면 유사도 범위 |
 
 OmniParser는 bbox를 찾고 OCR은 텍스트와 bbox를 찾습니다. 모델이 새 사각형을 만들 수는 없습니다.
 Florence-2의 기능 캡션은 빈 입력칸을 `Maximize`, `Center` 등으로 잘못 설명했으므로 현재
@@ -22,14 +22,14 @@ Florence-2의 기능 캡션은 빈 입력칸을 `Maximize`, `Center` 등으로 �
 
 두 모델 경계를 구분합니다.
 
-1. `brain/visual/perception.py`의 로컬 의미 탐지는 이미 검출된 후보를 분류하기 위해 현재
+1. `brain/visual/scanning.py`의 로컬 의미 탐지는 이미 검출된 후보를 분류하기 위해 현재
    catalog의 marker ID를 사용할 수 있습니다. 이 번호는 후보 bbox를 가리키는 임시 handle입니다.
 2. `brain/graph/screen_mapping.py`의 업무 판단은 OCR text+bbox와 detector control bbox를 받아
    `수량`, `포장정보/단위` 같은 의미 이름을 만듭니다. `ScreenMapping`의 field, assignment,
    step과 evidence는 detector 번호를 업무 key로 사용하지 않습니다.
 
 따라서 OCR/OmniParser 번호가 다음 캡처에서 바뀌어도 notebook과 업무 입력의 의미 key가 번호에
-묶이지 않습니다. 웜 실행은 성공 좌표를 viewport와 pHash로 검증해 재사용하고, 재결합 실패 시
+묶이지 않습니다. 기억 재사용은 성공 좌표를 viewport와 pHash로 검증해 재사용하고, 재결합 실패 시
 현재 화면 모델 경로로 돌아갑니다.
 
 ## 행동 point와 안전 경계
@@ -52,7 +52,7 @@ Florence-2의 기능 캡션은 빈 입력칸을 `Maximize`, `Center` 등으로 �
 - `screen_matching = true`
 - `guard_mode = "observe_only"`
 - OmniParser v2 `cuda:0`, image size 640
-- visual cache와 compiled warm method 활성화
+- visual cache와 compiled memory 활성화
 - method pHash 최대 거리 6
 
 OCR Python과 detector 가중치 경로는 로컬 설치값이므로 실행 전에 확인합니다. 비밀번호 영역을

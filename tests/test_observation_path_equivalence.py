@@ -6,7 +6,7 @@ was inspected: visible values + assignments coexist with a next-tab action.
 Names, values and geometry below use the existing public test fixtures, NOT a
 verbatim pilot response. Explicit evidence is omitted to expose duplicate-proof
 requirements. Warm paths cover both promoted screen cache and actual compilation.
-Physical dispatch remains covered by test_method_runtime, including its known xfail.
+Physical dispatch remains covered by test_memory_retrieval, including its known xfail.
 """
 
 import json
@@ -14,11 +14,11 @@ from copy import deepcopy
 
 import pytest
 from test_brain import record as record
-from test_screen_matching import named_response, setup_brain
+from test_context_recall import named_response, setup_brain
 
-from brain.cache import VisualMatchCache
+from brain.cache import ScreenPatternCache
 from brain.cache.methods import MethodLibrary
-from brain.demo_learning.warm_methods import WarmCandidate, compile_warm_method
+from brain.demo_learning.memory_compilation import MemoryCandidate, compile_memory
 from brain.graph.execution import ActionPlan, PlanExecution
 from brain.graph.schemas import Choice, Decision
 from brain.graph.transitions import ObservedEffect
@@ -26,7 +26,7 @@ from brain.observe.summary import describe
 from pipeline.schemas import OcrBlock
 
 
-class MissingWarmEvidence(AssertionError):
+class MissingRetrievedEvidence(AssertionError):
     """Only measured warm memo loss is expected, not setup or other failures."""
 
 
@@ -49,7 +49,7 @@ def observed_response(record):
 def prepare_worker(path, record, responses):
     path.mkdir(parents=True)
     brain, model, *_ = setup_brain(path, record, responses)
-    read = brain.visual_perception.ocr.read
+    read = brain.screen_scanner.ocr.read
 
     def current_ocr(page):
         # Synthetic CURRENT observation, not proof copied from cold history.
@@ -58,7 +58,7 @@ def prepare_worker(path, record, responses):
             OcrBlock(id=9, text=record.fields.hbl_no.value, bbox=(110, 20, 90, 15), confidence=1),
         ]
 
-    brain.visual_perception.ocr.read = current_ocr
+    brain.screen_scanner.ocr.read = current_ocr
     brain.settings = brain.settings.model_copy(
         update={"guard_mode": "observe_only", "visual_model_only_review": True}
     )
@@ -122,8 +122,8 @@ def run_route(path, record, route, *, mutate=None):
         responses = [initial, next_action_only]
     cache_path = path / "cache.json"
     compiled = None
-    if route in {"cold-to-warm-cache", "cold-to-warm-compiled"}:
-        if route == "cold-to-warm-compiled":
+    if route in {"model-to-pattern-cache", "model-to-compiled-memory"}:
+        if route == "model-to-compiled-memory":
             training = deepcopy(raw)
             training["steps"] = [
                 {
@@ -136,14 +136,14 @@ def run_route(path, record, route, *, mutate=None):
             ]
             responses = [training]
         cold, _ = prepare_worker(path / "cold", record, responses)
-        cold.visual_match_cache = VisualMatchCache(cache_path, enabled=True)
+        cold.visual_match_cache = ScreenPatternCache(cache_path, enabled=True)
         cold._observe()
         assert cold.visual_match_candidate is not None
         cold.visual_match_cache.stage(*cold.visual_match_candidate)
         assert cold.visual_match_cache.finish(success=True) == 1
-        if route == "cold-to-warm-compiled":
-            screen = cold.visual_perception.planning_context()[0].screen
-            candidate = WarmCandidate(
+        if route == "model-to-compiled-memory":
+            screen = cold.screen_scanner.planning_context()[0].screen
+            candidate = MemoryCandidate(
                 "c000",
                 cold.visual_match_candidate[0],
                 str(cold.observation.obs_id),
@@ -151,7 +151,7 @@ def run_route(path, record, route, *, mutate=None):
                 screen,
                 cold.visual_proposal.model_dump(mode="json"),
             )
-            compiled = compile_warm_method(
+            compiled = compile_memory(
                 {
                     "source_case": "synthetic-cold",
                     "task": cold.task_instruction.model_dump(mode="json"),
@@ -174,8 +174,8 @@ def run_route(path, record, route, *, mutate=None):
             )
         responses = []
     brain, model = prepare_worker(path / "current", record, responses)
-    if route == "cold-to-warm-cache":
-        brain.visual_match_cache = VisualMatchCache(cache_path, enabled=True)
+    if route == "model-to-pattern-cache":
+        brain.visual_match_cache = ScreenPatternCache(cache_path, enabled=True)
     elif compiled is not None:
         brain.method_library = MethodLibrary(path / "compiled.json", enabled=True)
         brain.method_library.upsert(compiled)
@@ -197,7 +197,7 @@ def run_route(path, record, route, *, mutate=None):
     if mutate is not None and route in {
         "empty-action-recovery",
         "identical-capture",
-        "cold-to-warm-cache",
+        "model-to-pattern-cache",
     }:
         # Compare memory itself, before prerequisite assertions or target lookup
         # can mask the missing update with an unrelated exception.
@@ -206,11 +206,11 @@ def run_route(path, record, route, *, mutate=None):
         e.value == record.fields.hbl_no.value and e.role == "edit"
         for e in brain.observation.elements
     ), f"{route}: current value was not received"
-    if route == "cold-to-warm-compiled":
+    if route == "model-to-compiled-memory":
         assert not model.prompts
         assert sum(e.payload.get("check") == "method_bound" for e in brain.log.read_all()) == 1
         if "hbl_no" not in brain.verified:
-            raise MissingWarmEvidence(
+            raise MissingRetrievedEvidence(
                 f"Current value received; action targets="
                 f"{[step.target for step in brain.visual_proposal.steps]}, "
                 f"evidence targets={[item.target for item in brain.visual_proposal.evidence]}; "
@@ -262,7 +262,7 @@ def run_route(path, record, route, *, mutate=None):
     if mutate is not None:
         return semantic_memory(brain)
     expected_calls = (
-        0 if route.startswith("cold-to-warm") else 2 if route == "empty-action-recovery" else 1
+        0 if route.startswith("model-to-") else 2 if route == "empty-action-recovery" else 1
     )
     assert len(model.prompts) == expected_calls, route
     events = brain.log.read_all()
@@ -272,8 +272,8 @@ def run_route(path, record, route, *, mutate=None):
         "field-batch": "screen_fill_values",
         "empty-action-recovery": "missing_match_actions_completed",
         "identical-capture": "identical_form_reused",
-        "cold-to-warm-cache": "visual_match_cache",
-        "cold-to-warm-compiled": "method_bound",
+        "model-to-pattern-cache": "visual_match_cache",
+        "model-to-compiled-memory": "method_bound",
     }[route]
     assert checks.count(required_check) == 1, (route, checks)
     return semantic_memory(brain)
@@ -286,8 +286,8 @@ def run_route(path, record, route, *, mutate=None):
         "field-batch",
         "empty-action-recovery",
         "identical-capture",
-        "cold-to-warm-cache",
-        "cold-to-warm-compiled",
+        "model-to-pattern-cache",
+        "model-to-compiled-memory",
     ],
 )
 def test_synthetic_same_facts_reach_same_memory(tmp_path, record, route):
@@ -304,7 +304,7 @@ def test_synthetic_same_facts_reach_same_memory(tmp_path, record, route):
         "field-batch",
         "empty-action-recovery",
         "identical-capture",
-        "cold-to-warm-cache",
+        "model-to-pattern-cache",
     ],
 )
 def test_baseline_detects_disabled_memory_update(tmp_path, record, monkeypatch, route):
@@ -319,13 +319,13 @@ def test_baseline_detects_disabled_memory_update(tmp_path, record, monkeypatch, 
                     invoked.append("_apply_field_values")
                     return scene
 
-                monkeypatch.setattr(brain.visual_perception, "_apply_field_values", omit_values)
+                monkeypatch.setattr(brain.screen_scanner, "_apply_field_values", omit_values)
         elif stage == "before-observe":
             name = {
                 "single-action": "_record_action_verification",
                 "field-batch": "_remember_action_effect",
                 "empty-action-recovery": "_remember_model_task_evidence",
-                "cold-to-warm-cache": "_remember_model_task_evidence",
+                "model-to-pattern-cache": "_remember_model_task_evidence",
             }[route]
 
             def omit_memory(*args, **kwargs):

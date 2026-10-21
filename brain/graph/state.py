@@ -10,7 +10,7 @@ from sawon_interfaces import Observation
 
 from .click_refinement import ClickRefinement
 from .execution import ActionPlan, PendingAction
-from .method_runtime import MethodState
+from .memory_retrieval import RetrievalState
 from .reconciliation import ReconciledObservation
 from .review import EvidenceReview
 from .saved_evidence import SavedEvidence
@@ -20,8 +20,8 @@ from .transitions import EvidenceLedger, ExplorationLedger, NavigationHistory
 from .visual_points import VisualPointBindings
 
 if TYPE_CHECKING:
+    from .context_recall import ScreenMatch
     from .engine import Result
-    from .matching import ScreenMatch
 
 WorkerNode = Literal["observation", "decision", "execution", "review", "finish"]
 
@@ -137,7 +137,7 @@ class WorkerState(TypedDict):
     review: ReviewState
     lifecycle: LifecycleState
     progress: ProgressState
-    methods: MethodState
+    methods: RetrievalState
 
 
 def create_worker_state(
@@ -150,7 +150,7 @@ def create_worker_state(
             "sequence": 0,
             "reconciled": None,
         },
-        "methods": MethodState(),
+        "methods": RetrievalState(),
         "progress": ProgressState(
             rolling_context=RollingContextManager(rolling_buffer_size),
             navigation_history=NavigationHistory(navigation_history_size),

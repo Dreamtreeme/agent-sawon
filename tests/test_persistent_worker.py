@@ -11,7 +11,7 @@ from PIL import Image
 
 from brain.visual.detector import DetectorSettings, OmniParserDetector
 from brain.visual.detector_worker import DetectorSession
-from brain.visual.perception import VisualPerception
+from brain.visual.scanning import ScreenScanner
 from pipeline.ocr_worker import OcrSession
 from pipeline.worker_broker import WorkerBroker
 from sawon_runtime.persistent_worker import PersistentWorker, WorkerError
@@ -279,7 +279,7 @@ def test_brain_closes_local_workers_on_completion_and_interruption(
     log = RunLog(tmp_path, case_id="worker-cleanup", agent_id="test")
     detector = OmniParserDetector(DetectorSettings(), log)
     detector._worker = SimpleNamespace(close=lambda: closed.append("detector"))
-    brain.visual_perception = VisualPerception(
+    brain.screen_scanner = ScreenScanner(
         relay=None,
         ocr=SimpleNamespace(close=lambda: closed.append("ocr")),
         case_dir=tmp_path,

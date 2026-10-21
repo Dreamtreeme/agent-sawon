@@ -13,35 +13,35 @@ from test_brain import record as record
 from test_visual_markers import fixture
 from test_visual_scene import wire
 
-import brain.graph.matching as matching
-from brain.cache import VisualMatchCache, visual_match_key
-from brain.graph.engine import Brain
-from brain.graph.matching import (
+import brain.graph.context_recall as matching
+from brain.cache import ScreenPatternCache, screen_pattern_key
+from brain.graph.context_recall import (
+    CONTEXT_PLAN_RULES,
     OBSERVE_ONLY_TARGET_RULES,
     TARGET_GROUNDING_RULES,
-    TASK_PLAN_RULES,
     ActionCapability,
-    MatchSelection,
-    MatchServices,
+    ContextRecallServices,
+    RecallSelection,
     ScreenMatch,
     ScreenPlan,
     bind_value_evidence_to_controls,
-    build_match_prompt,
+    build_context_prompt,
     compile_match,
     compile_screen_action_plan,
     enforce_taught_input_surfaces,
-    match_screen,
     omit_nonblocking_image_request,
     omit_nonblocking_refinement,
-    select_match_response,
+    recall_context,
+    select_context_response,
     task_action_contract,
     validate_action_surfaces,
     validate_match_plan,
 )
+from brain.graph.engine import Brain
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
 from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
-from brain.graph.screen_mapping import MAPPING_RULES
+from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInstruction
 from brain.visual.scene import SceneObservation, SemanticDetection
@@ -163,9 +163,9 @@ def setup_brain(tmp_path, record, responses, *, task_instruction=None):
 
     def route(prompt):
         item = next(plans)
-        if prompt.startswith((TASK_PLAN_RULES, TASK_PLAN_RULES)):
+        if prompt.startswith((CONTEXT_PLAN_RULES, CONTEXT_PLAN_RULES)):
             return {key: value for key, value in item.items() if key in ScreenPlan.model_fields}
-        if prompt.startswith(MAPPING_RULES):
+        if prompt.startswith(CONTEXT_MAPPING_RULES):
             assert "fields" in item, "Provider fixtures must use semantic names and coordinates"
         if prompt.startswith(TARGET_GROUNDING_RULES):
             return {
@@ -194,21 +194,21 @@ def setup_brain(tmp_path, record, responses, *, task_instruction=None):
         run_log=log,
         visual_ocr=ocr,
     )
-    brain.visual_perception.detector = detector
+    brain.screen_scanner.detector = detector
     return brain, model, relay, ocr, detector, meaning
 
 
 def matching_contract(brain, screen=None):
     screen = screen or {"ocr": [], "markers": []}
-    services = MatchServices(
+    services = ContextRecallServices(
         settings=brain.settings,
         log=brain.log,
         call=brain._call,
         case_dir=brain.case_dir,
         cache=brain.visual_match_cache,
-        methods=brain.methods,
+        memory_retrieval=brain.memory_retrieval,
     )
-    return brain._screen_match_request(screen, None), services
+    return brain._context_recall_request(screen, None), services
 
 
 def test_method_grounding_failure_retries_visual_cache_or_model_once(
@@ -229,8 +229,8 @@ def test_method_grounding_failure_retries_visual_cache_or_model_once(
     def select(_request, _services, _prepared, *, allow_method=True):
         selections.append(allow_method)
         if allow_method:
-            return MatchSelection(method_response, None, method_response, False, _prepared)
-        return MatchSelection(fallback_response, ("f" * 64, {}), None, False, _prepared)
+            return RecallSelection(method_response, None, method_response, False, _prepared)
+        return RecallSelection(fallback_response, ("f" * 64, {}), None, False, _prepared)
 
     def ground(response, *_args, **_kwargs):
         if response is method_response:
@@ -243,12 +243,12 @@ def test_method_grounding_failure_retries_visual_cache_or_model_once(
         rejected.append(reason)
         return {"method_id": "method-1", "group_id": "group-1"}
 
-    monkeypatch.setattr(matching, "select_match_response", select)
+    monkeypatch.setattr(matching, "select_context_response", select)
     monkeypatch.setattr(matching, "validate_or_replan", lambda response, *_: response)
-    monkeypatch.setattr(matching, "ground_match_response", ground)
-    monkeypatch.setattr(services.methods, "reject_pending", reject_pending)
+    monkeypatch.setattr(matching, "ground_context_response", ground)
+    monkeypatch.setattr(services.memory_retrieval, "reject_pending", reject_pending)
 
-    result = match_screen(request, services)
+    result = recall_context(request, services)
 
     assert result.response.purpose == "fallback"
     assert selections == [True, False]
@@ -321,7 +321,7 @@ def test_task_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path, reco
         for event in brain.log.read_all()
     )
     assert len(model.prompts) == 1
-    assert model.prompts[0].startswith(MAPPING_RULES)
+    assert model.prompts[0].startswith(CONTEXT_MAPPING_RULES)
     assert OBSERVE_ONLY_TARGET_RULES not in model.prompts[0]
     assert brain.action_plan.actions[0].decision.action.source == "hbl_no"
     assert brain.action_plan.actions[0].decision.action.ref.startswith(
@@ -396,8 +396,8 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(
     brain._observe()
 
     assert len(model.prompts) == 1
-    assert model.prompts[0].startswith(MAPPING_RULES)
-    state = json.loads(model.prompts[0][len(MAPPING_RULES) :])
+    assert model.prompts[0].startswith(CONTEXT_MAPPING_RULES)
+    state = json.loads(model.prompts[0][len(CONTEXT_MAPPING_RULES) :])
     assert state["task"]["objective"] == brain.task_instruction.objective
     assert state["task"]["procedure"] == []
     assert state["taught_procedure_progress"]["steps"] == []
@@ -451,7 +451,7 @@ def test_generic_task_binds_prompt_container_path_to_input_key(
     assert brain.visual_proposal.evidence[0].field == "hbl_no"
 
 
-def test_cold_plan_trusts_model_semantics_within_the_runtime_input_scope(tmp_path, record):
+def test_model_plan_trusts_model_semantics_within_the_runtime_input_scope(tmp_path, record):
     task_instruction = TaskInstruction.model_validate(
         {
             "name": "Taught shipment entry",
@@ -597,7 +597,7 @@ def test_low_confidence_action_target_is_rejected_before_execution(
     with pytest.raises(ValueError, match="action_target_uncertain"):
         validate_match_plan(response, capability, request, services, set(brain.values))
     event = brain.log.read_all()[-1]
-    assert event.payload["validator"] == "matching.validate_match_plan"
+    assert event.payload["validator"] == "context_recall.validate_match_plan"
     rejected = json.loads(Path(event.payload["artifact"]).read_text(encoding="utf-8"))
     assert rejected["response"] == response.model_dump(mode="json")
     assert rejected["reason"] == "screen_match_action_target_uncertain"
@@ -764,7 +764,7 @@ def test_taught_surface_agrees_through_compile_dispatch_and_reread(
     ]
     proposed.controls[0] = proposed.controls[0].model_copy(update={"text_ids": [10]})
     after = bind_scene(wire(), blocks, ground_meanings(proposed, markers, blocks))
-    brain.visual_perception.observe = lambda _: after
+    brain.screen_scanner.scan = lambda _: after
     assert brain._verify_node() == "review"
     assert "packages.count" in brain.verified
 
@@ -802,7 +802,7 @@ def test_post_save_model_review_uses_only_persisted_detail_evidence(
     brain.post_save_verified = {"hbl_no"}
 
     request, services = matching_contract(brain)
-    prepared = build_match_prompt(request, services)
+    prepared = build_context_prompt(request, services)
     notebook = prepared.state["notebook"]
 
     assert request.verified_fields == {"hbl_no"}
@@ -1023,7 +1023,7 @@ def test_post_save_completion_rejection_names_missing_evidence_and_scope(
     assert event.payload["subgoal_key"] == "task:post_save_detail:description"
 
     request, services = matching_contract(brain)
-    prepared = build_match_prompt(request, services)
+    prepared = build_context_prompt(request, services)
     prompted = prepared.state["notebook"]["recent_feedback"][-1]
     assert prompted["missing_fields"] == ["description"]
     assert prompted["subgoal_key"] == "task:post_save_detail:description"
@@ -1239,7 +1239,7 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(tmp_path, record,
     first, first_model, *_ = setup_brain(
         tmp_path / "first", record, [named_response()], task_instruction=task_instruction
     )
-    first.visual_match_cache = VisualMatchCache(cache_path, enabled=True)
+    first.visual_match_cache = ScreenPatternCache(cache_path, enabled=True)
     first._observe()
     assert len(first_model.prompts) == 1
     assert first.visual_match_candidate is not None
@@ -1249,7 +1249,7 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(tmp_path, record,
     second, second_model, *_ = setup_brain(
         tmp_path / "second", record, [], task_instruction=task_instruction
     )
-    second.visual_match_cache = VisualMatchCache(cache_path, enabled=True)
+    second.visual_match_cache = ScreenPatternCache(cache_path, enabled=True)
     second._observe()
     assert second_model.prompts == []
     assert second._select_node() == "review"
@@ -1269,7 +1269,7 @@ def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
     brain, model, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
     request, services = matching_contract(brain)
     request = replace(request, phase="save_result")
-    brain.methods.enabled = True
+    brain.memory_retrieval.enabled = True
 
     bound = []
 
@@ -1287,10 +1287,10 @@ def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
             message_targets=[8] if has_review else [],
         )
 
-    services.methods.apply = bind_method
-    cache = VisualMatchCache(tmp_path / "save-result-cache.json", enabled=True)
+    services.memory_retrieval.retrieve = bind_method
+    cache = ScreenPatternCache(tmp_path / "save-result-cache.json", enabled=True)
     services = replace(services, cache=cache)
-    prepared = build_match_prompt(request, services)
+    prepared = build_context_prompt(request, services)
     cached = ScreenMatch(
         screen_kind="dialog",
         controls=[],
@@ -1298,10 +1298,10 @@ def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
         operation="stop",
         expected_result="Inspect the current save result",
     )
-    cache.stage(visual_match_key(prepared.state), cached.model_dump(mode="json"))
+    cache.stage(screen_pattern_key(prepared.state), cached.model_dump(mode="json"))
     assert cache.finish(success=True) == 1
 
-    selected = select_match_response(request, services, prepared)
+    selected = select_context_response(request, services, prepared)
 
     if has_review:
         assert selected.response == selected.method_proposal
@@ -1366,7 +1366,7 @@ def test_gemini_interprets_and_plans_in_one_image_call(tmp_path, record, task_in
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     assert images_seen == [True]
-    assert model.prompts[0].startswith(MAPPING_RULES)
+    assert model.prompts[0].startswith(CONTEXT_MAPPING_RULES)
 
 
 def test_task_planner_sees_that_post_save_query_is_still_missing(
@@ -1380,7 +1380,7 @@ def test_task_planner_sees_that_post_save_query_is_still_missing(
 
     brain._observe()
 
-    state = json.loads(model.prompts[0][len(MAPPING_RULES) :])
+    state = json.loads(model.prompts[0][len(CONTEXT_MAPPING_RULES) :])
     saved = state["notebook"]["saved_record_review"]
     assert saved["query_row_seen"] is False
     assert saved["confirmed_fields"] == []
@@ -1407,7 +1407,7 @@ def test_identical_rematch_reuses_grounded_interpretation(tmp_path, record, task
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     assert len(model.prompts) == 2
-    assert model.prompts[-1].startswith(MAPPING_RULES)
+    assert model.prompts[-1].startswith(CONTEXT_MAPPING_RULES)
     assert ocr.calls == detector.calls == 1
     assert any(
         event.payload.get("check") == "identical_form_reused" for event in brain.log.read_all()
@@ -1810,8 +1810,8 @@ def test_save_result_and_proof_use_the_existing_contract():
 def test_delivered_input_verification_omission_is_repaired_without_reusing_old_value(
     tmp_path, record, mode
 ):
+    from brain.graph.context_recall import required_verification, retain_verification
     from brain.graph.execution import GuardStop
-    from brain.graph.matching import required_verification, retain_verification
     from brain.graph.schemas import Choice, Decision
     from brain.observe.summary import describe
     from brain.visual.markers import Marker, build_markers, ground_meanings
@@ -1901,7 +1901,7 @@ def test_delivered_input_verification_omission_is_repaired_without_reusing_old_v
 
 
 def test_model_only_review_delegates_required_verification_without_repair_call(tmp_path, record):
-    from brain.graph.matching import retain_verification
+    from brain.graph.context_recall import retain_verification
 
     brain, model, *_ = setup_brain(tmp_path, record, [])
     brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
@@ -1947,7 +1947,7 @@ def test_post_action_review_preserves_next_action_in_same_response(tmp_path, rec
     }
     request, services = matching_contract(brain, screen)
 
-    result = match_screen(
+    result = recall_context(
         replace(request, post_action_review=True, pending_verification=True), services
     )
 
@@ -1972,9 +1972,9 @@ def test_post_action_review_reuses_bound_next_method_without_model_call(tmp_path
     }
     request, services = matching_contract(brain, screen)
     replay = ScreenMatch.model_validate(response(meaning))
-    services.methods.apply = lambda _screen: replay
+    services.memory_retrieval.retrieve = lambda _screen: replay
 
-    result = match_screen(
+    result = recall_context(
         replace(request, post_action_review=True, pending_verification=True), services
     )
 
@@ -1994,17 +1994,17 @@ def test_post_action_review_reuses_promoted_visual_decision_without_model_call(t
     }
     request, services = matching_contract(brain, screen)
     request = replace(request, post_action_review=True, pending_verification=True)
-    services.methods.enabled = False
+    services.memory_retrieval.enabled = False
     services = replace(
         services,
-        cache=VisualMatchCache(tmp_path / "post-action-cache.json", enabled=True),
+        cache=ScreenPatternCache(tmp_path / "post-action-cache.json", enabled=True),
     )
-    prepared = build_match_prompt(request, services)
+    prepared = build_context_prompt(request, services)
     cached = ScreenMatch.model_validate(response(meaning))
-    services.cache.stage(visual_match_key(prepared.state), cached.model_dump(mode="json"))
+    services.cache.stage(screen_pattern_key(prepared.state), cached.model_dump(mode="json"))
     assert services.cache.finish(success=True) == 1
 
-    result = match_screen(request, services)
+    result = recall_context(request, services)
 
     assert [(step.target, step.action, step.source) for step in result.response.steps] == [
         (step.target, step.action, step.source) for step in cached.steps
@@ -2035,7 +2035,7 @@ def test_empty_action_recovery_preserves_education_and_current_observed_values(t
     )
     brain._observe()
     assert len(model.prompts) == 2
-    first, second = [json.loads(p[len(MAPPING_RULES) :]) for p in model.prompts]
+    first, second = [json.loads(p[len(CONTEXT_MAPPING_RULES) :]) for p in model.prompts]
     assert second["task"] == first["task"]
     assert second["taught_procedure_progress"] == first["taught_procedure_progress"]
     assert second["recovery"]["matched_inputs"] == ["hbl_no"]
@@ -2071,7 +2071,7 @@ def test_empty_action_is_completed_once_or_explicitly_stopped(tmp_path, record, 
 def test_missing_action_completion_cannot_repeat_empty_act():
     from pydantic import ValidationError
 
-    from brain.graph.matching import ActionCompletion
+    from brain.graph.context_recall import ActionCompletion
 
     with pytest.raises(ValidationError, match="act_requires_steps"):
         ActionCompletion(operation="act", steps=[])
@@ -2109,7 +2109,7 @@ def test_selection_row_and_confirmation_compile_to_existing_executor():
     from types import SimpleNamespace
     from uuid import uuid4
 
-    from brain.graph.matching import compile_screen_action_plan
+    from brain.graph.context_recall import compile_screen_action_plan
 
     obs_id = uuid4()
     prefix = "e" + str(obs_id.int) + "0"
@@ -2157,7 +2157,7 @@ def test_selection_plan_preserves_optional_final_record_effect():
     from types import SimpleNamespace
     from uuid import uuid4
 
-    from brain.graph.matching import compile_screen_action_plan
+    from brain.graph.context_recall import compile_screen_action_plan
 
     obs_id = uuid4()
     prefix = "e" + str(obs_id.int) + "0"
@@ -2186,7 +2186,7 @@ def test_selection_plan_preserves_optional_final_record_effect():
 
 
 def test_unique_procedure_field_binds_selection_effect_without_model_echo():
-    from brain.graph.matching import ActionCapability, bind_selection_effect
+    from brain.graph.context_recall import ActionCapability, bind_selection_effect
 
     match = ScreenMatch.model_validate(
         {
@@ -2297,14 +2297,14 @@ def test_save_matching_receives_same_action_contract_as_validator(tmp_path, reco
         ],
     )
     brain.phase = "save_result"
-    brain._match_visual(
+    brain._recall_visual_context(
         {
             "ocr": [b.model_dump() for b in fixture()[0]],
             "markers": [m.model_dump() for m in fixture()[2]],
         },
         None,
     )
-    state = json.loads(model.prompts[-1][len(MAPPING_RULES) :])
+    state = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
     expected = {
         "allowed_intents": {
             result: sorted(intents) for result, intents in SAVE_RESULT_ACTIONS.items()
@@ -2398,14 +2398,14 @@ def test_task_prompt_separates_available_pending_and_verified_inputs(tmp_path, r
         )
         brain.pending = {"decision": brain.decision}
 
-    brain._match_visual(
+    brain._recall_visual_context(
         {
             "ocr": [block.model_dump() for block in fixture()[0]],
             "markers": [marker.model_dump() for marker in fixture()[2]],
         },
         None,
     )
-    state = json.loads(model.prompts[-1][len(MAPPING_RULES) :])
+    state = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
     notebook = state["notebook"]
     assert set(notebook["inputs"]) == set(brain.values)
     assert notebook["remaining_inputs"] == ["consignee"]
@@ -2492,7 +2492,7 @@ def test_pending_fields_remain_evidence_context_without_claiming_delivery(tmp_pa
     )
     brain.pending = {"decision": brain.decision}
 
-    brain._match_visual(
+    brain._recall_visual_context(
         {
             "ocr": [block.model_dump() for block in fixture()[0]],
             "markers": [marker.model_dump() for marker in fixture()[2]],
@@ -2500,7 +2500,7 @@ def test_pending_fields_remain_evidence_context_without_claiming_delivery(tmp_pa
         None,
     )
 
-    state = json.loads(model.prompts[-1][len(MAPPING_RULES) :])
+    state = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
     assert state["notebook"]["pending_verification_inputs"] == ["hbl_no"]
     assert set(state["notebook"]["remaining_inputs"]) == {"hbl_no", "shipper"}
     assert "hbl_no" not in brain.verified
@@ -2539,7 +2539,7 @@ def test_final_row_matching_receives_visibility_and_action_contract(tmp_path, re
     "dependency", ["none", "action", "evidence", "parent", "verification", "other_verification"]
 )
 def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
-    from brain.graph.matching import sanitize_unused_controls
+    from brain.graph.context_recall import sanitize_unused_controls
     from brain.visual.markers import Marker, ground_meanings
     from brain.visual.scene import SemanticDetection, bind_scene
     from pipeline.schemas import OcrBlock
@@ -2601,7 +2601,7 @@ def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
 
 @pytest.mark.parametrize("dependency", ["unrelated", "dangling_unused", "action", "direct_proof"])
 def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, dependency):
-    from brain.graph.matching import sanitize_unused_controls
+    from brain.graph.context_recall import sanitize_unused_controls
     from brain.visual.markers import Marker, ground_meanings
     from brain.visual.scene import SemanticDetection, bind_scene
     from pipeline.schemas import OcrBlock
@@ -2673,7 +2673,7 @@ def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, depend
 def test_control_cleanup_preserves_current_evidence_regardless_of_prior_verification(
     tmp_path, record, verified
 ):
-    from brain.graph.matching import sanitize_unused_controls
+    from brain.graph.context_recall import sanitize_unused_controls
     from brain.visual.markers import Marker, ground_meanings
     from brain.visual.scene import SemanticDetection, bind_scene
 
@@ -2735,7 +2735,7 @@ def test_education_retrieval_replans_before_any_provisional_action(tmp_path, rec
     assert '"retrieved_step_ids": ["save-record"]' in model.prompts[1]
     expected = next(step for step in taught.procedure if step.id == "save-record")
     assert expected.completion in model.prompts[1]
-    expanded = json.loads(model.prompts[1][len(MAPPING_RULES) :])
+    expanded = json.loads(model.prompts[1][len(CONTEXT_MAPPING_RULES) :])
     assert {step["id"] for step in expanded["taught_procedure_progress"]["steps"]} >= {
         "login",
         "save-record",
@@ -2782,7 +2782,7 @@ def test_synthetic_education_expansion_survives_empty_action_recovery(tmp_path, 
     ]
     assert purposes == ["screen_decision", "education_retrieval", "missing_actions_recovery"]
     initial, expanded, recovered = [
-        json.loads(prompt[len(MAPPING_RULES) :]) for prompt in model.prompts
+        json.loads(prompt[len(CONTEXT_MAPPING_RULES) :]) for prompt in model.prompts
     ]
     assert [step["id"] for step in initial["taught_procedure_progress"]["steps"]] == [
         "login",
@@ -2840,7 +2840,7 @@ def test_synthetic_fallback_education_survives_empty_action_recovery(tmp_path, r
     )
     request, services = matching_contract(brain, screen)
 
-    result = match_screen(replace(request, proposal=proposal), services)
+    result = recall_context(replace(request, proposal=proposal), services)
 
     events = brain.log.read_all()
     fallback = [event for event in events if event.payload.get("check") == "method_fallback"]
@@ -2854,7 +2854,7 @@ def test_synthetic_fallback_education_survives_empty_action_recovery(tmp_path, r
         "missing_actions_recovery",
     ]
     initial, expanded, recovered = [
-        json.loads(prompt[len(MAPPING_RULES) :]) for prompt in model.prompts
+        json.loads(prompt[len(CONTEXT_MAPPING_RULES) :]) for prompt in model.prompts
     ]
     assert "save-record" not in {
         step["id"] for step in initial["taught_procedure_progress"]["steps"]
@@ -2881,7 +2881,7 @@ def test_supplied_education_preserves_actions_without_another_model_call(tmp_pat
     brain._observe()
 
     assert len(model.prompts) == 1
-    sent = json.loads(model.prompts[0][len(MAPPING_RULES) :])
+    sent = json.loads(model.prompts[0][len(CONTEXT_MAPPING_RULES) :])
     supplied = {step["id"]: step for step in sent["taught_procedure_progress"]["steps"]}
     assert supplied["login"] == next(
         step for step in taught.procedure if step.id == "login"
@@ -2982,7 +2982,7 @@ def test_inline_target_reaches_wire_with_exact_fill_point_without_recovery(
     data["steps"][0]["point"] = [175.25, 30.75]
     brain, model, *_ = setup_brain(tmp_path, record, [data])
     if model_created:
-        brain.visual_perception.detector.read = lambda *args, **kwargs: []
+        brain.screen_scanner.detector.read = lambda *args, **kwargs: []
     brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
     brain._observe()
     assert brain._select_node() == "review"
@@ -2994,7 +2994,7 @@ def test_inline_target_reaches_wire_with_exact_fill_point_without_recovery(
     assert len(model.prompts) == 1  # No target-semantics supplement or coordinate-repair call.
 
 
-def test_semantic_cold_mapping_becomes_observation_and_coordinate_method(tmp_path, record):
+def test_semantic_model_mapping_becomes_observation_and_coordinate_method(tmp_path, record):
     from brain.cache.methods import MethodLibrary, method_from_match
     from brain.graph.screen_mapping import ScreenMapping
     from brain.visual.action_rebind import perceptual_hash
@@ -3017,11 +3017,15 @@ def test_semantic_cold_mapping_becomes_observation_and_coordinate_method(tmp_pat
     assert json.loads(artifact.read_text(encoding="utf-8"))["assignments"] == {
         "Reference": "hbl_no"
     }
+    # Check the actual provider prompt after ScreenMapping rebuilds it.
+    assert model.prompts[0].startswith("Perform Context Recall")
+    for stage in ("Scanning", "Pattern Matching", "Memory Retrieval"):
+        assert stage in model.prompts[0], stage
     assert '"id_namespace"' not in model.prompts[0]
     assert '"text_regions"' in model.prompts[0]
     schema = ScreenMatch.model_json_schema()
     assert schema["$defs"]["NamedAction"]["properties"]["target"]["type"] == "string"
-    screen = brain.visual_perception.planning_context()[0].screen
+    screen = brain.screen_scanner.planning_context()[0].screen
     mapping = ScreenMapping.model_validate(raw)
     payload = mapping.local_payload(screen)
     learned = method_from_match(screen, payload, method_id="semantic", purpose="Query")
@@ -3375,7 +3379,7 @@ def test_mapping_preserves_review_and_retrieval_purpose_and_ignores_unused_grid(
         "taught_procedure_progress": {"retrieved_step_ids": ["details"]},
     }
     prompt = mapping_prompt("old numeric instructions" + json.dumps(state), {})
-    payload = json.loads(prompt[len(MAPPING_RULES) :])
+    payload = json.loads(prompt[len(CONTEXT_MAPPING_RULES) :])
     assert "already delivered" in payload["review_instruction"]
     assert "not another retrieval" in payload["education_instruction"]
     mapping = ScreenMapping.model_validate(named_response(grid="nonexistent grid", row="absent"))
@@ -3455,11 +3459,11 @@ def test_detail_observation_commits_review_before_current_evidence(
         def reject(*args, **kwargs):
             raise ValueError("screen_match_action_surface_mismatch")
 
-        monkeypatch.setattr("brain.graph.matching.validate_or_replan", reject)
+        monkeypatch.setattr("brain.graph.context_recall.validate_or_replan", reject)
     brain._observe()
     assert brain.model_saved_detail_review
     assert "hbl_no" in brain.post_save_verified
-    payload = json.loads(model.prompts[0][len(MAPPING_RULES) :])
+    payload = json.loads(model.prompts[0][len(CONTEXT_MAPPING_RULES) :])
     assert payload["notebook"]["workflow_state"]["saved_result_open_pending"]
     assert payload["notebook"]["evidence_scope"] == "saved_detail_candidate"
     assert payload["notebook"]["verified_inputs"] == []

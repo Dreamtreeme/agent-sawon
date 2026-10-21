@@ -6,6 +6,7 @@ Windows ERP를 조작하는 Python 프로젝트입니다. 이 저장소는 판�
 제공합니다.
 
 현재 운영 기준은 [현행 런타임 기준](docs/current-runtime.md) 한 곳에서 관리합니다.
+단계와 코드 이름은 [화면 처리 용어](docs/runtime-terminology.md)를 따릅니다.
 내부 상태와 저장소 사이의 경계는 [계약 지도](docs/contracts.md), 실제 노드 흐름은
 [코드 실행 흐름](docs/code-flow.md)을 따릅니다. 날짜가 붙은 분석·파일럿 보고서는
 [문서 인덱스](docs/README.md)에서 역사 기록으로 분리합니다.
@@ -16,7 +17,7 @@ Windows ERP를 조작하는 Python 프로젝트입니다. 이 저장소는 판�
 - 실행 한도: `config/brain.visual.toml`의 건별 `$3`
 - 화면 관찰: GPU PaddleOCR + OmniParser v2
 - 작업자: `Observation → Decision → Review → Execution` 책임 그래프
-- 재사용: 화면 매칭 캐시와 성공한 콜드 실행에서 편찬한 웜 메서드
+- 재사용: 화면 매칭 캐시와 성공한 콜드 실행에서 편찬한 편찬된 기억
 - 환경 경계: `sawon_interfaces` 계약과 relay HTTP
 
 과거 Luna·Gemini·Jev 어댑터와 가격 정보는 비교 및 재생을 위해 남아 있을 수 있지만,
@@ -58,7 +59,7 @@ Windows 데스크톱이 필요한 `gui` 테스트를 제외합니다. 테스트 
 ```powershell
 .\.venv\Scripts\python.exe -m brain.run --help
 .\.venv\Scripts\python.exe -m pipeline.run --help
-.\.venv\Scripts\python.exe -m brain.demo_learning.warm_methods --help
+.\.venv\Scripts\python.exe -m brain.demo_learning.memory_compilation --help
 ```
 
 화면 작업에는 업무별 `--task`, 입력 record, 실행 중인 relay가 필요합니다. 문서 추출 결과를

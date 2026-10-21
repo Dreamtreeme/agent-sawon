@@ -1,4 +1,4 @@
-"""Match the current OCR form to user task instructions and compile local actions."""
+"""Context Recall: combine observation, retrieved memory and current task progress."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from brain.cache import VisualMatchCache, visual_match_key
+from brain.cache import ScreenPatternCache, screen_pattern_key
 from brain.input_binding import (
     MODEL_INPUTS_NAME,
     allowed_input_surfaces,
@@ -248,14 +248,14 @@ class ScreenMatch(SemanticDetection, ScreenPlan):
         )
 
 
-class MatchMethodRuntime(Protocol):
-    """Method operations required by matching, independent of their implementation."""
+class MemoryRetriever(Protocol):
+    """Memory operations used by Context Recall, independent of their implementation."""
 
     enabled: bool
 
     def prompt_context(self) -> dict: ...
 
-    def apply(self, screen: dict) -> ScreenMatch | None: ...
+    def retrieve(self, screen: dict) -> ScreenMatch | None: ...
 
     def remember(self, screen: dict, response: ScreenMatch) -> None: ...
 
@@ -263,7 +263,7 @@ class MatchMethodRuntime(Protocol):
 
 
 @dataclass(frozen=True)
-class MatchRequest:
+class ContextRecallRequest:
     """Immutable state needed to choose one action boundary for one screen."""
 
     screen: dict
@@ -291,19 +291,19 @@ class MatchRequest:
 
 
 @dataclass(frozen=True)
-class MatchServices:
-    """Explicit side-effect boundary used by screen matching."""
+class ContextRecallServices:
+    """Explicit side-effect boundary used by Context Recall."""
 
     settings: BrainSettings
     log: RunLog
     call: ScreenModelCall
     case_dir: Path
-    cache: VisualMatchCache
-    methods: MatchMethodRuntime
+    cache: ScreenPatternCache
+    memory_retrieval: MemoryRetriever
 
 
 @dataclass(frozen=True)
-class MatchResult:
+class ContextRecallResult:
     """Screen decision plus the two state updates owned by the graph runtime."""
 
     response: ScreenMatch
@@ -313,7 +313,7 @@ class MatchResult:
 
 
 @dataclass(frozen=True)
-class MatchPromptContext:
+class RecallPromptContext:
     state: dict
     capability: ActionCapability
     active_fields: frozenset[str]
@@ -324,16 +324,16 @@ class MatchPromptContext:
 
 
 @dataclass(frozen=True)
-class MatchSelection:
+class RecallSelection:
     response: ScreenMatch
     cache_hit: tuple[str, dict] | None
     method_proposal: ScreenMatch | None
     used_image: bool
-    prepared: MatchPromptContext
+    prepared: RecallPromptContext
 
 
-def _call_match(
-    services: MatchServices,
+def _call_context_recall(
+    services: ContextRecallServices,
     purpose: str,
     prompt: str,
     schema: type[ResponseT],
@@ -344,7 +344,7 @@ def _call_match(
         return services.call(prompt, schema, page=page)
 
 
-def write_match_artifact(services: MatchServices, kind: str, value: BaseModel) -> None:
+def write_recall_artifact(services: ContextRecallServices, kind: str, value: BaseModel) -> None:
     atomic_write_json(services.case_dir / "matching" / f"{uuid4().hex}-{kind}.json", value)
 
 
@@ -369,8 +369,9 @@ the tab, button, menu, link, row, or cell to activate; it is never a fill or key
 """
 
 
-TASK_PLAN_RULES = (
-    """Use the supplied grounded screen interpretation as immutable evidence.
+CONTEXT_PLAN_RULES = (
+    """Perform Context Recall.
+Use the supplied grounded screen interpretation as immutable evidence.
 Use the user task description, input data and runtime notebook to choose the next action from the
 execution contract. The task description is business intent, not a UI route. Do not assume labels,
 menus, tabs, coordinates or screen order that are absent from the current interpretation. Return one
@@ -423,8 +424,12 @@ keyboard targets.
 """
 
 
-TASK_RULES = (
-    """Use the user task description, input data, runtime notebook and CURRENT screen.
+CONTEXT_RECALL_RULES = (
+    """Perform Context Recall using the user task, input data, notebook and CURRENT screen.
+Scanning supplies the current observation. Pattern Matching searches stored screen/task patterns;
+Memory Retrieval supplies available learned methods. Context Recall combines this information
+with the current task progress to choose the next action. These responsibilities apply to every
+observed screen.
 The task description contains business intent and completion conditions, not a fixed UI route.
 Choose the next grounded action that advances the objective from the current evidence. Decide
 whether to fill visible inputs, use a visible lookup/selection control, navigate, save, or verify.
@@ -507,8 +512,8 @@ notebook.inputs value named by task.identity_input_key. A query caption or input
 saved result row.
 """
 
-METHOD_RULES = """
-method_memory contains learned ways to achieve purposes, with parameter slots and observed
+RETRIEVED_MEMORY_RULES = """
+Memory Retrieval exposes method_memory: learned ways to achieve purposes, with slots and observed
 screen branches. Use relevant methods as task know-how. Return purpose as the specific business
 subgoal of this batch, preserving it until achieved. When a method fits, return its method_id
 and method_bindings mapping its slots to exact current notebook.inputs keys. Keep these meanings
@@ -572,7 +577,7 @@ def verification_requirements(
 
 
 def sanitize_unused_controls(
-    services: MatchServices,
+    services: ContextRecallServices,
     phase: str,
     response: ScreenMatch,
     screen: dict,
@@ -715,7 +720,7 @@ def required_verification(pending: PendingAction | None) -> list[dict]:
 
 
 def retain_verification(
-    services: MatchServices,
+    services: ContextRecallServices,
     response: ScreenMatch,
     screen: dict,
     required: list[dict] | tuple[dict, ...],
@@ -768,7 +773,7 @@ def retain_verification(
         return response
     # Only an actual omission causes this measured repair call. The action/proof
     # proposal remains unchanged; original verification still checks current values.
-    supplement = _call_match(
+    supplement = _call_context_recall(
         services,
         "target_grounding",
         "Return only missing verification controls and their necessary parents from CURRENT "
@@ -805,7 +810,7 @@ def retain_verification(
 
 
 def retain_action_targets(
-    services: MatchServices, response: ScreenMatch, screen: dict, page=None
+    services: ContextRecallServices, response: ScreenMatch, screen: dict, page=None
 ) -> ScreenMatch:
     """Add semantics for omitted targets that exist in the current marker catalog."""
     controls = {control.id: control for control in response.controls}
@@ -831,7 +836,7 @@ def retain_action_targets(
         return response
 
     original_steps = response.steps
-    supplement = _call_match(
+    supplement = _call_context_recall(
         services,
         "input_evidence_recovery",
         TARGET_GROUNDING_RULES
@@ -872,7 +877,7 @@ def retain_action_targets(
     )
     if repaired.steps != original_steps:
         raise AssertionError("action_target_grounding_changed_plan")
-    write_match_artifact(services, "target-grounding", repaired)
+    write_recall_artifact(services, "target-grounding", repaired)
     services.log.append(
         "verify",
         payload={
@@ -886,7 +891,7 @@ def retain_action_targets(
 
 
 def bind_value_evidence_to_controls(
-    services: MatchServices, response: ScreenMatch, screen: dict
+    services: ContextRecallServices, response: ScreenMatch, screen: dict
 ) -> ScreenMatch:
     """Resolve a literal OCR value marker to its already-grounded input control."""
 
@@ -986,7 +991,7 @@ def _is_login_batch(steps: list[MatchAction]) -> bool:
     )
 
 
-def _validate_taught_step(response: ScreenMatch, request: MatchRequest) -> None:
+def _validate_taught_step(response: ScreenMatch, request: ContextRecallRequest) -> None:
     taught = request.task_instruction.procedure
     if not taught:
         return
@@ -1004,7 +1009,9 @@ def _semantic_label(text: str) -> str:
     return re.sub(r"[^0-9a-z가-힣]+", "", normalized)
 
 
-def _validate_saved_row_navigation_target(response: ScreenMatch, request: MatchRequest) -> None:
+def _validate_saved_row_navigation_target(
+    response: ScreenMatch, request: ContextRecallRequest
+) -> None:
     """A post-save query may open only a target carrying the saved identity value."""
 
     identity_key = request.task_instruction.identity_input_key
@@ -1037,7 +1044,7 @@ def _validate_saved_row_navigation_target(response: ScreenMatch, request: MatchR
 
 
 def _normalize_match_actions(
-    response: ScreenMatch, request: MatchRequest, services: MatchServices
+    response: ScreenMatch, request: ContextRecallRequest, services: ContextRecallServices
 ) -> ScreenMatch:
     """Normalize provider vocabulary at the model boundary."""
 
@@ -1080,7 +1087,7 @@ def _normalize_match_actions(
 
 
 def _validate_completion_annotations(
-    response: ScreenMatch, request: MatchRequest, services: MatchServices
+    response: ScreenMatch, request: ContextRecallRequest, services: ContextRecallServices
 ) -> ScreenMatch:
     if any(item.field not in request.values for item in response.evidence):
         raise ValueError("screen_match_unknown_task_field")
@@ -1103,7 +1110,7 @@ def _validate_completion_annotations(
     return response
 
 
-def _validate_login_boundary(response: ScreenMatch, request: MatchRequest) -> None:
+def _validate_login_boundary(response: ScreenMatch, request: ContextRecallRequest) -> None:
     if any(action.intent == "credential" for action in response.steps) and not _is_login_batch(
         response.steps
     ):
@@ -1117,7 +1124,7 @@ def _validate_login_boundary(response: ScreenMatch, request: MatchRequest) -> No
 
 
 def _validate_step_contract(
-    response: ScreenMatch, request: MatchRequest, services: MatchServices
+    response: ScreenMatch, request: ContextRecallRequest, services: ContextRecallServices
 ) -> None:
     """Reject combinations that cannot be represented by Decision/Choice."""
 
@@ -1149,7 +1156,7 @@ def _validate_step_contract(
 def _validate_action_boundary(
     response: ScreenMatch,
     capability: ActionCapability,
-    request: MatchRequest,
+    request: ContextRecallRequest,
 ) -> None:
     allowed_intents = set(capability.actions)
     if "login" in allowed_intents:
@@ -1170,7 +1177,9 @@ def _validate_input_scope(response: ScreenMatch, capability: ActionCapability) -
         raise ValueError("screen_match_field_outside_procedure_scope")
 
 
-def _validate_action_targets_executable(response: ScreenMatch, services: MatchServices) -> None:
+def _validate_action_targets_executable(
+    response: ScreenMatch, services: ContextRecallServices
+) -> None:
     """Reject a target that the subsequent visual binding will disable."""
 
     controls = {control.id: control for control in response.controls}
@@ -1189,14 +1198,14 @@ def _validate_action_targets_executable(response: ScreenMatch, services: MatchSe
 def validate_match_plan(
     response: ScreenMatch,
     capability: ActionCapability,
-    request: MatchRequest,
-    services: MatchServices,
+    request: ContextRecallRequest,
+    services: ContextRecallServices,
     active_fields: set[str],
 ) -> ScreenMatch:
     """Validate task actions separately from an already grounded screen interpretation."""
     with rejection_evidence(
         services.log,
-        "matching.validate_match_plan",
+        "context_recall.validate_match_plan",
         response=response,
         context={"phase": request.phase},
     ):
@@ -1278,7 +1287,7 @@ def _action_targets_have_groundable_roles(response: ScreenMatch, screen: dict) -
 
 
 def omit_nonblocking_refinement(
-    services: MatchServices, response: ScreenMatch, screen: dict
+    services: ContextRecallServices, response: ScreenMatch, screen: dict
 ) -> ScreenMatch:
     """Do not refine unrelated future work when the current action is grounded."""
     if not response.needs_refinement or response.operation != "act" or not response.steps:
@@ -1301,7 +1310,7 @@ def omit_nonblocking_refinement(
 
 
 def omit_nonblocking_image_request(
-    services: MatchServices, response: ScreenMatch, screen: dict
+    services: ContextRecallServices, response: ScreenMatch, screen: dict
 ) -> ScreenMatch:
     """A grounded immediate action does not need another copy of the same image."""
     if not response.needs_image or response.operation != "act" or not response.steps:
@@ -1324,7 +1333,7 @@ def omit_nonblocking_image_request(
 
 
 def validate_action_surfaces(
-    services: MatchServices, response: ScreenMatch, screen: dict
+    services: ContextRecallServices, response: ScreenMatch, screen: dict
 ) -> ScreenMatch:
     """Keep text as evidence and permit actions only on typed current surfaces."""
 
@@ -1380,7 +1389,7 @@ def validate_action_surfaces(
 
 
 def enforce_taught_input_surfaces(
-    request: MatchRequest, services: MatchServices, response: ScreenMatch
+    request: ContextRecallRequest, services: ContextRecallServices, response: ScreenMatch
 ) -> ScreenMatch:
     """Keep a taught record input off a grid unless the user authorized that surface."""
 
@@ -1463,9 +1472,9 @@ def task_action_contract(
     )
 
 
-def prepare_match_plan(
-    request: MatchRequest,
-    services: MatchServices,
+def prepare_context_plan(
+    request: ContextRecallRequest,
+    services: ContextRecallServices,
     response: ScreenMatch,
     capability: ActionCapability,
     active_fields: set[str],
@@ -1473,7 +1482,7 @@ def prepare_match_plan(
     """Compile every proposal through the same task and write-surface contract."""
     with rejection_evidence(
         services.log,
-        "matching.prepare_match_plan",
+        "context_recall.prepare_context_plan",
         response=response,
         context={"screen": request.screen, "phase": request.phase},
     ):
@@ -1520,7 +1529,9 @@ def prepare_match_plan(
         return validate_match_plan(response, capability, request, services, active_fields)
 
 
-def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchPromptContext:
+def build_context_prompt(
+    request: ContextRecallRequest, services: ContextRecallServices
+) -> RecallPromptContext:
     """Assemble the bounded model context without selecting or mutating a plan."""
 
     contract = request.execution_contract
@@ -1649,23 +1660,23 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
         }
     if "save_review" in contract:
         state["save_review"] = contract["save_review"]
-    methods = services.methods
+    methods = services.memory_retrieval
     if methods.enabled:
         state["method_memory"] = methods.prompt_context()
-    method_rules = METHOD_RULES if methods.enabled else ""
+    method_rules = RETRIEVED_MEMORY_RULES if methods.enabled else ""
     guard_rules = (
         OBSERVE_ONLY_TARGET_RULES if services.settings.guard_mode == "observe_only" else ""
     )
     taught_rules = TAUGHT_PROCEDURE_RULES if request.task_instruction.procedure else ""
     prompt = (
-        TASK_RULES
+        CONTEXT_RECALL_RULES
         + guard_rules
         + taught_rules
         + method_rules
         + (POST_ACTION_REVIEW_RULES if request.post_action_review else "")
         + json.dumps(state, ensure_ascii=False)
     )
-    return MatchPromptContext(
+    return RecallPromptContext(
         state=state,
         capability=capability,
         active_fields=frozenset(active_fields),
@@ -1676,19 +1687,19 @@ def build_match_prompt(request: MatchRequest, services: MatchServices) -> MatchP
     )
 
 
-def select_match_response(
-    request: MatchRequest,
-    services: MatchServices,
-    prepared: MatchPromptContext,
+def select_context_response(
+    request: ContextRecallRequest,
+    services: ContextRecallServices,
+    prepared: RecallPromptContext,
     *,
     allow_method: bool = True,
-) -> MatchSelection:
+) -> RecallSelection:
     """Resolve method, cache, grounded-plan and model sources in priority order."""
 
     screen, page = request.screen, request.page
     method_proposal = request.proposal if allow_method else None
     if allow_method and method_proposal is None and "correction" not in screen:
-        method_proposal = services.methods.apply(screen)
+        method_proposal = services.memory_retrieval.retrieve(screen)
         if (
             request.phase == "save_result"
             and method_proposal is not None
@@ -1730,10 +1741,10 @@ def select_match_response(
                 "uncertainties": grounded.uncertainties,
             },
         }
-        plan = _call_match(
+        plan = _call_context_recall(
             services,
             "grounded_screen_plan",
-            TASK_PLAN_RULES
+            CONTEXT_PLAN_RULES
             + prepared.guard_rules
             + prepared.taught_rules
             + prepared.method_rules
@@ -1744,7 +1755,7 @@ def select_match_response(
         response = ScreenMatch.model_validate(
             {**grounded.model_dump(), **plan.model_dump()}
         ).model_copy(update={"mapping": plan.mapping})
-        write_match_artifact(services, "cached-plan", response)
+        write_recall_artifact(services, "cached-plan", response)
         services.log.append(
             "verify",
             payload={
@@ -1753,7 +1764,7 @@ def select_match_response(
             },
         )
     else:
-        response = _call_match(
+        response = _call_context_recall(
             services,
             (
                 "input_review"
@@ -1766,7 +1777,7 @@ def select_match_response(
             ScreenMatch,
             page=page,
         )
-        write_match_artifact(services, "markers", response)
+        write_recall_artifact(services, "markers", response)
         response = local_response(response, screen)
     if response.requested_instruction_ids:
         by_id = {step.id: step for step in request.task_instruction.procedure}
@@ -1812,10 +1823,10 @@ def select_match_response(
             },
         )
         prepared = replace(prepared, state=expanded)
-        response = _call_match(
+        response = _call_context_recall(
             services,
             "education_retrieval",
-            TASK_RULES
+            CONTEXT_RECALL_RULES
             + prepared.guard_rules
             + prepared.taught_rules
             + prepared.method_rules
@@ -1824,7 +1835,7 @@ def select_match_response(
             ScreenMatch,
             page=page,
         )
-        write_match_artifact(services, "education-plan", response)
+        write_recall_artifact(services, "education-plan", response)
         response = local_response(response, screen)
         if response.requested_instruction_ids:
             if not response.steps:
@@ -1843,10 +1854,10 @@ def select_match_response(
     response = omit_nonblocking_image_request(services, response, screen)
     used_image = cache_hit is None and method_proposal is None
     if response.needs_image:
-        response = _call_match(
+        response = _call_context_recall(
             services,
             "image_recovery",
-            TASK_RULES
+            CONTEXT_RECALL_RULES
             + prepared.guard_rules
             + prepared.taught_rules
             + prepared.method_rules
@@ -1855,26 +1866,26 @@ def select_match_response(
             ScreenMatch,
             page=page,
         )
-        write_match_artifact(services, "image", response)
+        write_recall_artifact(services, "image", response)
         response = local_response(response, screen)
         response = omit_nonblocking_image_request(services, response, screen)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
     response = bind_value_evidence_to_controls(services, response, screen)
-    return MatchSelection(response, cache_hit, method_proposal, used_image, prepared)
+    return RecallSelection(response, cache_hit, method_proposal, used_image, prepared)
 
 
 def validate_or_replan(
     response: ScreenMatch,
-    request: MatchRequest,
-    services: MatchServices,
-    prepared: MatchPromptContext,
+    request: ContextRecallRequest,
+    services: ContextRecallServices,
+    prepared: RecallPromptContext,
 ) -> ScreenMatch:
     """Validate one task plan and repair only a re-plannable action error."""
 
     active_fields = set(prepared.active_fields)
     try:
-        return prepare_match_plan(request, services, response, prepared.capability, active_fields)
+        return prepare_context_plan(request, services, response, prepared.capability, active_fields)
     except ValueError as error:
         if (
             services.settings.guard_mode == "observe_only"
@@ -1909,10 +1920,10 @@ def validate_or_replan(
                     "rejected_target_ids": sorted(step.target for step in response.steps),
                 },
             }
-            corrected = _call_match(
+            corrected = _call_context_recall(
                 services,
                 "replan_after_rejection",
-                TASK_RULES
+                CONTEXT_RECALL_RULES
                 + prepared.guard_rules
                 + prepared.taught_rules
                 + prepared.method_rules
@@ -1922,10 +1933,10 @@ def validate_or_replan(
             )
             corrected = local_response(corrected, request.screen)
             corrected = bind_value_evidence_to_controls(services, corrected, request.screen)
-            corrected = prepare_match_plan(
+            corrected = prepare_context_plan(
                 request, services, corrected, prepared.capability, active_fields
             )
-            write_match_artifact(services, "action-surface-correction", corrected)
+            write_recall_artifact(services, "action-surface-correction", corrected)
             services.log.append(
                 "verify",
                 payload={
@@ -1949,10 +1960,10 @@ def validate_or_replan(
                     "rejected_target_ids": sorted(step.target for step in response.steps),
                 },
             }
-            corrected = _call_match(
+            corrected = _call_context_recall(
                 services,
                 "replan_after_rejection",
-                TASK_RULES
+                CONTEXT_RECALL_RULES
                 + prepared.guard_rules
                 + prepared.taught_rules
                 + prepared.method_rules
@@ -1962,10 +1973,10 @@ def validate_or_replan(
             )
             corrected = local_response(corrected, request.screen)
             corrected = bind_value_evidence_to_controls(services, corrected, request.screen)
-            corrected = prepare_match_plan(
+            corrected = prepare_context_plan(
                 request, services, corrected, prepared.capability, active_fields
             )
-            write_match_artifact(services, "uncertain-target-correction", corrected)
+            write_recall_artifact(services, "uncertain-target-correction", corrected)
             services.log.append(
                 "verify",
                 payload={
@@ -2010,10 +2021,10 @@ def validate_or_replan(
                 "instruction": correction_instruction,
             },
         }
-        plan = _call_match(
+        plan = _call_context_recall(
             services,
             "replan_after_rejection",
-            TASK_PLAN_RULES
+            CONTEXT_PLAN_RULES
             + prepared.guard_rules
             + prepared.taught_rules
             + prepared.method_rules
@@ -2024,10 +2035,10 @@ def validate_or_replan(
         corrected = ScreenMatch.model_validate(
             {**interpretation.model_dump(), **plan.model_dump()}
         ).model_copy(update={"mapping": plan.mapping})
-        corrected = prepare_match_plan(
+        corrected = prepare_context_plan(
             request, services, corrected, prepared.capability, active_fields
         )
-        write_match_artifact(services, "action-correction", corrected)
+        write_recall_artifact(services, "action-correction", corrected)
         services.log.append(
             "verify",
             payload={
@@ -2039,18 +2050,18 @@ def validate_or_replan(
         return corrected
 
 
-def ground_match_response(
+def ground_context_response(
     response: ScreenMatch,
-    request: MatchRequest,
-    services: MatchServices,
-    prepared: MatchPromptContext,
+    request: ContextRecallRequest,
+    services: ContextRecallServices,
+    prepared: RecallPromptContext,
     *,
     used_image: bool,
 ) -> ScreenMatch:
     """Ground referenced controls and recover one unresolved action batch."""
     with rejection_evidence(
         services.log,
-        "matching.ground_match_response",
+        "context_recall.ground_context_response",
         response=response,
         context={"screen": request.screen, "phase": request.phase},
     ):
@@ -2069,7 +2080,7 @@ def ground_match_response(
             )
             response = sanitize_unused_controls(services, request.phase, response, screen, required)
             if response.operation == "act" and not response.steps:
-                completion = _call_match(
+                completion = _call_context_recall(
                     services,
                     "missing_actions_recovery",
                     "The current form was matched but operation=act had no executable steps. "
@@ -2121,7 +2132,7 @@ def ground_match_response(
                         "steps": len(response.steps),
                     },
                 )
-        response = prepare_match_plan(
+        response = prepare_context_plan(
             request,
             services,
             response,
@@ -2134,14 +2145,17 @@ def ground_match_response(
         return response
 
 
-def match_screen(
-    request: MatchRequest, services: MatchServices, *, defer_plan_errors: bool = False
-) -> MatchResult:
+def recall_context(
+    request: ContextRecallRequest,
+    services: ContextRecallServices,
+    *,
+    defer_plan_errors: bool = False,
+) -> ContextRecallResult:
     screen = request.screen
     decision_id = uuid4().hex
     with rejection_evidence(
         services.log,
-        "matching.match_screen",
+        "context_recall.recall_context",
         context={"screen": request.screen, "phase": request.phase, "decision_id": decision_id},
     ):
         original_call = services.call
@@ -2162,7 +2176,7 @@ def match_screen(
                             model_page = page.model_copy(update={"image_path": capture})
                     mapped = original_call(mapping_prompt(prompt, screen), schema, page=model_page)
                     if mapped.mapping is not None:
-                        write_match_artifact(services, "semantic-mapping", mapped.mapping)
+                        write_recall_artifact(services, "semantic-mapping", mapped.mapping)
                         payload = mapped.mapping.local_payload(screen, request.values)
                         if screen.get("unresolved_annotations"):
                             services.log.append(
@@ -2191,11 +2205,11 @@ def match_screen(
                 "frame": str(request.page.image_path) if request.page else None,
             },
         )
-        prepared = build_match_prompt(request, services)
+        prepared = build_context_prompt(request, services)
         state = prepared.state
         capability = prepared.capability
         prompt = prepared.prompt
-        selection = select_match_response(request, services, prepared)
+        selection = select_context_response(request, services, prepared)
         response = selection.response
         cache_hit = selection.cache_hit
         method_proposal = selection.method_proposal
@@ -2203,7 +2217,7 @@ def match_screen(
         reported_response = response
         try:
             response = validate_or_replan(response, request, services, prepared)
-            response = ground_match_response(
+            response = ground_context_response(
                 response,
                 request,
                 services,
@@ -2215,9 +2229,9 @@ def match_screen(
                 if defer_plan_errors and str(error).startswith("screen_match_"):
                     # Keep the observed fields even when the next action is unusable.
                     # No rejected proposal may become a cache candidate.
-                    return MatchResult(reported_response, None, plan_error=str(error))
+                    return ContextRecallResult(reported_response, None, plan_error=str(error))
                 raise
-            rejected = services.methods.reject_pending(reason=str(error))
+            rejected = services.memory_retrieval.reject_pending(reason=str(error))
             services.log.append(
                 "verify",
                 payload={
@@ -2234,9 +2248,9 @@ def match_screen(
                 request,
                 proposal=None,
             )
-            prepared = build_match_prompt(fallback_request, services)
+            prepared = build_context_prompt(fallback_request, services)
             state = prepared.state
-            selection = select_match_response(
+            selection = select_context_response(
                 fallback_request, services, prepared, allow_method=False
             )
             response = selection.response
@@ -2245,7 +2259,7 @@ def match_screen(
             method_proposal = None
             used_image = selection.used_image
             response = validate_or_replan(response, fallback_request, services, prepared)
-            response = ground_match_response(
+            response = ground_context_response(
                 response,
                 fallback_request,
                 services,
@@ -2288,7 +2302,7 @@ def match_screen(
         )
         visual_match_candidate = (
             (
-                cache_hit[0] if cache_hit is not None else visual_match_key(state),
+                cache_hit[0] if cache_hit is not None else screen_pattern_key(state),
                 {
                     **response.model_dump(mode="json"),
                     **(
@@ -2316,9 +2330,9 @@ def match_screen(
                 "prompt_chars": len(prompt),
             },
         )
-        if services.methods.enabled and response != method_proposal:
-            services.methods.remember(screen, response)
-        return MatchResult(
+        if services.memory_retrieval.enabled and response != method_proposal:
+            services.memory_retrieval.remember(screen, response)
+        return ContextRecallResult(
             response=response,
             visual_match_candidate=visual_match_candidate,
             observation_claim=observation_claim,

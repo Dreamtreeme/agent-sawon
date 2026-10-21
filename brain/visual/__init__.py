@@ -1,1 +1,1 @@
-"""Image-grounded perception; never reads desktop controls or ERP internals."""
+"""Image-grounded Scanning; never reads desktop controls or ERP internals."""

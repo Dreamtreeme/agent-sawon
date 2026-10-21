@@ -1,4 +1,8 @@
-"""Verified, exact visual match reuse before any paid screen-model call."""
+"""Pattern Matching: exact normalized screen/task lookup before a paid model call.
+
+Coordinate memories also use pHash matching in methods._coordinate_bindings.
+This cache retains its exact semantic contract; renaming does not broaden matching.
+"""
 
 from __future__ import annotations
 
@@ -13,21 +17,21 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sawon_runtime.storage import atomic_write_json
 
 
-class VisualMatchCacheIntegrityError(ValueError):
+class ScreenPatternCacheIntegrityError(ValueError):
     """The private cache is invalid and must be preserved for inspection."""
 
 
-class VisualMatchEntry(BaseModel):
+class ScreenPatternEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     key: str = Field(pattern=r"^[0-9a-f]{64}$")
     response: dict[str, Any]
     success_count: int = Field(default=1, ge=1)
 
 
-class VisualMatchDocument(BaseModel):
+class ScreenPatternDocument(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["0.1"] = "0.1"
-    entries: tuple[VisualMatchEntry, ...] = ()
+    entries: tuple[ScreenPatternEntry, ...] = ()
 
 
 _VOLATILE_KEYS = {
@@ -69,7 +73,7 @@ def _cache_contract(value: Any, *, parent: str | None = None) -> Any:
     return value
 
 
-def visual_match_key(state: dict[str, Any]) -> str:
+def screen_pattern_key(state: dict[str, Any]) -> str:
     """Bind reuse to stable screen semantics and the executable task contract."""
     contract = _cache_contract(state)
     encoded = json.dumps(
@@ -78,28 +82,28 @@ def visual_match_key(state: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-class VisualMatchCache:
+class ScreenPatternCache:
     def __init__(self, path: Path, *, enabled: bool = False, lock_timeout: float = 10):
         self.path = Path(path)
         self.enabled = enabled
         self.lock_timeout = lock_timeout
         self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
-        self._staged: dict[str, VisualMatchEntry] = {}
+        self._staged: dict[str, ScreenPatternEntry] = {}
 
-    def _read_unlocked(self) -> VisualMatchDocument:
+    def _read_unlocked(self) -> ScreenPatternDocument:
         if not self.path.exists():
-            return VisualMatchDocument()
+            return ScreenPatternDocument()
         try:
-            return VisualMatchDocument.model_validate_json(self.path.read_bytes())
+            return ScreenPatternDocument.model_validate_json(self.path.read_bytes())
         except (ValidationError, UnicodeDecodeError) as exc:
-            raise VisualMatchCacheIntegrityError(
+            raise ScreenPatternCacheIntegrityError(
                 "Invalid visual match cache; preserved without modification"
             ) from exc
 
     def lookup(self, state: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
         if not self.enabled:
             return None
-        key = visual_match_key(state)
+        key = screen_pattern_key(state)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with portalocker.Lock(self.lock_path, mode="a", timeout=self.lock_timeout):
             entry = next((item for item in self._read_unlocked().entries if item.key == key), None)
@@ -107,7 +111,7 @@ class VisualMatchCache:
 
     def stage(self, key: str, response: dict[str, Any]) -> None:
         if self.enabled:
-            self._staged[key] = VisualMatchEntry(key=key, response=response)
+            self._staged[key] = ScreenPatternEntry(key=key, response=response)
 
     def finish(self, *, success: bool) -> int:
         staged = tuple(self._staged.values())
@@ -124,6 +128,6 @@ class VisualMatchCache:
                 )
             atomic_write_json(
                 self.path,
-                VisualMatchDocument(entries=tuple(existing[key] for key in sorted(existing))),
+                ScreenPatternDocument(entries=tuple(existing[key] for key in sorted(existing))),
             )
         return len(staged)

@@ -334,10 +334,14 @@ def mapping_prompt(prompt: str, screen: dict) -> str:
             {"bbox": m["bbox"]} for m in screen.get("markers", []) if m["source"] == "omniparser"
         ],
     }
-    return MAPPING_RULES + json.dumps(state, ensure_ascii=False)
+    return CONTEXT_MAPPING_RULES + json.dumps(state, ensure_ascii=False)
 
 
-MAPPING_RULES = """Use the user education, notebook and current screenshot to advance the task.
+CONTEXT_MAPPING_RULES = """Perform Context Recall using user education, notebook and current screen.
+Scanning supplies the screenshot and observed regions. Pattern Matching searches stored patterns;
+Memory Retrieval supplies learned methods when available. Combine the supplied memory with this
+run's inputs, notebook and current visible values to choose the next action. These are processing
+responsibilities, not separate execution modes. Missing memory calls for current-screen reasoning.
 Name fields by visible meaning; qualify duplicate names by section. Never use detector numbers.
 Return fields as named entries (name, role, bbox, value) and assignments as name/source entries.
 Every target in steps, evidence, completion_evidence and message_targets, and grid/row references,

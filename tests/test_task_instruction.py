@@ -19,8 +19,8 @@ from brain.task_instruction import TaskInputRecord, TaskInstruction
 from sawon_runtime.storage import RunLog
 
 
-class PassthroughPerception:
-    def observe(self, observation):
+class PassthroughScanner:
+    def scan(self, observation):
         return observation
 
 
@@ -365,7 +365,7 @@ def test_model_owned_generic_evidence_is_not_invalidated_by_later_screens(tmp_pa
         objective="Save the supplied invoice.",
         completion_conditions=["A visible result confirms that the invoice was saved."],
     )
-    brain.visual_perception = PassthroughPerception()
+    brain.screen_scanner = PassthroughScanner()
 
     brain._observe()
     brain.observation = brain.observation.model_copy(

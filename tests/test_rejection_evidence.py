@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from brain.demo_learning.warm_methods import WarmMethodAssembly
+from brain.demo_learning.memory_compilation import MemoryAssembly
 from models.base import MeasuredModelClient, ProviderReply, TokenUsage
 from sawon_runtime import storage
 
@@ -84,9 +84,9 @@ def test_ninth_compiler_anchor_warns_and_preserves_raw_response(
             raise OSError("synthetic diagnostic write failure")
 
         monkeypatch.setattr(storage, "atomic_write_json", fail)
-    result = client.complete_json("synthetic input", WarmMethodAssembly)
+    result = client.complete_json("synthetic input", MemoryAssembly)
     assert result.response.groups[0].context_anchors == [f"anchor {index}" for index in range(8)]
-    anchor_schema = WarmMethodAssembly.model_json_schema()["$defs"]["WarmGroupSelection"][
+    anchor_schema = MemoryAssembly.model_json_schema()["$defs"]["MemoryGroupSelection"][
         "properties"
     ]["context_anchors"]
     assert "maxItems" not in anchor_schema
@@ -109,13 +109,13 @@ def test_accepted_model_response_is_unchanged_when_diagnostic_storage_fails(tmp_
         '{"purpose":"fill","groups":[{"candidate_id":"c0",'
         '"purpose":"fill","expected_result":"filled"}]}'
     )
-    expected = WarmMethodAssembly.model_validate_json(raw)
+    expected = MemoryAssembly.model_validate_json(raw)
 
     def fail(*args, **kwargs):
         raise OSError("synthetic diagnostic write failure")
 
     monkeypatch.setattr(storage, "atomic_write_json", fail)
     client = LocalReply(log, raw)
-    assert client.complete_json("synthetic input", WarmMethodAssembly).response == expected
+    assert client.complete_json("synthetic input", MemoryAssembly).response == expected
     assert client.calls == 1
     assert log.read_all()[0].payload["status"] == "success"

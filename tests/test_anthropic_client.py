@@ -9,7 +9,7 @@ import pytest
 from PIL import Image
 from pydantic import BaseModel
 
-from brain.graph.matching import ScreenMatch, ScreenPlan
+from brain.graph.context_recall import ScreenMatch, ScreenPlan
 from brain.visual.scene import SemanticDetection
 from models.anthropic_client import AnthropicClient, anthropic_provider_schema
 from models.base import TokenUsage

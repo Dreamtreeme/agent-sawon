@@ -1,4 +1,8 @@
-"""Compile a successful run, then replay its current-screen-bound execution graph."""
+"""Memory Retrieval: bind stored methods to the current task and screen.
+
+The existing service still selects eligible groups and tracks learning/delivery.
+Naming the responsibility does not move pattern matching ahead of scanning yet.
+"""
 
 from __future__ import annotations
 
@@ -22,11 +26,11 @@ from brain.task_instruction import TaskInstruction
 from sawon_runtime.storage import RunLog, atomic_write_json
 
 if TYPE_CHECKING:
-    from .matching import ScreenMatch
+    from .context_recall import ScreenMatch
 
 
 @dataclass(frozen=True)
-class MethodContext:
+class RetrievalContext:
     task: TaskInstruction | None
     task_sha256: str | None
     inputs: Mapping[str, str]
@@ -35,7 +39,7 @@ class MethodContext:
 
 
 @dataclass
-class MethodState:
+class RetrievalState:
     bindings: dict[str, dict[str, str]] = field(default_factory=dict)
     active_method_id: str | None = None
     used: set[tuple[str, str]] = field(default_factory=set)
@@ -48,7 +52,7 @@ class MethodState:
     blocked_method_ids: set[str] = field(default_factory=set)
 
 
-def open_method_library(
+def open_memory_library(
     path: Path,
     case_dir: Path,
     *,
@@ -72,13 +76,13 @@ def open_method_library(
     return library
 
 
-class MethodRuntime:
-    """A short-lived view of explicit task data, run state and a persistent library."""
+class MemoryRetrieval:
+    """Retrieve reusable plans through explicit task, run-state and library inputs."""
 
     def __init__(
         self,
-        context: MethodContext,
-        state: MethodState,
+        context: RetrievalContext,
+        state: RetrievalState,
         library: MethodLibrary,
         *,
         case_dir: Path,
@@ -257,8 +261,8 @@ class MethodRuntime:
             "recent_executions": self.state.history[-2:],
         }
 
-    def apply(self, screen: dict) -> ScreenMatch | None:
-        from .matching import ScreenMatch
+    def retrieve(self, screen: dict) -> ScreenMatch | None:
+        from .context_recall import ScreenMatch
 
         self.state.pending = None
         pending_predecessor = (
@@ -787,7 +791,7 @@ class MethodRuntime:
                     ]
                 atomic_write_json(
                     self.case_dir / "method-candidate.json",
-                    # Export the full merged method. A warm run often learns only
+                    # Export the full merged method. Memory reuse often learns only
                     # the suffix that required model fallback; that suffix alone
                     # is not a replayable business procedure.
                     MethodDocument(methods=installed_methods),

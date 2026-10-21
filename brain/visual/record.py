@@ -12,7 +12,7 @@ from pathlib import Path
 from brain.relay import HttpRelay
 from brain.settings import BrainSettings
 from brain.visual.detector import OmniParserDetector
-from brain.visual.perception import SemanticRequest, VisualPerception
+from brain.visual.scanning import ScreenScanner, SemanticRequest
 from brain.visual.scene import SemanticDetection
 from models.accounting import read_model_accounting
 from models.budget import ImageCallBudget
@@ -37,7 +37,7 @@ def record_scenes(source, perception, output: Path, *, samples: int) -> int:
             wire = source.observe()
             if wire.blocked_reason or wire.active_window is None:
                 raise ValueError("blocked_foreground")
-            scene = perception.observe(wire)
+            scene = perception.scan(wire)
             stream.write(scene.model_dump_json() + "\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -83,7 +83,7 @@ def main(argv=None) -> int:
         return result.response
 
     settings = BrainSettings.load(args.brain_config)
-    perception = VisualPerception(
+    perception = ScreenScanner(
         source,
         PaddleOcrEngine(PipelineSettings.load(args.ocr_config)),
         args.output,

@@ -12,9 +12,9 @@ from test_methods import completion_response, completion_scene, learned
 from test_visual_scene import wire
 
 from brain.cache.methods import MethodDocument, MethodLibrary, method_from_match
+from brain.graph.context_recall import MethodBinding, ScreenMatch
 from brain.graph.engine import Brain
-from brain.graph.matching import MethodBinding, ScreenMatch
-from brain.graph.method_runtime import open_method_library
+from brain.graph.memory_retrieval import open_memory_library
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from brain.visual.markers import Marker, build_markers, ground_meanings
@@ -25,13 +25,13 @@ from sawon_runtime.storage import RunLog, atomic_write_json
 TEST_SCREEN_PHASH = 10945075410289642384  # 400x200 white fixture capture.
 
 
-def test_compiled_only_library_does_not_replay_raw_cold_trace(tmp_path):
+def test_compiled_only_library_does_not_replay_raw_model_trace(tmp_path):
     cold = learned()
     warm = cold.model_copy(update={"id": "compiled", "artifact_kind": "warm_compiled"})
     source = tmp_path / "source.json"
     atomic_write_json(source, MethodDocument(methods=[cold, warm]))
 
-    library = open_method_library(source, tmp_path / "case", enabled=True, compiled_only=True)
+    library = open_memory_library(source, tmp_path / "case", enabled=True, compiled_only=True)
 
     assert [method.id for method in library.methods()] == ["compiled"]
 
@@ -188,12 +188,14 @@ def setup(
         run_log=log,
         visual_ocr=Ocr(),
     )
-    brain.visual_perception.detector = Detector()
-    assert brain.methods.apply(current_screen) is None  # A matching saved detail is not a goal.
+    brain.screen_scanner.detector = Detector()
+    assert (
+        brain.memory_retrieval.retrieve(current_screen) is None
+    )  # A matching saved detail is not a goal.
     if not changed_label:
         # A preceding navigation decision selects the next purpose; the worker then
         # binds that purpose on the newly observed form without another model call.
-        brain.methods.remember(
+        brain.memory_retrieval.remember(
             {"ocr": [], "markers": []},
             ScreenMatch(
                 screen_kind="menu",
@@ -214,17 +216,17 @@ def setup(
 def test_learned_method_is_scoped_to_exact_user_education_file(tmp_path):
     brain, _, _ = setup(tmp_path)
 
-    assert brain.methods.prompt_context()["methods"]
+    assert brain.memory_retrieval.prompt_context()["methods"]
     brain.task_instruction_sha256 = "0" * 64
 
-    assert brain.methods.prompt_context()["methods"] == []
-    assert brain.methods.context()["methods"] == []
+    assert brain.memory_retrieval.prompt_context()["methods"] == []
+    assert brain.memory_retrieval.context()["methods"] == []
 
 
-def test_synthetic_warm_evidence_survives_scene_grounding_and_updates_notebook(tmp_path):
+def test_synthetic_memory_evidence_survives_scene_grounding_and_updates_notebook(tmp_path):
     # Synthetic current OCR, using the real binder, scene projection and memo update.
     brain, model, relay = setup(tmp_path)
-    original = brain.methods.library.methods()[0]
+    original = brain.memory_retrieval.library.methods()[0]
     group = original.action_groups[0]
     library = MethodLibrary(tmp_path / "evidence-methods.json", enabled=True)
     library.upsert(
@@ -339,12 +341,12 @@ def test_compiled_coordinates_reach_executor_without_model(tmp_path, observe_aga
     assert education.payload["procedure_step_ids"] == [
         step.id for step in brain.task_instruction.procedure
     ]
-    assert brain.methods.state.history[-1]["origin"] == "reuse"
-    assert brain.methods.state.history[-1]["status"] == "delivered"
-    assert brain.methods.state.used
+    assert brain.memory_retrieval.state.history[-1]["origin"] == "reuse"
+    assert brain.memory_retrieval.state.history[-1]["status"] == "delivered"
+    assert brain.memory_retrieval.state.used
     # A rejected new source mapping must not reactivate the previous valid one.
     _, _, current, response = catalog(shift=20)
-    brain.methods.remember(
+    brain.memory_retrieval.remember(
         current,
         response.model_copy(
             update={
@@ -353,8 +355,8 @@ def test_compiled_coordinates_reach_executor_without_model(tmp_path, observe_aga
             }
         ),
     )
-    assert brain.methods.state.active_method_id is None
-    assert brain.methods.apply(current) is None
+    assert brain.memory_retrieval.state.active_method_id is None
+    assert brain.memory_retrieval.retrieve(current) is None
 
 
 @pytest.mark.parametrize("fail_second", [False, True])
@@ -362,16 +364,16 @@ def test_model_adaptation_is_retained_only_after_whole_batch_delivery(tmp_path, 
     brain, model, relay = setup(tmp_path, changed_label=True, fail_second=fail_second)
     brain._observe()
     assert len(model.prompts) == 1
-    assert len(brain.methods.library.methods()[0].action_groups) == 1
+    assert len(brain.memory_retrieval.library.methods()[0].action_groups) == 1
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     outcome = brain._act_node()
-    groups = brain.methods.library.methods()[0].action_groups
+    groups = brain.memory_retrieval.library.methods()[0].action_groups
     if fail_second:
         assert outcome in {"observation", "finish"}
         assert brain.pending is None
         assert len(groups) == 1
-        assert brain.methods.state.history[-1]["status"] == "interrupted"
+        assert brain.memory_retrieval.state.history[-1]["status"] == "interrupted"
         assert relay.entered == ["New customer B"]
     else:
         assert outcome == "observation"
@@ -379,16 +381,16 @@ def test_model_adaptation_is_retained_only_after_whole_batch_delivery(tmp_path, 
         # A delivered local variant remains quarantined until the whole
         # business task succeeds.
         assert len(groups) == 1
-        assert brain.methods.state.history[-1]["origin"] == "adaptation"
-        assert brain.methods.finish(success=True) == 1
-        groups = brain.methods.library.methods()[0].action_groups
+        assert brain.memory_retrieval.state.history[-1]["origin"] == "adaptation"
+        assert brain.memory_retrieval.finish(success=True) == 1
+        groups = brain.memory_retrieval.library.methods()[0].action_groups
         assert len(groups) == 1
         candidate = MethodDocument.model_validate_json(
             (brain.case_dir / "method-candidate.json").read_bytes()
         )
         assert candidate.methods[0].action_groups == groups
-        current_screen = brain.visual_perception.planning_context()[0].screen
-        bound = brain.methods.library.bind_with_context(
+        current_screen = brain.screen_scanner.planning_context()[0].screen
+        bound = brain.memory_retrieval.library.bind_with_context(
             "business-entry", {}, current_screen, brain.values
         )
         assert bound is not None
@@ -399,26 +401,28 @@ def test_model_adaptation_is_retained_only_after_whole_batch_delivery(tmp_path, 
 def test_final_model_proof_is_promoted_only_after_business_success(tmp_path, business_success):
     brain, _, _ = setup(tmp_path)
     final_screen = completion_scene()
-    brain.methods.remember(final_screen, ScreenMatch.model_validate(completion_response()))
-    assert brain.methods.library.methods()[0].completion is None
+    brain.memory_retrieval.remember(final_screen, ScreenMatch.model_validate(completion_response()))
+    assert brain.memory_retrieval.library.methods()[0].completion is None
 
-    promoted = brain.methods.finish(success=business_success)
+    promoted = brain.memory_retrieval.finish(success=business_success)
     assert promoted == int(business_success)
-    method = brain.methods.library.methods()[0]
+    method = brain.memory_retrieval.library.methods()[0]
     if not business_success:
         assert method.completion is None
         return
 
     assert method.completion is not None
-    brain.methods.state.used.update((method.id, group.id) for group in method.action_groups)
-    response = brain.methods.apply(
+    brain.memory_retrieval.state.used.update(
+        (method.id, group.id) for group in method.action_groups
+    )
+    response = brain.memory_retrieval.retrieve(
         completion_scene(customer="New customer B", reference="ORDER-B", ids=100)
     )
     assert response is not None
     assert response.operation == "complete"
     assert response.steps == []
     assert {item.field for item in response.evidence} == {"customer", "reference"}
-    assert brain.methods.state.history == []
+    assert brain.memory_retrieval.state.history == []
     events = brain.log.read_all()
     assert any(
         event.kind == "cache_hit" and event.payload.get("check") == "method_completion_bound"
@@ -428,7 +432,7 @@ def test_final_model_proof_is_promoted_only_after_business_success(tmp_path, bus
 
 @pytest.mark.parametrize("business_success", [False, True])
 def test_successful_candidate_installs_versioned_live_library(tmp_path, business_success):
-    from brain.graph.method_runtime import open_method_library
+    from brain.graph.memory_retrieval import open_memory_library
 
     live = tmp_path / "live" / "methods.json"
     brain, _, _ = setup(
@@ -441,7 +445,7 @@ def test_successful_candidate_installs_versioned_live_library(tmp_path, business
     assert brain._review_node() == "execution"
     assert brain._act_node() == "observation"
     assert brain.pending is not None
-    assert brain.methods.finish(success=business_success) == int(business_success)
+    assert brain.memory_retrieval.finish(success=business_success) == int(business_success)
     if not business_success:
         assert not live.exists()
         return
@@ -467,7 +471,7 @@ def test_successful_candidate_installs_versioned_live_library(tmp_path, business
     ]
 
     # The next task prefers the successful live revision over the immutable seed.
-    library = open_method_library(
+    library = open_memory_library(
         brain.settings.methods.path,
         tmp_path / "next-case",
         enabled=True,
@@ -548,10 +552,10 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
             ],
         }
     )
-    brain.methods.remember(screen, learned)
-    assert brain.methods.state.pending is not None
-    brain.methods.delivered(complete=True)
-    assert brain.methods.finish(success=True) == 1
+    brain.memory_retrieval.remember(screen, learned)
+    assert brain.memory_retrieval.state.pending is not None
+    brain.memory_retrieval.delivered(complete=True)
+    assert brain.memory_retrieval.finish(success=True) == 1
 
     candidate_text = (brain.case_dir / "method-candidate.json").read_text(encoding="utf-8")
     assert "private-user-47" not in candidate_text
@@ -562,7 +566,7 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
     # Older live libraries appended newly learned login screens after the
     # business groups.  Runtime order follows the taught procedure, so those
     # libraries self-heal without another model call.
-    installed_methods = brain.methods.library.methods()
+    installed_methods = brain.memory_retrieval.library.methods()
     installed = next(
         method
         for method in installed_methods
@@ -584,17 +588,17 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
         for group in method.action_groups
     )
     atomic_write_json(
-        brain.methods.library.path,
+        brain.memory_retrieval.library.path,
         MethodDocument(
             methods=[
                 installed.model_copy(update={"action_groups": [old_business_group, login_group]})
             ]
         ),
     )
-    brain.methods.state.used.clear()
-    replay = brain.methods.apply(screen)
+    brain.memory_retrieval.state.used.clear()
+    replay = brain.memory_retrieval.retrieve(screen)
     assert replay is not None
-    assert brain.methods.state.pending["group_id"] == login_group.id
+    assert brain.memory_retrieval.state.pending["group_id"] == login_group.id
     assert [step.source for step in replay.steps] == [
         "credential.username",
         "credential.password",
@@ -605,7 +609,7 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
 
 def test_taught_method_selects_the_only_branch_that_binds_current_screen(tmp_path):
     brain, model, _ = setup(tmp_path)
-    method = brain.methods.library.methods()[0]
+    method = brain.memory_retrieval.library.methods()[0]
     first = method.action_groups[0].model_copy(
         update={"id": "customer-screen", "taught_step_id": "customer"}
     )
@@ -624,7 +628,7 @@ def test_taught_method_selects_the_only_branch_that_binds_current_screen(tmp_pat
         update={"id": "account-screen", "taught_step_id": "account"}
     )
     atomic_write_json(
-        brain.methods.library.path,
+        brain.memory_retrieval.library.path,
         MethodDocument(methods=[method.model_copy(update={"action_groups": [first, second]})]),
     )
     brain.task_instruction = TaskInstruction.model_validate(
@@ -636,24 +640,24 @@ def test_taught_method_selects_the_only_branch_that_binds_current_screen(tmp_pat
             ],
         }
     )
-    brain.methods.state.pending = None
-    brain.methods.state.used.clear()
+    brain.memory_retrieval.state.pending = None
+    brain.memory_retrieval.state.used.clear()
 
-    replay = brain.methods.apply(account_screen)
+    replay = brain.memory_retrieval.retrieve(account_screen)
 
     assert replay is not None
-    assert brain.methods.state.pending["group_id"] == second.id
-    assert brain.methods.state.pending["pruned_group_ids"] == [first.id]
-    brain.methods.delivered(complete=True)
-    brain.methods.verify_delivery(success=True)
-    assert (method.id, first.id) in brain.methods.state.used
-    assert (method.id, second.id) in brain.methods.state.used
+    assert brain.memory_retrieval.state.pending["group_id"] == second.id
+    assert brain.memory_retrieval.state.pending["pruned_group_ids"] == [first.id]
+    brain.memory_retrieval.delivered(complete=True)
+    brain.memory_retrieval.verify_delivery(success=True)
+    assert (method.id, first.id) in brain.memory_retrieval.state.used
+    assert (method.id, second.id) in brain.memory_retrieval.state.used
     assert model.prompts == []
 
 
 def test_unproductive_method_edge_is_removed_before_success_promotion(tmp_path):
     brain, _, _ = setup(tmp_path, changed_label=True)
-    method = brain.methods.library.methods()[0]
+    method = brain.memory_retrieval.library.methods()[0]
     _, _, screen, response = catalog("Account", shift=20)
     control = response.controls[0].model_copy(update={"role": "button"})
     response = response.model_copy(
@@ -674,42 +678,42 @@ def test_unproductive_method_edge_is_removed_before_success_promotion(tmp_path):
         }
     )
 
-    brain.methods.remember(screen, response)
-    assert brain.methods.state.pending is not None
-    group_id = brain.methods.state.pending["group_id"]
-    brain.methods.delivered(complete=True)
-    assert method.id in brain.methods.state.staged
-    assert (method.id, group_id) in brain.methods.state.used
+    brain.memory_retrieval.remember(screen, response)
+    assert brain.memory_retrieval.state.pending is not None
+    group_id = brain.memory_retrieval.state.pending["group_id"]
+    brain.memory_retrieval.delivered(complete=True)
+    assert method.id in brain.memory_retrieval.state.staged
+    assert (method.id, group_id) in brain.memory_retrieval.state.used
 
-    brain.methods.verify_delivery(success=False)
+    brain.memory_retrieval.verify_delivery(success=False)
 
-    assert method.id not in brain.methods.state.staged
-    assert (method.id, group_id) not in brain.methods.state.used
-    assert brain.methods.state.history[-1]["status"] == "unproductive"
-    assert brain.methods.finish(success=True) == 0
+    assert method.id not in brain.memory_retrieval.state.staged
+    assert (method.id, group_id) not in brain.memory_retrieval.state.used
+    assert brain.memory_retrieval.state.history[-1]["status"] == "unproductive"
+    assert brain.memory_retrieval.finish(success=True) == 0
 
 
 def test_delivered_fill_with_incomplete_reread_is_promoted_only_on_task_success(tmp_path):
     brain, _, _ = setup(tmp_path, changed_label=True)
-    method = brain.methods.library.methods()[0]
+    method = brain.memory_retrieval.library.methods()[0]
     _, _, screen, response = catalog("Account", shift=20)
     response = response.model_copy(update={"method_id": method.id})
 
-    brain.methods.remember(screen, response)
-    group_id = brain.methods.state.pending["group_id"]
-    brain.methods.delivered(complete=True)
-    brain.methods.verify_delivery(success=False)
+    brain.memory_retrieval.remember(screen, response)
+    group_id = brain.memory_retrieval.state.pending["group_id"]
+    brain.memory_retrieval.delivered(complete=True)
+    brain.memory_retrieval.verify_delivery(success=False)
 
-    assert brain.methods.state.history[-1]["status"] == "provisional"
-    assert (method.id, group_id) in brain.methods.state.used
-    assert brain.methods.finish(success=True) == 1
-    promoted = brain.methods.library.methods()[0]
+    assert brain.memory_retrieval.state.history[-1]["status"] == "provisional"
+    assert (method.id, group_id) in brain.memory_retrieval.state.used
+    assert brain.memory_retrieval.finish(success=True) == 1
+    promoted = brain.memory_retrieval.library.methods()[0]
     assert [group.id for group in promoted.action_groups] == [group_id]
 
 
 def test_unproductive_reused_edge_is_consumed_for_the_current_run(tmp_path):
     brain, _, _ = setup(tmp_path)
-    method = brain.methods.library.methods()[0]
+    method = brain.memory_retrieval.library.methods()[0]
     group = method.action_groups[0]
     action = group.actions[0].model_copy(
         update={
@@ -720,23 +724,23 @@ def test_unproductive_reused_edge_is_consumed_for_the_current_run(tmp_path):
     )
     group = group.model_copy(update={"actions": [action]})
     method = method.model_copy(update={"action_groups": [group]})
-    brain.methods.state.pending = {
+    brain.memory_retrieval.state.pending = {
         "method": method,
         "group_id": group.id,
         "origin": "reuse",
         "pruned_group_ids": [],
     }
 
-    brain.methods.delivered(complete=True)
-    brain.methods.verify_delivery(success=False)
+    brain.memory_retrieval.delivered(complete=True)
+    brain.memory_retrieval.verify_delivery(success=False)
 
-    assert (method.id, group.id) in brain.methods.state.used
-    assert brain.methods.state.history[-1]["status"] == "unproductive"
+    assert (method.id, group.id) in brain.memory_retrieval.state.used
+    assert brain.memory_retrieval.state.history[-1]["status"] == "unproductive"
 
 
 def test_predispatch_rejection_blocks_that_method_without_blame_on_previous_delivery(tmp_path):
     brain, _, _ = setup(tmp_path)
-    method = brain.methods.library.methods()[0]
+    method = brain.memory_retrieval.library.methods()[0]
     group = method.action_groups[0]
     previous = {
         "method": method,
@@ -745,27 +749,27 @@ def test_predispatch_rejection_blocks_that_method_without_blame_on_previous_deli
         "pruned_group_ids": [],
         "history_index": 0,
     }
-    brain.methods.state.unverified = previous
-    brain.methods.state.pending = {
+    brain.memory_retrieval.state.unverified = previous
+    brain.memory_retrieval.state.pending = {
         "method": method,
         "group_id": group.id,
         "origin": "reuse",
         "pruned_group_ids": [],
     }
 
-    rejected = brain.methods.reject_pending(reason="input_label_not_near_control")
+    rejected = brain.memory_retrieval.reject_pending(reason="input_label_not_near_control")
 
     assert rejected is not None
     assert rejected["group_id"] == group.id
     assert rejected["status"] == "rejected_before_delivery"
-    assert brain.methods.state.unverified is previous
-    assert method.id in brain.methods.state.blocked_method_ids
-    assert brain.methods.apply(catalog()[2]) is None
+    assert brain.memory_retrieval.state.unverified is previous
+    assert method.id in brain.memory_retrieval.state.blocked_method_ids
+    assert brain.memory_retrieval.retrieve(catalog()[2]) is None
 
 
 def test_successful_fallback_keeps_untried_followup_in_the_same_taught_step(tmp_path):
     brain, _, _ = setup(tmp_path, changed_label=True)
-    installed = brain.methods.library.methods()[0]
+    installed = brain.memory_retrieval.library.methods()[0]
     failed_action = (
         installed.action_groups[0]
         .actions[0]
@@ -792,37 +796,37 @@ def test_successful_fallback_keeps_untried_followup_in_the_same_taught_step(tmp_
         }
     )
     atomic_write_json(
-        brain.methods.library.path,
+        brain.memory_retrieval.library.path,
         MethodDocument(
             methods=[installed.model_copy(update={"action_groups": [old_group, followup_group]})]
         ),
     )
-    brain.methods.state.pending = {
+    brain.memory_retrieval.state.pending = {
         "method": installed.model_copy(update={"action_groups": [old_group, followup_group]}),
         "group_id": old_group.id,
         "origin": "reuse",
         "pruned_group_ids": [],
     }
-    brain.methods.delivered(complete=True)
-    brain.methods.verify_delivery(success=False)
+    brain.memory_retrieval.delivered(complete=True)
+    brain.memory_retrieval.verify_delivery(success=False)
 
     _, _, screen, response = catalog("Account", shift=20)
     response = response.model_copy(update={"method_id": installed.id, "taught_step_id": "details"})
 
-    brain.methods.remember(screen, response)
-    assert brain.methods.state.pending is not None
-    new_group_id = brain.methods.state.pending["group_id"]
-    brain.methods.delivered(complete=True)
-    brain.methods.verify_delivery(success=True)
+    brain.memory_retrieval.remember(screen, response)
+    assert brain.memory_retrieval.state.pending is not None
+    new_group_id = brain.memory_retrieval.state.pending["group_id"]
+    brain.memory_retrieval.delivered(complete=True)
+    brain.memory_retrieval.verify_delivery(success=True)
 
-    assert (installed.id, old_group.id) in brain.methods.state.used
-    assert (installed.id, new_group_id) in brain.methods.state.used
-    assert (installed.id, followup_group.id) not in brain.methods.state.used
+    assert (installed.id, old_group.id) in brain.memory_retrieval.state.used
+    assert (installed.id, new_group_id) in brain.memory_retrieval.state.used
+    assert (installed.id, followup_group.id) not in brain.memory_retrieval.state.used
 
 
 def test_method_history_does_not_own_education_completion(tmp_path):
     brain, _, _ = setup(tmp_path)
-    method = brain.methods.library.methods()[0]
+    method = brain.memory_retrieval.library.methods()[0]
     first = method.action_groups[0].model_copy(
         update={"id": "group-first", "taught_step_id": "step-1"}
     )
@@ -833,7 +837,7 @@ def test_method_history_does_not_own_education_completion(tmp_path):
         update={"id": "group-third", "taught_step_id": "step-3"}
     )
     atomic_write_json(
-        brain.methods.library.path,
+        brain.memory_retrieval.library.path,
         MethodDocument(
             methods=[method.model_copy(update={"action_groups": [first, second, third]})]
         ),
@@ -849,8 +853,8 @@ def test_method_history_does_not_own_education_completion(tmp_path):
             ],
         }
     )
-    brain.methods.state.used.add((method.id, first.id))
-    brain.methods.state.history.extend(
+    brain.memory_retrieval.state.used.add((method.id, first.id))
+    brain.memory_retrieval.state.history.extend(
         [
             {
                 "taught_step_id": "step-1",
@@ -871,7 +875,7 @@ def test_method_history_does_not_own_education_completion(tmp_path):
     )
 
     procedure = brain._taught_procedure_progress()
-    memory = brain.methods.prompt_context()
+    memory = brain.memory_retrieval.prompt_context()
 
     assert [step["id"] for step in procedure["steps"]] == ["step-1", "step-2"]
     assert procedure["completed_step_ids"] == []
@@ -884,7 +888,7 @@ def test_method_history_does_not_own_education_completion(tmp_path):
 
 def test_generic_success_trace_becomes_model_free_execution_graph(tmp_path):
     brain, model, _ = setup(tmp_path)
-    atomic_write_json(brain.methods.library.path, MethodDocument())
+    atomic_write_json(brain.memory_retrieval.library.path, MethodDocument())
     _, _, screen, response = catalog(shift=20)
     first = response.model_copy(
         update={
@@ -902,23 +906,23 @@ def test_generic_success_trace_becomes_model_free_execution_graph(tmp_path):
     )
     brain.observation = wire()
     for item in (first, second):
-        brain.methods.remember(screen, item)
-        assert brain.methods.state.pending is not None
-        brain.methods.delivered(complete=True)
+        brain.memory_retrieval.remember(screen, item)
+        assert brain.memory_retrieval.state.pending is not None
+        brain.memory_retrieval.delivered(complete=True)
 
-    assert len(brain.methods.state.staged) == 1
-    assert brain.methods.finish(success=True) == 1
-    method = brain.methods.library.methods()[0]
+    assert len(brain.memory_retrieval.state.staged) == 1
+    assert brain.memory_retrieval.finish(success=True) == 1
+    method = brain.memory_retrieval.library.methods()[0]
     assert [group.trace_index for group in method.action_groups] == [0, 1]
     assert method.action_groups[0].predecessor_group_ids == []
     assert method.action_groups[1].predecessor_group_ids == [method.action_groups[0].id]
 
-    brain.methods.state.used.clear()
-    first_replay = brain.methods.apply(screen)
+    brain.memory_retrieval.state.used.clear()
+    first_replay = brain.memory_retrieval.retrieve(screen)
     assert first_replay is not None
     assert first_replay.purpose == "Enter the visible customer"
-    brain.methods.delivered(complete=True)
-    second_replay = brain.methods.apply(screen)
+    brain.memory_retrieval.delivered(complete=True)
+    second_replay = brain.memory_retrieval.retrieve(screen)
     assert second_replay is not None
     assert second_replay.purpose == "Enter the visible reference"
     assert model.prompts == []
@@ -930,8 +934,8 @@ def test_next_observation_error_does_not_discard_delivered_method(tmp_path):
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     brain._act_node()
-    brain.methods.verify_delivery(success=None)
-    assert brain.methods.state.history[-1]["status"] == "provisional"
+    brain.memory_retrieval.verify_delivery(success=None)
+    assert brain.memory_retrieval.state.history[-1]["status"] == "provisional"
     event = next(
         e for e in reversed(brain.log.read_all()) if e.payload.get("check") == "method_effect"
     )
@@ -942,7 +946,7 @@ def test_next_observation_error_does_not_discard_delivered_method(tmp_path):
 @pytest.mark.parametrize("verified", [False, True], ids=["no-effect", "observed-effect"])
 def test_bound_edge_replaced_without_dispatch_unblocks_only_after_effect(tmp_path, verified):
     brain, _, _ = setup(tmp_path)
-    runtime = brain.methods
+    runtime = brain.memory_retrieval
     method = runtime.library.methods()[0]
     first = method.action_groups[0].model_copy(update={"trace_index": 0})
     next_hash = first.screen_phash ^ 1023
@@ -956,7 +960,7 @@ def test_bound_edge_replaced_without_dispatch_unblocks_only_after_effect(tmp_pat
     )
     runtime.library.upsert(method.model_copy(update={"action_groups": [first, followup]}))
     _, _, screen, _ = catalog(shift=20)
-    bound = runtime.apply(screen)
+    bound = runtime.retrieve(screen)
     assert bound is not None
     original = runtime.state.pending
     old_edge = (original["method"].id, original["group_id"])
@@ -975,21 +979,21 @@ def test_bound_edge_replaced_without_dispatch_unblocks_only_after_effect(tmp_pat
     runtime.delivered(complete=True)
     _, _, next_screen, _ = catalog(shift=20)
     next_screen["screen_phash"] = next_hash
-    assert runtime.apply(next_screen) is not None  # Conditional plan before effect commit.
+    assert runtime.retrieve(next_screen) is not None  # Conditional plan before effect commit.
     assert runtime.state.pending["group_id"] == "next-edge"
     assert old_edge not in runtime.state.used
     runtime.verify_delivery(success=verified)
     assert (old_edge in runtime.state.used) is verified
     _, _, next_screen, _ = catalog(shift=20)
     next_screen["screen_phash"] = next_hash
-    assert (runtime.apply(next_screen) is not None) is verified
+    assert (runtime.retrieve(next_screen) is not None) is verified
 
 
 def test_same_frame_and_sources_do_not_make_another_control_the_same_edge(tmp_path):
     brain, _, _ = setup(tmp_path)
-    runtime = brain.methods
+    runtime = brain.memory_retrieval
     _, _, screen, _ = catalog(shift=20)
-    bound = runtime.apply(screen)
+    bound = runtime.retrieve(screen)
     # Move Customer into Reference's region on the identical screenshot.
     fallback = bound.model_copy(
         update={

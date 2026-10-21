@@ -42,7 +42,7 @@ def remember(brain: Brain) -> dict:
             "remaining_inputs": sorted(set(brain.values) - set(brain.verified)),
         }
     )
-    if brain.methods.enabled:
-        memo["method_progress"] = brain.methods.context()
+    if brain.memory_retrieval.enabled:
+        memo["method_progress"] = brain.memory_retrieval.context()
     atomic_write_json(brain.case_dir / "task-notebook.json", memo)
     return memo

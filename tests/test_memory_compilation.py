@@ -8,16 +8,16 @@ from PIL import Image
 from test_visual_scene import wire
 
 from brain.cache.methods import MethodDocument, MethodLibrary
-from brain.cache.visual_match import VisualMatchDocument, VisualMatchEntry
-from brain.demo_learning.warm_methods import (
-    WarmCandidate,
-    WarmMethodAssembly,
-    assemble_warm_method,
-    compile_warm_method,
-    read_warm_candidates,
+from brain.cache.pattern_matching import ScreenPatternDocument, ScreenPatternEntry
+from brain.demo_learning.memory_compilation import (
+    MemoryAssembly,
+    MemoryCandidate,
+    assemble_memory,
+    compile_memory,
+    read_memory_candidates,
 )
-from brain.graph.matching import ScreenMatch, compile_match
-from brain.graph.method_runtime import open_method_library
+from brain.graph.context_recall import ScreenMatch, compile_match
+from brain.graph.memory_retrieval import open_memory_library
 from brain.graph.save_review import SaveReviewResponse, validate_save_review
 from brain.graph.screen_mapping import ScreenMapping
 from brain.visual.scene import Detection, VisualControl, bind_scene
@@ -91,7 +91,7 @@ def source():
 
 def candidates():
     return [
-        WarmCandidate(
+        MemoryCandidate(
             "c000",
             "a" * 64,
             "obs-1",
@@ -99,7 +99,7 @@ def candidates():
             screen("Shipment editor"),
             response(target=90, source="hbl_no"),
         ),
-        WarmCandidate(
+        MemoryCandidate(
             "c001",
             "b" * 64,
             "obs-2",
@@ -111,7 +111,7 @@ def candidates():
 
 
 def draft(*, groups=("c000", "c001")):
-    return WarmMethodAssembly(
+    return MemoryAssembly(
         purpose="Enter and save a shipment",
         groups=[
             {
@@ -127,12 +127,12 @@ def draft(*, groups=("c000", "c001")):
     )
 
 
-def test_warm_compiler_preserves_purpose_points_and_trace_order(tmp_path):
+def test_memory_compiler_preserves_purpose_points_and_trace_order(tmp_path):
     from pydantic import ValidationError
 
     raw = draft().model_dump()
     raw["purpose"] = "목적" * 150  # Synthetic 300-character explanation, not a token/byte limit.
-    method = compile_warm_method(source(), candidates(), raw, method_id="warm-shipment")
+    method = compile_memory(source(), candidates(), raw, method_id="warm-shipment")
     assert [slot.source_key for slot in method.slots] == ["hbl_no"]
     assert [group.trace_index for group in method.action_groups] == [0, 1]
     assert method.action_groups[1].predecessor_group_ids == [method.action_groups[0].id]
@@ -157,7 +157,7 @@ def test_warm_compiler_preserves_purpose_points_and_trace_order(tmp_path):
 
     raw["purpose"] += "끝"
     with pytest.raises(ValidationError) as caught:
-        compile_warm_method(source(), candidates(), raw, method_id="too-long")
+        compile_memory(source(), candidates(), raw, method_id="too-long")
     assert [(error["loc"], error["type"]) for error in caught.value.errors()] == [
         (("purpose",), "string_too_long")
     ]
@@ -182,9 +182,9 @@ def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_naviga
     cold_response["controls"].append({"id": 10, "role": "text", "text_ids": [1], "confidence": 1})
     inputs = [
         *candidates(),
-        WarmCandidate("c002", "c" * 64, "obs-3", 2, cold_screen, cold_response),
+        MemoryCandidate("c002", "c" * 64, "obs-3", 2, cold_screen, cold_response),
     ]
-    method = compile_warm_method(
+    method = compile_memory(
         source(), inputs, draft(groups=("c000", "c001", "c002")), method_id="warm-save-review"
     )
     group = method.action_groups[-1]
@@ -233,11 +233,11 @@ def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_naviga
         assert ScreenMatch.model_validate(fallback).save_result is None, label
 
 
-def test_warm_compiler_keeps_only_visible_non_instance_context_anchors():
+def test_memory_compiler_keeps_only_visible_non_instance_context_anchors():
     selected = draft()
     selected.groups[0].context_anchors = ["Shipment", "Login screen", "HBL-001"]
 
-    method = compile_warm_method(source(), candidates(), selected, method_id="warm-shipment")
+    method = compile_memory(source(), candidates(), selected, method_id="warm-shipment")
 
     assert method.action_groups[0].context_anchors == ["Shipment"]
 
@@ -259,7 +259,7 @@ def test_anchor_overflow_records_warning_without_relaxing_candidate_ids(
     log = RunLog(tmp_path, case_id="anchor-warning", agent_id="test")
 
     def assemble():
-        return assemble_warm_method(
+        return assemble_memory(
             source(),
             inputs,
             model=model,
@@ -279,7 +279,7 @@ def test_anchor_overflow_records_warning_without_relaxing_candidate_ids(
         assert method.action_groups[0].targets[0].point == (200, 300)
         assert method.action_groups[0].actions[0].slot == "hbl_no"
         raw["groups"][0]["context_anchors"] = anchors[:8]
-        expected = compile_warm_method(source(), inputs, raw, method_id="warning-test")
+        expected = compile_memory(source(), inputs, raw, method_id="warning-test")
         assert method.action_groups == expected.action_groups
     warnings = [
         event.payload
@@ -304,19 +304,19 @@ def test_anchor_overflow_does_not_discard_invalid_trailing_item():
     raw = draft().model_dump()
     raw["groups"][0]["context_anchors"] = ["valid"] * 8 + [None]
     with pytest.raises(ValidationError) as caught:
-        WarmMethodAssembly.model_validate(raw)
+        MemoryAssembly.model_validate(raw)
     assert [(error["loc"], error["type"]) for error in caught.value.errors()] == [
         (("groups", 0, "context_anchors", 8), "string_type")
     ]
 
 
-def test_warm_compiler_rejects_missing_input():
+def test_memory_compiler_rejects_missing_input():
     with pytest.raises(ValueError, match="warm_method_missing_sources:hbl_no"):
-        compile_warm_method(source(), candidates(), draft(groups=("c001",)), method_id="bad")
+        compile_memory(source(), candidates(), draft(groups=("c001",)), method_id="bad")
     without_capture = candidates()
     without_capture[0].screen.pop("screen_phash")
     with pytest.raises(ValueError, match="warm_method_candidate_requires_reference_screenshot"):
-        compile_warm_method(source(), without_capture, draft(), method_id="bad")
+        compile_memory(source(), without_capture, draft(), method_id="bad")
 
 
 def create_successful_case(tmp_path):
@@ -382,9 +382,9 @@ def create_successful_case(tmp_path):
     cache_path = tmp_path / "visual-cache.json"
     atomic_write_json(
         cache_path,
-        VisualMatchDocument(
+        ScreenPatternDocument(
             entries=(
-                VisualMatchEntry(
+                ScreenPatternEntry(
                     key="a" * 64, response={**match, "mapping": mapping.model_dump(mode="json")}
                 ),
             )
@@ -396,14 +396,14 @@ def create_successful_case(tmp_path):
 
 def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):
     case, cache_path, visual, mapping, match, education_sha = create_successful_case(tmp_path)
-    loaded_source, loaded = read_warm_candidates(case, cache_path)
+    loaded_source, loaded = read_memory_candidates(case, cache_path)
 
     # A successful selection-phase plan is equally eligible. A duplicate artifact
     # on the same frame must not create a second execution step.
     atomic_write_json(visual / "screen-plan.json", match)
-    assert len(read_warm_candidates(case, cache_path)[1]) == 1
+    assert len(read_memory_candidates(case, cache_path)[1]) == 1
     (visual / "screen-match.json").unlink()
-    assert len(read_warm_candidates(case, cache_path)[1]) == 1
+    assert len(read_memory_candidates(case, cache_path)[1]) == 1
 
     # Reused frames retain only capture + plan; read_screen must use exact pixels.
     from brain.demo_learning.methods import read_screen
@@ -413,7 +413,7 @@ def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):
     (reused / "capture.png").write_bytes((visual / "capture.png").read_bytes())
     assert read_screen(case, "reused") == read_screen(case, "obs-1")
     atomic_write_json(reused / "screen-plan.json", match)
-    assert len(read_warm_candidates(case, cache_path)[1]) == 1  # No delivery on reused frame.
+    assert len(read_memory_candidates(case, cache_path)[1]) == 1  # No delivery on reused frame.
 
     assert loaded_source["values"] == {"hbl_no": "HBL-001"}
     assert loaded_source["task_sha256"] == education_sha
@@ -421,7 +421,7 @@ def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):
         ("c000", "a" * 64, "obs-1")
     ]
 
-    compiled = compile_warm_method(
+    compiled = compile_memory(
         loaded_source,
         loaded,
         {
@@ -442,19 +442,19 @@ def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):
     mapping.operation = "duplicate_clear"
     atomic_write_json(
         cache_path,
-        VisualMatchDocument(
+        ScreenPatternDocument(
             entries=(
-                VisualMatchEntry(
+                ScreenPatternEntry(
                     key="a" * 64, response={**match, "mapping": mapping.model_dump(mode="json")}
                 ),
             )
         ),
     )
-    assert read_warm_candidates(case, cache_path)[1][0].response["operation"] == "act"
+    assert read_memory_candidates(case, cache_path)[1][0].response["operation"] == "act"
     # A post-action interpretation failure can prevent per-edge promotion even
     # though delivery and the final business result both succeeded.
-    atomic_write_json(cache_path, VisualMatchDocument())
-    recovered = read_warm_candidates(case, cache_path)[1]
+    atomic_write_json(cache_path, ScreenPatternDocument())
+    recovered = read_memory_candidates(case, cache_path)[1]
     assert len(recovered) == 1
     assert recovered[0].cache_key.startswith("trace:")
     path = tmp_path / "compiled.json"
@@ -466,7 +466,7 @@ def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):
         "ocr": [],
         "screen_phash": loaded[0].screen["screen_phash"],
     }
-    library = open_method_library(path, tmp_path / "warm", enabled=True, compiled_only=True)
+    library = open_memory_library(path, tmp_path / "warm", enabled=True, compiled_only=True)
     bound = library.bind(
         "named-warm", {}, current, {"hbl_no": "HBL-002"}, group_id=compiled.action_groups[0].id
     )
@@ -477,9 +477,9 @@ def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):
 
 
 @pytest.mark.parametrize("skip_logged", [False, True], ids=["undelivered", "already-satisfied"])
-def test_warm_candidates_keep_navigation_after_satisfied_input(tmp_path, skip_logged):
+def test_memory_candidates_keep_navigation_after_satisfied_input(tmp_path, skip_logged):
     case, cache_path, visual, *_ = create_successful_case(tmp_path)
-    atomic_write_json(cache_path, VisualMatchDocument())
+    atomic_write_json(cache_path, ScreenPatternDocument())
     path = visual / "screen-match.json"
     match = json.loads(path.read_text(encoding="utf-8"))
     match["steps"].append(
@@ -510,20 +510,20 @@ def test_warm_candidates_keep_navigation_after_satisfied_input(tmp_path, skip_lo
     log_path.write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
     if not skip_logged:
         with pytest.raises(ValueError, match="successful_run_has_no_joined_visual_cache_actions"):
-            read_warm_candidates(case, tmp_path / "visual-cache.json")
+            read_memory_candidates(case, tmp_path / "visual-cache.json")
     else:
-        from brain.demo_learning.warm_methods import assembly_prompt
+        from brain.demo_learning.memory_compilation import memory_assembly_prompt
 
-        source_data, loaded = read_warm_candidates(case, tmp_path / "visual-cache.json")
+        source_data, loaded = read_memory_candidates(case, tmp_path / "visual-cache.json")
         assert len(loaded) == 1
         assert [step["action"] for step in loaded[0].response["steps"]] == ["double_click"]
         assert loaded[0].satisfied_actions[0]["source"] == "hbl_no"
         assert loaded[0].observed_transitions[0]["observed_effect"] == "changed"
-        assert '"observed_effect": "changed"' in assembly_prompt(source_data, loaded)
+        assert '"observed_effect": "changed"' in memory_assembly_prompt(source_data, loaded)
 
 
 def test_critic_graph_keeps_execution_order_and_excludes_wholly_skipped_plan(tmp_path):
-    from brain.demo_learning.warm_methods import assembly_prompt
+    from brain.demo_learning.memory_compilation import memory_assembly_prompt
 
     case, cache_path, _, _, fill, _ = create_successful_case(tmp_path)
     click = response(target=91, intent="save", point=(700, 550), taught="save")
@@ -579,13 +579,13 @@ def test_critic_graph_keeps_execution_order_and_excludes_wholly_skipped_plan(tmp
     (case / "run_log.jsonl").write_text(
         "".join(json.dumps(e) + "\n" for e in events), encoding="utf-8"
     )
-    source_data, loaded = read_warm_candidates(case, cache_path)
+    source_data, loaded = read_memory_candidates(case, cache_path)
     assert len(loaded) == 2
     assert loaded[0].trace_index < loaded[1].trace_index
     assert [c.observed_transitions[0]["action_id"] for c in loaded] == ["a1", "a2"]
     assert len(source_data["nonexecuted_plans"]) == 1
     assert source_data["nonexecuted_plans"][0]["already_satisfied"][0]["source"] == "hbl_no"
-    prompt = assembly_prompt(source_data, loaded)
+    prompt = memory_assembly_prompt(source_data, loaded)
     assert '"previous_candidate_id": "c000"' in prompt
-    method = compile_warm_method(source_data, loaded, draft(), method_id="critic")
+    method = compile_memory(source_data, loaded, draft(), method_id="critic")
     assert len({g.trace_index for g in method.action_groups}) == 2

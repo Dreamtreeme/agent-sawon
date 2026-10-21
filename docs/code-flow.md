@@ -41,8 +41,7 @@ flowchart TD
 
 - **Observation**: relay에서 현재 허용 창을 관찰하고 GPU OCR·OmniParser 결과를 만듭니다.
   직전 행동이 있으면 새 관찰에서 전달 효과를 확인합니다.
-- **Decision**: 사용자 목표·교육, 입력 key, 누적 메모와 현재 화면을 결합합니다. 편찬된 웜
-  메서드가 현재 화면에 재결합되면 사용하고, 실패하면 Claude Haiku 5.5의 화면 판단으로
+- **Decision**: 사용자 목표·교육, 입력 key, 누적 메모와 현재 화면을 결합합니다. 편찬된 기억이 현재 화면에 재결합되면 사용하고, 실패하면 Claude Haiku 5.5의 화면 판단으로
   돌아갑니다.
 - **Review**: 모델 제안과 현재 관찰 근거를 연결하고 다음 route를 정합니다. 현재 설정의
   `guard_mode = "observe_only"`를 존중하며 과거의 엄격한 휴리스틱을 지침만 보고 복원하지 않습니다.
@@ -50,6 +49,10 @@ flowchart TD
   받습니다. relay 전달 성공은 업무 완료가 아니며 다음 Observation/Review가 효과를 판정합니다.
 
 ## 화면 의미 경로
+
+이 경로의 책임 이름은 Scanning → Pattern Matching → Memory Retrieval → Context Recall입니다.
+각 함수의 위치와 아직 분리되지 않은 부분은 [용어와 코드 대응](runtime-terminology.md)을
+참고합니다. 아래 그래프는 이름 변경 후에도 유지되는 실제 호출 흐름입니다.
 
 ```mermaid
 flowchart LR
@@ -89,9 +92,9 @@ brain/run.py
 brain/graph/state.py          WorkerState
 brain/graph/screen_mapping.py 화면 의미 JSON 계약
 brain/graph/execution.py      ExecutionRequest / ExecutionResult
-brain/visual/perception.py    OCR·탐지·로컬 의미 관찰
-brain/demo_learning/          성공 trace와 웜 메서드 편찬
+brain/visual/scanning.py    OCR·탐지·로컬 의미 관찰
+brain/demo_learning/          성공 trace와 기억 편찬
 ```
 
-사용자 교육은 특정 ERP 상태 기계로 컴파일하지 않습니다. 성공한 콜드 trace는 전체 업무 성공을
-확인한 뒤 웜 메서드 후보가 되며, 현재 화면에 결합하지 못하면 모델 판단으로 폴백합니다.
+사용자 교육은 특정 ERP 상태 기계로 컴파일하지 않습니다. 성공한 실행 trace는 전체 업무 성공을
+확인한 뒤 편찬된 기억 후보가 되며, 현재 화면에 결합하지 못하면 모델 판단으로 폴백합니다.

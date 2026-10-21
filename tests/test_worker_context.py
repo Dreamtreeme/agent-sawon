@@ -4,11 +4,11 @@ import json
 
 import pytest
 from test_brain import record as record
-from test_screen_matching import fixture, named_response, setup_brain
+from test_context_recall import fixture, named_response, setup_brain
 from test_visual_scene import wire
 
 from brain.graph.schemas import Choice, Decision
-from brain.graph.screen_mapping import MAPPING_RULES
+from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
 from brain.task_instruction import TaskInstruction
 from brain.visual.markers import build_markers, ground_meanings
 from brain.visual.scene import bind_scene
@@ -45,14 +45,14 @@ def test_direct_and_screen_matching_receive_identical_execution_context(
         == expected["allowed_intents"]
     )
     assert direct["final_required_fields"] == expected["final_required_fields"]
-    brain._match_visual(
+    brain._recall_visual_context(
         {
             "ocr": [b.model_dump() for b in blocks],
             "markers": [{**m.model_dump(), "contained_ocr_ids": list(m.text_ids)} for m in markers],
         },
         None,
     )
-    matched = json.loads(model.prompts[-1][len(MAPPING_RULES) :])
+    matched = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
     expected.update(
         available_inputs=sorted(brain.values),
     )
@@ -224,7 +224,7 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
     )
     brain.pending = {"decision": brain.decision, "effect_source": "shipper"}
     markers = build_markers(blocks, boxes, 400, 200)
-    matched = brain._match_visual(
+    matched = brain._recall_visual_context(
         {
             "image_size": [400, 200],
             "ocr": [block.model_dump() for block in blocks],
@@ -236,7 +236,7 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
         None,
     )
 
-    state = json.loads(model.prompts[-1][len(MAPPING_RULES) :])
+    state = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
     assert matched.procedure_step == "task-action"
     assert "select_tab" in state["capability"]["actions"]
     assert state["execution"]["pending_actions"] == [{"intent": "select_option", "source": None}]
@@ -299,7 +299,7 @@ def test_opening_saved_detail_scopes_request_without_erasing_entry_on_failed_nav
             action=Choice(type="double_click", ref="row"),
         ),
     }
-    request = brain._screen_match_request({}, None)
+    request = brain._context_recall_request({}, None)
     assert not request.verified_fields
     assert not request.policy.facts.verified_field_names
     assert not request.evidence_claims

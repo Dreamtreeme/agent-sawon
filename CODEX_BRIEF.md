@@ -23,7 +23,7 @@ ERP를 조작합니다. core 저장소는 판단·모델·문서 처리를, sibl
 - 비용: 실행 건별 최대 `$3`; 프로젝트 누적 상한 없음
 - 관찰: GPU PaddleOCR + OmniParser v2
 - 화면 판단: 의미 이름, OCR text+bbox, control bbox와 모델 선택 point
-- 재사용: 전체 성공한 콜드 실행에서 편찬하고 현재 viewport·pHash에 재결합한 웜 메서드
+- 재사용: 전체 성공한 원본 실행에서 편찬하고 현재 viewport·pHash에 재결합한 편찬된 기억
 - 완료: relay 전달이 아니라 사용자 완료 조건의 후속 화면 근거
 
 상세 값은 이 문서에 중복하지 않고 `config/models.toml`, `config/brain.visual.toml`과
@@ -33,7 +33,7 @@ ERP를 조작합니다. core 저장소는 판단·모델·문서 처리를, sibl
 
 - ERP별 버튼명·좌표·탭 순서를 프로덕션 코드에 하드코딩하지 않습니다.
 - 사용자가 가르친 절차, 현재 관찰, 누적 업무 메모와 입력 key를 모델 판단에 함께 제공합니다.
-- detector 번호는 현재 관찰의 임시 handle이며 지속 업무 key나 웜 identity로 저장하지 않습니다.
+- detector 번호는 현재 관찰의 임시 handle이며 지속 업무 key나 기억 식별자로 저장하지 않습니다.
 - `WorkerState`가 그래프 상태를 소유하고 `ExecutionRequest`/`ExecutionResult`가 실행 경계를
   담당합니다. 서비스에 전체 `Brain`을 넘기지 않습니다.
 - core가 bench에서 직접 사용하는 계약은 `sawon_interfaces`로 제한합니다.

@@ -1,5 +1,9 @@
-"""Visual screen-match cache public API."""
+"""Pattern Matching cache public API."""
 
-from .visual_match import VisualMatchCache, VisualMatchCacheIntegrityError, visual_match_key
+from .pattern_matching import (
+    ScreenPatternCache,
+    ScreenPatternCacheIntegrityError,
+    screen_pattern_key,
+)
 
-__all__ = ["VisualMatchCache", "VisualMatchCacheIntegrityError", "visual_match_key"]
+__all__ = ["ScreenPatternCache", "ScreenPatternCacheIntegrityError", "screen_pattern_key"]

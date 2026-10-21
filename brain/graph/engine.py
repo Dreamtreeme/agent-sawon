@@ -18,7 +18,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sawon_interfaces import Action, Observation, ShipmentRecord, UIElement
 
-from brain.cache import VisualMatchCache
+from brain.cache import ScreenPatternCache
 from brain.input_binding import allowed_input_surfaces
 from brain.observe import describe, redact, summarize
 from brain.observe.evidence import (
@@ -33,7 +33,7 @@ from brain.relay import Relay
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from brain.visual.detector import OmniParserDetector
-from brain.visual.perception import SemanticRequest, VisualGroundingError, VisualPerception
+from brain.visual.scanning import ScreenScanner, SemanticRequest, VisualGroundingError
 from brain.visual.scene import SceneObservation, SemanticDetection
 from models.accounting import read_model_accounting
 from models.base import ModelClient
@@ -81,7 +81,7 @@ from .input_verification import (
     evaluate_input_value,
     needs_blur_recheck,
 )
-from .method_runtime import MethodContext, MethodRuntime, open_method_library
+from .memory_retrieval import MemoryRetrieval, RetrievalContext, open_memory_library
 from .policy import DecisionPolicy, ExecutionFacts
 from .reconciliation import reconcile_observation
 from .review import EvidenceReview, review_final
@@ -256,7 +256,7 @@ class Brain:
         self.call_budget = call_budget
         self.recovery_model, self.recovery_budget = recovery_model, recovery_budget
         self.prepared_case = prepared_case
-        self.visual_match_cache = VisualMatchCache(
+        self.visual_match_cache = ScreenPatternCache(
             settings.visual_match_cache.path,
             enabled=settings.visual_match_cache.enabled,
         )
@@ -286,7 +286,7 @@ class Brain:
                 },
             )
             self.phase = "task"
-        self.method_library = open_method_library(
+        self.method_library = open_memory_library(
             settings.methods.path,
             self.case_dir,
             enabled=settings.methods.enabled,
@@ -294,7 +294,7 @@ class Brain:
             compiled_only=settings.methods.compiled_only,
             max_phash_distance=settings.methods.max_phash_distance,
         )
-        self.visual_perception = VisualPerception(
+        self.screen_scanner = ScreenScanner(
             relay,
             visual_ocr,
             self.case_dir,
@@ -317,11 +317,11 @@ class Brain:
         return "hbl_no" if "hbl_no" in self.values else None
 
     @property
-    def methods(self) -> MethodRuntime:
+    def memory_retrieval(self) -> MemoryRetrieval:
         # Rebind to the adopted state at access; never keep a pre-handoff state
         # or the whole Brain inside the method/cache service.
-        return MethodRuntime(
-            MethodContext(
+        return MemoryRetrieval(
+            RetrievalContext(
                 self.task_instruction,
                 self.task_instruction_sha256,
                 self.values,
@@ -335,8 +335,8 @@ class Brain:
             promotion_path=self.settings.methods.promotion_path,
         )
 
-    def _screen_match_request(self, screen: dict, page, *, interpretation=None, proposal=None):
-        from .matching import MatchRequest, required_verification
+    def _context_recall_request(self, screen: dict, page, *, interpretation=None, proposal=None):
+        from .context_recall import ContextRecallRequest, required_verification
 
         assert self.task_instruction is not None
         assert self.task_instruction_sha256 is not None
@@ -370,7 +370,7 @@ class Brain:
         saved_record_review = (
             self.saved_evidence.snapshot(self.values) if self.saved_evidence.session_id else None
         )
-        return MatchRequest(
+        return ContextRecallRequest(
             screen=screen,
             page=page,
             phase=self.phase,
@@ -429,26 +429,26 @@ class Brain:
             )
         )
 
-    def _match_visual(
+    def _recall_visual_context(
         self, screen: dict, page, *, interpretation=None, proposal=None, defer_plan_errors=False
     ):
-        from .matching import MatchServices, match_screen
+        from .context_recall import ContextRecallServices, recall_context
 
-        request = self._screen_match_request(
+        request = self._context_recall_request(
             screen,
             page,
             interpretation=interpretation,
             proposal=proposal,
         )
-        result = match_screen(
+        result = recall_context(
             request,
-            MatchServices(
+            ContextRecallServices(
                 settings=self.settings,
                 log=self.log,
                 call=self._call,
                 case_dir=self.case_dir,
                 cache=self.visual_match_cache,
-                methods=self.methods,
+                memory_retrieval=self.memory_retrieval,
             ),
             defer_plan_errors=defer_plan_errors,
         )
@@ -541,7 +541,7 @@ class Brain:
                     for key in ("error", "invalid_text_links", "invalid_links", "instruction")
                     if key in request.correction
                 }
-            response = self._match_visual(screen, request.page, defer_plan_errors=True)
+            response = self._recall_visual_context(screen, request.page, defer_plan_errors=True)
             self.visual_proposal = response
             atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
             return self._groundable_interpretation(response, screen)
@@ -579,7 +579,7 @@ class Brain:
 
     def _selection_call(self, prompt: str, schema: type[BaseModel]):
         if self.settings.screen_matching:
-            from .matching import (
+            from .context_recall import (
                 compile_match,
                 compile_screen_action_plan,
             )
@@ -593,8 +593,8 @@ class Brain:
                 response is not None and self.visual_proposal_obs_id == self.observation.obs_id
             )
             if not proposal_reused:
-                request, interpretation = self.visual_perception.planning_context()
-                response = self._match_visual(
+                request, interpretation = self.screen_scanner.planning_context()
+                response = self._recall_visual_context(
                     request.screen,
                     request.page,
                     interpretation=interpretation,
@@ -619,7 +619,7 @@ class Brain:
                     },
                 )
                 self.visual_proposal = None
-                self.observation = self.visual_perception.rematch(self.observation.wire)
+                self.observation = self.screen_scanner.rematch(self.observation.wire)
                 self.visual_proposal_obs_id = self.observation.obs_id
                 response, self.visual_proposal = self.visual_proposal, None
                 if response is None or response.needs_refinement:
@@ -630,7 +630,7 @@ class Brain:
                 )
             assert isinstance(self.observation, SceneObservation)
             if response.mapping is not None and not proposal_reused:
-                self.observation = self.visual_perception.bind_mapping(
+                self.observation = self.screen_scanner.bind_mapping(
                     self.observation.wire, response.interpretation(), response.mapping.fields
                 )
             prefix = "e" + str(self.observation.obs_id.int) + "0"
@@ -720,7 +720,7 @@ class Brain:
                         },
                     )
             if missing_targets:
-                request, _ = self.visual_perception.planning_context()
+                request, _ = self.screen_scanner.planning_context()
                 catalog_marker_ids = {marker["id"] for marker in request.screen.get("markers", [])}
                 response_control_ids = {control.id for control in response.controls}
                 if not missing_targets <= catalog_marker_ids:
@@ -728,7 +728,7 @@ class Brain:
                 if not missing_targets <= response_control_ids:
                     raise ValueError("action_target_semantics_missing")
                 semantics = response.interpretation()
-                self.observation = self.visual_perception.merge_interpretation(
+                self.observation = self.screen_scanner.merge_interpretation(
                     self.observation.wire, semantics
                 )
                 if synthetic:
@@ -1218,7 +1218,7 @@ class Brain:
         if not observation.blocked_reason:
             self.visual_proposal = None
             self.visual_plan_error = None
-            observation = self.visual_perception.observe(observation)
+            observation = self.screen_scanner.scan(observation)
             self.visual_proposal_obs_id = observation.obs_id
         self.observation = observation
         self.review = None
@@ -2170,7 +2170,7 @@ class Brain:
             else None
         )
         refined = self.click_refinement.applies(self.observation, decision)
-        rebind = getattr(self.visual_perception, "rebind_action", None)
+        rebind = getattr(self.screen_scanner, "rebind_action", None)
         return wire_action(
             ActionWiringRequest(
                 observation=self.observation,
@@ -2333,7 +2333,7 @@ class Brain:
         visual_candidate, self.visual_match_candidate = self.visual_match_candidate, None
         try:
             outcome = self._execute_plan(plan)
-            self.methods.delivered(complete=self.pending is not None)
+            self.memory_retrieval.delivered(complete=self.pending is not None)
             if visual_candidate is not None and self.pending is not None:
                 self.pending["visual_match_candidate"] = visual_candidate
             return outcome
@@ -2997,7 +2997,7 @@ class Brain:
             )
             return self._fail("verification_error:" + type(exc).__name__)
         finally:
-            self.methods.verify_delivery(success=method_effect_verified)
+            self.memory_retrieval.verify_delivery(success=method_effect_verified)
             self._log_verification_transition(pending, observation, observed_effect, new_facts)
             self.pending = None
 
@@ -3176,7 +3176,7 @@ class Brain:
         try:
             return self._run()
         finally:
-            close = getattr(self.visual_perception, "close", None)
+            close = getattr(self.screen_scanner, "close", None)
             if close:
                 close()
 
@@ -3221,8 +3221,8 @@ class Brain:
             self._finish("failed", "runtime_error:" + type(exc).__name__)
         assert self.result is not None
         try:
-            promoted = self.methods.finish(success=self.result.status == "success")
-            if self.methods.enabled:
+            promoted = self.memory_retrieval.finish(success=self.result.status == "success")
+            if self.memory_retrieval.enabled:
                 self.log.append(
                     "verify",
                     payload={

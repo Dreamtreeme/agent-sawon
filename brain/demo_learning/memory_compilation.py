@@ -1,4 +1,4 @@
-"""Compile one successful cold run and its visual cache into a warm method."""
+"""Memory Compilation: refine a successful execution trace into retrievable task memory."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from sawon_interfaces import ShipmentRecord
 
 from brain.cache.methods import LearnedMethod, MethodDocument, MethodSlot, method_from_match
-from brain.cache.visual_match import VisualMatchDocument
+from brain.cache.pattern_matching import ScreenPatternDocument
 from brain.demo_learning.methods import read_screen
 from brain.graph.screen_mapping import ScreenMapping
 from brain.observe.values import values_for
@@ -28,8 +28,8 @@ from models.factory import create_model_client
 from sawon_runtime.storage import RunLog, atomic_write_json, rejection_evidence
 
 
-class WarmGroupSelection(BaseModel):
-    """One successful cached action boundary selected for warm replay."""
+class MemoryGroupSelection(BaseModel):
+    """One successful cached action boundary selected for memory reuse."""
 
     model_config = ConfigDict(extra="forbid")
     candidate_id: str
@@ -51,19 +51,19 @@ class WarmGroupSelection(BaseModel):
         return self
 
 
-class RemovedWarmGroup(BaseModel):
+class RemovedMemoryGroup(BaseModel):
     model_config = ConfigDict(extra="forbid")
     candidate_id: str
     reason: str
 
 
-class WarmMethodAssembly(BaseModel):
-    """Model selection over immutable successful cold-run action batches."""
+class MemoryAssembly(BaseModel):
+    """Model selection over immutable action batches from a successful source execution."""
 
     model_config = ConfigDict(extra="forbid")
     purpose: str = Field(min_length=1, max_length=300)
-    groups: list[WarmGroupSelection] = Field(min_length=1, max_length=80)
-    removed_groups: list[RemovedWarmGroup] = Field(default_factory=list)
+    groups: list[MemoryGroupSelection] = Field(min_length=1, max_length=80)
+    removed_groups: list[RemovedMemoryGroup] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def unique_candidates(self):
@@ -74,7 +74,7 @@ class WarmMethodAssembly(BaseModel):
 
 
 @dataclass(frozen=True)
-class WarmCandidate:
+class MemoryCandidate:
     candidate_id: str
     cache_key: str
     obs_id: str
@@ -85,7 +85,10 @@ class WarmCandidate:
     satisfied_actions: tuple[dict, ...] = ()
 
 
-ASSEMBLY_RULES = """Act as the Critic of this successful cold execution graph.
+MEMORY_COMPILATION_RULES = """Perform Memory Compilation as the Critic of this successful execution.
+Scanning records observations; Pattern Matching identifies reusable screen/task patterns;
+Memory Retrieval supplies stored methods; Context Recall applies them to the current task.
+Refine the supplied execution graph into memory for these runtime responsibilities.
 Walk candidates in execution order: observation -> proposal -> delivered actions -> observed result.
 A candidate contains only actions actually delivered; already_satisfied and nonexecuted_plans
 are observation facts, not actions to replay. Do not add them back.
@@ -178,8 +181,10 @@ def _case_values(case_dir: Path) -> dict[str, str]:
     return values_for(record)
 
 
-def read_warm_candidates(case_dir: Path, visual_cache: Path) -> tuple[dict, list[WarmCandidate]]:
-    """Join delivered actions to successful cold-run screens and promoted geometry."""
+def read_memory_candidates(
+    case_dir: Path, visual_cache: Path
+) -> tuple[dict, list[MemoryCandidate]]:
+    """Join delivered actions to successful source observations and promoted geometry."""
 
     case_dir = Path(case_dir)
     result = _read(case_dir / "result.json")
@@ -187,7 +192,7 @@ def read_warm_candidates(case_dir: Path, visual_cache: Path) -> tuple[dict, list
         raise ValueError("warm_method_requires_successful_cold_run")
     task_path = case_dir / "task-instruction.json"
     task = TaskInstruction.model_validate_json(task_path.read_bytes())
-    cache = VisualMatchDocument.model_validate_json(Path(visual_cache).read_bytes())
+    cache = ScreenPatternDocument.model_validate_json(Path(visual_cache).read_bytes())
     by_response: dict[str, list[str]] = {}
     for entry in cache.entries:
         by_response.setdefault(_canonical(entry.response), []).append(entry.key)
@@ -287,7 +292,7 @@ def read_warm_candidates(case_dir: Path, visual_cache: Path) -> tuple[dict, list
             response = {**normalized, "operation": response.get("operation", "act")}
         response = {**response, "steps": retained}
         candidates.append(
-            WarmCandidate(
+            MemoryCandidate(
                 candidate_id="",
                 cache_key=key,
                 obs_id=obs_id,
@@ -316,7 +321,7 @@ def read_warm_candidates(case_dir: Path, visual_cache: Path) -> tuple[dict, list
     }, candidates
 
 
-def assembly_prompt(source: dict, candidates: list[WarmCandidate]) -> str:
+def memory_assembly_prompt(source: dict, candidates: list[MemoryCandidate]) -> str:
     values = source["values"]
     summaries = []
     for index, candidate in enumerate(candidates):
@@ -375,10 +380,10 @@ def assembly_prompt(source: dict, candidates: list[WarmCandidate]) -> str:
             for plan in source.get("nonexecuted_plans", [])
         ],
     }
-    return ASSEMBLY_RULES + json.dumps(payload, ensure_ascii=False)
+    return MEMORY_COMPILATION_RULES + json.dumps(payload, ensure_ascii=False)
 
 
-def _required_sources(candidates: list[WarmCandidate]) -> set[str]:
+def _required_sources(candidates: list[MemoryCandidate]) -> set[str]:
     return {
         step["source"]
         for candidate in candidates
@@ -387,19 +392,17 @@ def _required_sources(candidates: list[WarmCandidate]) -> set[str]:
     }
 
 
-def compile_warm_method(
+def compile_memory(
     source: dict,
-    candidates: list[WarmCandidate],
-    draft: WarmMethodAssembly | dict,
+    candidates: list[MemoryCandidate],
+    draft: MemoryAssembly | dict,
     *,
     method_id: str,
     source_receipt: str | None = None,
 ) -> LearnedMethod:
     """Validate the model's selection and locally compile exact cached actions."""
 
-    assembly = (
-        draft if isinstance(draft, WarmMethodAssembly) else WarmMethodAssembly.model_validate(draft)
-    )
+    assembly = draft if isinstance(draft, MemoryAssembly) else MemoryAssembly.model_validate(draft)
     by_id = {candidate.candidate_id: candidate for candidate in candidates}
     try:
         selected = [by_id[group.candidate_id] for group in assembly.groups]
@@ -482,9 +485,9 @@ def compile_warm_method(
     )
 
 
-def assemble_warm_method(
+def assemble_memory(
     source: dict,
-    candidates: list[WarmCandidate],
+    candidates: list[MemoryCandidate],
     *,
     model: ModelClient,
     log: RunLog,
@@ -495,13 +498,13 @@ def assemble_warm_method(
 ) -> LearnedMethod:
     with rejection_evidence(
         log,
-        "warm_methods.assemble_warm_method",
+        "memory_compilation.assemble_memory",
         context={
             "draft": str(log.case_dir / "assembly-draft.json"),
             "input": str(log.case_dir / "assembly-input.json"),
         },
     ):
-        prompt = assembly_prompt(source, candidates)
+        prompt = memory_assembly_prompt(source, candidates)
         atomic_write_json(
             log.case_dir / "assembly-input.json",
             {
@@ -525,10 +528,10 @@ def assemble_warm_method(
         accounting = read_model_accounting(log)
         if accounting.unknown:
             raise ValueError("unknown_model_call_cost")
-        reserved = budget(prompt, WarmMethodAssembly) if budget is not None else Decimal(0)
+        reserved = budget(prompt, MemoryAssembly) if budget is not None else Decimal(0)
         if accounting.known_usd + reserved > max_cost_usd:
             raise ValueError("warm_method_assembly_cost_cap")
-        draft = model.complete_json(prompt, WarmMethodAssembly).response
+        draft = model.complete_json(prompt, MemoryAssembly).response
         for index, group in enumerate(draft.groups):
             if group._discarded_context_anchors:
                 log.append(
@@ -543,7 +546,7 @@ def assemble_warm_method(
                 )
         draft_path = log.case_dir / "assembly-draft.json"
         atomic_write_json(draft_path, draft)
-        method = compile_warm_method(
+        method = compile_memory(
             source,
             candidates,
             draft,
@@ -570,21 +573,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--visual-cache", type=Path, required=True)
     parser.add_argument("--case-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--method-id", default="warm-" + uuid4().hex[:12])
+    parser.add_argument("--method-id", default="memory-" + uuid4().hex[:12])
     parser.add_argument("--model-config", type=Path, required=True)
     parser.add_argument("--env-path", type=Path)
     parser.add_argument("--max-cost-usd", type=float, required=True)
     args = parser.parse_args(argv)
     if not math.isfinite(args.max_cost_usd) or not 0 < args.max_cost_usd <= 50:
         parser.error("A finite per-compilation budget up to $50 is required")
-    source, candidates = read_warm_candidates(args.source_case, args.visual_cache)
+    source, candidates = read_memory_candidates(args.source_case, args.visual_cache)
     args.case_dir.mkdir(parents=True, exist_ok=False)
-    log = RunLog(args.case_dir, case_id="warm-compile-" + uuid4().hex, agent_id="warm-compiler")
+    log = RunLog(args.case_dir, case_id="memory-compile-" + uuid4().hex, agent_id="memory-compiler")
     summary = {"status": "stopped", "output": str(args.output.resolve())}
     exit_code = 1
     try:
         model = create_model_client(args.model_config, run_log=log, env_path=args.env_path)
-        method = assemble_warm_method(
+        method = assemble_memory(
             source,
             candidates,
             model=model,

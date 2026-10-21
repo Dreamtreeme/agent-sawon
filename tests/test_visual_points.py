@@ -2,7 +2,7 @@ import pytest
 from sawon_interfaces import UIElement
 from test_visual_scene import wire
 
-from brain.graph.matching import MatchAction
+from brain.graph.context_recall import MatchAction
 from brain.graph.schemas import Choice, Decision
 from brain.graph.visual_points import VisualPointBindings
 from brain.visual.scene import SceneObservation

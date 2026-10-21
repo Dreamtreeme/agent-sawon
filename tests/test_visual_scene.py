@@ -9,7 +9,7 @@ import pytest
 from PIL import Image
 from sawon_interfaces import CaptureGeometry, Observation, Screenshot, WindowInfo
 
-from brain.graph.matching import ScreenMatch
+from brain.graph.context_recall import ScreenMatch
 from brain.relay import HttpRelay, RelayError
 from brain.visual.scene import Detection, SemanticDetection, VisualControl, bind_scene
 from pipeline.schemas import OcrBlock

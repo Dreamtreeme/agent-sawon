@@ -18,19 +18,26 @@ screens, execution outcome and the generated method before configuring it for re
 learner currently extracts one visible input batch, not every branch of the source workflow.
 See [method runtime configuration](../cache/README.md).
 
-## Compile a successful cold run into a warm method
+## Memory Compilation
 
-Cold execution and warm replay are separate stages. After a cold case reaches business success and
-its visual cache is promoted, compile the complete successful path with one measured model call:
+Memory Compilation refines a successful source execution into retrievable task memory.
+After the source case reaches business success and its screen-pattern cache is promoted, compile
+its successful path with one measured model call:
 
 ```powershell
-python -m brain.demo_learning.warm_methods --source-case cases/cold/case --visual-cache cases/visual-match-cache.json --case-dir cases/warm-compilation/run-001 --method-id shipment-entry --model-config config/models.toml --env-path .env --max-cost-usd 0.1 --output cases/methods/warm.json
+python -m brain.demo_learning.memory_compilation --source-case cases/source/case --visual-cache cases/visual-match-cache.json --case-dir cases/memory-compilation/run-001 --method-id shipment-entry --model-config config/models.toml --env-path .env --max-cost-usd 0.1 --output cases/methods/memory.json
 ```
 
-The model selects and orders immutable cached batches; local code retains their exact actions and
-input keys. Compilation requires a successful source result, covers every observed input source and
-login/save intent, and rejects candidates without a reference screenshot. Successful coordinates
-are reused only when viewport size and screenshot pHash match the recorded screen.
-The result is marked `warm_compiled`; configure `methods.compiled_only=true` so partial cold trace
-fragments are not replayed as finished warm methods. The compilation directory records its input,
-request, model draft, cost, and result for review.
+`read_memory_candidates` joins source observations and delivered actions. `assemble_memory` asks
+for a `MemoryAssembly`; `compile_memory` retains the selected actions, input keys and coordinates.
+The model reviews the trace and selects candidates; it does not invent actions or coordinates.
+Current compilation still selects action-bearing candidates. Preserving all read-only screen
+mappings is follow-up work, not an effect of the terminology change.
+
+Pattern Matching compares the recorded viewport and pHash. Memory Retrieval binds the selected
+method, and Context Recall combines it with the current task and notebook. The runtime still has
+combined responsibilities; see [terminology and implementation](../../docs/runtime-terminology.md).
+
+The persisted artifact tag remains `warm_compiled`. `methods.compiled_only=true` excludes partial
+runtime traces. The compilation directory records inputs, requests, draft, cost and result.
+Historical cold/warm labels describe benchmark conditions, not different runtime stages.

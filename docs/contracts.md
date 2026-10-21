@@ -7,15 +7,18 @@
 
 ## 계약 소유권
 
+단계 명칭과 실제 구현 범위는 [화면 처리 용어](runtime-terminology.md)를 따른다.
+Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변경을 뜻하지 않는다.
+
 | 계약 | 소유 위치 | 소비자 | 책임 |
 |---|---|---|---|
 | `WorkerState`와 하위 상태 | `brain/graph/state.py` | `brain/graph/workflow.py`, `engine.py`, graph 노드 | 한 실행 안의 관찰·판단·검토·실행·진행 상태 |
 | 그래프 라우팅 | `brain/graph/workflow.py` | LangGraph | `lifecycle.route`를 다음 책임 노드 또는 `finish`로 연결 |
 | `ExecutionRequest`/`ExecutionResult` | `brain/graph/execution.py` | `engine.py`, relay adapter | 준비된 행동 전달과 relay가 확인한 결과. 업무 성공을 판정하지 않음 |
-| 화면 의미 매핑 | `brain/graph/screen_mapping.py` | matching, method runtime | 의미 이름·bbox·입력 key·행동 point의 모델 경계 |
-| 선택 결과의 요청 문맥 | `brain/graph/matching.py`의 `MatchSelection.prepared` | `match_screen` → `ground_match_response` | 같은 판단에서 확장한 교육 상세를 빈 행동 보완에 전달. 거절 후 재계획은 기존 prepared 사용. 턴 간 영구 상태가 아님 |
-| 웜 편찬 응답 | `brain/demo_learning/warm_methods.py`의 `WarmMethodAssembly` / `WarmGroupSelection` | 모델 클라이언트, `compile_warm_method` | 후보 ID로 성공 행동을 선택. context_anchors는 타입 검증 후 첫 8개를 보존하고 초과분 경고 기록 |
-| 웜 행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup` | `method_from_match`, `compile_warm_method`, `MethodRuntime`, matching | 행동 좌표와 함께 저장 결과 분류·메시지 대상 이름·수정 필드를 보존하고 현재 화면 참조로 결합 |
+| 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `context_recall`, `memory_retrieval` | 의미 이름·bbox·입력 key·행동 point의 모델 경계 |
+| 선택 결과의 요청 문맥 | `brain/graph/context_recall.py`의 `RecallSelection.prepared` | `recall_context` → `ground_context_response` | 같은 판단에서 확장한 교육 상세를 빈 행동 보완에 전달. 거절 후 재계획은 기존 prepared 사용. 턴 간 영구 상태가 아님 |
+| 기억 편찬 응답 | `brain/demo_learning/memory_compilation.py`의 `MemoryAssembly` / `MemoryGroupSelection` | 모델 클라이언트, `compile_memory` | 후보 ID로 성공 행동을 선택. context_anchors는 타입 검증 후 첫 8개를 보존하고 초과분 경고 기록 |
+| 인출된 행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup` | `method_from_match`, `compile_memory`, `MemoryRetrieval`, `context_recall` | 행동 좌표와 함께 저장 결과 분류·메시지 대상 이름·수정 필드를 보존하고 현재 화면 참조로 결합 |
 | 시각 공용 자료형 | `sawon_runtime/visual.py` | OCR·탐지·pipeline | 렌더 페이지와 OCR block 계약 |
 | 공개 record/action/observation/event | `../agent-sawon-bench/interfaces/sawon_interfaces/contracts.py` | core와 bench | 두 저장소가 공유하는 버전 있는 Pydantic 계약 |
 | 공개 스키마 export | `../agent-sawon-bench/interfaces/sawon_interfaces/export_schemas.py` | 외부 소비자·검사 | `sawon_interfaces` JSON Schema 생성 |
@@ -63,7 +66,7 @@ flowchart LR
 서비스에 전체 `Brain`을 넘기거나 같은 상태를 별도 객체에 반복 복사해 새 계약처럼 만들지
 않습니다. 이미 존재하는 공용 계약을 확장할 수 있는지 먼저 확인합니다.
 
-## 웜 증거와 저장 결과
+## 인출된 증거와 저장 결과
 
 `MethodLibrary.bind_visible_value_evidence`는 현재 OCR에서 입력값이 일치한 경우에만 증거를
 만듭니다. 이때 증거 대상도 행동 대상과 동일한 `screen.markers` / `selected_fields`에 등록합니다.
@@ -72,30 +75,31 @@ flowchart LR
 이후 `ground_meanings` → `bind_scene` → `_remember_model_task_evidence`의 기존 경로가 메모를
 갱신합니다. 전달 성공만으로 입력이나 저장 완료를 메모에 추가하지 않습니다.
 
-`MethodActionGroup`의 `save_result`, `message_targets`, `repair_fields`는 콜드 판단의 저장 결과를
+`MethodActionGroup`의 `save_result`, `message_targets`, `repair_fields`는 모델 판단의 저장 결과를
 보존합니다. `message_targets`에는 `targets`의 이름을 저장하고, 해당 대상의 bbox와
 `anchor_texts`에 메시지 위치와 텍스트를 보관합니다. 입력값 부분은 입력 key 자리표시자로
 바꿉니다. 생산자는 `method_from_match`이며 런타임 학습과 편찬 CLI가 이 함수를 공유합니다.
 
 소비자는 `MethodLibrary.bind_with_context`입니다. 기존 viewport·pHash 조건을 통과한 뒤 현재
 메시지를 입력값이 치환된 텍스트와 정규화 비교하여 저장 결과를 재결합합니다.
-matching은 재결합된 결과와 메시지가 있는 메서드를 `save_result` 단계에서도 선택합니다.
+`context_recall`은 재결합된 결과와 메시지가 있는 메서드를 `save_result` 단계에서도 선택합니다.
 `compile_match`와 `SaveReviewResponse`의 기존 변환·검증은 유지합니다. 이 결과는 다음 행동을
 위한 저장 화면 해석이며 작업 전체 성공 선언이 아닙니다.
 
 새 필드가 없는 이전 메서드는 기본값 `None` / 빈 목록으로 읽습니다. 메시지가 없거나 현재
 내용이 다르면 저장 결과를 재사용하지 않고 기존 화면 캐시·모델 판단 경로로 넘깁니다.
 이전 산출물에 없던 메시지는 자동 복원하지 않으므로 새 저장 결과 재사용에는 재편찬이 필요합니다.
-공개 인터페이스와 모델 요청 스키마는 바뀌지 않습니다.
+이 저장 결과 전달은 공개 인터페이스와 행동 응답의 필드·제약을 바꾸지 않습니다.
+편찬 응답 타입의 이름 변경은 [화면 처리 용어](runtime-terminology.md)에 별도로 기록합니다.
 
-웜 편찬의 앵커 절단 경고는 logging과 편찬 실행의 RunLog verify 이벤트
+기억 편찬의 앵커 절단 경고는 logging과 편찬 실행의 RunLog verify 이벤트
 `warm_context_anchors_truncated`에 남긴다. 이벤트에는 group_index, retained, discarded를
 기록하고 앵커 원문은 넣지 않는다. 앵커 리스트의 원래 순서를 유지하며, 후보 ID·행동·좌표·
 입력 출처 검증 및 다른 응답 필드의 제한은 이 경고 정책으로 완화하지 않는다.
 
-편찬 전체 설명인 `WarmMethodAssembly.purpose`는 1–300자를 허용하며 `LearnedMethod.purpose`에
+편찬 전체 설명인 `MemoryAssembly.purpose`는 1–300자를 허용하며 `LearnedMethod.purpose`에
 원문을 보존합니다. 300자를 넘으면 파싱 단계에서 거절합니다. 그룹별 설명인
-`WarmGroupSelection.purpose`의 160자 제한과 `expected_result`의 240자 제한은 별도입니다.
+`MemoryGroupSelection.purpose`의 160자 제한과 `expected_result`의 240자 제한은 별도입니다.
 
 ## 거절 진단 산출물
 
@@ -106,7 +110,7 @@ matching은 재결합된 결과와 메시지가 있는 메서드를 `save_result
 공급자 원문은 `models/base.py`가 `diagnostics/model-<call_id>.json`에 보관하며,
 `model_call` 이벤트의 `call_id`, `context`, `response_artifact`로 추적한다.
 
-화면 비교 거절은 `brain/visual/perception.py`가 실제 비교한 두 캡처와 pHash·거리·기준을
+화면 비교 거절은 `brain/visual/scanning.py`가 실제 비교한 두 캡처와 pHash·거리·기준을
 기록한다. bench의 `relay/service.py`와 `relay/api.py`는 relay artifact 디렉터리의
 `diagnostics/<id>/rejection.json`에 요청과 이유를 기록한다. relay는 현재 pHash를 판정에
 사용하지 않으므로 값은 null과 미사용 사유로 표시한다. HTTP 오류 응답에는 원문을 노출하지 않는다.
