@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -148,7 +147,8 @@ class ScreenScanner:
         threshold: float = 0.8,
         detector: ControlDetector | None = None,
         merge_settings: MergeSettings | None = None,
-        reuse_identical: bool = False,
+        reuse_similar: bool = False,
+        max_phash_distance: int = 6,
         model_led_semantics: bool = False,
         retrieve_screen_memory: Callable[[dict], dict | None] | None = None,
     ):
@@ -156,7 +156,8 @@ class ScreenScanner:
         self.detect, self.secrets, self.threshold = detect, secrets, threshold
         self.detector = detector or OmniParserDetector(DetectorSettings(), log)
         self.merge_settings = merge_settings or MergeSettings()
-        self.reuse_identical = reuse_identical
+        self.reuse_similar = reuse_similar
+        self.max_phash_distance = max_phash_distance
         self.model_led_semantics = model_led_semantics
         self.retrieve_screen_memory = retrieve_screen_memory
         self._catalog: _SceneCatalog | None = None
@@ -183,7 +184,7 @@ class ScreenScanner:
         shot = wire.screenshot
         assert shot is not None
         cache_key = (
-            hashlib.sha256(path.read_bytes()).hexdigest(),
+            perceptual_hash(path),
             shot.width,
             shot.height,
             wire.active_window.handle if wire.active_window else None,
@@ -196,23 +197,33 @@ class ScreenScanner:
             width=shot.width,
             height=shot.height,
         )
-        identity = {"image_size": [page.width, page.height], "screen_phash": perceptual_hash(path)}
+        identity = {"image_size": [page.width, page.height], "screen_phash": cache_key[0]}
         memory = (
             self.retrieve_screen_memory(identity)
             if self.retrieve_screen_memory is not None
             else None
         )
-        previous = self._catalogs.get(cache_key)
-        reuse_catalog = self.reuse_identical and previous is not None
+        # Compare with the original cached capture, not a chain of similar frames.
+        distance, previous = min(
+            (
+                (hash_distance(key[0], cache_key[0]), catalog)
+                for key, catalog in reversed(self._catalogs.items())
+                if key[1:] == cache_key[1:]
+                and hash_distance(key[0], cache_key[0]) <= self.max_phash_distance
+            ),
+            key=lambda item: item[0],
+            default=(None, None),
+        )
+        reuse_catalog = self.reuse_similar and previous is not None
         self.log.append(
             "verify",
             payload={
                 "check": "screen_similarity",
                 "obs_id": str(wire.obs_id),
                 "matched": memory is not None or reuse_catalog,
-                "distance": 0 if reuse_catalog else memory["distance"] if memory else None,
+                "distance": distance if reuse_catalog else memory["distance"] if memory else None,
                 "groups": memory["groups"] if memory else [],
-                "source": "identical_catalog" if reuse_catalog else "method_library",
+                "source": "phash_catalog" if reuse_catalog else "method_library",
                 "route": "memory_retrieval" if memory or reuse_catalog else "scanning",
             },
         )
@@ -222,9 +233,11 @@ class ScreenScanner:
             self.log.append(
                 "verify",
                 payload={
-                    "check": "identical_form_reused",
+                    "check": "similar_form_reused",
                     "obs_id": str(wire.obs_id),
                     "ocr_and_detection_skipped": True,
+                    "phash_distance": distance,
+                    "max_phash_distance": self.max_phash_distance,
                 },
             )
             return self._resolve(wire, catalog)

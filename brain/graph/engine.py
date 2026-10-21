@@ -304,7 +304,8 @@ class Brain:
             threshold=settings.visual_min_confidence,
             detector=OmniParserDetector(settings.visual_detector, self.log),
             merge_settings=settings.visual_merge,
-            reuse_identical=settings.screen_matching,
+            reuse_similar=settings.screen_matching,
+            max_phash_distance=settings.methods.max_phash_distance,
             model_led_semantics=settings.visual_model_led_semantics,
             retrieve_screen_memory=lambda screen: self.memory_retrieval.retrieve_screen_memory(
                 screen

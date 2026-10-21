@@ -588,6 +588,66 @@ def test_failed_refinement_returns_navigation_semantics_to_decision_graph(tmp_pa
     assert "required input extent missing" in scene.uncertainties
 
 
+@pytest.mark.parametrize(
+    ("distance", "changed_window", "changed_size", "expected_reads"),
+    [(6, False, False, 1), (7, False, False, 2), (1, True, False, 2), (1, False, True, 2)],
+    ids=["within-phash", "outside-phash", "other-window", "other-size"],
+)
+def test_synthetic_phash_catalog_reuse_boundary(
+    tmp_path, monkeypatch, distance, changed_window, changed_size, expected_reads
+):
+    # Synthetic hashes isolate the distance boundary from image encoding and OCR variability.
+    from brain.visual import scanning
+
+    blocks, boxes, _, meaning = fixture()
+    captures = []
+    reads = []
+
+    class Relay:
+        def screenshot(self, observation, path):
+            path.parent.mkdir(parents=True)
+            Image.new("RGB", (400, 200), "white" if not captures else "gray").save(path)
+            captures.append(path.read_bytes())
+            return path
+
+    class Ocr:
+        def read(self, page):
+            reads.append(page)
+            return blocks
+
+    class Detector:
+        def read(self, page, *, ocr_boxes=()):
+            return boxes
+
+    monkeypatch.setattr(
+        scanning, "perceptual_hash", lambda path: 0 if len(captures) == 1 else (1 << distance) - 1
+    )
+    log = RunLog(tmp_path, case_id="synthetic-phash", agent_id="test")
+    scanner = ScreenScanner(
+        Relay(),
+        Ocr(),
+        tmp_path,
+        log,
+        lambda request: meaning,
+        detector=Detector(),
+        reuse_similar=True,
+        max_phash_distance=6,
+    )
+    scanner.scan(wire())
+    current = wire()
+    if changed_window:
+        current.active_window.handle = 2
+    if changed_size:
+        current.screenshot.width = 401
+    scanner.scan(current)
+    assert captures[0] != captures[1]
+    assert len(reads) == expected_reads
+    reused = [e.payload for e in log.read_all() if e.payload.get("check") == "similar_form_reused"]
+    assert bool(reused) is (expected_reads == 1)
+    if reused:
+        assert reused[0]["phash_distance"] == distance
+
+
 def test_same_screen_rematch_corrects_and_updates_cached_meaning_without_new_ocr(tmp_path):
     blocks, boxes, _, meaning = fixture()
     calls = {"capture": 0, "ocr": 0, "detector": 0}
@@ -628,7 +688,7 @@ def test_same_screen_rematch_corrects_and_updates_cached_meaning_without_new_ocr
         RunLog(tmp_path, case_id="rematch", agent_id="test"),
         interpret,
         detector=Detector(),
-        reuse_identical=True,
+        reuse_similar=True,
     )
     assert perception.scan(wire()).elements[0].role == "edit"
     current = wire()

@@ -1412,7 +1412,7 @@ def test_identical_rematch_reuses_grounded_interpretation(tmp_path, record, task
     assert model.prompts[-1].startswith(CONTEXT_MAPPING_RULES)
     assert ocr.calls == detector.calls == 1
     assert any(
-        event.payload.get("check") == "identical_form_reused" for event in brain.log.read_all()
+        event.payload.get("check") == "similar_form_reused" for event in brain.log.read_all()
     )
 
 

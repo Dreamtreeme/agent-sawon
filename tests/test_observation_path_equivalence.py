@@ -276,7 +276,7 @@ def run_route(path, record, route, *, mutate=None):
         "single-action": "input_value_matches",
         "field-batch": "screen_fill_values",
         "empty-action-recovery": "missing_match_actions_completed",
-        "identical-capture": "identical_form_reused",
+        "identical-capture": "similar_form_reused",
         "model-to-pattern-cache": "visual_match_cache",
         "model-to-compiled-memory": "method_bound",
     }[route]
