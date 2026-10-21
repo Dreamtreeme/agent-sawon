@@ -75,6 +75,12 @@ class MethodActionGroup(BaseModel):
     screen_kind: str = "unknown"
     screen_phash: int | None = None
     image_size: tuple[int, int] | None = None
+    save_result: (
+        Literal["rejected", "confirmation_required", "ready_for_query", "unknown"] | None
+    ) = None
+    # Names in targets, never the detector IDs from the source run.
+    message_targets: list[str] = Field(default_factory=list)
+    repair_fields: list[str] = Field(default_factory=list)
 
 
 class MethodCompletionTarget(BaseModel):
@@ -175,6 +181,14 @@ def compile_method_candidate(
                 update={
                     "purpose": redact(group.purpose),
                     "expected_result": redact(group.expected_result),
+                    "targets": [
+                        target.model_copy(
+                            update={"anchor_texts": [redact(text) for text in target.anchor_texts]}
+                        )
+                        if target.name in group.message_targets
+                        else target
+                        for target in group.targets
+                    ],
                 }
             )
             signature = json.dumps(
@@ -187,6 +201,9 @@ def compile_method_candidate(
                             "role": target.role,
                             "point": target.point,
                             "bbox": target.bbox,
+                            "message_text": target.anchor_texts
+                            if target.name in compiled.message_targets
+                            else [],
                         }
                         for target in compiled.targets
                     ],
@@ -201,6 +218,8 @@ def compile_method_candidate(
                         }
                         for action in compiled.actions
                     ],
+                    "save_result": compiled.save_result,
+                    "repair_fields": compiled.repair_fields,
                 },
                 sort_keys=True,
                 ensure_ascii=False,
@@ -316,6 +335,7 @@ def method_from_match(
     source_transitions: tuple[str, ...] | list[str] = (),
     task_objective: str = "",
     task_contract_sha256: str = "",
+    values: dict[str, str] | None = None,
 ) -> LearnedMethod | None:
     """Retain executed screen-bound coordinates and parameterize their input sources.
 
@@ -335,8 +355,27 @@ def method_from_match(
     by_source = {slot.source_key: slot.name for slot in slots}
     targets: dict[int, MethodTarget] = {}
     actions = []
+
+    def coordinate_target(
+        target_id: int, control: dict, point: list | tuple | None, default_name: str
+    ) -> MethodTarget | None:
+        marker = markers.get(target_id)
+        selected = screen.get("selected_fields", {}).get(str(target_id), {})
+        bbox = selected.get("bbox") or (marker["bbox"] if marker else None)
+        if point is None:
+            if bbox is None:
+                return None
+            x, y, width, height = marker["bbox"] if marker else bbox
+            point = [x + width / 2, y + height / 2]
+        return MethodTarget(
+            name=selected.get("name") or default_name,
+            role=control["role"],
+            point=tuple(point),
+            bbox=tuple(bbox or [int(point[0]), int(point[1]), 1, 1]),
+        )
+
     for step in steps:
-        marker, control = markers.get(step["target"]), controls.get(step["target"])
+        control = controls.get(step["target"])
         if control is None:
             if step.get("point") is None or screen.get("screen_phash") is None:
                 return None
@@ -346,25 +385,14 @@ def method_from_match(
             return None
         target_id = step["target"]
         if target_id not in targets:
-            point = step.get("point")
-            if point is None and marker is not None:
-                x, y, width, height = marker["bbox"]
-                point = [x + width / 2, y + height / 2]
-            if point is None:
+            target = coordinate_target(
+                target_id,
+                control,
+                step.get("point"),
+                source or control.get("visual_description") or f"target_{len(targets) + 1}",
+            )
+            if target is None:
                 return None
-            selected = screen.get("selected_fields", {}).get(str(target_id), {})
-            bbox = selected.get("bbox") or (
-                marker["bbox"] if marker else [int(point[0]), int(point[1]), 1, 1]
-            )
-            target = MethodTarget(
-                name=selected.get("name")
-                or source
-                or control.get("visual_description")
-                or f"target_{len(targets) + 1}",
-                role=control["role"],
-                point=tuple(point),
-                bbox=tuple(bbox),
-            )
             targets[target_id] = target
         actions.append(
             MethodAction(
@@ -376,6 +404,38 @@ def method_from_match(
                 point=step.get("point") or targets[target_id].point,
             )
         )
+    message_targets = []
+    for target_id in dict.fromkeys(response.get("message_targets", [])):
+        control = controls.get(target_id)
+        if control is None:
+            continue
+        target = targets.get(target_id) or coordinate_target(
+            target_id,
+            control,
+            None,
+            control.get("visual_description") or f"message_{len(message_targets) + 1}",
+        )
+        if target is None:
+            continue
+        text = " ".join(
+            block["text"]
+            for block in sorted(screen.get("ocr", []), key=lambda b: (b["bbox"][1], b["bbox"][0]))
+            if contains(target.bbox, block["bbox"])
+        )
+        if not text.strip():
+            continue
+        for source, value in sorted(
+            (values or {}).items(), key=lambda item: len(str(item[1])), reverse=True
+        ):
+            if str(value):
+                text = text.replace(str(value), "{" + source + "}")
+        targets[target_id] = target.model_copy(update={"anchor_texts": [text]})
+        message_targets.append(target.name)
+    # Incomplete historical annotations leave an action-only method. Selection
+    # still requests the current save review rather than inventing a result.
+    has_save_review = bool(message_targets) and len(message_targets) == len(
+        set(response.get("message_targets", []))
+    )
     group = MethodActionGroup(
         id="pending",
         purpose=response.get("purpose", "")[:160],
@@ -387,6 +447,9 @@ def method_from_match(
         screen_kind=response.get("screen_kind", "unknown"),
         screen_phash=screen.get("screen_phash"),
         image_size=screen.get("image_size"),
+        save_result=response.get("save_result") if has_save_review else None,
+        message_targets=message_targets if has_save_review else [],
+        repair_fields=list(response.get("repair_fields", [])) if has_save_review else [],
     )
     encoded = json.dumps(group.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
     group = group.model_copy(update={"id": hashlib.sha256(encoded.encode()).hexdigest()[:16]})
@@ -523,7 +586,34 @@ def _bind_target(target: MethodTarget, screen: dict) -> tuple[dict, list[int]] |
 def _marker_text_ids(marker: dict, screen: dict) -> list[int]:
     if marker["source"] == "ocr":
         return list(marker.get("text_ids", []))
-    return [block["id"] for block in screen["ocr"] if contains(marker["bbox"], block["bbox"])]
+    return [
+        block["id"]
+        for block in sorted(screen["ocr"], key=lambda b: (b["bbox"][1], b["bbox"][0]))
+        if contains(marker["bbox"], block["bbox"])
+    ]
+
+
+def _bound_control(target: MethodTarget, marker: dict, label_ids: list[int], screen: dict) -> dict:
+    return ControlMeaning(
+        id=marker["id"],
+        role=target.role,
+        label_ids=label_ids,
+        text_ids=_marker_text_ids(marker, screen),
+        confidence=1,
+        confidence_policy="argmax",
+        visual_description=target.name,
+    ).model_dump(mode="json")
+
+
+def _register_bound_target(screen: dict, target: MethodTarget, marker: dict) -> None:
+    """Keep action and evidence references in the same current-frame namespace."""
+    markers = screen.setdefault("markers", [])
+    if not any(item["id"] == marker["id"] for item in markers):
+        markers.append({**marker, "source": "model_selected", "candidate_confidence": 1})
+    screen.setdefault("selected_fields", {}).setdefault(
+        str(marker["id"]),
+        {"name": target.name, "bbox": list(target.bbox), "role": target.role},
+    )
 
 
 def _coordinate_bindings(
@@ -537,20 +627,50 @@ def _coordinate_bindings(
         or hash_distance(group.screen_phash, current_hash) > max_phash_distance
     ):
         return None
-    first_id = max((marker["id"] for marker in screen.get("markers", [])), default=0) + 1
+    markers = {marker["id"]: marker for marker in screen.get("markers", [])}
+    next_id = max(markers, default=0) + 1
     if any(target.point is None or target.bbox is None for target in group.targets):
         return None
+    selected = {
+        (tuple(field["bbox"]), field["role"]): markers[int(ref)]
+        for ref, field in screen.get("selected_fields", {}).items()
+        if int(ref) in markers
+    }
+    bound = {}
+    for target in group.targets:
+        marker = selected.get((target.bbox, target.role))
+        if marker is None:
+            marker = dict(id=next_id, source="learned_point", bbox=list(target.bbox), text_ids=[])
+            next_id += 1
+        bound[target.name] = (marker, [])
+    return bound
+
+
+def _bind_save_review(
+    group: MethodActionGroup, controls: dict[int, dict], bound: dict, screen: dict, values: dict
+) -> dict:
+    """Reuse the learned classification only with its messages on this frame."""
+    if group.save_result in {None, "unknown"} or not group.message_targets:
+        return {}
+    targets = {target.name: target for target in group.targets}
+    blocks = {block["id"]: block["text"] for block in screen.get("ocr", [])}
+    message_ids = []
+    for name in group.message_targets:
+        target = targets.get(name)
+        if target is None or not target.anchor_texts:
+            return {}
+        marker, _ = bound[name]
+        observed = " ".join(blocks[i] for i in controls[marker["id"]]["text_ids"])
+        expected = " ".join(target.anchor_texts)
+        for source, value in values.items():
+            expected = expected.replace("{" + source + "}", str(value))
+        if not observed.strip() or normalize(observed) != normalize(expected):
+            return {}
+        message_ids.append(marker["id"])
     return {
-        target.name: (
-            {
-                "id": first_id + index,
-                "source": "learned_point",
-                "bbox": list(target.bbox),
-                "text_ids": [],
-            },
-            [],
-        )
-        for index, target in enumerate(group.targets)
+        "save_result": group.save_result,
+        "message_targets": message_ids,
+        "repair_fields": group.repair_fields,
     }
 
 
@@ -673,19 +793,7 @@ class MethodLibrary:
             steps, controls = [], {}
             for target in group.targets:
                 marker, label_ids = bound[target.name]
-                controls[marker["id"]] = ControlMeaning(
-                    id=marker["id"],
-                    role=target.role,
-                    label_ids=label_ids,
-                    text_ids=(
-                        list(marker.get("text_ids", []))
-                        if marker["source"] == "ocr"
-                        else [b["id"] for b in screen["ocr"] if contains(marker["bbox"], b["bbox"])]
-                    ),
-                    confidence=1,
-                    confidence_policy="argmax",
-                    visual_description=target.name,
-                ).model_dump(mode="json")
+                controls[marker["id"]] = _bound_control(target, marker, label_ids, screen)
             for action in group.actions:
                 marker, _ = bound[action.target]
                 source = sources.get(action.slot) if action.slot else None
@@ -709,14 +817,7 @@ class MethodLibrary:
             else:
                 for target in group.targets:
                     marker, _ = bound[target.name]
-                    screen.setdefault("markers", []).append(
-                        {**marker, "source": "model_selected", "candidate_confidence": 1}
-                    )
-                    screen.setdefault("selected_fields", {})[str(marker["id"])] = {
-                        "name": target.name,
-                        "bbox": list(target.bbox),
-                        "role": target.role,
-                    }
+                    _register_bound_target(screen, target, marker)
                 return BoundMethod(
                     method.id,
                     group.id,
@@ -729,6 +830,20 @@ class MethodLibrary:
                         "steps": steps,
                         "operation": "act",
                         "expected_result": group.expected_result,
+                        **_bind_save_review(
+                            group,
+                            controls,
+                            bound,
+                            screen,
+                            {
+                                **values,
+                                **{
+                                    slot.source_key: values[sources[slot.name]]
+                                    for slot in method.slots
+                                    if sources[slot.name] in values
+                                },
+                            },
+                        ),
                     },
                 )
         return None
@@ -768,13 +883,8 @@ class MethodLibrary:
                     visible.append(" ".join(visible))
                 if not any(field_matches(source, text, values) for text in visible):
                     continue
-                controls[marker["id"]] = ControlMeaning(
-                    id=marker["id"],
-                    role=target.role,
-                    label_ids=label_ids,
-                    text_ids=text_ids,
-                    confidence=1,
-                ).model_dump(mode="json")
+                _register_bound_target(screen, target, marker)
+                controls[marker["id"]] = _bound_control(target, marker, label_ids, screen)
                 evidence[source] = {"field": source, "target": marker["id"]}
         return list(controls.values()), list(evidence.values())
 

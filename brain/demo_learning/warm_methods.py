@@ -453,6 +453,7 @@ def compile_warm_method(
             context_anchors=context_anchors,
             task_objective=source["task"]["objective"],
             task_contract_sha256=source["task_sha256"],
+            values=source["values"],
         )
         if fragment is None:
             raise ValueError(

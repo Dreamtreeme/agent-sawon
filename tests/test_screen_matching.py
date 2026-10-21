@@ -1262,8 +1262,9 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(tmp_path, record,
     assert len(hits) == 1
 
 
-def test_save_result_binds_method_but_uses_current_review_before_dispatch(
-    tmp_path, record, task_instruction
+@pytest.mark.parametrize("has_review", [False, True], ids=["action-only", "current-save-review"])
+def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
+    tmp_path, record, task_instruction, has_review
 ):
     brain, model, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
     request, services = matching_contract(brain)
@@ -1275,7 +1276,15 @@ def test_save_result_binds_method_but_uses_current_review_before_dispatch(
     def bind_method(screen):
         bound.append(screen)
         return ScreenMatch(
-            screen_kind="dialog", procedure_step="task-action", controls=[], steps=[]
+            screen_kind="dialog",
+            procedure_step="task-action",
+            controls=[
+                {"id": 7, "role": "button", "confidence": 1},
+                {"id": 8, "role": "text", "confidence": 1},
+            ],
+            steps=[{"target": 7, "action": "click", "intent": "navigate", "point": [20, 20]}],
+            save_result="ready_for_query" if has_review else None,
+            message_targets=[8] if has_review else [],
         )
 
     services.methods.apply = bind_method
@@ -1294,8 +1303,15 @@ def test_save_result_binds_method_but_uses_current_review_before_dispatch(
 
     selected = select_match_response(request, services, prepared)
 
-    assert selected.response == cached
-    assert selected.cache_hit is not None
+    if has_review:
+        assert selected.response == selected.method_proposal
+        assert selected.response.save_result == "ready_for_query"
+        assert selected.response.steps[0].intent == "navigate"
+        assert selected.cache_hit is None
+        assert not selected.used_image
+    else:
+        assert selected.response == cached
+        assert selected.cache_hit is not None
     assert bound == [request.screen]
     assert model.prompts == []
 

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from PIL import Image
+from test_visual_scene import wire
 
 from brain.cache.methods import MethodDocument, MethodLibrary
 from brain.cache.visual_match import VisualMatchDocument, VisualMatchEntry
@@ -15,8 +16,12 @@ from brain.demo_learning.warm_methods import (
     compile_warm_method,
     read_warm_candidates,
 )
+from brain.graph.matching import ScreenMatch, compile_match
 from brain.graph.method_runtime import open_method_library
+from brain.graph.save_review import SaveReviewResponse, validate_save_review
 from brain.graph.screen_mapping import ScreenMapping
+from brain.visual.scene import Detection, VisualControl, bind_scene
+from pipeline.schemas import OcrBlock
 from sawon_runtime.storage import RunLog, atomic_write_json
 
 
@@ -143,6 +148,76 @@ def test_warm_compiler_preserves_successful_model_points_and_trace_order(tmp_pat
     assert bound is not None
     assert bound["steps"][0]["point"] == [200.0, 300.0]
     assert bound["steps"][0]["source"] == "hbl_no"
+
+
+def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_navigation(tmp_path):
+    # Synthetic successful cold response; no model or desktop is involved.
+    cold_screen = {
+        "image_size": [400, 200],
+        "screen_phash": 123,
+        "ocr": [
+            {"id": 1, "text": "Saved HBL-001", "bbox": [10, 10, 270, 20]},
+            {"id": 2, "text": "OK", "bbox": [100, 80, 60, 20]},
+        ],
+        "markers": [
+            {"id": 10, "source": "ocr", "bbox": [10, 10, 270, 20], "text_ids": [1]},
+            {"id": 20, "source": "omniparser", "bbox": [100, 80, 60, 20], "text_ids": []},
+        ],
+    }
+    cold_response = response(target=20, intent="navigate", point=(135, 90), taught="inspect")
+    cold_response.update(screen_kind="dialog", save_result="ready_for_query", message_targets=[10])
+    cold_response["controls"].append({"id": 10, "role": "text", "text_ids": [1], "confidence": 1})
+    inputs = [
+        *candidates(),
+        WarmCandidate("c002", "c" * 64, "obs-3", 2, cold_screen, cold_response),
+    ]
+    method = compile_warm_method(
+        source(), inputs, draft(groups=("c000", "c001", "c002")), method_id="warm-save-review"
+    )
+    group = method.action_groups[-1]
+    assert group.save_result == "ready_for_query"
+    message = next(target for target in group.targets if target.name in group.message_targets)
+    assert message.anchor_texts == ["Saved {hbl_no}"]
+
+    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
+    library.upsert(method)
+    current = {
+        **cold_screen,
+        "markers": [],
+        "ocr": [
+            {"id": 101, "text": "Saved HBL-002", "bbox": [10, 10, 270, 20]},
+            {"id": 102, "text": "OK", "bbox": [100, 80, 60, 20]},
+        ],
+    }
+    rebound = library.bind(method.id, {}, current, {"hbl_no": "HBL-002"}, group_id=group.id)
+    assert rebound is not None
+    plan = ScreenMatch.model_validate(rebound)
+    assert plan.message_targets and plan.message_targets != [10]
+    assert plan.steps[0].point == [135, 90]
+    boxes = {item["id"]: item["bbox"] for item in current["markers"]}
+    observation = bind_scene(
+        wire(),
+        [OcrBlock(**block, confidence=1) for block in current["ocr"]],
+        Detection(
+            screen_kind=plan.screen_kind,
+            controls=[
+                VisualControl(**control.model_dump(), bbox=boxes[control.id])
+                for control in plan.controls
+            ],
+        ),
+    )
+    review = compile_match(plan, observation, SaveReviewResponse)
+    validate_save_review(review, observation)
+    assert review.result == "ready_for_query"
+    assert review.next_decision.to_decision().intent == "navigate"
+    assert set(review.evidence_refs) <= {item.ref for item in observation.elements}
+
+    # The same geometry must not turn an error or unreadable message into a saved result.
+    for label, text in [("different-result", "Save rejected"), ("missing-message", "")]:
+        changed = {**current, "ocr": [{**current["ocr"][0], "text": text}, current["ocr"][1]]}
+        fallback = library.bind(method.id, {}, changed, {"hbl_no": "HBL-002"}, group_id=group.id)
+        assert fallback is not None, label
+        assert ScreenMatch.model_validate(fallback).save_result is None, label
 
 
 def test_warm_compiler_keeps_only_visible_non_instance_context_anchors():

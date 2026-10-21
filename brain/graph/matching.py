@@ -1689,9 +1689,16 @@ def select_match_response(
     method_proposal = request.proposal if allow_method else None
     if allow_method and method_proposal is None and "correction" not in screen:
         method_proposal = services.methods.apply(screen)
-        if request.phase == "save_result" and method_proposal is not None:
-            # Keep the bound edge as fallback provenance, but ask the model to
-            # review the current save result before dispatching its action.
+        if (
+            request.phase == "save_result"
+            and method_proposal is not None
+            and (
+                method_proposal.save_result in {None, "unknown"}
+                or not method_proposal.message_targets
+            )
+        ):
+            # Legacy/action-only methods still need current result evidence.
+            # A method carrying a rebound save review uses the common executor.
             method_proposal = None
     cache_hit = services.cache.lookup(prepared.state) if method_proposal is None else None
     if method_proposal is not None:

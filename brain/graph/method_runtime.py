@@ -555,6 +555,7 @@ class MethodRuntime:
             slots=slots,
             task_objective=task.objective if task else "",
             task_contract_sha256=(self.task_context.task_sha256 or "") if task else "",
+            values=self._binding_values(),
         )
         if method is not None:
             if previous is not None:

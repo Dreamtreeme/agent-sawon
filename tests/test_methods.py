@@ -125,6 +125,13 @@ def test_saved_fill_coordinates_bind_current_values_as_visible_evidence(tmp_path
     assert evidence == [{"field": "supplier", "target": 112}]
     assert controls[0]["id"] == 112
     assert 102 in controls[0]["text_ids"]
+    assert current["selected_fields"]["112"]["bbox"] == [100, 25, 200, 30]
+    assert 112 in {marker["id"] for marker in current["markers"]}
+    # Rebinding evidence on this frame keeps its registered control ID.
+    assert library.bind_visible_value_evidence(
+        "find-party", {"requested_party": "supplier"}, current, {"supplier": "New supplier"}
+    ) == (controls, evidence)
+    assert len(current["markers"]) == len({marker["id"] for marker in current["markers"]})
     assert library.bind_visible_value_evidence(
         "find-party",
         {"requested_party": "supplier"},

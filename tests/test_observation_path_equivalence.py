@@ -287,17 +287,7 @@ def run_route(path, record, route, *, mutate=None):
         "empty-action-recovery",
         "identical-capture",
         "cold-to-warm-cache",
-        pytest.param(
-            "cold-to-warm-compiled",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=MissingWarmEvidence,
-                reason=(
-                    "Synthetic compiled candidate bypasses read_warm_candidates; "
-                    "action 3 / evidence 4 loses memo; live occurrence unconfirmed"
-                ),
-            ),
-        ),
+        "cold-to-warm-compiled",
     ],
 )
 def test_synthetic_same_facts_reach_same_memory(tmp_path, record, route):

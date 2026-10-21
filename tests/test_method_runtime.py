@@ -17,8 +17,8 @@ from brain.graph.matching import MethodBinding, ScreenMatch
 from brain.graph.method_runtime import open_method_library
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
-from brain.visual.markers import Marker, build_markers
-from brain.visual.scene import ControlMeaning
+from brain.visual.markers import Marker, build_markers, ground_meanings
+from brain.visual.scene import ControlMeaning, bind_scene
 from pipeline.schemas import OcrBlock
 from sawon_runtime.storage import RunLog, atomic_write_json
 
@@ -219,6 +219,70 @@ def test_learned_method_is_scoped_to_exact_user_education_file(tmp_path):
 
     assert brain.methods.prompt_context()["methods"] == []
     assert brain.methods.context()["methods"] == []
+
+
+def test_synthetic_warm_evidence_survives_scene_grounding_and_updates_notebook(tmp_path):
+    # Synthetic current OCR, using the real binder, scene projection and memo update.
+    brain, model, relay = setup(tmp_path)
+    original = brain.methods.library.methods()[0]
+    group = original.action_groups[0]
+    library = MethodLibrary(tmp_path / "evidence-methods.json", enabled=True)
+    library.upsert(
+        original.model_copy(
+            update={
+                "action_groups": [
+                    group.model_copy(
+                        update={
+                            "id": f"input-{index}",
+                            "targets": [next(t for t in group.targets if t.name == action.target)],
+                            "actions": [action],
+                        }
+                    )
+                    for index, action in enumerate(group.actions)
+                ]
+            }
+        )
+    )
+    blocks, _, screen, _ = catalog(shift=20)
+    blocks.extend(
+        [
+            OcrBlock(id=180, text=brain.values["customer"], bbox=(105, 45, 130, 15), confidence=1),
+            OcrBlock(
+                id=190,
+                text=brain.values["reference"],
+                bbox=(105, 115, 100, 15),
+                confidence=1,
+            ),
+        ]
+    )
+    screen["ocr"] = [block.model_dump(mode="json") for block in blocks]
+    controls, evidence = library.bind_visible_value_evidence(original.id, {}, screen, brain.values)
+    assert {item["field"] for item in evidence} == {"customer", "reference"}
+    assert len({item["target"] for item in evidence}) == 2
+    response = ScreenMatch(
+        screen_kind="editor",
+        procedure_step="task-action",
+        controls=controls,
+        evidence=evidence,
+        steps=[],
+    )
+    meanings = brain._groundable_interpretation(response, screen)
+    markers = [
+        Marker(
+            id=item["id"],
+            source=item["source"],
+            bbox=item["bbox"],
+            confidence=1,
+            text_ids=item.get("text_ids", []),
+        )
+        for item in screen["markers"]
+    ]
+    brain.observation = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
+    brain._remember_model_task_evidence(response)
+
+    assert set(brain.verified) == {"customer", "reference"}
+    assert not brain.save_issued
+    assert model.prompts == [] and relay.actions == []
 
 
 @pytest.mark.parametrize(
