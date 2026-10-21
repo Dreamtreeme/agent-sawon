@@ -28,8 +28,9 @@ Luna, Gemini, Jev와 replay 어댑터는 비교·재생 코드일 수 있으며 
 분기한 뒤 Context Recall → Pattern Matching → 화면 판단 경로로 연결한다. 기억 경로는
 필드 기하·입력 키 대응·절차를 인출하고 현재 값은 OCR로 읽는다. Context Recall은 이번 실행의
 상태를 읽기만 하며 모델 판단·검증·복구는 `screen_decision.py`가 담당한다.
-같은 창·크기의 pHash 유사 캡처는 이전 OCR·탐지를 재사용하되 문맥·패턴·판단 순서를 거친다.
-카탈로그 유사도도 `methods.max_phash_distance`를 사용하며 SHA256 완전일치는 사용하지 않는다. 성공 기록 정제는 Memory Compilation이다.
+같은 창·크기의 pHash 유사 캡처는 로컬 탐지 기하를 재사용하되 OCR은 현재 프레임에서 다시
+실행하고 문맥·패턴·판단 순서를 거친다. 카탈로그 유사도도 `methods.max_phash_distance`를
+사용하며 SHA256 완전일치는 사용하지 않는다. 성공 기록 정제는 Memory Compilation이다.
 분기 조건과 저장 형식은 [용어와 코드 대응](runtime-terminology.md)에 명시한다.
 
 1. `pipeline`이 문서를 렌더링하고 GPU OCR·추출·교차 검증을 수행합니다.

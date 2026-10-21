@@ -1316,7 +1316,7 @@ def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
     assert model.prompts == []
 
 
-def test_identical_capture_reuses_ocr_but_replans_current_task_action(tmp_path, record):
+def test_similar_capture_reruns_ocr_but_reuses_detector_geometry(tmp_path, record):
     next_action = named_response(
         fields={"Next": {"role": "button", "bbox": [100, 15, 150, 30]}},
         assignments={},
@@ -1329,8 +1329,8 @@ def test_identical_capture_reuses_ocr_but_replans_current_task_action(tmp_path, 
     first_id = brain.observation.obs_id
     brain._observe()
     assert brain.observation.obs_id != first_id
-    assert ocr.calls == detector.calls == 1
-    # Exact reuse joins the same decision path during observation.
+    assert ocr.calls == 2 and detector.calls == 1
+    # Similar-screen geometry reuse joins the same decision path during observation.
     assert len(model.prompts) == 2
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
@@ -1342,7 +1342,7 @@ def test_identical_capture_reuses_ocr_but_replans_current_task_action(tmp_path, 
     )
     relay.color = "black"
     brain._observe()
-    assert ocr.calls == detector.calls == 2
+    assert ocr.calls == 3 and detector.calls == 2
 
 
 def test_gemini_interprets_and_plans_in_one_image_call(tmp_path, record, task_instruction):
@@ -1389,7 +1389,9 @@ def test_task_planner_sees_that_post_save_query_is_still_missing(
     assert saved["missing_fields"] == sorted(brain.values)
 
 
-def test_identical_rematch_reuses_grounded_interpretation(tmp_path, record, task_instruction):
+def test_similar_rematch_uses_fresh_ocr_and_reused_detector_geometry(
+    tmp_path, record, task_instruction
+):
     from brain.observe.progress import navigation_state
 
     full = named_response()
@@ -1410,7 +1412,7 @@ def test_identical_rematch_reuses_grounded_interpretation(tmp_path, record, task
     assert brain._review_node() == "execution"
     assert len(model.prompts) == 2
     assert model.prompts[-1].startswith(CONTEXT_MAPPING_RULES)
-    assert ocr.calls == detector.calls == 1
+    assert ocr.calls == 2 and detector.calls == 1
     assert any(
         event.payload.get("check") == "similar_form_reused" for event in brain.log.read_all()
     )

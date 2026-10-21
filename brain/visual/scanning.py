@@ -203,6 +203,24 @@ class ScreenScanner:
             if self.retrieve_screen_memory is not None
             else None
         )
+        blocks = self.ocr.read(page)
+        for secret in self.secrets:
+            if secret:
+                blocks = [
+                    block.model_copy(update={"text": block.text.replace(secret, "[REDACTED]")})
+                    for block in blocks
+                ]
+        ocr_ms = (perf_counter() - started) * 1000
+        # OCR is current-frame evidence and is never inherited from a similar capture.
+        atomic_write_json(
+            folder / "ocr.json",
+            {
+                "source": "local_ocr",
+                "obs_id": str(wire.obs_id),
+                "ocr_ms": ocr_ms,
+                "blocks": [block.model_dump(mode="json") for block in blocks],
+            },
+        )
         # Compare with the original cached capture, not a chain of similar frames.
         distance, previous = min(
             (
@@ -214,7 +232,7 @@ class ScreenScanner:
             key=lambda item: item[0],
             default=(None, None),
         )
-        reuse_catalog = self.reuse_similar and previous is not None
+        reuse_catalog = self.reuse_similar and previous is not None and memory is None
         self.log.append(
             "verify",
             payload={
@@ -229,54 +247,55 @@ class ScreenScanner:
         )
         if reuse_catalog:
             assert previous.detection is not None
-            catalog = replace(previous, page=page, reused=True)
+            catalog, detector_ms = self._build_catalog(
+                page,
+                cache_key,
+                blocks,
+                memory,
+                ocr_ms,
+                reused_boxes=previous.boxes,
+            )
+            catalog.reused = True
             self.log.append(
                 "verify",
                 payload={
                     "check": "similar_form_reused",
                     "obs_id": str(wire.obs_id),
-                    "ocr_and_detection_skipped": True,
+                    "ocr_skipped": False,
+                    "detector_skipped": True,
                     "phash_distance": distance,
                     "max_phash_distance": self.max_phash_distance,
                 },
             )
-            return self._resolve(wire, catalog)
-        blocks = self.ocr.read(page)
-        for secret in self.secrets:
-            if secret:
-                blocks = [
-                    block.model_copy(update={"text": block.text.replace(secret, "[REDACTED]")})
-                    for block in blocks
-                ]
-        ocr_ms = (perf_counter() - started) * 1000
-        # Save OCR even when a provider rejects the subsequent detection request.
-        atomic_write_json(
-            folder / "ocr.json",
-            {
-                "source": "local_ocr",
-                "obs_id": str(wire.obs_id),
-                "ocr_ms": ocr_ms,
-                "blocks": [block.model_dump(mode="json") for block in blocks],
-            },
-        )
+            return self._resolve(wire, catalog, ocr_ms=ocr_ms, detector_ms=detector_ms)
         catalog, detector_ms = self._build_catalog(page, cache_key, blocks, memory, ocr_ms)
         return self._resolve(wire, catalog, ocr_ms=ocr_ms, detector_ms=detector_ms)
 
-    def _build_catalog(self, page, cache_key, blocks, memory, ocr_ms=0.0):
+    def _build_catalog(self, page, cache_key, blocks, memory, ocr_ms=0.0, *, reused_boxes=None):
         """Two observation sources feed the same context-recall and grounding path."""
         folder = page.image_path.parent
         local_started = perf_counter()
+        detector_skipped = memory is not None or reused_boxes is not None
         boxes = (
-            []
+            list(reused_boxes)
+            if reused_boxes is not None
+            else []
             if memory is not None
             else self.detector.read(page, ocr_boxes=tuple(block.bbox for block in blocks))
+        )
+        geometry_source = (
+            "memory_retrieval"
+            if memory is not None
+            else "phash_catalog"
+            if reused_boxes is not None
+            else "scanning"
         )
         atomic_write_json(
             folder / "local-detections.json",
             {
                 "obs_id": folder.name,
                 "boxes": [b.model_dump(mode="json") for b in boxes],
-                "source": "memory_retrieval" if memory else "scanning",
+                "source": geometry_source,
             },
         )
         markers = build_markers(
@@ -311,9 +330,11 @@ class ScreenScanner:
                 "markers": len(markers),
                 "ocr_ms": ocr_ms,
                 "ocr_worker": getattr(self.ocr, "last_metrics", {}),
-                "detector_worker": {} if memory else getattr(self.detector, "last_metrics", {}),
+                "detector_worker": {}
+                if detector_skipped
+                else getattr(self.detector, "last_metrics", {}),
                 "route": "memory_retrieval" if memory else "scanning",
-                "detector_skipped": memory is not None,
+                "detector_skipped": detector_skipped,
                 "local_detector_ms": detector_ms,
                 "local_detector_api_cost_usd": 0,
             },
@@ -475,8 +496,6 @@ class ScreenScanner:
             selected_fields=catalog.selected_fields,
             reused=catalog.reused,
         )
-        if catalog.reused:
-            request = replace(request, interpretation=catalog.interpretation())
         detection_ms = 0.0
         refinement_attempted = catalog.refined
         for attempt in range(3):

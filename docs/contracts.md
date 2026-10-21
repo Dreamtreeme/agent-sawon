@@ -21,7 +21,7 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | 인출된 화면·행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup` | `method_from_match`, `compile_memory`, `MemoryRetrieval`, `screen_decision` | 행동 좌표, 관찰 필드 기하·입력 키, 저장 결과 분류·메시지 대상을 보존하고 현재 화면에 결합 |
 | 실행 문맥 회상 | `brain/graph/context_recall.py`의 `recall_context` | `screen_decision.build_decision_prompt` | 이번 실행의 이력·누적 증거·남은 입력·진행 상태를 읽음. 선택·모델 호출·상태 변경 없음 |
 | 재탐색 요청 | `ScreenMapping.needs_refinement` → `ScreenPlan`/`ScreenMatch` → `SemanticDetection` | `ScreenScanner._resolve` | 필요한 보이는 컨트롤이 없으면 동일 캡처·OCR로 탐색 재진입. provider 스키마에도 존재 |
-| pHash 유사 캡처의 화면 해석 | `SemanticRequest.interpretation` / `_SceneCatalog.interpretation` | `Brain._detect_visual` → `screen_decision` | OCR·탐지는 재사용하고 현재 문맥·판단은 공통 순서로 수행 |
+| pHash 유사 캡처의 화면 해석 | `SemanticRequest` / `_SceneCatalog` | `Brain._detect_visual` → `screen_decision` | 로컬 탐지 기하는 재사용하고 OCR은 현재 프레임에서 다시 실행. 현재 문맥·판단은 공통 순서로 수행 |
 | 관찰 경로 선택 | `ScreenScanner.scan` / `MemoryRetrieval.retrieve_screen_memory` | `_SceneCatalog`, `screen_decision` | 캡처 직후 유사도 확인 → 메모리 기하 또는 탐지. 행동 선택은 아직 하지 않음 |
 | 시각 공용 자료형 | `sawon_runtime/visual.py` | OCR·탐지·pipeline | 렌더 페이지와 OCR block 계약 |
 | 공개 record/action/observation/event | `../agent-sawon-bench/interfaces/sawon_interfaces/contracts.py` | core와 bench | 두 저장소가 공유하는 버전 있는 Pydantic 계약 |
@@ -155,9 +155,9 @@ bench 외부 에이전트 설정의 `execution_phase`로 cold/warm/unknown을 �
 
 ### OCR 카탈로그 재사용
 
-`ScreenScanner`는 SHA256 대신 pHash 해밍 거리로 실행 중 OCR·탐지 카탈로그를 선택한다.
+`ScreenScanner`는 SHA256 대신 pHash 해밍 거리로 실행 중 로컬 탐지 기하를 선택한다.
 같은 창 handle·화면 크기에서 `methods.max_phash_distance` 이내인 가장 가까운 원본 카탈로그를
 재사용하며, 거리가 같은 경우 최근 항목을 선택한다. 재사용한 프레임으로 기준 해시를 이동시키지 않는다.
 `screen_similarity.source=phash_catalog`, `similar_form_reused.phash_distance`에 판정을 기록한다.
-재사용 시 OCR 값도 이전 카탈로그에서 가져오므로, pHash에 반영되지 않는 작은 텍스트 변화는
-새로 읽지 못할 수 있다. pHash 유사도 자체가 입력값 또는 업무 완료의 증명은 아니다.
+OCR은 pHash 거리와 관계없이 매 캡처에서 다시 실행한다. 따라서 입력값과 버튼 문구 같은 현재
+텍스트를 이전 프레임에서 가져오지 않는다. pHash 유사도 자체는 입력값 또는 업무 완료의 증명이 아니다.

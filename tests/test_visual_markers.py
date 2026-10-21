@@ -589,12 +589,12 @@ def test_failed_refinement_returns_navigation_semantics_to_decision_graph(tmp_pa
 
 
 @pytest.mark.parametrize(
-    ("distance", "changed_window", "changed_size", "expected_reads"),
+    ("distance", "changed_window", "changed_size", "expected_detector_reads"),
     [(6, False, False, 1), (7, False, False, 2), (1, True, False, 2), (1, False, True, 2)],
     ids=["within-phash", "outside-phash", "other-window", "other-size"],
 )
 def test_synthetic_phash_catalog_reuse_boundary(
-    tmp_path, monkeypatch, distance, changed_window, changed_size, expected_reads
+    tmp_path, monkeypatch, distance, changed_window, changed_size, expected_detector_reads
 ):
     # Synthetic hashes isolate the distance boundary from image encoding and OCR variability.
     from brain.visual import scanning
@@ -602,6 +602,8 @@ def test_synthetic_phash_catalog_reuse_boundary(
     blocks, boxes, _, meaning = fixture()
     captures = []
     reads = []
+    detector_reads = []
+    requests = []
 
     class Relay:
         def screenshot(self, observation, path):
@@ -613,11 +615,17 @@ def test_synthetic_phash_catalog_reuse_boundary(
     class Ocr:
         def read(self, page):
             reads.append(page)
-            return blocks
+            text = "Reference" if len(reads) == 1 else "Current Reference"
+            return [blocks[0].model_copy(update={"text": text})]
 
     class Detector:
         def read(self, page, *, ocr_boxes=()):
+            detector_reads.append(page)
             return boxes
+
+    def interpret(request):
+        requests.append(request)
+        return meaning
 
     monkeypatch.setattr(
         scanning, "perceptual_hash", lambda path: 0 if len(captures) == 1 else (1 << distance) - 1
@@ -628,7 +636,7 @@ def test_synthetic_phash_catalog_reuse_boundary(
         Ocr(),
         tmp_path,
         log,
-        lambda request: meaning,
+        interpret,
         detector=Detector(),
         reuse_similar=True,
         max_phash_distance=6,
@@ -641,14 +649,18 @@ def test_synthetic_phash_catalog_reuse_boundary(
         current.screenshot.width = 401
     scanner.scan(current)
     assert captures[0] != captures[1]
-    assert len(reads) == expected_reads
+    assert len(reads) == 2
+    assert requests[-1].screen["ocr"][0]["text"] == "Current Reference"
+    assert len(detector_reads) == expected_detector_reads
     reused = [e.payload for e in log.read_all() if e.payload.get("check") == "similar_form_reused"]
-    assert bool(reused) is (expected_reads == 1)
+    assert bool(reused) is (expected_detector_reads == 1)
     if reused:
         assert reused[0]["phash_distance"] == distance
+        assert reused[0]["ocr_skipped"] is False
+        assert reused[0]["detector_skipped"] is True
 
 
-def test_same_screen_rematch_corrects_and_updates_cached_meaning_without_new_ocr(tmp_path):
+def test_same_screen_rematch_uses_fresh_ocr_and_reused_geometry(tmp_path):
     blocks, boxes, _, meaning = fixture()
     calls = {"capture": 0, "ocr": 0, "detector": 0}
     requests = []
@@ -693,7 +705,7 @@ def test_same_screen_rematch_corrects_and_updates_cached_meaning_without_new_ocr
     assert perception.scan(wire()).elements[0].role == "edit"
     current = wire()
     assert perception.scan(current).elements[0].role == "combobox"
-    assert requests[1].interpretation.controls[0].role == "edit"
+    assert requests[1].interpretation is None
     before_rematch = calls.copy()
     corrected = perception.rematch(current)
     assert calls == before_rematch  # Rematching must not capture or run local models.
@@ -703,7 +715,7 @@ def test_same_screen_rematch_corrects_and_updates_cached_meaning_without_new_ocr
     assert perception.planning_context()[0].screen["observation_route"] == "memory_retrieval"
     assert "control:0:value_outside_local_marker" in corrected.global_uncertainties
     assert perception.scan(wire()).elements[0].role == "combobox"
-    assert calls == {"capture": 3, "ocr": 1, "detector": 1}
+    assert calls == {"capture": 3, "ocr": 3, "detector": 1}
     assert len(requests) == 4  # Reused captures also resolve current context before returning.
 
 
