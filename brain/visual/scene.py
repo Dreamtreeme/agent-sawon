@@ -150,6 +150,11 @@ def mostly_contains(outer: tuple, inner: tuple, minimum: float = 0.95) -> bool:
     return intersection / max(1, c * d) >= minimum
 
 
+def contains_control_text(control: tuple, text: tuple) -> bool:
+    """Allow OCR glyph boxes to cross an input border by a few pixels."""
+    return mostly_contains(control, text, minimum=0.85)
+
+
 def overlap(left, right) -> float:
     x, y, w, h = left
     a, b, c, d = right
@@ -234,7 +239,8 @@ def bind_scene(
             raise ValueError("duplicate_ocr_reference")
         if any(i not in by_id for i in ids):
             raise ValueError("unknown_ocr_reference")
-        if any(not contains(control.bbox, by_id[i].bbox) for i in control.text_ids):
+        text_inside = contains_control_text if control.role in {"edit", "combobox"} else contains
+        if any(not text_inside(control.bbox, by_id[i].bbox) for i in control.text_ids):
             raise ValueError("value_outside_visual_control")
         if control.parent_id is not None:
             parent = controls.get(control.parent_id)

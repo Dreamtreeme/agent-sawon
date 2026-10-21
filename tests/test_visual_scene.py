@@ -72,6 +72,15 @@ def test_input_uses_control_rectangle_not_label_and_only_ocr_value():
     assert result.screenshot.desktop_point((200, 35)) == (0, 70)
 
 
+def test_input_accepts_ocr_value_with_small_border_jitter():
+    blocks, detection = scene(value="12")
+    blocks[1] = blocks[1].model_copy(update={"bbox": (96, 25, 45, 15)})
+
+    target = bind_scene(wire(), blocks, detection).elements[0]
+
+    assert target.value == "12"
+
+
 def test_uncertain_ocr_is_not_value_evidence():
     blocks, detection = scene(confidence=0.2)
     assert bind_scene(wire(), blocks, detection).elements[0].value is None

@@ -31,6 +31,7 @@ from .scene import (
     SemanticDetection,
     bind_scene,
     contains,
+    contains_control_text,
     same_control_region,
 )
 
@@ -653,7 +654,11 @@ class ScreenScanner:
                                 id=int(ref),
                                 role=item["role"],
                                 visual_description=item["name"],
-                                text_ids=[b.id for b in blocks if contains(item["bbox"], b.bbox)],
+                                text_ids=[
+                                    b.id
+                                    for b in blocks
+                                    if contains_control_text(item["bbox"], b.bbox)
+                                ],
                                 confidence=1,
                             ),
                         )
@@ -949,7 +954,7 @@ class ScreenScanner:
                     "value": " ".join(
                         block.text
                         for block in sorted(blocks, key=lambda b: (b.bbox[1], b.bbox[0]))
-                        if contains(item["bbox"], block.bbox)
+                        if contains_control_text(item["bbox"], block.bbox)
                     ),
                 }
                 for item in memory["fields"]

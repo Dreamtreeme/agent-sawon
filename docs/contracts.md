@@ -161,3 +161,5 @@ bench 외부 에이전트 설정의 `execution_phase`로 cold/warm/unknown을 �
 `screen_similarity.source=phash_catalog`, `similar_form_reused.phash_distance`에 판정을 기록한다.
 OCR은 pHash 거리와 관계없이 매 캡처에서 다시 실행한다. 따라서 입력값과 버튼 문구 같은 현재
 텍스트를 이전 프레임에서 가져오지 않는다. pHash 유사도 자체는 입력값 또는 업무 완료의 증명이 아니다.
+입력칸 값 OCR은 독립 검출기의 작은 경계 오차를 허용하기 위해 OCR 상자의 85% 이상이 해당
+`edit`/`combobox` 영역에 포함되면 연결한다. 일반 텍스트와 구조 부모의 포함 계약은 바꾸지 않는다.

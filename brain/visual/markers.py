@@ -10,7 +10,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from sawon_runtime.visual import OcrBlock
 
 from .row_candidates import row_candidates
-from .scene import Detection, SemanticDetection, VisualControl, contains, mostly_contains, overlap
+from .scene import (
+    Detection,
+    SemanticDetection,
+    VisualControl,
+    contains,
+    contains_control_text,
+    mostly_contains,
+    overlap,
+)
 
 
 class Marker(BaseModel):
@@ -258,7 +266,9 @@ def ground_meanings(
             raise ValueError("ocr_marker_text_mismatch")
         if meaning.role in {"edit", "combobox"} and not meaning.text_ids:
             meaning = meaning.model_copy(
-                update={"text_ids": [b.id for b in blocks if contains(marker.bbox, b.bbox)]}
+                update={
+                    "text_ids": [b.id for b in blocks if contains_control_text(marker.bbox, b.bbox)]
+                }
             )
 
         controls.append(VisualControl(**meaning.model_dump(), bbox=list(marker.bbox)))
@@ -278,10 +288,11 @@ def ground_meanings(
             )
     grounded_controls = []
     for control in controls:
+        text_inside = contains_control_text if control.role in {"edit", "combobox"} else contains
         valid_text_ids = [
             block.id
             for block in blocks
-            if block.id in control.text_ids and contains(control.bbox, block.bbox)
+            if block.id in control.text_ids and text_inside(control.bbox, block.bbox)
         ]
         if len(valid_text_ids) != len(control.text_ids):
             uncertainties.append(f"control:{control.id}:value_outside_local_marker")

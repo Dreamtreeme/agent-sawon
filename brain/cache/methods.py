@@ -16,7 +16,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from brain.observe.values import field_matches, normalize
 from brain.visual.action_rebind import hash_distance
 from brain.visual.markers import marker_role_allowed
-from brain.visual.scene import ControlMeaning, contains, overlap, same_control_region
+from brain.visual.scene import (
+    ControlMeaning,
+    contains,
+    contains_control_text,
+    overlap,
+    same_control_region,
+)
 from sawon_runtime.storage import atomic_write_json
 
 # Completion evidence still binds visible values through label-to-control geometry.
@@ -641,13 +647,15 @@ def _bind_target(target: MethodTarget, screen: dict) -> tuple[dict, list[int]] |
     return candidates[0][1], candidates[0][2]
 
 
-def _marker_text_ids(marker: dict, screen: dict) -> list[int]:
+def _marker_text_ids(marker: dict, screen: dict, role: str) -> list[int]:
     if marker["source"] == "ocr":
         return list(marker.get("text_ids", []))
     return [
         block["id"]
         for block in sorted(screen["ocr"], key=lambda b: (b["bbox"][1], b["bbox"][0]))
-        if contains(marker["bbox"], block["bbox"])
+        if (contains_control_text if role in {"edit", "combobox"} else contains)(
+            marker["bbox"], block["bbox"]
+        )
     ]
 
 
@@ -656,7 +664,7 @@ def _bound_control(target: MethodTarget, marker: dict, label_ids: list[int], scr
         id=marker["id"],
         role=target.role,
         label_ids=label_ids,
-        text_ids=_marker_text_ids(marker, screen),
+        text_ids=_marker_text_ids(marker, screen, target.role),
         confidence=1,
         confidence_policy="argmax",
         visual_description=target.name,
@@ -954,7 +962,7 @@ class MethodLibrary:
                 if source is None or source not in values or target is None or source in evidence:
                     continue
                 marker, label_ids = bound[target.name]
-                text_ids = _marker_text_ids(marker, screen)
+                text_ids = _marker_text_ids(marker, screen, target.role)
                 visible = [blocks[text_id]["text"] for text_id in text_ids if text_id in blocks]
                 if visible:
                     visible.append(" ".join(visible))
@@ -990,7 +998,7 @@ class MethodLibrary:
             if bound is None:
                 return None
             marker, label_ids = bound
-            text_ids = _marker_text_ids(marker, screen)
+            text_ids = _marker_text_ids(marker, screen, item.target.role)
             visible = [blocks[text_id]["text"] for text_id in text_ids if text_id in blocks]
             if visible:
                 visible.append(" ".join(visible))
