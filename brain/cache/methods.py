@@ -136,6 +136,24 @@ class LearnedMethod(BaseModel):
         return self
 
 
+def group_input_sources(
+    method: LearnedMethod, group: MethodActionGroup, slot_map: dict[str, str]
+) -> dict[str, str | None]:
+    """Resolve remembered field bindings against this run's input slots."""
+    sources = {slot.name: slot_map.get(slot.name, slot.source_key) for slot in method.slots}
+    input_bindings = {slot.source_key: sources[slot.name] for slot in method.slots}
+    return {
+        **{
+            name: input_bindings.get(source, source) for name, source in group.field_sources.items()
+        },
+        **{
+            action.target: sources.get(action.slot)
+            for action in group.actions
+            if action.action == "fill" and action.slot is not None
+        },
+    }
+
+
 class MethodDocument(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["0.1"] = "0.1"
@@ -914,9 +932,7 @@ class MethodLibrary:
         method = next((item for item in self.methods() if item.id == method_id), None)
         if method is None:
             return [], []
-        sources = {slot.name: slot_map.get(slot.name, slot.source_key) for slot in method.slots}
         blocks = {block["id"]: block for block in screen.get("ocr", [])}
-        input_bindings = {slot.source_key: sources[slot.name] for slot in method.slots}
         controls: dict[int, dict] = {}
         evidence: dict[str, dict] = {}
         for group in method.action_groups:
@@ -926,17 +942,7 @@ class MethodLibrary:
             )
             if bound is None:
                 continue
-            field_sources = {
-                **{
-                    name: input_bindings.get(source, source)
-                    for name, source in group.field_sources.items()
-                },
-                **{
-                    action.target: sources.get(action.slot)
-                    for action in group.actions
-                    if action.action == "fill" and action.slot is not None
-                },
-            }
+            field_sources = group_input_sources(method, group, slot_map)
             for name, source in field_sources.items():
                 target = targets.get(name)
                 if source is None or source not in values or target is None or source in evidence:

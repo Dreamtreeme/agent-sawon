@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from copy import deepcopy
 from uuid import uuid4
 
 import pytest
@@ -11,10 +12,11 @@ from test_brain import ScriptedModel
 from test_methods import completion_response, completion_scene, learned
 from test_visual_scene import wire
 
+import brain.graph.screen_decision as screen_decision
 from brain.cache.methods import MethodDocument, MethodLibrary, method_from_match
-from brain.graph.context_recall import MethodBinding, ScreenMatch
 from brain.graph.engine import Brain
 from brain.graph.memory_retrieval import open_memory_library
+from brain.graph.screen_decision import MethodBinding, ScreenMatch
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from brain.visual.markers import Marker, build_markers, ground_meanings
@@ -37,7 +39,7 @@ def test_compiled_only_library_does_not_replay_raw_model_trace(tmp_path):
 
 
 @pytest.mark.parametrize("similar", [True, False], ids=["memory", "scanning"])
-def test_synthetic_similarity_routes_before_ocr_and_shared_context(tmp_path, similar):
+def test_synthetic_similarity_routes_before_ocr_and_shared_context(tmp_path, similar, monkeypatch):
     # Synthetic capture/OCR/model responses; actual scanner, memory and context functions.
     brain, model, _ = setup(tmp_path, changed_label=True)
     if not similar:
@@ -53,11 +55,10 @@ def test_synthetic_similarity_routes_before_ocr_and_shared_context(tmp_path, sim
         )
     order = []
     scanner = brain.screen_scanner
-    recognize, read, detect, recall = (
-        scanner.recall_screen,
+    recognize, read, detect = (
+        scanner.retrieve_screen_memory,
         scanner.ocr.read,
         scanner.detector.read,
-        scanner.detect,
     )
 
     def recognition(screen):
@@ -77,18 +78,50 @@ def test_synthetic_similarity_routes_before_ocr_and_shared_context(tmp_path, sim
         order.append("scanning")
         return detect(page, **kwargs)
 
+    original_context = screen_decision.recall_context
+    original_pattern = screen_decision.match_screen_pattern
+    original_generate = model._generate
+
     def context(request):
-        order.append("context")
+        order.append("context_recall")
         assert request.screen["observation_route"] == (
             "memory_retrieval" if similar else "scanning"
         )
-        return recall(request)
+        before = deepcopy(request)
+        restored = original_context(request)
+        assert request == before  # Context Recall reads state; it does not choose or execute.
+        assert restored["notebook"]["remaining_inputs"] == ["customer", "reference"]
+        if similar:
+            assert {f["source"] for f in request.screen["memory_fields"]} == {
+                "customer",
+                "reference",
+            }
+            assert request.screen["retrieved_procedure"][0]["steps"][0]["source"] == "customer"
+        return restored
 
-    scanner.recall_screen, scanner.ocr.read = recognition, ocr
-    scanner.detector.read, scanner.detect = detector, context
+    def pattern(*args, **kwargs):
+        order.append("pattern_matching")
+        return original_pattern(*args, **kwargs)
+
+    def generate(*args, **kwargs):
+        order.append("decision")
+        return original_generate(*args, **kwargs)
+
+    scanner.retrieve_screen_memory, scanner.ocr.read = recognition, ocr
+    scanner.detector.read = detector
+    monkeypatch.setattr(screen_decision, "recall_context", context)
+    monkeypatch.setattr(screen_decision, "match_screen_pattern", pattern)
+    monkeypatch.setattr(model, "_generate", generate)
     brain._observe()
 
-    assert order == ["similarity", "current_values", *([] if similar else ["scanning"]), "context"]
+    assert order == [
+        "similarity",
+        "current_values",
+        *([] if similar else ["scanning"]),
+        "context_recall",
+        "pattern_matching",
+        "decision",
+    ]
     assert ('"remembered_fields"' in model.prompts[0]) is similar
     assert brain._select_node() == "review"
     assert [a.decision.action.source for a in brain.action_plan.actions] == [
@@ -99,6 +132,66 @@ def test_synthetic_similarity_routes_before_ocr_and_shared_context(tmp_path, sim
     recognition_event = next(e for e in events if e.payload.get("check") == "screen_similarity")
     assert recognition_event.payload["matched"] is similar
     assert any(e.payload.get("check") == "screen_pattern_selection" for e in events)
+
+
+@pytest.mark.parametrize("identical", [False, True], ids=["library", "identical-catalog"])
+def test_synthetic_provider_refinement_reenters_scanning_with_same_capture(
+    tmp_path, monkeypatch, identical
+):
+    # Synthetic image/OCR/provider replies; real provider parsing, decision and scanner functions.
+    brain, model, relay = setup(tmp_path, changed_label=True)
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+    next_plan = next(model.decisions)
+    if identical:
+        brain.method_library.enabled = False
+        model.decisions = iter([next_plan])
+        brain._observe()
+        model.prompts.clear()
+        assert brain.screen_scanner._catalog.memory is None
+    model.decisions = iter(
+        [
+            {
+                "fields": [],
+                "assignments": [],
+                "steps": [],
+                "needs_refinement": True,
+                "purpose": "Synthetic: a required visible control is missing from memory.",
+            },
+            next_plan,
+        ]
+    )
+    calls = []
+
+    def count(obj, name, label):
+        original = getattr(obj, name)
+
+        def invoke(*args, **kwargs):
+            calls.append(label)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(obj, name, invoke)
+
+    scanner = brain.screen_scanner
+    count(relay, "screenshot", "capture")
+    count(scanner.ocr, "read", "ocr")
+    count(scanner.detector, "read", "detector")
+    count(model, "_generate", "model")
+    assert ScreenMatch.model_json_schema()["properties"]["needs_refinement"]["type"] == "boolean"
+
+    brain._observe()
+
+    assert calls == ["capture", *([] if identical else ["ocr"]), "model", "detector", "model"]
+    assert ('"remembered_fields"' in model.prompts[0]) is not identical
+    assert '"remembered_fields"' not in model.prompts[1]
+    assert brain._select_node() == "review"
+    assert [a.decision.action.source for a in brain.action_plan.actions] == [
+        "customer",
+        "reference",
+    ]
+    events = brain.log.read_all()
+    assert sum(e.payload.get("check") == "screen_memory_fallback" for e in events) == 1
+    assert not any(e.payload.get("check") == "missing_match_actions_completed" for e in events)
+    assert relay.actions == []
 
 
 def catalog(label="Customer", shift=0):

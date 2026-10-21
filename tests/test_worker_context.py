@@ -4,7 +4,7 @@ import json
 
 import pytest
 from test_brain import record as record
-from test_context_recall import fixture, named_response, setup_brain
+from test_screen_decision import fixture, named_response, setup_brain
 from test_visual_scene import wire
 
 from brain.graph.schemas import Choice, Decision
@@ -45,7 +45,7 @@ def test_direct_and_screen_matching_receive_identical_execution_context(
         == expected["allowed_intents"]
     )
     assert direct["final_required_fields"] == expected["final_required_fields"]
-    brain._recall_visual_context(
+    brain._decide_visual_screen(
         {
             "ocr": [b.model_dump() for b in blocks],
             "markers": [{**m.model_dump(), "contained_ocr_ids": list(m.text_ids)} for m in markers],
@@ -224,7 +224,7 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
     )
     brain.pending = {"decision": brain.decision, "effect_source": "shipper"}
     markers = build_markers(blocks, boxes, 400, 200)
-    matched = brain._recall_visual_context(
+    matched = brain._decide_visual_screen(
         {
             "image_size": [400, 200],
             "ocr": [block.model_dump() for block in blocks],
@@ -299,7 +299,7 @@ def test_opening_saved_detail_scopes_request_without_erasing_entry_on_failed_nav
             action=Choice(type="double_click", ref="row"),
         ),
     }
-    request = brain._context_recall_request({}, None)
+    request = brain._screen_decision_request({}, None)
     assert not request.verified_fields
     assert not request.policy.facts.verified_field_names
     assert not request.evidence_claims

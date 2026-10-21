@@ -306,7 +306,9 @@ class Brain:
             merge_settings=settings.visual_merge,
             reuse_identical=settings.screen_matching,
             model_led_semantics=settings.visual_model_led_semantics,
-            recall_screen=lambda screen: self.memory_retrieval.recall_screen(screen),
+            retrieve_screen_memory=lambda screen: self.memory_retrieval.retrieve_screen_memory(
+                screen
+            ),
         )
 
     @property
@@ -336,8 +338,8 @@ class Brain:
             promotion_path=self.settings.methods.promotion_path,
         )
 
-    def _context_recall_request(self, screen: dict, page, *, interpretation=None, proposal=None):
-        from .context_recall import ContextRecallRequest, required_verification
+    def _screen_decision_request(self, screen: dict, page, *, interpretation=None, proposal=None):
+        from .screen_decision import ScreenDecisionRequest, required_verification
 
         assert self.task_instruction is not None
         assert self.task_instruction_sha256 is not None
@@ -371,7 +373,7 @@ class Brain:
         saved_record_review = (
             self.saved_evidence.snapshot(self.values) if self.saved_evidence.session_id else None
         )
-        return ContextRecallRequest(
+        return ScreenDecisionRequest(
             screen=screen,
             page=page,
             phase=self.phase,
@@ -430,20 +432,20 @@ class Brain:
             )
         )
 
-    def _recall_visual_context(
+    def _decide_visual_screen(
         self, screen: dict, page, *, interpretation=None, proposal=None, defer_plan_errors=False
     ):
-        from .context_recall import ContextRecallServices, recall_context
+        from .screen_decision import ScreenDecisionServices, decide_screen
 
-        request = self._context_recall_request(
+        request = self._screen_decision_request(
             screen,
             page,
             interpretation=interpretation,
             proposal=proposal,
         )
-        result = recall_context(
+        result = decide_screen(
             request,
-            ContextRecallServices(
+            ScreenDecisionServices(
                 settings=self.settings,
                 log=self.log,
                 call=self._call,
@@ -542,7 +544,12 @@ class Brain:
                     for key in ("error", "invalid_text_links", "invalid_links", "instruction")
                     if key in request.correction
                 }
-            response = self._recall_visual_context(screen, request.page, defer_plan_errors=True)
+            response = self._decide_visual_screen(
+                screen,
+                request.page,
+                interpretation=request.interpretation,
+                defer_plan_errors=True,
+            )
             self.visual_proposal = response
             atomic_write_json(request.page.image_path.parent / "screen-match.json", response)
             return self._groundable_interpretation(response, screen)
@@ -580,7 +587,7 @@ class Brain:
 
     def _selection_call(self, prompt: str, schema: type[BaseModel]):
         if self.settings.screen_matching:
-            from .context_recall import (
+            from .screen_decision import (
                 compile_match,
                 compile_screen_action_plan,
             )
@@ -595,7 +602,7 @@ class Brain:
             )
             if not proposal_reused:
                 request, interpretation = self.screen_scanner.planning_context()
-                response = self._recall_visual_context(
+                response = self._decide_visual_screen(
                     request.screen,
                     request.page,
                     interpretation=interpretation,

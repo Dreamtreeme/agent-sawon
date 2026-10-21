@@ -35,8 +35,9 @@ Each selected action group also preserves observed field names/geometry and inpu
 including passive fields. Historical values are not stored in this layout. Compilation still
 selects action-bearing candidates; it does not turn every passive-only frame into an action group.
 
-Viewport/pHash matching happens before observation. Memory Retrieval supplies field geometry;
-a miss uses Scanning. Both feed task Pattern Matching and Context Recall. Current OCR validates
+Viewport/pHash matching follows capture and precedes detection. Memory Retrieval supplies field
+geometry, input bindings and learned procedures; a miss uses Scanning. Both restore current Context
+Recall, match patterns and then choose an action. Current OCR validates
 values; a remembered value is not current completion evidence. Older artifacts still load with
 empty observed-field defaults and need recompilation to obtain the additional field layout.
 See [terminology and implementation](../../docs/runtime-terminology.md).

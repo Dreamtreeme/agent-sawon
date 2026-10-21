@@ -192,7 +192,7 @@ def test_wrong_field_is_not_verified_and_only_that_field_is_replanned(tmp_path, 
 
 
 def test_shared_source_verifies_and_repairs_each_delivered_target(tmp_path, record):
-    from brain.graph.context_recall import ScreenMatch
+    from brain.graph.screen_decision import ScreenMatch
 
     for wrong_ref in ("e20", "e21", None):
         relay = ChangingPixelsRelay(record)
@@ -481,9 +481,9 @@ def test_joint_verification_survives_corrected_visual_label(tmp_path, record, wr
 
 
 def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
-    from brain.graph.context_recall import ScreenMatch
     from brain.graph.execution import ActionPlan, PlanExecution
     from brain.graph.schemas import Choice, Decision
+    from brain.graph.screen_decision import ScreenMatch
     from brain.task_instruction import TaskInstruction
 
     relay = ChangingPixelsRelay(record)

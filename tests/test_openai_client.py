@@ -10,7 +10,7 @@ import pytest
 from openai import BadRequestError
 from pydantic import BaseModel, ValidationError
 
-from brain.graph.context_recall import ScreenMatch
+from brain.graph.screen_decision import ScreenMatch
 from models.base import TokenUsage, UsageUnavailableError
 from models.budget import CallBudget
 from models.factory import create_model_client

@@ -49,7 +49,7 @@ GUI 의존성까지 필요하면 `-Gui`를 전달한다. 이 스크립트는 GPU
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-- 변경 영역을 먼저 확인할 때: `.\.venv\Scripts\python.exe -m pytest tests/test_context_recall.py -q`
+- 변경 영역을 먼저 확인할 때: `.\.venv\Scripts\python.exe -m pytest tests/test_screen_decision.py -q`
 - 선택적 병렬 실행: `.\scripts\test-parallel.ps1` (`-n 4`, 기본은 순차 실행).
 - core와 bench를 함께 검사할 때: `.\scripts\check.ps1`.
 - 기본 pytest는 `gui` 테스트를 제외한다. 실제 Windows 데스크톱이 필요한 테스트에는

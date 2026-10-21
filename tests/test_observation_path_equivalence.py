@@ -14,7 +14,7 @@ from copy import deepcopy
 
 import pytest
 from test_brain import record as record
-from test_context_recall import named_response, setup_brain
+from test_screen_decision import named_response, setup_brain
 
 from brain.cache import ScreenPatternCache
 from brain.cache.methods import MethodLibrary
@@ -111,7 +111,8 @@ def semantic_memory(brain):
 
 def run_route(path, record, route, *, mutate=None):
     raw = observed_response(record)
-    responses = [raw]
+    # Identical pixels reuse detection, while current context still passes through decision.
+    responses = [raw, deepcopy(raw)] if route == "identical-capture" else [raw]
     if route == "empty-action-recovery":
         initial = {**deepcopy(raw), "steps": []}
         next_action_only = {
@@ -262,7 +263,11 @@ def run_route(path, record, route, *, mutate=None):
     if mutate is not None:
         return semantic_memory(brain)
     expected_calls = (
-        0 if route.startswith("model-to-") else 2 if route == "empty-action-recovery" else 1
+        0
+        if route.startswith("model-to-")
+        else 2
+        if route in {"empty-action-recovery", "identical-capture"}
+        else 1
     )
     assert len(model.prompts) == expected_calls, route
     events = brain.log.read_all()

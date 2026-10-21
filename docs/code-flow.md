@@ -1,6 +1,6 @@
 # 현재 코드 실행 흐름
 
-기준일: 2026-10-18. 모델·비용·제거된 동작은 [현행 런타임 기준](current-runtime.md),
+기준일: 2026-10-21. 모델·비용·제거된 동작은 [현행 런타임 기준](current-runtime.md),
 상태와 저장소 경계는 [계약 지도](contracts.md)를 함께 따릅니다.
 
 ## 서류에서 화면 작업까지
@@ -24,8 +24,9 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    START[사용자 교육과 입력] --> O[Observation]
-    O --> D[Decision]
+    START[사용자 교육과 입력] --> O[Observation: 관찰·화면 계획]
+    O --> R[Review]
+    R -->|행동 필요| D[Decision: 실행 계획 확정]
     D --> R[Review]
     R -->|실행| E[Execution]
     E --> O
@@ -42,8 +43,9 @@ flowchart TD
 - **Observation**: relay 캡처 직후 화면 유사도를 확인합니다. 일치한 기억에서 필드 기하를
   인출하거나 OmniParser로 탐색하고, 현재 값은 GPU OCR로 읽습니다. 직전 행동이 있으면
   새 관찰에서 전달 효과를 확인합니다.
-- **Decision**: 사용자 목표·교육, 입력 key, 누적 메모와 현재 화면을 결합합니다. 편찬된 기억이 현재 화면에 재결합되면 사용하고, 실패하면 Claude Haiku 5.5의 화면 판단으로
-  돌아갑니다.
+- **Decision**: Observation에서 생성한 화면 계획을 공통 실행 계약으로 확정합니다. 계획이
+  없거나 다시 판단해야 하면 같은 `screen_decision` 경로로 들어갑니다. 현재 `screen_matching`
+  설정은 화면 해석과 다음 행동을 한 응답으로 얻으므로 최초 모델 판단은 Observation 안에서 일어납니다.
 - **Review**: 모델 제안과 현재 관찰 근거를 연결하고 다음 route를 정합니다. 현재 설정의
   `guard_mode = "observe_only"`를 존중하며 과거의 엄격한 휴리스틱을 지침만 보고 복원하지 않습니다.
 - **Execution**: 준비된 `ExecutionRequest`를 공통 실행기에 전달하고 `ExecutionResult`를
@@ -57,18 +59,20 @@ flowchart TD
 ```mermaid
 flowchart TD
     CAP[현재 캡처] --> SIM{화면 유사도}
-    SIM -->|일치| MEM[Memory Retrieval: 필드 기하 인출]
+    SIM -->|일치| MEM[Memory Retrieval: 업무 지식 인출]
     SIM -->|미일치| SCAN[Scanning: OCR·OmniParser]
     MEM --> VALUES[현재 값 OCR]
-    VALUES --> MATCH[Pattern Matching: 행동·업무 문맥 결합]
-    SCAN --> MATCH
-    MATCH --> RECALL[Context Recall: 메모·교육과 다음 계획]
-    RECALL -->|기억에 필요한 필드 없음| SCAN
-    RECALL --> EXEC[공통 Review·Execution]
+    VALUES --> RECALL[Context Recall: 이번 실행 상태 복원]
+    SCAN --> RECALL
+    RECALL --> MATCH[Pattern Matching: 현재 화면·진행에 결합]
+    MATCH --> DECIDE[화면 판단: 기억·캐시 또는 모델]
+    DECIDE -->|needs_refinement| SCAN
+    DECIDE --> EXEC[장면·메모 갱신 후 공통 검토·실행]
     EXEC --> CAP
 ```
 
-메모리의 필드가 부족해 탐색으로 돌아갈 때 캡처와 OCR을 다시 수행하지 않습니다.
+메모리의 필드가 부족해 모델이 `ScreenMapping.needs_refinement=true`를 반환하면 탐색으로
+돌아갑니다. 캡처와 OCR을 다시 수행하지 않습니다. 동일 캡처도 공통 문맥·판단 경로를 거칩니다.
 모델이 새 계획을 내는 경우와 기억 계획을 쓰는 경우는 같은 검증·실행 경로를 거칩니다.
 
 로컬 의미 탐지는 후보 분류 과정에서 실행 중 marker ID를 사용하지만, task-level

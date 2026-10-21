@@ -20,8 +20,8 @@ from .transitions import EvidenceLedger, ExplorationLedger, NavigationHistory
 from .visual_points import VisualPointBindings
 
 if TYPE_CHECKING:
-    from .context_recall import ScreenMatch
     from .engine import Result
+    from .screen_decision import ScreenMatch
 
 WorkerNode = Literal["observation", "decision", "execution", "review", "finish"]
 

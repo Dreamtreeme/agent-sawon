@@ -15,11 +15,14 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | `WorkerState`와 하위 상태 | `brain/graph/state.py` | `brain/graph/workflow.py`, `engine.py`, graph 노드 | 한 실행 안의 관찰·판단·검토·실행·진행 상태 |
 | 그래프 라우팅 | `brain/graph/workflow.py` | LangGraph | `lifecycle.route`를 다음 책임 노드 또는 `finish`로 연결 |
 | `ExecutionRequest`/`ExecutionResult` | `brain/graph/execution.py` | `engine.py`, relay adapter | 준비된 행동 전달과 relay가 확인한 결과. 업무 성공을 판정하지 않음 |
-| 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `context_recall`, `memory_retrieval` | 의미 이름·bbox·입력 key·행동 point의 모델 경계 |
-| 선택 결과의 요청 문맥 | `brain/graph/context_recall.py`의 `RecallSelection.prepared` | `recall_context` → `ground_context_response` | 같은 판단에서 확장한 교육 상세를 빈 행동 보완에 전달. 거절 후 재계획은 기존 prepared 사용. 턴 간 영구 상태가 아님 |
+| 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `screen_decision`, `memory_retrieval` | 의미 이름·bbox·입력 key·행동 point의 모델 경계 |
+| 선택 결과의 요청 문맥 | `brain/graph/screen_decision.py`의 `ScreenSelection.prepared` | `decide_screen` → `ground_screen_response` | 같은 판단에서 확장한 교육 상세를 빈 행동 보완에 전달. 거절 후 재계획은 기존 prepared 사용. 턴 간 영구 상태가 아님 |
 | 기억 편찬 응답 | `brain/demo_learning/memory_compilation.py`의 `MemoryAssembly` / `MemoryGroupSelection` | 모델 클라이언트, `compile_memory` | 후보 ID로 성공 행동을 선택. context_anchors는 타입 검증 후 첫 8개를 보존하고 초과분 경고 기록 |
-| 인출된 화면·행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup` | `method_from_match`, `compile_memory`, `MemoryRetrieval`, `context_recall` | 행동 좌표, 관찰 필드 기하·입력 키, 저장 결과 분류·메시지 대상을 보존하고 현재 화면에 결합 |
-| 관찰 경로 선택 | `ScreenScanner.scan` / `MemoryRetrieval.recall_screen` | `_SceneCatalog`, `context_recall` | 캡처 직후 유사도 확인 → 메모리 기하 또는 탐지. 행동 선택은 아직 하지 않음 |
+| 인출된 화면·행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup` | `method_from_match`, `compile_memory`, `MemoryRetrieval`, `screen_decision` | 행동 좌표, 관찰 필드 기하·입력 키, 저장 결과 분류·메시지 대상을 보존하고 현재 화면에 결합 |
+| 실행 문맥 회상 | `brain/graph/context_recall.py`의 `recall_context` | `screen_decision.build_decision_prompt` | 이번 실행의 이력·누적 증거·남은 입력·진행 상태를 읽음. 선택·모델 호출·상태 변경 없음 |
+| 재탐색 요청 | `ScreenMapping.needs_refinement` → `ScreenPlan`/`ScreenMatch` → `SemanticDetection` | `ScreenScanner._resolve` | 필요한 보이는 컨트롤이 없으면 동일 캡처·OCR로 탐색 재진입. provider 스키마에도 존재 |
+| 동일 캡처의 화면 해석 | `SemanticRequest.interpretation` / `_SceneCatalog.interpretation` | `Brain._detect_visual` → `screen_decision` | OCR·탐지는 재사용하고 현재 문맥·판단은 공통 순서로 수행 |
+| 관찰 경로 선택 | `ScreenScanner.scan` / `MemoryRetrieval.retrieve_screen_memory` | `_SceneCatalog`, `screen_decision` | 캡처 직후 유사도 확인 → 메모리 기하 또는 탐지. 행동 선택은 아직 하지 않음 |
 | 시각 공용 자료형 | `sawon_runtime/visual.py` | OCR·탐지·pipeline | 렌더 페이지와 OCR block 계약 |
 | 공개 record/action/observation/event | `../agent-sawon-bench/interfaces/sawon_interfaces/contracts.py` | core와 bench | 두 저장소가 공유하는 버전 있는 Pydantic 계약 |
 | 공개 스키마 export | `../agent-sawon-bench/interfaces/sawon_interfaces/export_schemas.py` | 외부 소비자·검사 | `sawon_interfaces` JSON Schema 생성 |
@@ -75,11 +78,16 @@ flowchart LR
 런타임 학습·편찬 모두 이 함수를 사용합니다. `compile_method_candidate`의 중복 판정에도
 이 필드를 포함해 서로 다른 관찰 정보를 지우지 않습니다. 옛 산출물은 빈 기본값으로 읽습니다.
 
-`MemoryRetrieval.recall_screen`은 같은 교육 digest·목표의 기억에서 기존 viewport·pHash
-조건을 적용해 가장 가까운 화면의 기하를 반환합니다. 같은 거리의 그룹은 bbox·role로 합칩니다.
+`MemoryRetrieval.retrieve_screen_memory`은 같은 교육 digest·목표의 기억에서 기존 viewport·pHash
+조건을 적용해 가장 가까운 화면의 기하·입력 키 대응·절차를 반환합니다. 같은 거리의 그룹은 bbox·role로 합칩니다.
 이 읽기는 pending·used·verified를 갱신하지 않습니다. 화면이 비슷하다는 사실은 행동 선택이나
 완료 증거가 아닙니다. `match_pattern`이 기존 단계 문맥으로 행동을 결합하고, 현재 OCR에서
 일치한 값만 공통 증거 갱신 경로에 들어갑니다. 현재 프레임의 marker ID는 새로 배정합니다.
+
+`retrieve_screen_memory`의 필드에는 현재 슬롯에 연결한 `source`가, `procedure`에는 학습한
+행동·선행 그룹·예상 결과가 들어갑니다. `group_input_sources`는 인출과 현재 값 증거 연결의
+공용 변환입니다. 행동 후보 선택 전에 이 지식을 `remembered_fields`와 `retrieved_procedure`로
+모델에 전달합니다. 이 정보는 과거 지식이며 이번 실행의 완료 상태와 구분합니다.
 
 `MethodLibrary.bind_visible_value_evidence`는 현재 OCR에서 입력값이 일치한 경우에만 증거를
 만듭니다. 이때 증거 대상도 행동 대상과 동일한 `screen.markers` / `selected_fields`에 등록합니다.
@@ -95,7 +103,7 @@ flowchart LR
 
 소비자는 `MethodLibrary.bind_with_context`입니다. 기존 viewport·pHash 조건을 통과한 뒤 현재
 메시지를 입력값이 치환된 텍스트와 정규화 비교하여 저장 결과를 재결합합니다.
-`context_recall`은 재결합된 결과와 메시지가 있는 메서드를 `save_result` 단계에서도 선택합니다.
+`screen_decision`은 재결합된 결과와 메시지가 있는 메서드를 `save_result` 단계에서도 선택합니다.
 `compile_match`와 `SaveReviewResponse`의 기존 변환·검증은 유지합니다. 이 결과는 다음 행동을
 위한 저장 화면 해석이며 작업 전체 성공 선언이 아닙니다.
 

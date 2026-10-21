@@ -1,7 +1,7 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
 Intent schema fixtures were captured from pre-consolidation commit 6ab16c3.
-ScreenMatch/ScreenPlan were intentionally updated for semantic coordinate mapping on 2026-10-12.
+ScreenMatch/ScreenPlan were updated on 2026-10-21 to expose needs_refinement for scanning fallback.
 """
 
 import hashlib
@@ -10,7 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from brain.graph.context_recall import (
+from brain.graph.save_review import SaveReviewResponse
+from brain.graph.schemas import Decision, DecisionResponse, KeyChoice, WireActDecision
+from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
+from brain.graph.screen_decision import (
     ActionCapability,
     ActionCompletion,
     MatchAction,
@@ -18,9 +21,6 @@ from brain.graph.context_recall import (
     ScreenPlan,
     TargetedMatchAction,
 )
-from brain.graph.save_review import SaveReviewResponse
-from brain.graph.schemas import Decision, DecisionResponse, KeyChoice, WireActDecision
-from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
 from brain.graph.transitions import ActionTransition
 from brain.visual.scene import ControlMeaning, Detection, SemanticDetection, VisualControl
 from brain.vocabulary import (
@@ -71,7 +71,7 @@ def test_navigation_keys_preserve_the_existing_tuple_subset():
             SemanticDetection,
             "4bb02cfe9fbffb82400d576b99007a631014b3ce54e807dae954cc07a29caa26",
         ),
-        (ScreenMatch, "aa27cac19816bb42640fedea61ea441f00a95824c06634441ddb2c0aeefe1ad7"),
+        (ScreenMatch, "f8d743c08394db79aa116684d613a912f391ce91b4a23ebd784dfe009acba305"),
     ],
 )
 def test_control_role_schemas_match_recorded_json_and_order(model, digest):
@@ -146,8 +146,8 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
             ActionCompletion,
             "382b47754e866a0ea5883240fcbf14f7a714090510376c9e7c12e4b6da1ee4e1",
         ),
-        (ScreenPlan, "aa27cac19816bb42640fedea61ea441f00a95824c06634441ddb2c0aeefe1ad7"),
-        (ScreenMatch, "aa27cac19816bb42640fedea61ea441f00a95824c06634441ddb2c0aeefe1ad7"),
+        (ScreenPlan, "f8d743c08394db79aa116684d613a912f391ce91b4a23ebd784dfe009acba305"),
+        (ScreenMatch, "f8d743c08394db79aa116684d613a912f391ce91b4a23ebd784dfe009acba305"),
         (Decision, "2fcaf3300563865b937899768e96893b5de15ede16e9e71f926926b6994d77e5"),
         (
             WireActDecision,

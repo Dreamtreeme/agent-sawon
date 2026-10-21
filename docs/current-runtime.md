@@ -25,8 +25,10 @@ Luna, Gemini, Jev와 replay 어댑터는 비교·재생 코드일 수 있으며 
 ## 실행 경로
 
 화면 캡처 직후 유사도를 확인한다. 일치하면 Memory Retrieval, 미일치하면 Scanning으로
-분기한 뒤 공통 Pattern Matching → Context Recall 경로로 연결한다. 기억 경로는 저장된
-필드 기하를 인출하고 현재 값은 OCR로 읽는다. 성공 기록 정제는 Memory Compilation이다.
+분기한 뒤 Context Recall → Pattern Matching → 화면 판단 경로로 연결한다. 기억 경로는
+필드 기하·입력 키 대응·절차를 인출하고 현재 값은 OCR로 읽는다. Context Recall은 이번 실행의
+상태를 읽기만 하며 모델 판단·검증·복구는 `screen_decision.py`가 담당한다.
+동일 캡처도 문맥·패턴·판단 순서를 거치고 OCR·탐지만 생략한다. 성공 기록 정제는 Memory Compilation이다.
 분기 조건과 저장 형식은 [용어와 코드 대응](runtime-terminology.md)에 명시한다.
 
 1. `pipeline`이 문서를 렌더링하고 GPU OCR·추출·교차 검증을 수행합니다.

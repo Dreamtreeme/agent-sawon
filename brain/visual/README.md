@@ -1,6 +1,6 @@
 # 현재 시각 경로
 
-기준일: 2026-10-18. 현재 운영 기준은 [`docs/current-runtime.md`](../../docs/current-runtime.md),
+기준일: 2026-10-21. 현재 운영 기준은 [`docs/current-runtime.md`](../../docs/current-runtime.md),
 그래프와 공개 계약은 [`docs/contracts.md`](../../docs/contracts.md)를 따릅니다. 이전 시각 경로의
 상세 실험 기록은 [`docs/archive/reports/brain-visual-readme-20261018.md`](../../docs/archive/reports/brain-visual-readme-20261018.md)에 보존합니다.
 
@@ -14,11 +14,13 @@
 | 업무 화면 매핑 | 사용자 교육, notebook, 스크린샷, text/control bbox | 의미 이름, 입력 key, 행동 point의 `ScreenMapping` | 의미 이름은 현재 화면 계약, point는 현재 캡처 |
 | 편찬된 기억 | 성공 trace, OCR anchor, pHash | 현재 화면에 재결합한 행동 | 교육 digest와 화면 유사도 범위 |
 
-캡처 직후 기존 viewport·pHash 조건으로 기억을 검색합니다. 일치하면 저장한 필드 bbox를
+캡처 직후 기존 viewport·pHash 조건으로 기억을 검색합니다. 일치하면 필드 bbox·입력 키·절차를
 인출하여 OmniParser를 생략하고, 미일치하면 OmniParser로 bbox를 찾습니다. 현재 문자열은
-두 경로 모두 OCR로 읽습니다. 바이트까지 동일한 관찰의 기존 catalog 재사용은 유지합니다.
+두 경로 모두 OCR로 읽습니다. 바이트까지 동일한 관찰은 OCR·탐지를 재사용하지만 현재 문맥 회상,
+패턴 매칭, 화면 판단은 같은 순서로 실행합니다.
 로컬 의미 탐지는 주어진 후보를 분류하며, 업무 모델의 ScreenMapping은 의미 이름과 bbox를
-선택합니다. 기억이 불충분하면 같은 캡처·OCR에서 탐지 경로로 돌아갑니다.
+선택합니다. 기억이 불충분하면 모델의 `needs_refinement` 응답으로 같은 캡처·OCR에서
+탐지 경로로 돌아갑니다. 이 신호는 내부 타입뿐 아니라 provider 응답 스키마에도 있습니다.
 Florence-2의 기능 캡션은 빈 입력칸을 `Maximize`, `Center` 등으로 잘못 설명했으므로 현재
 런타임에서 사용하지 않습니다.
 

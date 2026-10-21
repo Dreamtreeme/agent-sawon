@@ -13,34 +13,34 @@ from test_brain import record as record
 from test_visual_markers import fixture
 from test_visual_scene import wire
 
-import brain.graph.context_recall as matching
+import brain.graph.screen_decision as matching
 from brain.cache import ScreenPatternCache, screen_pattern_key
-from brain.graph.context_recall import (
-    CONTEXT_PLAN_RULES,
-    OBSERVE_ONLY_TARGET_RULES,
-    TARGET_GROUNDING_RULES,
-    ActionCapability,
-    ContextRecallServices,
-    RecallSelection,
-    ScreenMatch,
-    ScreenPlan,
-    bind_value_evidence_to_controls,
-    build_context_prompt,
-    compile_match,
-    compile_screen_action_plan,
-    enforce_taught_input_surfaces,
-    omit_nonblocking_image_request,
-    omit_nonblocking_refinement,
-    recall_context,
-    select_context_response,
-    task_action_contract,
-    validate_action_surfaces,
-    validate_match_plan,
-)
 from brain.graph.engine import Brain
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
 from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
+from brain.graph.screen_decision import (
+    OBSERVE_ONLY_TARGET_RULES,
+    SCREEN_PLAN_RULES,
+    TARGET_GROUNDING_RULES,
+    ActionCapability,
+    ScreenDecisionServices,
+    ScreenMatch,
+    ScreenPlan,
+    ScreenSelection,
+    bind_value_evidence_to_controls,
+    build_decision_prompt,
+    compile_match,
+    compile_screen_action_plan,
+    decide_screen,
+    enforce_taught_input_surfaces,
+    omit_nonblocking_image_request,
+    omit_nonblocking_refinement,
+    select_screen_response,
+    task_action_contract,
+    validate_action_surfaces,
+    validate_match_plan,
+)
 from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInstruction
@@ -163,7 +163,7 @@ def setup_brain(tmp_path, record, responses, *, task_instruction=None):
 
     def route(prompt):
         item = next(plans)
-        if prompt.startswith((CONTEXT_PLAN_RULES, CONTEXT_PLAN_RULES)):
+        if prompt.startswith((SCREEN_PLAN_RULES, SCREEN_PLAN_RULES)):
             return {key: value for key, value in item.items() if key in ScreenPlan.model_fields}
         if prompt.startswith(CONTEXT_MAPPING_RULES):
             assert "fields" in item, "Provider fixtures must use semantic names and coordinates"
@@ -200,7 +200,7 @@ def setup_brain(tmp_path, record, responses, *, task_instruction=None):
 
 def matching_contract(brain, screen=None):
     screen = screen or {"ocr": [], "markers": []}
-    services = ContextRecallServices(
+    services = ScreenDecisionServices(
         settings=brain.settings,
         log=brain.log,
         call=brain._call,
@@ -208,7 +208,7 @@ def matching_contract(brain, screen=None):
         cache=brain.visual_match_cache,
         memory_retrieval=brain.memory_retrieval,
     )
-    return brain._context_recall_request(screen, None), services
+    return brain._screen_decision_request(screen, None), services
 
 
 def test_method_grounding_failure_retries_visual_cache_or_model_once(
@@ -229,8 +229,8 @@ def test_method_grounding_failure_retries_visual_cache_or_model_once(
     def select(_request, _services, _prepared, *, allow_method=True):
         selections.append(allow_method)
         if allow_method:
-            return RecallSelection(method_response, None, method_response, False, _prepared)
-        return RecallSelection(fallback_response, ("f" * 64, {}), None, False, _prepared)
+            return ScreenSelection(method_response, None, method_response, False, _prepared)
+        return ScreenSelection(fallback_response, ("f" * 64, {}), None, False, _prepared)
 
     def ground(response, *_args, **_kwargs):
         if response is method_response:
@@ -243,12 +243,12 @@ def test_method_grounding_failure_retries_visual_cache_or_model_once(
         rejected.append(reason)
         return {"method_id": "method-1", "group_id": "group-1"}
 
-    monkeypatch.setattr(matching, "select_context_response", select)
+    monkeypatch.setattr(matching, "select_screen_response", select)
     monkeypatch.setattr(matching, "validate_or_replan", lambda response, *_: response)
-    monkeypatch.setattr(matching, "ground_context_response", ground)
+    monkeypatch.setattr(matching, "ground_screen_response", ground)
     monkeypatch.setattr(services.memory_retrieval, "reject_pending", reject_pending)
 
-    result = recall_context(request, services)
+    result = decide_screen(request, services)
 
     assert result.response.purpose == "fallback"
     assert selections == [True, False]
@@ -597,7 +597,7 @@ def test_low_confidence_action_target_is_rejected_before_execution(
     with pytest.raises(ValueError, match="action_target_uncertain"):
         validate_match_plan(response, capability, request, services, set(brain.values))
     event = brain.log.read_all()[-1]
-    assert event.payload["validator"] == "context_recall.validate_match_plan"
+    assert event.payload["validator"] == "screen_decision.validate_match_plan"
     rejected = json.loads(Path(event.payload["artifact"]).read_text(encoding="utf-8"))
     assert rejected["response"] == response.model_dump(mode="json")
     assert rejected["reason"] == "screen_match_action_target_uncertain"
@@ -802,7 +802,7 @@ def test_post_save_model_review_uses_only_persisted_detail_evidence(
     brain.post_save_verified = {"hbl_no"}
 
     request, services = matching_contract(brain)
-    prepared = build_context_prompt(request, services)
+    prepared = build_decision_prompt(request, services)
     notebook = prepared.state["notebook"]
 
     assert request.verified_fields == {"hbl_no"}
@@ -1023,7 +1023,7 @@ def test_post_save_completion_rejection_names_missing_evidence_and_scope(
     assert event.payload["subgoal_key"] == "task:post_save_detail:description"
 
     request, services = matching_contract(brain)
-    prepared = build_context_prompt(request, services)
+    prepared = build_decision_prompt(request, services)
     prompted = prepared.state["notebook"]["recent_feedback"][-1]
     assert prompted["missing_fields"] == ["description"]
     assert prompted["subgoal_key"] == "task:post_save_detail:description"
@@ -1290,7 +1290,7 @@ def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
     services.memory_retrieval.match_pattern = bind_method
     cache = ScreenPatternCache(tmp_path / "save-result-cache.json", enabled=True)
     services = replace(services, cache=cache)
-    prepared = build_context_prompt(request, services)
+    prepared = build_decision_prompt(request, services)
     cached = ScreenMatch(
         screen_kind="dialog",
         controls=[],
@@ -1301,7 +1301,7 @@ def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
     cache.stage(screen_pattern_key(prepared.state), cached.model_dump(mode="json"))
     assert cache.finish(success=True) == 1
 
-    selected = select_context_response(request, services, prepared)
+    selected = select_screen_response(request, services, prepared)
 
     if has_review:
         assert selected.response == selected.method_proposal
@@ -1329,7 +1329,9 @@ def test_identical_capture_reuses_ocr_but_replans_current_task_action(tmp_path, 
     first_id = brain.observation.obs_id
     brain._observe()
     assert brain.observation.obs_id != first_id
-    assert ocr.calls == detector.calls == len(model.prompts) == 1
+    assert ocr.calls == detector.calls == 1
+    # Exact reuse joins the same decision path during observation.
+    assert len(model.prompts) == 2
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     assert len(model.prompts) == 2
@@ -1403,7 +1405,7 @@ def test_identical_rematch_reuses_grounded_interpretation(tmp_path, record, task
     assert [(e.name, e.value) for e in brain.observation.elements] == [
         (e.name, e.value) for e in before.elements
     ]
-    assert len(model.prompts) == 1
+    assert len(model.prompts) == 2
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     assert len(model.prompts) == 2
@@ -1810,9 +1812,9 @@ def test_save_result_and_proof_use_the_existing_contract():
 def test_delivered_input_verification_omission_is_repaired_without_reusing_old_value(
     tmp_path, record, mode
 ):
-    from brain.graph.context_recall import required_verification, retain_verification
     from brain.graph.execution import GuardStop
     from brain.graph.schemas import Choice, Decision
+    from brain.graph.screen_decision import required_verification, retain_verification
     from brain.observe.summary import describe
     from brain.visual.markers import Marker, build_markers, ground_meanings
     from brain.visual.scene import SemanticDetection, bind_scene
@@ -1901,7 +1903,7 @@ def test_delivered_input_verification_omission_is_repaired_without_reusing_old_v
 
 
 def test_model_only_review_delegates_required_verification_without_repair_call(tmp_path, record):
-    from brain.graph.context_recall import retain_verification
+    from brain.graph.screen_decision import retain_verification
 
     brain, model, *_ = setup_brain(tmp_path, record, [])
     brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
@@ -1947,7 +1949,7 @@ def test_post_action_review_preserves_next_action_in_same_response(tmp_path, rec
     }
     request, services = matching_contract(brain, screen)
 
-    result = recall_context(
+    result = decide_screen(
         replace(request, post_action_review=True, pending_verification=True), services
     )
 
@@ -1974,7 +1976,7 @@ def test_post_action_review_reuses_bound_next_method_without_model_call(tmp_path
     replay = ScreenMatch.model_validate(response(meaning))
     services.memory_retrieval.match_pattern = lambda _screen: replay
 
-    result = recall_context(
+    result = decide_screen(
         replace(request, post_action_review=True, pending_verification=True), services
     )
 
@@ -1999,12 +2001,12 @@ def test_post_action_review_reuses_promoted_visual_decision_without_model_call(t
         services,
         cache=ScreenPatternCache(tmp_path / "post-action-cache.json", enabled=True),
     )
-    prepared = build_context_prompt(request, services)
+    prepared = build_decision_prompt(request, services)
     cached = ScreenMatch.model_validate(response(meaning))
     services.cache.stage(screen_pattern_key(prepared.state), cached.model_dump(mode="json"))
     assert services.cache.finish(success=True) == 1
 
-    result = recall_context(request, services)
+    result = decide_screen(request, services)
 
     assert [(step.target, step.action, step.source) for step in result.response.steps] == [
         (step.target, step.action, step.source) for step in cached.steps
@@ -2071,7 +2073,7 @@ def test_empty_action_is_completed_once_or_explicitly_stopped(tmp_path, record, 
 def test_missing_action_completion_cannot_repeat_empty_act():
     from pydantic import ValidationError
 
-    from brain.graph.context_recall import ActionCompletion
+    from brain.graph.screen_decision import ActionCompletion
 
     with pytest.raises(ValidationError, match="act_requires_steps"):
         ActionCompletion(operation="act", steps=[])
@@ -2109,7 +2111,7 @@ def test_selection_row_and_confirmation_compile_to_existing_executor():
     from types import SimpleNamespace
     from uuid import uuid4
 
-    from brain.graph.context_recall import compile_screen_action_plan
+    from brain.graph.screen_decision import compile_screen_action_plan
 
     obs_id = uuid4()
     prefix = "e" + str(obs_id.int) + "0"
@@ -2157,7 +2159,7 @@ def test_selection_plan_preserves_optional_final_record_effect():
     from types import SimpleNamespace
     from uuid import uuid4
 
-    from brain.graph.context_recall import compile_screen_action_plan
+    from brain.graph.screen_decision import compile_screen_action_plan
 
     obs_id = uuid4()
     prefix = "e" + str(obs_id.int) + "0"
@@ -2186,7 +2188,7 @@ def test_selection_plan_preserves_optional_final_record_effect():
 
 
 def test_unique_procedure_field_binds_selection_effect_without_model_echo():
-    from brain.graph.context_recall import ActionCapability, bind_selection_effect
+    from brain.graph.screen_decision import ActionCapability, bind_selection_effect
 
     match = ScreenMatch.model_validate(
         {
@@ -2297,7 +2299,7 @@ def test_save_matching_receives_same_action_contract_as_validator(tmp_path, reco
         ],
     )
     brain.phase = "save_result"
-    brain._recall_visual_context(
+    brain._decide_visual_screen(
         {
             "ocr": [b.model_dump() for b in fixture()[0]],
             "markers": [m.model_dump() for m in fixture()[2]],
@@ -2398,7 +2400,7 @@ def test_task_prompt_separates_available_pending_and_verified_inputs(tmp_path, r
         )
         brain.pending = {"decision": brain.decision}
 
-    brain._recall_visual_context(
+    brain._decide_visual_screen(
         {
             "ocr": [block.model_dump() for block in fixture()[0]],
             "markers": [marker.model_dump() for marker in fixture()[2]],
@@ -2492,7 +2494,7 @@ def test_pending_fields_remain_evidence_context_without_claiming_delivery(tmp_pa
     )
     brain.pending = {"decision": brain.decision}
 
-    brain._recall_visual_context(
+    brain._decide_visual_screen(
         {
             "ocr": [block.model_dump() for block in fixture()[0]],
             "markers": [marker.model_dump() for marker in fixture()[2]],
@@ -2539,7 +2541,7 @@ def test_final_row_matching_receives_visibility_and_action_contract(tmp_path, re
     "dependency", ["none", "action", "evidence", "parent", "verification", "other_verification"]
 )
 def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
-    from brain.graph.context_recall import sanitize_unused_controls
+    from brain.graph.screen_decision import sanitize_unused_controls
     from brain.visual.markers import Marker, ground_meanings
     from brain.visual.scene import SemanticDetection, bind_scene
     from pipeline.schemas import OcrBlock
@@ -2601,7 +2603,7 @@ def test_only_unused_invalid_roles_are_omitted(tmp_path, record, dependency):
 
 @pytest.mark.parametrize("dependency", ["unrelated", "dangling_unused", "action", "direct_proof"])
 def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, dependency):
-    from brain.graph.context_recall import sanitize_unused_controls
+    from brain.graph.screen_decision import sanitize_unused_controls
     from brain.visual.markers import Marker, ground_meanings
     from brain.visual.scene import SemanticDetection, bind_scene
     from pipeline.schemas import OcrBlock
@@ -2673,7 +2675,7 @@ def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, depend
 def test_control_cleanup_preserves_current_evidence_regardless_of_prior_verification(
     tmp_path, record, verified
 ):
-    from brain.graph.context_recall import sanitize_unused_controls
+    from brain.graph.screen_decision import sanitize_unused_controls
     from brain.visual.markers import Marker, ground_meanings
     from brain.visual.scene import SemanticDetection, bind_scene
 
@@ -2840,7 +2842,7 @@ def test_synthetic_fallback_education_survives_empty_action_recovery(tmp_path, r
     )
     request, services = matching_contract(brain, screen)
 
-    result = recall_context(replace(request, proposal=proposal), services)
+    result = decide_screen(replace(request, proposal=proposal), services)
 
     events = brain.log.read_all()
     fallback = [event for event in events if event.payload.get("check") == "method_fallback"]
@@ -3018,7 +3020,7 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(tmp_pa
         "Reference": "hbl_no"
     }
     # Check the actual provider prompt after ScreenMapping rebuilds it.
-    assert model.prompts[0].startswith("Perform Context Recall")
+    assert model.prompts[0].startswith("Choose the next screen action")
     for stage in ("Scanning", "Pattern Matching", "Memory Retrieval"):
         assert stage in model.prompts[0], stage
     assert '"id_namespace"' not in model.prompts[0]
@@ -3459,7 +3461,7 @@ def test_detail_observation_commits_review_before_current_evidence(
         def reject(*args, **kwargs):
             raise ValueError("screen_match_action_surface_mismatch")
 
-        monkeypatch.setattr("brain.graph.context_recall.validate_or_replan", reject)
+        monkeypatch.setattr("brain.graph.screen_decision.validate_or_replan", reject)
     brain._observe()
     assert brain.model_saved_detail_review
     assert "hbl_no" in brain.post_save_verified

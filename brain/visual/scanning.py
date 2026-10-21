@@ -96,6 +96,7 @@ class SemanticRequest:
     screen: dict
     page: RenderedPage
     correction: dict | None = None
+    interpretation: SemanticDetection | None = None
 
     def prompt(self) -> str:
         prompt = SCANNING_RULES + json.dumps(self.screen, ensure_ascii=False)
@@ -118,6 +119,20 @@ class _SceneCatalog:
     memory: dict | None = None
     reused: bool = False
 
+    def interpretation(self) -> SemanticDetection:
+        if self.detection is None:
+            raise ValueError("visual_interpretation_unavailable")
+        return SemanticDetection.model_validate(
+            {
+                "screen_kind": self.detection.screen_kind,
+                "controls": [
+                    control.model_dump(exclude={"bbox"}) for control in self.detection.controls
+                ],
+                "uncertainties": self.detection.uncertainties,
+                "needs_refinement": False,
+            }
+        )
+
 
 class ScreenScanner:
     def __init__(
@@ -134,7 +149,7 @@ class ScreenScanner:
         merge_settings: MergeSettings | None = None,
         reuse_identical: bool = False,
         model_led_semantics: bool = False,
-        recall_screen: Callable[[dict], dict | None] | None = None,
+        retrieve_screen_memory: Callable[[dict], dict | None] | None = None,
     ):
         self.relay, self.ocr, self.case_dir, self.log = relay, ocr, case_dir, log
         self.detect, self.secrets, self.threshold = detect, secrets, threshold
@@ -142,7 +157,7 @@ class ScreenScanner:
         self.merge_settings = merge_settings or MergeSettings()
         self.reuse_identical = reuse_identical
         self.model_led_semantics = model_led_semantics
-        self.recall_screen = recall_screen
+        self.retrieve_screen_memory = retrieve_screen_memory
         self._catalog: _SceneCatalog | None = None
         self._catalogs: dict[tuple, _SceneCatalog] = {}
         self._action_captures: dict[str, Path] = {}
@@ -181,7 +196,11 @@ class ScreenScanner:
             height=shot.height,
         )
         identity = {"image_size": [page.width, page.height], "screen_phash": perceptual_hash(path)}
-        memory = self.recall_screen(identity) if self.recall_screen is not None else None
+        memory = (
+            self.retrieve_screen_memory(identity)
+            if self.retrieve_screen_memory is not None
+            else None
+        )
         previous = self._catalogs.get(cache_key)
         reuse_catalog = self.reuse_identical and previous is not None
         self.log.append(
@@ -198,17 +217,7 @@ class ScreenScanner:
         )
         if reuse_catalog:
             assert previous.detection is not None
-            scene = bind_scene(
-                wire,
-                previous.blocks,
-                previous.detection,
-                threshold=self.threshold,
-                secrets=self.secrets,
-            )
-            scene = self._apply_field_values(wire, scene, previous.selected_fields)
-            scene = scene.model_copy(update={"capture_phash": perceptual_hash(path)})
-            self._catalog = replace(previous, page=page, reused=True)
-            self._catalogs[cache_key] = self._catalog
+            catalog = replace(previous, page=page, reused=True)
             self.log.append(
                 "verify",
                 payload={
@@ -217,7 +226,7 @@ class ScreenScanner:
                     "ocr_and_detection_skipped": True,
                 },
             )
-            return scene
+            return self._resolve(wire, catalog)
         blocks = self.ocr.read(page)
         for secret in self.secrets:
             if secret:
@@ -452,6 +461,8 @@ class ScreenScanner:
             selected_fields=catalog.selected_fields,
             reused=catalog.reused,
         )
+        if catalog.reused:
+            request = replace(request, interpretation=catalog.interpretation())
         detection_ms = 0.0
         refinement_attempted = catalog.refined
         for attempt in range(3):
@@ -501,7 +512,7 @@ class ScreenScanner:
                 folder / f"meanings-attempt-{attempt}.json", meanings.model_dump(mode="json")
             )
             if meanings.needs_refinement:
-                if catalog.memory is not None:
+                if catalog.memory is not None or catalog.reused:
                     self.log.append(
                         "verify",
                         payload={
@@ -757,17 +768,7 @@ class ScreenScanner:
             selected_fields=catalog.selected_fields,
             reused=catalog.reused,
         )
-        interpretation = SemanticDetection.model_validate(
-            {
-                "screen_kind": catalog.detection.screen_kind,
-                "controls": [
-                    control.model_dump(exclude={"bbox"}) for control in catalog.detection.controls
-                ],
-                "uncertainties": catalog.detection.uncertainties,
-                "needs_refinement": False,
-            }
-        )
-        return request, interpretation
+        return request, catalog.interpretation()
 
     def _apply_field_values(self, wire, scene, selected):
         prefix = "e" + str(wire.obs_id.int) + "0"
@@ -903,8 +904,10 @@ class ScreenScanner:
                 ],
             },
         )
+        if selected_fields:
+            request.screen["selected_fields"] = dict(selected_fields)
         if memory is not None:
-            request.screen["selected_fields"] = dict(selected_fields or {})
+            request.screen["retrieved_procedure"] = memory.get("procedure", [])
             request.screen["memory_fields"] = [
                 {
                     **item,

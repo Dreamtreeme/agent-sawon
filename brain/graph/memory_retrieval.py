@@ -1,4 +1,4 @@
-"""Recall screen geometry before detection, then bind methods using current observations."""
+"""Retrieve learned procedures and field bindings; bind actions only after context recall."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from brain.cache.methods import (
     MethodLibrary,
     MethodSlot,
     compile_method_candidate,
+    group_input_sources,
     method_completion_from_match,
     method_from_match,
     screen_similarity_distance,
@@ -23,7 +24,7 @@ from brain.task_instruction import TaskInstruction
 from sawon_runtime.storage import RunLog, atomic_write_json
 
 if TYPE_CHECKING:
-    from .context_recall import ScreenMatch
+    from .screen_decision import ScreenMatch
 
 
 @dataclass(frozen=True)
@@ -258,8 +259,8 @@ class MemoryRetrieval:
             "recent_executions": self.state.history[-2:],
         }
 
-    def recall_screen(self, screen: dict) -> dict | None:
-        """Read layout memory without selecting an action or advancing execution state."""
+    def retrieve_screen_memory(self, screen: dict) -> dict | None:
+        """Retrieve matching work knowledge without selecting actions or advancing this run."""
         if not self.enabled:
             return None
         matches = []
@@ -271,30 +272,60 @@ class MemoryRetrieval:
                     group, screen, self.library.max_phash_distance
                 )
                 if distance is not None:
-                    matches.append((distance, method.id, group))
+                    matches.append((distance, method, group))
         if not matches:
             return None
         nearest = min(distance for distance, _, _ in matches)
         fields = {}
         groups = []
-        for distance, method_id, group in matches:
+        procedure = []
+        for distance, method, group in matches:
             if distance != nearest:
                 continue
-            groups.append({"method_id": method_id, "group_id": group.id})
+            groups.append({"method_id": method.id, "group_id": group.id})
+            bindings = self.state.bindings.get(method.id, {})
+            field_sources = group_input_sources(method, group, bindings)
+            procedure.append(
+                {
+                    "method_id": method.id,
+                    "group_id": group.id,
+                    "purpose": group.purpose,
+                    "taught_step_id": group.taught_step_id,
+                    "predecessor_group_ids": group.predecessor_group_ids,
+                    "steps": [
+                        {
+                            **action.model_dump(mode="json", exclude={"slot"}),
+                            "source": field_sources.get(action.target),
+                        }
+                        for action in group.actions
+                    ],
+                    "expected_result": group.expected_result,
+                }
+            )
             for target in [*group.observed_fields, *group.targets]:
                 if target.bbox is None:
                     continue
                 # Equal frames can have several action groups; combine their observed fields.
                 fields.setdefault(
                     (target.bbox, target.role),
-                    {"name": target.name, "role": target.role, "bbox": list(target.bbox)},
+                    {
+                        "name": target.name,
+                        "role": target.role,
+                        "bbox": list(target.bbox),
+                        "source": field_sources.get(target.name),
+                    },
                 )
         if not fields:
             return None
-        return {"distance": nearest, "groups": groups, "fields": list(fields.values())}
+        return {
+            "distance": nearest,
+            "groups": groups,
+            "fields": list(fields.values()),
+            "procedure": procedure,
+        }
 
     def match_pattern(self, screen: dict) -> ScreenMatch | None:
-        from .context_recall import ScreenMatch
+        from .screen_decision import ScreenMatch
 
         self.state.pending = None
         pending_predecessor = (

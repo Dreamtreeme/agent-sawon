@@ -1,75 +1,88 @@
-# 화면 처리 단계와 코드 대응
+# 화면 처리 개념과 실행 순서
 
 기준일: 2026-10-21
 
-화면 유사도 확인 → Scanning 또는 Memory Retrieval → 공통 Pattern Matching과 Context Recall
-순서로 처리한다. 각 화면에서 새로 경로를 고르며, 실행 전체가 콜드에서 웜으로 바뀌는 스위치는 아니다.
+Memory Retrieval은 **과거에 배운 업무 방법**을 가져온다. Context Recall은 **이번 실행의
+현재 상황**을 복원한다. 두 역할은 서로를 대체하지 않는다. 기억을 찾은 경우와 새로 탐색한
+경우 모두 현재 상황을 확인하고, 현재 화면에 맞는 패턴을 연결한 뒤 다음 행동을 정한다.
+
+## 책임과 데이터
+
+| 단계 | 질문 | 입력 → 출력 | 코드 |
+|---|---|---|---|
+| 화면 유사도 | 이 화면을 경험했는가? | 현재 캡처·업무 식별 → 가까운 기억 또는 미일치 | `ScreenScanner.scan`, `screen_similarity_distance` |
+| Memory Retrieval | 이 업무를 어떻게 처리했는가? | 일치한 기억 → 필드 이름·bbox·입력 key·학습한 절차 | `MemoryRetrieval.retrieve_screen_memory` |
+| Scanning | 현재 무엇이 보이는가? | 캡처 → OCR 텍스트·OmniParser 후보 영역 | `ScreenScanner._build_catalog` |
+| Context Recall | 이번 실행은 어디까지 왔는가? | 현재 상태 → 메모·이력·완료/미완료 입력·진행 중 행동·교육 위치 | `context_recall.recall_context` |
+| Pattern Matching | 배운 방법을 지금 적용할 수 있는가? | 현재 화면·진행 상태 → 결합된 메서드 또는 화면 캐시 | `screen_decision.match_screen_pattern` |
+| 화면 판단 | 다음에 무엇을 할 것인가? | 위 결과 → 실행 계획 또는 탐색 요청 | `screen_decision.decide_screen`, `select_screen_response` |
+| Memory Compilation | 성공 경험에서 무엇을 재사용할 것인가? | 성공 실행 기록 → 절차·필드 대응·좌표를 담은 기억 | `compile_memory` |
+
+Context Recall에는 모델 호출·행동 선택·상태 변경이 없다. 모델 호출과 응답 검증·복구는
+`screen_decision.py`가 소유한다. 기억의 이전 업무 값은 현재 입력 완료의 증거로 사용하지 않는다.
+
+## 화면 처리 그래프
 
 ```mermaid
 flowchart TD
-    CAP[캡처] --> SIM{화면 유사도 확인}
-    SIM -->|일치| MEM[Memory Retrieval]
-    SIM -->|미일치| SCAN[Scanning]
+    CAP[현재 캡처] --> SIM{화면 유사도}
+    SIM -->|일치| MEM[Memory Retrieval: 업무 지식 인출]
+    SIM -->|미일치| SCAN[Scanning: OCR·OmniParser]
     MEM --> OCR[현재 값 OCR]
-    OCR --> PAT[Pattern Matching]
-    SCAN --> PAT
-    PAT --> CTX[Context Recall]
-    CTX -->|기억에 필요한 필드 부족| SCAN
-    CTX --> ACT[공통 검토·실행]
+    OCR --> CTX[Context Recall: 이번 실행 상태]
+    SCAN --> CTX
+    CTX --> PAT[Pattern Matching: 현재 상황에 결합]
+    PAT --> DEC[화면 판단: 기억·캐시 또는 모델]
+    DEC -->|needs_refinement| SCAN
+    DEC --> BIND[장면 결합·증거 연결·메모 갱신]
+    BIND --> REVIEW[검토·실행 계획 확정]
+    REVIEW --> ACT[실행]
     ACT --> CAP
 ```
 
-## 책임과 진입점
+`ScreenScanner.scan` → `_resolve` → `Brain._detect_visual` → `decide_screen` 순서다.
+`decide_screen`은 `build_decision_prompt`에서 `recall_context`를 호출한 다음
+`select_screen_response` → `match_screen_pattern`으로 기존 계획을 찾는다. 사용할 계획이
+없으면 모델 판단을 요청한다. 두 경로 모두 `ground_meanings` → `bind_scene` →
+`_remember_model_task_evidence`로 이어진다.
 
-| 책임 | 의미 | 현재 코드 |
-|---|---|---|
-| 화면 유사도 | 같은 업무의 기억과 viewport·pHash 비교 | `ScreenScanner.scan`, `screen_similarity_distance` |
-| Scanning | 현재 캡처에서 OCR·OmniParser로 필드 발견 | `brain/visual/scanning.py`: `_build_catalog` |
-| Memory Retrieval | 가까운 화면의 필드 이름·기하 인출, 현재 값은 OCR로 확보 | `brain/graph/memory_retrieval.py`: `recall_screen` |
-| Pattern Matching | 현재 업무 진행과 행동 패턴 결합, 화면 캐시 조회 | `MemoryRetrieval.match_pattern`, `ScreenPatternCache.lookup` |
-| Context Recall | 현재 관찰·교육·입력·메모와 인출된 계획을 결합, 필요하면 모델 판단 | `brain/graph/context_recall.py`: `recall_context`, `select_context_response` |
-| Memory Compilation | 성공 기록에서 재사용할 행동과 관찰 필드 정제 | `read_memory_candidates`, `assemble_memory`, `compile_memory` |
+바이트 단위로 동일한 캡처는 OCR·탐지를 생략하지만 `_resolve` 이후 공통 순서는 생략하지
+않는다. 저장된 화면 해석만 재사용하고 현재 진행 상태로 다음 행동을 다시 정한다. 판단을
+Decision 노드까지 미루던 이전의 별도 경로는 제거했다.
 
-## 실행 계약
+## 기억과 탐색의 연결 계약
 
-1. 캡처 직후 유사도를 확인한다. 기존 `methods.max_phash_distance`와 viewport 조건을
-   행동 결합과 공통으로 사용하며, 새 임계값은 만들지 않는다.
-2. 같은 교육 digest·목표에서 가까운 기억을 찾으면 필드 기하를 인출한다. 이때 행동을
-   선택하거나 pending·used·verified를 갱신하지 않는다. 같은 거리의 그룹은 bbox·role로 합친다.
-3. 기억 경로는 OmniParser를 생략하고 현재 OCR 값을 읽는다. 탐색 경로는 OCR과 OmniParser를
-   수행한다. byte-identical catalog의 기존 재사용은 두 연산을 모두 생략할 수 있다.
-4. 두 경로는 같은 `_resolve` → `recall_context`로 들어간다. 그 안에서 행동 패턴, 화면 캐시,
-   현재 해석과 모델 계획을 기존 우선순위로 선택한다. Context Recall은 모델 호출과 동의어가 아니다.
-5. 기억에 필요한 필드가 없어 `needs_refinement`가 나오면 같은 캡처와 OCR을 재사용해 전체
-   탐지로 전환한다. 이후 기존 보완 탐지·모델 판단·검토·실행을 공유한다.
+- 유사도는 기존 viewport·`methods.max_phash_distance` 조건을 사용한다. 같은 교육 digest·
+  목표의 기억만 검색한다. 같은 거리의 그룹은 현재 방식대로 bbox·role로 합치며 그룹 출처를 남긴다.
+- `retrieve_screen_memory`는 이름·bbox·role뿐 아니라 현재 슬롯에 연결한 `source`와
+  `procedure`를 반환한다. 행동 후보가 선택되지 않아도 이 정보는 모델에 전달된다.
+  인출만으로 `pending`, `used`, `verified`를 갱신하지 않는다.
+- `group_input_sources`를 기억 인출과 현재 값 증거 연결이 함께 사용한다. 현재 OCR 값과 입력값의
+  비교는 기존 `bind_visible_value_evidence` 경로를 사용한다. 기억에 있는 절차는 실행 완료 이력이 아니다.
+- 모델의 `ScreenMapping.needs_refinement`가 `ScreenPlan`/`ScreenMatch`를 지나
+  `SemanticDetection`까지 전달된다. 기억에 필요한 보이는 컨트롤이 없으면 같은 캡처·OCR로
+  OmniParser를 실행하고 다시 공통 문맥·패턴·판단 경로로 들어간다. 빈 행동 보완 호출로 바꾸지 않는다.
+- 화면 밖 컨트롤은 탐색 요청 신호로 대신 처리하지 않고 기존 이동·스크롤 행동으로 찾는다.
+  재탐지 이후에는 기존 보완 탐지의 종료 조건을 사용한다.
+- 예전 기억은 빈 관찰 필드 기본값으로 읽는다. 저장되지 않은 추가 필드·입력 대응은 성공 기록을
+  재편찬해야 확보할 수 있다. 콜드/웜은 bench의 실험 조건이며 화면마다 선택하는 경로와 다르다.
 
-LangGraph의 Observation·Decision·Review·Execution 노드는 유지한다. 관찰 내부의 분기와
-공통 문맥 조립을 바꾼 것이며 네 이름의 새로운 상태 기계나 독립 그래프를 추가한 것은 아니다.
+## LangGraph와의 관계
 
-## 기억과 현재 값
+위 단계는 화면 처리 내부의 실제 함수 순서다. 외부 LangGraph는 네 책임 노드를 유지하며 보통
+`Observation → Review → Decision → Review → Execution → Observation`으로 진행한다.
+현재 `screen_matching=true`에서는 화면 해석과 다음 계획을 한 번에 얻으므로 화면 판단까지
+Observation 내부에서 실행한다. Decision 노드는 그 계획을 실행 계약으로 확정하고, 필요할 때
+공통 화면 판단 경로로 재진입한다. 따라서 두 그래프를 같은 단계 이름으로 혼동하지 않는다.
+실행 후 Observation은 전달 효과 검증도 수행하며 완료·중단은 `lifecycle.route`에 따른다.
 
-`MethodActionGroup.observed_fields`와 `field_sources`는 행동 대상 외의 읽기 전용 필드를
-포함해 의미·좌표·업무 key를 보존한다. 원래 값은 저장하지 않는다. 인출된 필드는 현재 프레임에서
-새 임시 ID를 받으며, 모델에는 이름·bbox·현재 OCR 값을 담은 `remembered_fields`로 전달한다.
-현재 OCR에서 업무 값과 일치한 필드만 기존 메모 갱신 경로로 들어간다.
+## 검증과 저장 형식
 
-옛 기억은 빈 필드 기본값으로 읽으며 기존 행동 좌표를 사용할 수 있다. 추가 관찰 필드가 필요하면
-성공 기록을 재편찬해야 한다. 편찬은 여전히 행동이 전달된 후보를 선택하므로, 행동 없는 모든
-프레임까지 새 기억 그룹으로 보존하는 변경은 포함하지 않는다.
+합성 테스트는 실제 파서·문맥·패턴·판단 함수를 연결해 순서를 확인한다. 기억이 있어도 행동
+후보가 없는 경우의 입력 대응 전달, 모델 응답에 의한 탐색 복귀, 동일 캡처의 문맥 재평가를
+검증한다. 이 검증은 실제 ERP·유료 모델 성공률 측정이 아니다.
 
-## 로그와 저장 형식
-
-- `screen_similarity`: 거리, 후보 그룹, 선택 경로를 기록한다.
-- `local_visual_detection`: `route`, `detector_skipped`와 기존 시간을 기록한다.
-- `screen_pattern_selection`: 메서드·화면 캐시·grounded plan·모델 중 선택한 원천을 기록한다.
-- `screen_memory_fallback`: 기억에서 탐지로 돌아간 원인을 기록한다.
-- `methods`, `visual_match_cache`, `method_id`, `warm_compiled`, 모델 purpose와 기존 계측 식별자는
-  유지한다. bench의 cold/warm은 실험 조건이며 Scanning/Memory Retrieval과 같은 값이 아니다.
-- 공용 모델 응답 필드와 어휘 fixture는 유지한다. 추가 기억 필드는 내부 저장 계약이다.
-- CLI: `python -m brain.demo_learning.memory_compilation`.
-
-## 검증
-
-합성 테스트로 유사도→관찰→공통 판단 순서, 탐지 생략, 탐색 폴백에서 캡처/OCR 재사용,
-읽기 전용 필드의 편찬·현재 값 증거 연결, 재관찰 후 모델 없는 행동 전달을 확인한다.
-이 결과는 실제 ERP 성공이나 유료 모델 성능 측정이 아니다.
+기존 `screen_similarity`, `screen_pattern_selection`, `screen_memory_fallback`,
+`methods`, `visual_match_cache`, `warm_compiled`, 모델 purpose는 유지한다.
+모델 응답 스키마에 추가된 `needs_refinement`는 두 스키마 fixture에 반영한다.
+기억 편찬 CLI는 `python -m brain.demo_learning.memory_compilation`이다.

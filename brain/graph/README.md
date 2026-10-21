@@ -1,15 +1,19 @@
 # Worker runtime
 
 `python -m brain.run` loads the record and user task, then runs the four-node
-`Observation → Decision → Review → Execution` graph. Screen matching requires
+`Observation → Review → Decision → Review → Execution` route. Screen matching requires
 `--task`/`task_path`; `TaskInstruction.procedure` preserves user-taught steps.
 There is no separate legacy Procedure loader.
 
 ## Runtime responsibilities
 
 `ScreenScanner.scan` checks viewport/pHash before OCR or control detection.
-`MemoryRetrieval.recall_screen` supplies matching field geometry; a miss uses Scanning.
-Both feed `match_pattern` and `recall_context` for task-aware method/cache/model selection.
+`MemoryRetrieval.retrieve_screen_memory` supplies field geometry, input bindings and procedures;
+a miss uses Scanning. Both restore current execution state with `context_recall.recall_context`,
+then `screen_decision.match_screen_pattern` binds existing plans before model action selection.
+Context Recall performs no model calls or state changes. Even identical captures enter this shared
+sequence; only OCR/detection is skipped. `ScreenMapping.needs_refinement` connects model responses
+to local scanning on the same capture and OCR.
 Current OCR values, accumulated notebook and education share the same review/execution path.
 The four LangGraph responsibility nodes remain; see
 [the terminology guide](../../docs/runtime-terminology.md) for the internal branch and contracts.
@@ -22,8 +26,10 @@ The four LangGraph responsibility nodes remain; see
   The notebook and model context are projections of these facts.
 - Observation obtains evidence through relay HTTP and joins pending delivery to
   its subsequent screen. Local OCR/control detection supplies the marker catalog.
-- Decision obtains a proposal from a learned method, visual-match cache or measured
-  model. All three pass through the same task/input normalization, current-marker
+- With screen matching enabled, Observation obtains a combined interpretation and plan through
+  `screen_decision`. Decision finalizes that plan for execution, reentering the shared pipeline
+  when necessary. Learned methods, visual-match cache and measured model responses all pass
+  through the same task/input normalization, current-marker
   grounding and plan validation. Action and evidence targets must both be bound.
   Current evidence is recorded before the execution review gate. Missing semantic
   definitions are repaired without silently deleting current evidence.

@@ -16,9 +16,9 @@ from brain.demo_learning.memory_compilation import (
     compile_memory,
     read_memory_candidates,
 )
-from brain.graph.context_recall import ScreenMatch, compile_match
 from brain.graph.memory_retrieval import open_memory_library
 from brain.graph.save_review import SaveReviewResponse, validate_save_review
+from brain.graph.screen_decision import ScreenMatch, compile_match
 from brain.graph.screen_mapping import ScreenMapping
 from brain.visual.scene import Detection, VisualControl, bind_scene
 from pipeline.schemas import OcrBlock
