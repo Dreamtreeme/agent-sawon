@@ -306,6 +306,7 @@ class Brain:
             merge_settings=settings.visual_merge,
             reuse_identical=settings.screen_matching,
             model_led_semantics=settings.visual_model_led_semantics,
+            recall_screen=lambda screen: self.memory_retrieval.recall_screen(screen),
         )
 
     @property

@@ -75,6 +75,10 @@ class MethodActionGroup(BaseModel):
     screen_kind: str = "unknown"
     screen_phash: int | None = None
     image_size: tuple[int, int] | None = None
+    # Screen memory includes passive fields, not just the next action's targets.
+    # Only meaning/geometry/source bindings persist; values come from the current OCR.
+    observed_fields: list[MethodTarget] = Field(default_factory=list)
+    field_sources: dict[str, str] = Field(default_factory=dict)
     save_result: (
         Literal["rejected", "confirmation_required", "ready_for_query", "unknown"] | None
     ) = None
@@ -220,6 +224,10 @@ def compile_method_candidate(
                     ],
                     "save_result": compiled.save_result,
                     "repair_fields": compiled.repair_fields,
+                    "observed_fields": [
+                        target.model_dump(mode="json") for target in compiled.observed_fields
+                    ],
+                    "field_sources": compiled.field_sources,
                 },
                 sort_keys=True,
                 ensure_ascii=False,
@@ -436,6 +444,36 @@ def method_from_match(
     has_save_review = bool(message_targets) and len(message_targets) == len(
         set(response.get("message_targets", []))
     )
+    observed_fields = []
+    field_sources = {}
+    sources_by_target = {
+        **{item["target"]: item["field"] for item in response.get("evidence", [])},
+        **{step["target"]: step["source"] for step in steps if step.get("source")},
+    }
+    observed_controls = {
+        **{
+            int(ref): {"role": field["role"]}
+            for ref, field in screen.get("selected_fields", {}).items()
+        },
+        **controls,
+    }
+    for target_id, control in observed_controls.items():
+        name = (
+            screen.get("selected_fields", {}).get(str(target_id), {}).get("name")
+            or sources_by_target.get(target_id)
+            or control.get("visual_description")
+        )
+        if target_id not in targets and not name:
+            continue
+        target = targets.get(target_id) or coordinate_target(target_id, control, None, name)
+        if target is None:
+            continue
+        # Message anchors live on action targets. Never copy instance values into this layout.
+        observed_fields.append(target.model_copy(update={"anchor_texts": []}))
+        if source := sources_by_target.get(target_id) or screen.get("selected_fields", {}).get(
+            str(target_id), {}
+        ).get("source"):
+            field_sources[target.name] = source
     group = MethodActionGroup(
         id="pending",
         purpose=response.get("purpose", "")[:160],
@@ -447,6 +485,8 @@ def method_from_match(
         screen_kind=response.get("screen_kind", "unknown"),
         screen_phash=screen.get("screen_phash"),
         image_size=screen.get("image_size"),
+        observed_fields=observed_fields,
+        field_sources=field_sources,
         save_result=response.get("save_result") if has_save_review else None,
         message_targets=message_targets if has_save_review else [],
         repair_fields=list(response.get("repair_fields", [])) if has_save_review else [],
@@ -616,20 +656,34 @@ def _register_bound_target(screen: dict, target: MethodTarget, marker: dict) -> 
     )
 
 
-def _coordinate_bindings(
+def screen_similarity_distance(
     group: MethodActionGroup, screen: dict, max_phash_distance: int
-) -> dict[str, tuple[dict, list[int]]] | None:
+) -> int | None:
+    """Use the same viewport/pHash contract before OCR and when binding actions."""
     current_hash = screen.get("screen_phash")
     if (
         group.screen_phash is None
         or current_hash is None
         or tuple(screen.get("image_size", ())) != group.image_size
-        or hash_distance(group.screen_phash, current_hash) > max_phash_distance
     ):
         return None
+    distance = hash_distance(group.screen_phash, current_hash)
+    return distance if distance <= max_phash_distance else None
+
+
+def _coordinate_bindings(
+    group: MethodActionGroup,
+    screen: dict,
+    max_phash_distance: int,
+    *,
+    targets: list[MethodTarget] | None = None,
+) -> dict[str, tuple[dict, list[int]]] | None:
+    if screen_similarity_distance(group, screen, max_phash_distance) is None:
+        return None
+    targets = group.targets if targets is None else targets
     markers = {marker["id"]: marker for marker in screen.get("markers", [])}
     next_id = max(markers, default=0) + 1
-    if any(target.point is None or target.bbox is None for target in group.targets):
+    if any(target.point is None or target.bbox is None for target in targets):
         return None
     selected = {
         (tuple(field["bbox"]), field["role"]): markers[int(ref)]
@@ -637,7 +691,7 @@ def _coordinate_bindings(
         if int(ref) in markers
     }
     bound = {}
-    for target in group.targets:
+    for target in targets:
         marker = selected.get((target.bbox, target.role))
         if marker is None:
             marker = dict(id=next_id, source="learned_point", bbox=list(target.bbox), text_ids=[])
@@ -855,25 +909,36 @@ class MethodLibrary:
         screen: dict,
         values: dict[str, str],
     ) -> tuple[list[dict], list[dict]]:
-        """Reuse learned fill targets as deterministic proof on the current screen."""
+        """Match current OCR values at remembered input and passive-field locations."""
 
         method = next((item for item in self.methods() if item.id == method_id), None)
         if method is None:
             return [], []
         sources = {slot.name: slot_map.get(slot.name, slot.source_key) for slot in method.slots}
         blocks = {block["id"]: block for block in screen.get("ocr", [])}
+        input_bindings = {slot.source_key: sources[slot.name] for slot in method.slots}
         controls: dict[int, dict] = {}
         evidence: dict[str, dict] = {}
         for group in method.action_groups:
-            bound = _coordinate_bindings(group, screen, self.max_phash_distance)
+            targets = {target.name: target for target in [*group.observed_fields, *group.targets]}
+            bound = _coordinate_bindings(
+                group, screen, self.max_phash_distance, targets=list(targets.values())
+            )
             if bound is None:
                 continue
-            targets = {target.name: target for target in group.targets}
-            for action in group.actions:
-                if action.action != "fill" or action.slot is None:
-                    continue
-                source = sources.get(action.slot)
-                target = targets.get(action.target)
+            field_sources = {
+                **{
+                    name: input_bindings.get(source, source)
+                    for name, source in group.field_sources.items()
+                },
+                **{
+                    action.target: sources.get(action.slot)
+                    for action in group.actions
+                    if action.action == "fill" and action.slot is not None
+                },
+            }
+            for name, source in field_sources.items():
+                target = targets.get(name)
                 if source is None or source not in values or target is None or source in evidence:
                     continue
                 marker, label_ids = bound[target.name]

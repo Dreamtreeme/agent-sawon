@@ -18,7 +18,8 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `context_recall`, `memory_retrieval` | 의미 이름·bbox·입력 key·행동 point의 모델 경계 |
 | 선택 결과의 요청 문맥 | `brain/graph/context_recall.py`의 `RecallSelection.prepared` | `recall_context` → `ground_context_response` | 같은 판단에서 확장한 교육 상세를 빈 행동 보완에 전달. 거절 후 재계획은 기존 prepared 사용. 턴 간 영구 상태가 아님 |
 | 기억 편찬 응답 | `brain/demo_learning/memory_compilation.py`의 `MemoryAssembly` / `MemoryGroupSelection` | 모델 클라이언트, `compile_memory` | 후보 ID로 성공 행동을 선택. context_anchors는 타입 검증 후 첫 8개를 보존하고 초과분 경고 기록 |
-| 인출된 행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup` | `method_from_match`, `compile_memory`, `MemoryRetrieval`, `context_recall` | 행동 좌표와 함께 저장 결과 분류·메시지 대상 이름·수정 필드를 보존하고 현재 화면 참조로 결합 |
+| 인출된 화면·행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup` | `method_from_match`, `compile_memory`, `MemoryRetrieval`, `context_recall` | 행동 좌표, 관찰 필드 기하·입력 키, 저장 결과 분류·메시지 대상을 보존하고 현재 화면에 결합 |
+| 관찰 경로 선택 | `ScreenScanner.scan` / `MemoryRetrieval.recall_screen` | `_SceneCatalog`, `context_recall` | 캡처 직후 유사도 확인 → 메모리 기하 또는 탐지. 행동 선택은 아직 하지 않음 |
 | 시각 공용 자료형 | `sawon_runtime/visual.py` | OCR·탐지·pipeline | 렌더 페이지와 OCR block 계약 |
 | 공개 record/action/observation/event | `../agent-sawon-bench/interfaces/sawon_interfaces/contracts.py` | core와 bench | 두 저장소가 공유하는 버전 있는 Pydantic 계약 |
 | 공개 스키마 export | `../agent-sawon-bench/interfaces/sawon_interfaces/export_schemas.py` | 외부 소비자·검사 | `sawon_interfaces` JSON Schema 생성 |
@@ -67,6 +68,18 @@ flowchart LR
 않습니다. 이미 존재하는 공용 계약을 확장할 수 있는지 먼저 확인합니다.
 
 ## 인출된 증거와 저장 결과
+
+`MethodActionGroup.observed_fields`는 관찰한 필드의 의미·bbox·role을, `field_sources`는
+필드 이름 → 업무 입력 key를 저장합니다. 이전 입력값은 저장하지 않습니다. 생산자는
+`ScreenMapping.local_payload`의 내부 `selected_fields`와 `method_from_match`이며,
+런타임 학습·편찬 모두 이 함수를 사용합니다. `compile_method_candidate`의 중복 판정에도
+이 필드를 포함해 서로 다른 관찰 정보를 지우지 않습니다. 옛 산출물은 빈 기본값으로 읽습니다.
+
+`MemoryRetrieval.recall_screen`은 같은 교육 digest·목표의 기억에서 기존 viewport·pHash
+조건을 적용해 가장 가까운 화면의 기하를 반환합니다. 같은 거리의 그룹은 bbox·role로 합칩니다.
+이 읽기는 pending·used·verified를 갱신하지 않습니다. 화면이 비슷하다는 사실은 행동 선택이나
+완료 증거가 아닙니다. `match_pattern`이 기존 단계 문맥으로 행동을 결합하고, 현재 OCR에서
+일치한 값만 공통 증거 갱신 경로에 들어갑니다. 현재 프레임의 marker ID는 새로 배정합니다.
 
 `MethodLibrary.bind_visible_value_evidence`는 현재 OCR에서 입력값이 일치한 경우에만 증거를
 만듭니다. 이때 증거 대상도 행동 대상과 동일한 `screen.markers` / `selected_fields`에 등록합니다.

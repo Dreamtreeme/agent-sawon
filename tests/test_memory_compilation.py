@@ -163,6 +163,42 @@ def test_memory_compiler_preserves_purpose_points_and_trace_order(tmp_path):
     ]
 
 
+def test_synthetic_compilation_preserves_passive_field_mapping_but_not_old_value(tmp_path):
+    # Synthetic successful save screen: the reference is observed, never filled in this batch.
+    original = screen("Shipment editor")
+    mapping = ScreenMapping.model_validate(
+        {
+            "screen_kind": "editor",
+            "fields": {
+                "Reference": {"role": "text", "bbox": [100, 40, 200, 30], "value": "HBL-001"},
+                "Save": {"role": "button", "bbox": [600, 500, 100, 40]},
+            },
+            "assignments": {"Reference": "hbl_no"},
+            "steps": [{"target": "Save", "action": "click", "intent": "save", "point": [650, 520]}],
+        }
+    )
+    payload = mapping.local_payload(original, source()["values"])
+    candidate = MemoryCandidate("c000", "a" * 64, "obs", 0, original, payload)
+    method = compile_memory(source(), [candidate], draft(groups=("c000",)), method_id="passive")
+    group = method.action_groups[0]
+    assert group.field_sources == {"Reference": "hbl_no"}
+    assert {f.name for f in group.observed_fields} == {"Reference", "Save"}
+    assert "HBL-001" not in method.model_dump_json()
+    library = MethodLibrary(tmp_path / "passive-memory.json", enabled=True)
+    library.upsert(method)
+    fresh = screen("Shipment editor")
+    fresh["ocr"] = [{"id": 91, "text": "HBL-002", "bbox": [110, 45, 100, 20]}]
+    controls, evidence = library.bind_visible_value_evidence(
+        "passive", {}, fresh, {"hbl_no": "HBL-002"}
+    )
+    assert evidence and evidence[0]["field"] == "hbl_no"
+    assert controls[0]["text_ids"] == [91]
+    assert library.bind_visible_value_evidence("passive", {}, fresh, {"hbl_no": "HBL-001"}) == (
+        [],
+        [],
+    )
+
+
 def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_navigation(tmp_path):
     # Synthetic successful cold response; no model or desktop is involved.
     cold_screen = {

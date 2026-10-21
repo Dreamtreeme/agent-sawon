@@ -35,6 +35,7 @@ def test_visual_match_cache_key_ignores_run_metadata_but_keeps_action_context():
     first = {
         "screen": {
             "obs_id": "observation-a",
+            "observation_route": "scanning",
             "markers": [{"id": 7, "source": "ocr", "bbox": [1, 2, 3, 4], "confidence": 0.91}],
         },
         "notebook": {
@@ -50,6 +51,7 @@ def test_visual_match_cache_key_ignores_run_metadata_but_keeps_action_context():
     second = {
         "screen": {
             "obs_id": "observation-b",
+            "observation_route": "memory_retrieval",
             "markers": [{"id": 7, "source": "ocr", "bbox": [1, 2, 3, 4], "confidence": 0.87}],
         },
         "notebook": {

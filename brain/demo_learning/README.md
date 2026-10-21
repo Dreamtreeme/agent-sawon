@@ -31,12 +31,15 @@ python -m brain.demo_learning.memory_compilation --source-case cases/source/case
 `read_memory_candidates` joins source observations and delivered actions. `assemble_memory` asks
 for a `MemoryAssembly`; `compile_memory` retains the selected actions, input keys and coordinates.
 The model reviews the trace and selects candidates; it does not invent actions or coordinates.
-Current compilation still selects action-bearing candidates. Preserving all read-only screen
-mappings is follow-up work, not an effect of the terminology change.
+Each selected action group also preserves observed field names/geometry and input-key bindings,
+including passive fields. Historical values are not stored in this layout. Compilation still
+selects action-bearing candidates; it does not turn every passive-only frame into an action group.
 
-Pattern Matching compares the recorded viewport and pHash. Memory Retrieval binds the selected
-method, and Context Recall combines it with the current task and notebook. The runtime still has
-combined responsibilities; see [terminology and implementation](../../docs/runtime-terminology.md).
+Viewport/pHash matching happens before observation. Memory Retrieval supplies field geometry;
+a miss uses Scanning. Both feed task Pattern Matching and Context Recall. Current OCR validates
+values; a remembered value is not current completion evidence. Older artifacts still load with
+empty observed-field defaults and need recompilation to obtain the additional field layout.
+See [terminology and implementation](../../docs/runtime-terminology.md).
 
 The persisted artifact tag remains `warm_compiled`. `methods.compiled_only=true` excludes partial
 runtime traces. The compilation directory records inputs, requests, draft, cost and result.

@@ -24,9 +24,10 @@ Luna, Gemini, Jev와 replay 어댑터는 비교·재생 코드일 수 있으며 
 
 ## 실행 경로
 
-화면 처리 책임은 Scanning → Pattern Matching → Memory Retrieval → Context Recall로
-부른다. 성공 기록 정제는 Memory Compilation이다. 현재 구현의 책임 중첩과 저장 형식의
-기존 이름은 [용어와 코드 대응](runtime-terminology.md)에 명시한다.
+화면 캡처 직후 유사도를 확인한다. 일치하면 Memory Retrieval, 미일치하면 Scanning으로
+분기한 뒤 공통 Pattern Matching → Context Recall 경로로 연결한다. 기억 경로는 저장된
+필드 기하를 인출하고 현재 값은 OCR로 읽는다. 성공 기록 정제는 Memory Compilation이다.
+분기 조건과 저장 형식은 [용어와 코드 대응](runtime-terminology.md)에 명시한다.
 
 1. `pipeline`이 문서를 렌더링하고 GPU OCR·추출·교차 검증을 수행합니다.
 2. `brain.run`이 `TaskInstruction`, 입력 record, 설정과 relay를 연결합니다.

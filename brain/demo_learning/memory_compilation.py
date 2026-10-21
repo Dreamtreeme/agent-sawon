@@ -86,8 +86,8 @@ class MemoryCandidate:
 
 
 MEMORY_COMPILATION_RULES = """Perform Memory Compilation as the Critic of this successful execution.
-Scanning records observations; Pattern Matching identifies reusable screen/task patterns;
-Memory Retrieval supplies stored methods; Context Recall applies them to the current task.
+Runtime checks screen similarity first, then uses Memory Retrieval on a match or Scanning on a miss.
+Both routes use Pattern Matching and Context Recall with current task inputs and observations.
 Refine the supplied execution graph into memory for these runtime responsibilities.
 Walk candidates in execution order: observation -> proposal -> delivered actions -> observed result.
 A candidate contains only actions actually delivered; already_satisfied and nonexecuted_plans

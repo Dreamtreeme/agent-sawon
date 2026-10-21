@@ -7,11 +7,12 @@ There is no separate legacy Procedure loader.
 
 ## Runtime responsibilities
 
-Scanning (`ScreenScanner.scan`) observes the screen. Pattern Matching searches stored screen/task
-patterns. Memory Retrieval (`MemoryRetrieval.retrieve`) supplies bound methods. Context Recall
-(`recall_context`) combines observations, memory, education and current task progress. These names
-are responsibilities within the existing worker graph; callback order and eligibility are unchanged.
-See [the terminology guide](../../docs/runtime-terminology.md) for the remaining coupling.
+`ScreenScanner.scan` checks viewport/pHash before OCR or control detection.
+`MemoryRetrieval.recall_screen` supplies matching field geometry; a miss uses Scanning.
+Both feed `match_pattern` and `recall_context` for task-aware method/cache/model selection.
+Current OCR values, accumulated notebook and education share the same review/execution path.
+The four LangGraph responsibility nodes remain; see
+[the terminology guide](../../docs/runtime-terminology.md) for the internal branch and contracts.
 
 ## Ownership and flow
 

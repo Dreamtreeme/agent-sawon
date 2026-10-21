@@ -14,7 +14,11 @@
 | 업무 화면 매핑 | 사용자 교육, notebook, 스크린샷, text/control bbox | 의미 이름, 입력 key, 행동 point의 `ScreenMapping` | 의미 이름은 현재 화면 계약, point는 현재 캡처 |
 | 편찬된 기억 | 성공 trace, OCR anchor, pHash | 현재 화면에 재결합한 행동 | 교육 digest와 화면 유사도 범위 |
 
-OmniParser는 bbox를 찾고 OCR은 텍스트와 bbox를 찾습니다. 모델이 새 사각형을 만들 수는 없습니다.
+캡처 직후 기존 viewport·pHash 조건으로 기억을 검색합니다. 일치하면 저장한 필드 bbox를
+인출하여 OmniParser를 생략하고, 미일치하면 OmniParser로 bbox를 찾습니다. 현재 문자열은
+두 경로 모두 OCR로 읽습니다. 바이트까지 동일한 관찰의 기존 catalog 재사용은 유지합니다.
+로컬 의미 탐지는 주어진 후보를 분류하며, 업무 모델의 ScreenMapping은 의미 이름과 bbox를
+선택합니다. 기억이 불충분하면 같은 캡처·OCR에서 탐지 경로로 돌아갑니다.
 Florence-2의 기능 캡션은 빈 입력칸을 `Maximize`, `Center` 등으로 잘못 설명했으므로 현재
 런타임에서 사용하지 않습니다.
 

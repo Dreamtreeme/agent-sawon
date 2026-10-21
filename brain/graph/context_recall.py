@@ -255,7 +255,7 @@ class MemoryRetriever(Protocol):
 
     def prompt_context(self) -> dict: ...
 
-    def retrieve(self, screen: dict) -> ScreenMatch | None: ...
+    def match_pattern(self, screen: dict) -> ScreenMatch | None: ...
 
     def remember(self, screen: dict, response: ScreenMatch) -> None: ...
 
@@ -426,10 +426,9 @@ keyboard targets.
 
 CONTEXT_RECALL_RULES = (
     """Perform Context Recall using the user task, input data, notebook and CURRENT screen.
-Scanning supplies the current observation. Pattern Matching searches stored screen/task patterns;
-Memory Retrieval supplies available learned methods. Context Recall combines this information
-with the current task progress to choose the next action. These responsibilities apply to every
-observed screen.
+Screen similarity comes first: a match uses Memory Retrieval; a miss uses Scanning.
+Both routes feed Pattern Matching and Context Recall, combining the current observation,
+available learned methods and current task progress to choose the next action.
 The task description contains business intent and completion conditions, not a fixed UI route.
 Choose the next grounded action that advances the objective from the current evidence. Decide
 whether to fill visible inputs, use a visible lookup/selection control, navigate, save, or verify.
@@ -1699,7 +1698,7 @@ def select_context_response(
     screen, page = request.screen, request.page
     method_proposal = request.proposal if allow_method else None
     if allow_method and method_proposal is None and "correction" not in screen:
-        method_proposal = services.memory_retrieval.retrieve(screen)
+        method_proposal = services.memory_retrieval.match_pattern(screen)
         if (
             request.phase == "save_result"
             and method_proposal is not None
@@ -1712,6 +1711,22 @@ def select_context_response(
             # A method carrying a rebound save review uses the common executor.
             method_proposal = None
     cache_hit = services.cache.lookup(prepared.state) if method_proposal is None else None
+    services.log.append(
+        "select",
+        payload={
+            "check": "screen_pattern_selection",
+            "observation_route": screen.get("observation_route"),
+            "source": (
+                "method"
+                if method_proposal is not None
+                else "screen_cache"
+                if cache_hit is not None
+                else "grounded_plan"
+                if request.grounded_interpretation is not None
+                else "model"
+            ),
+        },
+    )
     if method_proposal is not None:
         response = method_proposal
     elif cache_hit is not None:

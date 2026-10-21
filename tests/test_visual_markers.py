@@ -55,6 +55,55 @@ def test_only_local_geometry_becomes_click_target():
     assert scene.screenshot.desktop_point((175, 30)) == (-50, 60)
 
 
+def test_synthetic_incomplete_memory_scans_without_recapture_or_second_ocr(tmp_path):
+    # Synthetic image and responses exercise the actual memory -> scanning fallback.
+    blocks, boxes, _, meaning = fixture()
+    calls = []
+
+    class Relay:
+        def screenshot(self, observed, path):
+            calls.append("capture")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (400, 200), "white").save(path)
+            return path
+
+    class Ocr:
+        def read(self, page):
+            calls.append("ocr")
+            return blocks
+
+    class Detector:
+        def read(self, page, *, ocr_boxes=()):
+            calls.append("detector")
+            return boxes
+
+    def recall(screen):
+        calls.append("similarity")
+        return {
+            "distance": 0,
+            "groups": [],
+            "fields": [{"name": "Reference", "role": "edit", "bbox": [100, 15, 150, 30]}],
+        }
+
+    def interpret(request):
+        route = request.screen["observation_route"]
+        calls.append(route)
+        return (
+            SemanticDetection(controls=[], needs_refinement=True)
+            if route == "memory_retrieval"
+            else meaning
+        )
+
+    log = RunLog(tmp_path, case_id="synthetic-fallback", agent_id="test")
+    scanner = ScreenScanner(
+        Relay(), Ocr(), tmp_path, log, interpret, detector=Detector(), recall_screen=recall
+    )
+    observed = scanner.scan(wire())
+    assert calls == ["capture", "similarity", "ocr", "memory_retrieval", "detector", "scanning"]
+    assert next(e for e in observed.elements if e.role == "edit").bbox == (100, 15, 150, 30)
+    assert any(e.payload.get("check") == "screen_memory_fallback" for e in log.read_all())
+
+
 def test_semantic_schema_cannot_generate_coordinates():
     schema = json.dumps(SemanticDetection.model_json_schema())
     assert "bbox" not in schema and "prefixItems" not in schema
@@ -518,7 +567,7 @@ def test_perception_refines_only_after_basic_detection_reports_failure(
     assert calls == ["full", "meaning"] + (["meaning"] if on_rematch else []) + (
         ["refine", "meaning"] if missing else []
     )
-    event = [e for e in log.read_all() if e.payload.get("stage") == "screen_scanner"][-1]
+    event = [e for e in log.read_all() if e.payload.get("stage") == "visual_perception"][-1]
     assert event.payload["detection_ms"] == (2000 if missing else 1000)
     assert event.payload["local_detector_ms"] == (
         (10000 if missing else 0) + (0 if on_rematch else 2000)
@@ -638,6 +687,8 @@ def test_same_screen_rematch_corrects_and_updates_cached_meaning_without_new_ocr
     assert calls == before_rematch  # Rematching must not capture or run local models.
     assert corrected.obs_id == current.obs_id and corrected.elements[0].role == "combobox"
     assert requests[1].correction is None
+    assert requests[1].screen["observation_route"] == "memory_retrieval"
+    assert perception.planning_context()[0].screen["observation_route"] == "memory_retrieval"
     assert "control:0:value_outside_local_marker" in corrected.global_uncertainties
     assert perception.scan(wire()).elements[0].role == "combobox"
     assert calls == {"capture": 3, "ocr": 1, "detector": 1}

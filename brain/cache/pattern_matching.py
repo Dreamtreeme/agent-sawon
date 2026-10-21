@@ -49,7 +49,7 @@ _DIAGNOSTIC_NOTEBOOK_KEYS = {
     "scratchpad",
 }
 _CONFIDENCE_KEYS = {"candidate_confidence", "confidence"}
-_CACHE_LAYER_KEYS = {"method_memory"}
+_CACHE_LAYER_KEYS = {"method_memory", "observation_route"}
 
 
 def _cache_contract(value: Any, *, parent: str | None = None) -> Any:

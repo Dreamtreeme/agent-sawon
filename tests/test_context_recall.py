@@ -1287,7 +1287,7 @@ def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
             message_targets=[8] if has_review else [],
         )
 
-    services.memory_retrieval.retrieve = bind_method
+    services.memory_retrieval.match_pattern = bind_method
     cache = ScreenPatternCache(tmp_path / "save-result-cache.json", enabled=True)
     services = replace(services, cache=cache)
     prepared = build_context_prompt(request, services)
@@ -1972,7 +1972,7 @@ def test_post_action_review_reuses_bound_next_method_without_model_call(tmp_path
     }
     request, services = matching_contract(brain, screen)
     replay = ScreenMatch.model_validate(response(meaning))
-    services.memory_retrieval.retrieve = lambda _screen: replay
+    services.memory_retrieval.match_pattern = lambda _screen: replay
 
     result = recall_context(
         replace(request, post_action_review=True, pending_verification=True), services

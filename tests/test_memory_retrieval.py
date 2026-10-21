@@ -36,6 +36,71 @@ def test_compiled_only_library_does_not_replay_raw_model_trace(tmp_path):
     assert [method.id for method in library.methods()] == ["compiled"]
 
 
+@pytest.mark.parametrize("similar", [True, False], ids=["memory", "scanning"])
+def test_synthetic_similarity_routes_before_ocr_and_shared_context(tmp_path, similar):
+    # Synthetic capture/OCR/model responses; actual scanner, memory and context functions.
+    brain, model, _ = setup(tmp_path, changed_label=True)
+    if not similar:
+        library = brain.memory_retrieval.library
+        method = library.methods()[0]
+        groups = [
+            group.model_copy(update={"screen_phash": group.screen_phash ^ ((1 << 64) - 1)})
+            for group in method.action_groups
+        ]
+        atomic_write_json(
+            library.path,
+            MethodDocument(methods=[method.model_copy(update={"action_groups": groups})]),
+        )
+    order = []
+    scanner = brain.screen_scanner
+    recognize, read, detect, recall = (
+        scanner.recall_screen,
+        scanner.ocr.read,
+        scanner.detector.read,
+        scanner.detect,
+    )
+
+    def recognition(screen):
+        order.append("similarity")
+        assert "ocr" not in screen
+        state = brain.memory_retrieval.state
+        pending, used, verified = state.pending, set(state.used), dict(brain.verified)
+        result = recognize(screen)
+        assert state.pending is pending and state.used == used and brain.verified == verified
+        return result
+
+    def ocr(page):
+        order.append("current_values")
+        return read(page)
+
+    def detector(page, **kwargs):
+        order.append("scanning")
+        return detect(page, **kwargs)
+
+    def context(request):
+        order.append("context")
+        assert request.screen["observation_route"] == (
+            "memory_retrieval" if similar else "scanning"
+        )
+        return recall(request)
+
+    scanner.recall_screen, scanner.ocr.read = recognition, ocr
+    scanner.detector.read, scanner.detect = detector, context
+    brain._observe()
+
+    assert order == ["similarity", "current_values", *([] if similar else ["scanning"]), "context"]
+    assert ('"remembered_fields"' in model.prompts[0]) is similar
+    assert brain._select_node() == "review"
+    assert [a.decision.action.source for a in brain.action_plan.actions] == [
+        "customer",
+        "reference",
+    ]
+    events = brain.log.read_all()
+    recognition_event = next(e for e in events if e.payload.get("check") == "screen_similarity")
+    assert recognition_event.payload["matched"] is similar
+    assert any(e.payload.get("check") == "screen_pattern_selection" for e in events)
+
+
 def catalog(label="Customer", shift=0):
     blocks = [
         OcrBlock(id=80, text=label, bbox=(10, 25 + shift, 65, 15), confidence=0.99),
@@ -190,7 +255,7 @@ def setup(
     )
     brain.screen_scanner.detector = Detector()
     assert (
-        brain.memory_retrieval.retrieve(current_screen) is None
+        brain.memory_retrieval.match_pattern(current_screen) is None
     )  # A matching saved detail is not a goal.
     if not changed_label:
         # A preceding navigation decision selects the next purpose; the worker then
@@ -287,19 +352,7 @@ def test_synthetic_memory_evidence_survives_scene_grounding_and_updates_notebook
     assert model.prompts == [] and relay.actions == []
 
 
-@pytest.mark.parametrize(
-    "observe_again",
-    [
-        False,
-        pytest.param(
-            True,
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="Repeated observation: visual_proposal_unknown_marker",
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("observe_again", [False, True])
 def test_compiled_coordinates_reach_executor_without_model(tmp_path, observe_again):
     brain, model, relay = setup(tmp_path)
     brain._observe()
@@ -356,7 +409,7 @@ def test_compiled_coordinates_reach_executor_without_model(tmp_path, observe_aga
         ),
     )
     assert brain.memory_retrieval.state.active_method_id is None
-    assert brain.memory_retrieval.retrieve(current) is None
+    assert brain.memory_retrieval.match_pattern(current) is None
 
 
 @pytest.mark.parametrize("fail_second", [False, True])
@@ -415,7 +468,7 @@ def test_final_model_proof_is_promoted_only_after_business_success(tmp_path, bus
     brain.memory_retrieval.state.used.update(
         (method.id, group.id) for group in method.action_groups
     )
-    response = brain.memory_retrieval.retrieve(
+    response = brain.memory_retrieval.match_pattern(
         completion_scene(customer="New customer B", reference="ORDER-B", ids=100)
     )
     assert response is not None
@@ -596,7 +649,7 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
         ),
     )
     brain.memory_retrieval.state.used.clear()
-    replay = brain.memory_retrieval.retrieve(screen)
+    replay = brain.memory_retrieval.match_pattern(screen)
     assert replay is not None
     assert brain.memory_retrieval.state.pending["group_id"] == login_group.id
     assert [step.source for step in replay.steps] == [
@@ -643,7 +696,7 @@ def test_taught_method_selects_the_only_branch_that_binds_current_screen(tmp_pat
     brain.memory_retrieval.state.pending = None
     brain.memory_retrieval.state.used.clear()
 
-    replay = brain.memory_retrieval.retrieve(account_screen)
+    replay = brain.memory_retrieval.match_pattern(account_screen)
 
     assert replay is not None
     assert brain.memory_retrieval.state.pending["group_id"] == second.id
@@ -764,7 +817,7 @@ def test_predispatch_rejection_blocks_that_method_without_blame_on_previous_deli
     assert rejected["status"] == "rejected_before_delivery"
     assert brain.memory_retrieval.state.unverified is previous
     assert method.id in brain.memory_retrieval.state.blocked_method_ids
-    assert brain.memory_retrieval.retrieve(catalog()[2]) is None
+    assert brain.memory_retrieval.match_pattern(catalog()[2]) is None
 
 
 def test_successful_fallback_keeps_untried_followup_in_the_same_taught_step(tmp_path):
@@ -918,11 +971,11 @@ def test_generic_success_trace_becomes_model_free_execution_graph(tmp_path):
     assert method.action_groups[1].predecessor_group_ids == [method.action_groups[0].id]
 
     brain.memory_retrieval.state.used.clear()
-    first_replay = brain.memory_retrieval.retrieve(screen)
+    first_replay = brain.memory_retrieval.match_pattern(screen)
     assert first_replay is not None
     assert first_replay.purpose == "Enter the visible customer"
     brain.memory_retrieval.delivered(complete=True)
-    second_replay = brain.memory_retrieval.retrieve(screen)
+    second_replay = brain.memory_retrieval.match_pattern(screen)
     assert second_replay is not None
     assert second_replay.purpose == "Enter the visible reference"
     assert model.prompts == []
@@ -960,7 +1013,7 @@ def test_bound_edge_replaced_without_dispatch_unblocks_only_after_effect(tmp_pat
     )
     runtime.library.upsert(method.model_copy(update={"action_groups": [first, followup]}))
     _, _, screen, _ = catalog(shift=20)
-    bound = runtime.retrieve(screen)
+    bound = runtime.match_pattern(screen)
     assert bound is not None
     original = runtime.state.pending
     old_edge = (original["method"].id, original["group_id"])
@@ -979,21 +1032,21 @@ def test_bound_edge_replaced_without_dispatch_unblocks_only_after_effect(tmp_pat
     runtime.delivered(complete=True)
     _, _, next_screen, _ = catalog(shift=20)
     next_screen["screen_phash"] = next_hash
-    assert runtime.retrieve(next_screen) is not None  # Conditional plan before effect commit.
+    assert runtime.match_pattern(next_screen) is not None  # Conditional plan before effect commit.
     assert runtime.state.pending["group_id"] == "next-edge"
     assert old_edge not in runtime.state.used
     runtime.verify_delivery(success=verified)
     assert (old_edge in runtime.state.used) is verified
     _, _, next_screen, _ = catalog(shift=20)
     next_screen["screen_phash"] = next_hash
-    assert (runtime.retrieve(next_screen) is not None) is verified
+    assert (runtime.match_pattern(next_screen) is not None) is verified
 
 
 def test_same_frame_and_sources_do_not_make_another_control_the_same_edge(tmp_path):
     brain, _, _ = setup(tmp_path)
     runtime = brain.memory_retrieval
     _, _, screen, _ = catalog(shift=20)
-    bound = runtime.retrieve(screen)
+    bound = runtime.match_pattern(screen)
     # Move Customer into Reference's region on the identical screenshot.
     fallback = bound.model_copy(
         update={

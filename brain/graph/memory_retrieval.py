@@ -1,8 +1,4 @@
-"""Memory Retrieval: bind stored methods to the current task and screen.
-
-The existing service still selects eligible groups and tracks learning/delivery.
-Naming the responsibility does not move pattern matching ahead of scanning yet.
-"""
+"""Recall screen geometry before detection, then bind methods using current observations."""
 
 from __future__ import annotations
 
@@ -21,6 +17,7 @@ from brain.cache.methods import (
     compile_method_candidate,
     method_completion_from_match,
     method_from_match,
+    screen_similarity_distance,
 )
 from brain.task_instruction import TaskInstruction
 from sawon_runtime.storage import RunLog, atomic_write_json
@@ -261,7 +258,42 @@ class MemoryRetrieval:
             "recent_executions": self.state.history[-2:],
         }
 
-    def retrieve(self, screen: dict) -> ScreenMatch | None:
+    def recall_screen(self, screen: dict) -> dict | None:
+        """Read layout memory without selecting an action or advancing execution state."""
+        if not self.enabled:
+            return None
+        matches = []
+        for method in self.library.methods():
+            if method.id in self.state.blocked_method_ids or not self._matches_current_task(method):
+                continue
+            for group in method.action_groups:
+                distance = screen_similarity_distance(
+                    group, screen, self.library.max_phash_distance
+                )
+                if distance is not None:
+                    matches.append((distance, method.id, group))
+        if not matches:
+            return None
+        nearest = min(distance for distance, _, _ in matches)
+        fields = {}
+        groups = []
+        for distance, method_id, group in matches:
+            if distance != nearest:
+                continue
+            groups.append({"method_id": method_id, "group_id": group.id})
+            for target in [*group.observed_fields, *group.targets]:
+                if target.bbox is None:
+                    continue
+                # Equal frames can have several action groups; combine their observed fields.
+                fields.setdefault(
+                    (target.bbox, target.role),
+                    {"name": target.name, "role": target.role, "bbox": list(target.bbox)},
+                )
+        if not fields:
+            return None
+        return {"distance": nearest, "groups": groups, "fields": list(fields.values())}
+
+    def match_pattern(self, screen: dict) -> ScreenMatch | None:
         from .context_recall import ScreenMatch
 
         self.state.pending = None
