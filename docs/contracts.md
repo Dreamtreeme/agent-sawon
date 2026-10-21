@@ -93,6 +93,10 @@ matching은 재결합된 결과와 메시지가 있는 메서드를 `save_result
 기록하고 앵커 원문은 넣지 않는다. 앵커 리스트의 원래 순서를 유지하며, 후보 ID·행동·좌표·
 입력 출처 검증 및 다른 응답 필드의 제한은 이 경고 정책으로 완화하지 않는다.
 
+편찬 전체 설명인 `WarmMethodAssembly.purpose`는 1–300자를 허용하며 `LearnedMethod.purpose`에
+원문을 보존합니다. 300자를 넘으면 파싱 단계에서 거절합니다. 그룹별 설명인
+`WarmGroupSelection.purpose`의 160자 제한과 `expected_result`의 240자 제한은 별도입니다.
+
 ## 거절 진단 산출물
 
 거절 기록은 판단 계약이 아니라 비공개 진단 산출물이다. `sawon_runtime/storage.py`의

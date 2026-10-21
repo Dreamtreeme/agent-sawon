@@ -127,14 +127,20 @@ def draft(*, groups=("c000", "c001")):
     )
 
 
-def test_warm_compiler_preserves_successful_model_points_and_trace_order(tmp_path):
-    method = compile_warm_method(source(), candidates(), draft(), method_id="warm-shipment")
+def test_warm_compiler_preserves_purpose_points_and_trace_order(tmp_path):
+    from pydantic import ValidationError
+
+    raw = draft().model_dump()
+    raw["purpose"] = "목적" * 150  # Synthetic 300-character explanation, not a token/byte limit.
+    method = compile_warm_method(source(), candidates(), raw, method_id="warm-shipment")
     assert [slot.source_key for slot in method.slots] == ["hbl_no"]
     assert [group.trace_index for group in method.action_groups] == [0, 1]
     assert method.action_groups[1].predecessor_group_ids == [method.action_groups[0].id]
     assert [group.targets[0].point for group in method.action_groups] == [(200, 300), (700, 550)]
     path = tmp_path / "warm-methods.json"
     atomic_write_json(path, MethodDocument(methods=[method]))
+    restored = MethodDocument.model_validate_json(path.read_bytes()).methods[0]
+    assert restored.purpose == raw["purpose"]
     current = screen("Shipment editor")
     current["ocr"] = []
     current["screen_kind"] = "editor"
@@ -148,6 +154,13 @@ def test_warm_compiler_preserves_successful_model_points_and_trace_order(tmp_pat
     assert bound is not None
     assert bound["steps"][0]["point"] == [200.0, 300.0]
     assert bound["steps"][0]["source"] == "hbl_no"
+
+    raw["purpose"] += "끝"
+    with pytest.raises(ValidationError) as caught:
+        compile_warm_method(source(), candidates(), raw, method_id="too-long")
+    assert [(error["loc"], error["type"]) for error in caught.value.errors()] == [
+        (("purpose",), "string_too_long")
+    ]
 
 
 def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_navigation(tmp_path):

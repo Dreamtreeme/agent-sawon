@@ -61,7 +61,7 @@ class WarmMethodAssembly(BaseModel):
     """Model selection over immutable successful cold-run action batches."""
 
     model_config = ConfigDict(extra="forbid")
-    purpose: str = Field(min_length=1, max_length=160)
+    purpose: str = Field(min_length=1, max_length=300)
     groups: list[WarmGroupSelection] = Field(min_length=1, max_length=80)
     removed_groups: list[RemovedWarmGroup] = Field(default_factory=list)
 
