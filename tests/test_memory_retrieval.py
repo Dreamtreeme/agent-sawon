@@ -381,6 +381,58 @@ def test_learned_method_is_scoped_to_exact_user_education_file(tmp_path):
     assert brain.memory_retrieval.context()["methods"] == []
 
 
+def test_synthetic_phash_memory_jitter_reaches_notebook_without_duplicate_controls(tmp_path):
+    # Synthetic reproduction of 078: independent memory/evidence boxes differ by one pixel.
+    brain, model, relay = setup(tmp_path)
+    library = brain.memory_retrieval.library
+    method = library.methods()[0]
+    group = method.action_groups[0]
+    shifted = [
+        target.model_copy(
+            update={
+                "bbox": (target.bbox[0], target.bbox[1] - 1, target.bbox[2], target.bbox[3] + 1)
+            }
+        )
+        for target in group.targets
+    ]
+    library.upsert(
+        method.model_copy(
+            update={
+                "action_groups": [
+                    group.model_copy(
+                        update={"observed_fields": shifted, "screen_phash": group.screen_phash ^ 1}
+                    )
+                ]
+            }
+        )
+    )
+    blocks = brain.screen_scanner.ocr.read(None)
+    for index, (source, target) in enumerate(
+        zip(("customer", "reference"), group.targets, strict=True)
+    ):
+        x, y, _, _ = target.bbox
+        blocks.append(
+            OcrBlock(
+                id=180 + index,
+                text=brain.values[source],
+                bbox=(x + 5, y + 5, 130, 15),
+                confidence=1,
+            )
+        )
+
+    brain._observe()
+
+    assert set(brain.verified) == {"customer", "reference"}
+    inputs = [element for element in brain.observation.elements if element.role == "edit"]
+    assert len(inputs) == 2
+    assert all(element.enabled and element.value for element in inputs)
+    assert model.prompts == [] and relay.actions == []
+    recognition = next(
+        e.payload for e in brain.log.read_all() if e.payload.get("check") == "screen_similarity"
+    )
+    assert recognition["matched"] and recognition["distance"] == 1
+
+
 def test_synthetic_memory_evidence_survives_scene_grounding_and_updates_notebook(tmp_path):
     # Synthetic current OCR, using the real binder, scene projection and memo update.
     brain, model, relay = setup(tmp_path)

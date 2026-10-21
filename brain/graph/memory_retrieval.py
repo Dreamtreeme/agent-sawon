@@ -21,6 +21,7 @@ from brain.cache.methods import (
     screen_similarity_distance,
 )
 from brain.task_instruction import TaskInstruction
+from brain.visual.scene import same_control_region
 from sawon_runtime.storage import RunLog, atomic_write_json
 
 if TYPE_CHECKING:
@@ -276,7 +277,7 @@ class MemoryRetrieval:
         if not matches:
             return None
         nearest = min(distance for distance, _, _ in matches)
-        fields = {}
+        fields = []
         groups = []
         procedure = []
         for distance, method, group in matches:
@@ -306,8 +307,12 @@ class MemoryRetrieval:
                 if target.bbox is None:
                     continue
                 # Equal frames can have several action groups; combine their observed fields.
-                fields.setdefault(
-                    (target.bbox, target.role),
+                if any(
+                    item["role"] == target.role and same_control_region(item["bbox"], target.bbox)
+                    for item in fields
+                ):
+                    continue
+                fields.append(
                     {
                         "name": target.name,
                         "role": target.role,
@@ -320,7 +325,7 @@ class MemoryRetrieval:
         return {
             "distance": nearest,
             "groups": groups,
-            "fields": list(fields.values()),
+            "fields": fields,
             "procedure": procedure,
         }
 

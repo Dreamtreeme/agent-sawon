@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from brain.observe.values import field_matches, normalize
 from brain.visual.action_rebind import hash_distance
 from brain.visual.markers import marker_role_allowed
-from brain.visual.scene import ControlMeaning, contains
+from brain.visual.scene import ControlMeaning, contains, overlap, same_control_region
 from sawon_runtime.storage import atomic_write_json
 
 # Completion evidence still binds visible values through label-to-control geometry.
@@ -670,7 +670,7 @@ def _register_bound_target(screen: dict, target: MethodTarget, marker: dict) -> 
         markers.append({**marker, "source": "model_selected", "candidate_confidence": 1})
     screen.setdefault("selected_fields", {}).setdefault(
         str(marker["id"]),
-        {"name": target.name, "bbox": list(target.bbox), "role": target.role},
+        {"name": target.name, "bbox": list(marker["bbox"]), "role": target.role},
     )
 
 
@@ -703,17 +703,23 @@ def _coordinate_bindings(
     next_id = max(markers, default=0) + 1
     if any(target.point is None or target.bbox is None for target in targets):
         return None
-    selected = {
-        (tuple(field["bbox"]), field["role"]): markers[int(ref)]
+    selected = [
+        (field["role"], markers[int(ref)])
         for ref, field in screen.get("selected_fields", {}).items()
         if int(ref) in markers
-    }
+    ]
     bound = {}
     for target in targets:
-        marker = selected.get((target.bbox, target.role))
+        candidates = [
+            marker
+            for role, marker in selected
+            if role == target.role and same_control_region(marker["bbox"], target.bbox)
+        ]
+        marker = max(candidates, key=lambda item: overlap(item["bbox"], target.bbox), default=None)
         if marker is None:
             marker = dict(id=next_id, source="learned_point", bbox=list(target.bbox), text_ids=[])
             next_id += 1
+            selected.append((target.role, marker))
         bound[target.name] = (marker, [])
     return bound
 

@@ -110,10 +110,18 @@ def test_library_rejects_same_method_id_from_another_task_contract(tmp_path):
     assert library.methods() == [first]
 
 
-def test_saved_fill_coordinates_bind_current_values_as_visible_evidence(tmp_path):
+@pytest.mark.parametrize("remembered_box", [None, [101, 24, 199, 31]], ids=["new", "jitter"])
+def test_saved_fill_coordinates_bind_current_values_as_visible_evidence(tmp_path, remembered_box):
     library = MethodLibrary(tmp_path / "methods.json", enabled=True)
     library.upsert(learned())
     current = scene(old_value="New supplier", ids=100)
+    target_id = 112
+    if remembered_box is not None:
+        current["markers"][0]["bbox"] = remembered_box
+        current["selected_fields"] = {
+            "110": {"name": "Customer", "role": "edit", "bbox": remembered_box}
+        }
+        target_id = 110
 
     controls, evidence = library.bind_visible_value_evidence(
         "find-party",
@@ -122,11 +130,13 @@ def test_saved_fill_coordinates_bind_current_values_as_visible_evidence(tmp_path
         {"supplier": "New supplier"},
     )
 
-    assert evidence == [{"field": "supplier", "target": 112}]
-    assert controls[0]["id"] == 112
+    assert evidence == [{"field": "supplier", "target": target_id}]
+    assert controls[0]["id"] == target_id
     assert 102 in controls[0]["text_ids"]
-    assert current["selected_fields"]["112"]["bbox"] == [100, 25, 200, 30]
-    assert 112 in {marker["id"] for marker in current["markers"]}
+    assert current["selected_fields"][str(target_id)]["bbox"] == (
+        remembered_box or [100, 25, 200, 30]
+    )
+    assert target_id in {marker["id"] for marker in current["markers"]}
     # Rebinding evidence on this frame keeps its registered control ID.
     assert library.bind_visible_value_evidence(
         "find-party", {"requested_party": "supplier"}, current, {"supplier": "New supplier"}

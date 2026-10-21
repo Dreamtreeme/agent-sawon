@@ -53,7 +53,8 @@ Decision 노드까지 미루던 이전의 별도 경로는 제거했다.
 ## 기억과 탐색의 연결 계약
 
 - 유사도는 기존 viewport·`methods.max_phash_distance` 조건을 사용한다. 같은 교육 digest·
-  목표의 기억만 검색한다. 같은 거리의 그룹은 현재 방식대로 bbox·role로 합치며 그룹 출처를 남긴다.
+  목표의 기억만 검색한다. 같은 거리의 그룹은 같은 role·겹치는 영역으로 합치며 그룹 출처를 남긴다.
+  bbox 완전일치를 요구하지 않고, 기억 인출·좌표 결합·장면 보충이 기존 장면 중복 기준을 공유한다.
 - `retrieve_screen_memory`는 이름·bbox·role뿐 아니라 현재 슬롯에 연결한 `source`와
   `procedure`를 반환한다. 행동 후보가 선택되지 않아도 이 정보는 모델에 전달된다.
   인출만으로 `pending`, `used`, `verified`를 갱신하지 않는다.

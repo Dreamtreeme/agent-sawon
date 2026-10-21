@@ -157,6 +157,11 @@ def overlap(left, right) -> float:
     return area / max(1, w * h + c * d - area)
 
 
+def same_control_region(left, right) -> bool:
+    """Share the scene's duplicate-region definition with remembered target binding."""
+    return overlap(left, right) >= 0.85
+
+
 def conflicting_writable_controls(controls: list[VisualControl]) -> set[int]:
     """Find mutually exclusive meanings assigned to one physical input surface.
 
@@ -237,7 +242,7 @@ def bind_scene(
                 raise ValueError("invalid_visual_parent_bounds")
         duplicate = (
             sum(
-                other.role == control.role and overlap(other.bbox, control.bbox) >= 0.85
+                other.role == control.role and same_control_region(other.bbox, control.bbox)
                 for other in detection.controls
             )
             > 1

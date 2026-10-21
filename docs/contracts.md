@@ -79,7 +79,8 @@ flowchart LR
 이 필드를 포함해 서로 다른 관찰 정보를 지우지 않습니다. 옛 산출물은 빈 기본값으로 읽습니다.
 
 `MemoryRetrieval.retrieve_screen_memory`은 같은 교육 digest·목표의 기억에서 기존 viewport·pHash
-조건을 적용해 가장 가까운 화면의 기하·입력 키 대응·절차를 반환합니다. 같은 거리의 그룹은 bbox·role로 합칩니다.
+조건을 적용해 가장 가까운 화면의 기하·입력 키 대응·절차를 반환합니다. 같은 거리의 그룹은
+같은 role과 공용 `same_control_region` 판정으로 합치며 bbox 완전일치를 요구하지 않습니다.
 이 읽기는 pending·used·verified를 갱신하지 않습니다. 화면이 비슷하다는 사실은 행동 선택이나
 완료 증거가 아닙니다. `match_pattern`이 기존 단계 문맥으로 행동을 결합하고, 현재 OCR에서
 일치한 값만 공통 증거 갱신 경로에 들어갑니다. 현재 프레임의 marker ID는 새로 배정합니다.
@@ -91,8 +92,10 @@ flowchart LR
 
 `MethodLibrary.bind_visible_value_evidence`는 현재 OCR에서 입력값이 일치한 경우에만 증거를
 만듭니다. 이때 증거 대상도 행동 대상과 동일한 `screen.markers` / `selected_fields`에 등록합니다.
-현재 프레임의 같은 bbox·role 대상은 같은 ID를 사용하며, 다른 그룹의 새 대상에는 새 ID를
-배정합니다. 이 ID는 현재 장면 결합용이며 메서드의 영구 업무 key가 아닙니다.
+현재 프레임의 같은 role·겹치는 입력 영역은 같은 ID를 사용하며, 다른 그룹의 새 대상에는 새 ID를
+배정합니다. 영역 판정은 장면의 기존 중복 기준(IoU >= 0.85)을 기억 인출·좌표 결합·장면 보충이
+공유합니다. bbox의 1–2픽셀 차이로 같은 칸을 두 번 만들지 않으며, 저장된 클릭 point는 바꾸지
+않습니다. 이 ID는 현재 장면 결합용이며 메서드의 영구 업무 key가 아닙니다.
 이후 `ground_meanings` → `bind_scene` → `_remember_model_task_evidence`의 기존 경로가 메모를
 갱신합니다. 전달 성공만으로 입력이나 저장 완료를 메모에 추가하지 않습니다.
 

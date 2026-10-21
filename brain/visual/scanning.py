@@ -32,6 +32,7 @@ from .scene import (
     SemanticDetection,
     bind_scene,
     contains,
+    same_control_region,
 )
 
 SCANNING_RULES = """Scanning interpretation: describe the current screenshot and OCR.
@@ -604,13 +605,15 @@ class ScreenScanner:
                 if catalog.memory is not None:
                     controls = {control.id: control for control in meanings.controls}
                     selected_fields = request.screen.get("selected_fields", {})
-                    represented = {
-                        tuple(selected_fields[str(ref)]["bbox"])
-                        for ref in controls
-                        if str(ref) in selected_fields
-                    }
+                    represented = [
+                        selected_fields[str(ref)] for ref in controls if str(ref) in selected_fields
+                    ]
                     for ref, item in selected_fields.items():
-                        if tuple(item["bbox"]) in represented:
+                        if any(
+                            previous["role"] == item["role"]
+                            and same_control_region(previous["bbox"], item["bbox"])
+                            for previous in represented
+                        ):
                             continue
                         controls.setdefault(
                             int(ref),
@@ -622,7 +625,7 @@ class ScreenScanner:
                                 confidence=1,
                             ),
                         )
-                        represented.add(tuple(item["bbox"]))
+                        represented.append(item)
                     meanings = meanings.model_copy(update={"controls": list(controls.values())})
                 detection = ground_meanings(
                     meanings,
