@@ -386,6 +386,8 @@ def test_short_password_redaction_preserves_protocol_identity(record):
         ("gross_weight_kg", "12,50.5", False),
         ("gross_weight_kg", "1250.500000001", False),
         ("packages.count", "12 CT", True),
+        ("packages.count", "12|", True),
+        ("packages.count", "12||", False),
         ("packages.unit", "12 CT", True),
         ("packages.count", "13 CT", False),
     ],

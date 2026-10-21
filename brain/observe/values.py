@@ -45,6 +45,8 @@ def field_matches(field: str, actual: str | None, values: dict[str, str]) -> boo
         if field == "packages.count":
             unit = re.escape(values["packages.unit"])
             clean = re.sub(rf"\s*{unit}\s*$", "", clean, flags=re.IGNORECASE)
+            # A focused numeric input may expose its caret as a trailing OCR glyph.
+            clean = re.sub(r"(?<=\d)\|$", "", clean)
         if not re.fullmatch(r"[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?", clean):
             return False
         try:
