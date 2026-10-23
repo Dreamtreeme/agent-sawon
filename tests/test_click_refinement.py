@@ -346,3 +346,43 @@ def test_synthetic_no_progress_preserves_current_alternative_plan(tmp_path, reco
     assert brain.pending is None
     assert brain.feedback[-1]["reason"] == "navigation_no_progress"
     assert len(relay.actions) == 1 and not model.prompts
+
+
+def test_synthetic_repeated_target_preserves_current_alternative_plan(tmp_path, record):
+    """Synthetic relay: an old repeated target must not discard the current screen plan."""
+    from brain.graph.screen_decision import ScreenMatch
+
+    brain, relay, model = setup(
+        tmp_path,
+        record,
+        {},
+        enabled=False,
+        intent="navigate",
+        target_role="button",
+    )
+    brain._act_node()
+    assert brain.pending is not None
+    scope = brain.pending["progress_scope"]
+    assert not brain.click_refinement.repeated_target(brain.pending, scope)
+    alternative = ScreenMatch(
+        screen_kind="query",
+        controls=[],
+        procedure_step="open-new-record",
+        steps=[{"target": 9, "action": "click", "intent": "navigate", "point": [240, 120]}],
+    )
+    observe = brain._observe
+
+    def observe_with_plan():
+        observation = observe()
+        brain.visual_proposal = alternative
+        brain.visual_proposal_obs_id = observation.obs_id
+        return observation
+
+    brain._observe = observe_with_plan
+    relay.changed = True
+
+    assert brain._verify_node() == "review"
+    assert brain.visual_proposal is alternative
+    assert brain.pending is None
+    assert brain.feedback[-1]["reason"] == "semantic_target_repeated"
+    assert len(relay.actions) == 1 and not model.prompts

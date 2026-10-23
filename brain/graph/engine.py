@@ -2491,6 +2491,16 @@ class Brain:
         finally:
             self.pending, self.decision = original_pending, original_decision
 
+    def _current_plan_ready(self, observation: Observation) -> bool:
+        """Return whether observation already produced a usable plan for Review."""
+
+        return bool(
+            self.visual_proposal is not None
+            and self.visual_proposal_obs_id == observation.obs_id
+            and self.visual_plan_error is None
+            and not self.visual_proposal.needs_refinement
+        )
+
     def _verify_navigation(
         self,
         pending: PendingAction,
@@ -2944,13 +2954,7 @@ class Brain:
             if outcome is not None:
                 # Observation already obtained a current alternative plan. Keep it
                 # for Review instead of replacing it with another model decision.
-                if (
-                    outcome == "observation"
-                    and self.visual_proposal is not None
-                    and self.visual_proposal_obs_id == observation.obs_id
-                    and self.visual_plan_error is None
-                    and not self.visual_proposal.needs_refinement
-                ):
+                if outcome == "observation" and self._current_plan_ready(observation):
                     return "review"
                 return outcome
             effect_source = pending.get("effect_source")
@@ -2964,6 +2968,8 @@ class Brain:
                     observed_effect = selected_effect
             outcome = self._verify_repeated_target(pending, observation)
             if outcome is not None:
+                if outcome == "observation" and self._current_plan_ready(observation):
+                    return "review"
                 return outcome
             outcome, observation, observed_effect = self._verify_text_input(
                 pending,
