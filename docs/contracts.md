@@ -54,6 +54,24 @@ flowchart LR
 상태를 반환합니다. `ExecutionResult`의 전달 성공은 업무 완료가 아닙니다. 후속 관찰과 검토가
 입력 효과, 저장 결과와 사용자 완료 조건을 확인합니다.
 
+### 입력 메모와 계획 결합
+
+| 상태 | 의미 |
+|---|---|
+| `verified` | 현재 실행에서 확인한 입력과 대상 descriptor |
+| `post_save_verified` | 저장 후 상세 검토에서 확인한 입력 키 |
+| `evidence_ledger` | 입력 표면의 소유권·대체·무효화 이력 |
+| `pending` | 전달한 행동과 다음 관찰에서 확인할 효과 |
+
+`state_property`와 `progress_property`는 WorkerState의 값을 읽고 쓰는 접근자이며 별도 상태
+복사본이 아니다. 확인된 필드가 후속 화면에서 보이지 않는 것만으로 전체 메모를 지우지 않는다.
+현재 관찰값 불일치와 증거 대체는 갱신 사유다. 메모에 기록된 입력 확인과 ERP 저장 완료는 구분한다.
+
+`ScreenMatch.from_plan`은 새 계획의 값을 기존 화면 해석보다 우선한다. 전체 ScreenMatch가
+반환되면 controls·화면 종류도 새 응답을 사용한다. 직렬화에서 제외되는 mapping은 명시적으로
+연결한다. 호출 위치는 `screen_decision.py`의 기존 해석 기반 `grounded_screen_plan` 경로와
+`validate_or_replan`의 거절 후 재계획 경로다. 회귀 검증은 `tests/test_plan_composition.py`에 있다.
+
 ## 계약 변경 절차
 
 1. 계약 소유 파일에서 필드, 의미와 수명을 먼저 수정합니다.
