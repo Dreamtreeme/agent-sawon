@@ -3570,3 +3570,72 @@ def test_query_result_is_remembered_then_next_action_is_selected(tmp_path, recor
     assert len(model.prompts) == 2
     assert "query_result_observed" in model.prompts[-1]
     assert "Do not use duplicate_clear/duplicate_found" in model.prompts[-1]
+
+
+@pytest.mark.parametrize(
+    ("save_result", "action", "expected_intent"),
+    [
+        ("ready_for_query", "click", "navigate"),
+        ("confirmation_required", "click", "confirm_save"),
+        ("ready_for_query", "key", None),
+        ("rejected", "click", None),
+    ],
+)
+def test_synthetic_save_acknowledgement_normalizes_only_completed_click(
+    tmp_path, save_result, action, expected_intent
+):
+    """Synthetic reconstruction of 088-r3: same target, only execution intent changes."""
+    from test_brain import element
+
+    from brain.graph.save_review import SaveReviewResponse
+    from sawon_runtime.storage import RunLog
+
+    observed = wire()
+    prefix = "e" + str(observed.obs_id.int) + "0"
+    scene = SceneObservation(
+        wire=observed,
+        screen_kind="dialog",
+        elements=[
+            element(prefix + "1", "Text", name="Saved record 1"),
+            element(prefix + "2", "Button", name="OK"),
+        ],
+    )
+    response = ScreenMatch(
+        screen_kind="dialog",
+        controls=[],
+        procedure_step="save-record",
+        save_result=save_result,
+        message_targets=[1],
+        steps=[
+            {
+                "target": 2,
+                "action": action,
+                "intent": "confirm_save",
+                "point": [288, 266],
+                "keys": "enter" if action == "key" else None,
+            }
+        ],
+    )
+    original = response.model_dump_json()
+    log = RunLog(tmp_path, case_id="synthetic-save", agent_id="test")
+    if expected_intent is None:
+        with pytest.raises(ValueError, match="next decision conflicts with save result"):
+            compile_match(response, scene, SaveReviewResponse, log=log)
+        assert not log.read_all()
+    else:
+        review = compile_match(response, scene, SaveReviewResponse, log=log)
+        decision = review.next_decision.to_decision()
+        assert review.result == save_result
+        assert review.evidence_refs == [prefix + "1"]
+        assert decision.intent == expected_intent
+        assert decision.operation == "act"  # Acknowledgement does not finish the task.
+        assert decision.action.type == "click" and decision.action.ref == prefix + "2"
+        events = log.read_all()
+        if expected_intent == "navigate":
+            assert len(events) == 1
+            assert events[0].payload["check"] == "save_acknowledgement_intent_normalized"
+            assert events[0].payload["point"] == [288, 266]
+            assert events[0].payload["target"] == 2
+        else:
+            assert not events
+    assert response.model_dump_json() == original

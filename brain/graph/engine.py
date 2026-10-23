@@ -771,7 +771,9 @@ class Brain:
                 self._remember_model_task_evidence(response)
             self.visual_points.bind(self.observation, response.steps)
             screen_action_plan = compile_screen_action_plan(response, self.observation)
-            result = screen_action_plan or compile_match(response, self.observation, schema)
+            result = screen_action_plan or compile_match(
+                response, self.observation, schema, log=self.log
+            )
             self.log.append(
                 "select",
                 payload={
@@ -2942,6 +2944,16 @@ class Brain:
                 pending, observation, decision, observed_state, changed
             )
             if outcome is not None:
+                # Observation already obtained a current alternative plan. Keep it
+                # for Review instead of replacing it with another model decision.
+                if (
+                    outcome == "observation"
+                    and self.visual_proposal is not None
+                    and self.visual_proposal_obs_id == observation.obs_id
+                    and self.visual_plan_error is None
+                    and not self.visual_proposal.needs_refinement
+                ):
+                    return "review"
                 return outcome
             effect_source = pending.get("effect_source")
             if decision.intent == "select_option" and effect_source is not None:

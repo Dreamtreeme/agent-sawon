@@ -318,3 +318,31 @@ def test_exhausted_grounding_repair_does_not_restart_from_outer_verification(tmp
     assert brain._verify_node() == "finish"
     assert brain.result.reason == "visual_grounding:ocr_marker_text_mismatch"
     assert len(relay.actions) == 1 and not model.prompts
+
+
+def test_synthetic_no_progress_preserves_current_alternative_plan(tmp_path, record):
+    """Synthetic relay: a failed click must not discard the next observed plan."""
+    from brain.graph.screen_decision import ScreenMatch
+
+    brain, relay, model = setup(tmp_path, record, {}, enabled=False, success=False)
+    brain._act_node()
+    observe = brain._observe
+    alternative = ScreenMatch(
+        screen_kind="editor",
+        controls=[],
+        procedure_step="alternative",
+        steps=[{"target": 8, "action": "click", "intent": "select_tab", "point": [160, 35]}],
+    )
+
+    def observe_with_plan():
+        observation = observe()
+        brain.visual_proposal = alternative
+        brain.visual_proposal_obs_id = observation.obs_id
+        return observation
+
+    brain._observe = observe_with_plan
+    assert brain._verify_node() == "review"
+    assert brain.visual_proposal is alternative
+    assert brain.pending is None
+    assert brain.feedback[-1]["reason"] == "navigation_no_progress"
+    assert len(relay.actions) == 1 and not model.prompts

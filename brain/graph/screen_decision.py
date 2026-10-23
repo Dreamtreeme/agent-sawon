@@ -2225,7 +2225,7 @@ def decide_screen(
         )
 
 
-def compile_match(response: ScreenMatch, observation, schema):
+def compile_match(response: ScreenMatch, observation, schema, *, log: RunLog | None = None):
     from .schemas import DecisionResponse
 
     def ref(target):
@@ -2300,6 +2300,17 @@ def compile_match(response: ScreenMatch, observation, schema):
         if len(response.steps) > 1 or (response.operation == "act" and not response.steps):
             raise ValueError("screen_match_requires_one_boundary_action")
         data = decision(response.steps[0] if response.steps else None)
+    # Acknowledging a completed save is navigation, even when the model calls
+    # the same button click confirm_save. Preserve the raw response and target.
+    normalized_acknowledgement = (
+        response.save_result == "ready_for_query"
+        and response.operation == "act"
+        and len(response.steps) == 1
+        and response.steps[0].action == "click"
+        and response.steps[0].intent == "confirm_save"
+    )
+    if normalized_acknowledgement:
+        data["decision"]["intent"] = "navigate"
     if response.save_result is not None:
         data = {
             "result": response.save_result,
@@ -2314,7 +2325,22 @@ def compile_match(response: ScreenMatch, observation, schema):
         "e" + str(observation.obs_id.int) + "0",
         {e.ref for e in observation.elements},
     )
-    return adapt_proposal(bound, schema)
+    result = adapt_proposal(bound, schema)
+    if normalized_acknowledgement and log is not None:
+        log.append(
+            "verify",
+            payload={
+                "check": "save_acknowledgement_intent_normalized",
+                "obs_id": str(observation.obs_id),
+                "save_result": response.save_result,
+                "original_intent": "confirm_save",
+                "execution_intent": "navigate",
+                "action": "click",
+                "target": response.steps[0].target,
+                "point": response.steps[0].point,
+            },
+        )
+    return result
 
 
 def compile_screen_action_plan(response: ScreenMatch, observation):
