@@ -85,26 +85,44 @@ class MemoryCandidate:
     satisfied_actions: tuple[dict, ...] = ()
 
 
-MEMORY_COMPILATION_RULES = """Perform Memory Compilation as the Critic of this successful execution.
-Runtime checks screen similarity first, then uses Memory Retrieval on a match or Scanning on a miss.
-Both routes restore Context Recall, then use Pattern Matching and decide the next screen action.
-Refine the supplied execution graph into memory for these runtime responsibilities.
-Walk candidates in execution order: observation -> proposal -> delivered actions -> observed result.
-A candidate contains only actions actually delivered; already_satisfied and nonexecuted_plans
-are observation facts, not actions to replay. Do not add them back.
-For each candidate, retain it in groups with review_reason, or explain its removal
-in removed_groups.
-Remove redundant retries and exploration only when the retained route still reaches each required
-screen and task goal. Explain how the retained predecessor can reach the next retained candidate;
-do not confuse unchanged pixels with an action failure, or delivery with business success.
-Use observed_transitions and after_screen_ocr as result evidence. original_expected_result is only
-the planner's prediction. Missing result evidence is unknown, not automatically a failed action.
-Retain required business/credential inputs, login submission, save, and navigation dependencies.
-The whole source run succeeded, but not every proposal was useful. Prefer effective transitions
-over earlier attempts that only selected a row. Never invent/edit/duplicate an action, input source,
-coordinate or marker. Return candidate IDs in increasing execution order.
-The runtime reuses exact successful points under matching viewport and screenshot similarity.
-context_anchors must exclude instance values, transient messages, dates and counters.
+MEMORY_COMPILATION_RULES = """Perform Memory Compilation as a retrospective process review
+of this successful execution. Do not judge candidates independently as simply right or wrong.
+Work backward from the user's completion conditions and identify the smallest recorded route
+that preserves every distinct business effect and every required procedure occurrence.
+
+First identify the required semantic effects: prerequisites, duplicate checks, required inputs,
+persistence, post-persistence retrieval, and final verification. Then attribute each effect to
+the candidate that actually established it. The same visible action may establish different
+effects at different stages; a query before persistence and a query after persistence are not
+duplicates merely because their controls and screens match.
+
+Review contiguous candidate spans counterfactually. A span is removable only when all of these
+are true:
+1. its net business effect is zero or is fully established by a retained candidate;
+2. the state before the span directly satisfies the preconditions of the next retained candidate;
+3. removing the whole span loses no taught requirement, input, persistence effect, later
+   retrieval, or check;
+4. the span is an exploratory mistake followed only by repairs or navigation back to the prior
+   useful state, or it is a redundant retry after the same semantic effect was established.
+Do not keep a repair merely because it was necessary after a mistake: if the mistake and all
+repairs can be removed together, evaluate the span's net effect. Conversely, do not remove query,
+refresh, persistence, or verification solely because pixels were unchanged; these actions may
+have an invisible business effect.
+
+Use screen hashes and matching_later_candidates only to test whether span boundaries may connect.
+They are supporting evidence, never proof of redundancy. Use the taught procedure,
+observed_transitions, and after_screen_ocr to determine effects. original_expected_result is only
+the planner's prediction. For every retained candidate explain its unique effect or dependency.
+For every removed candidate name the removable span and the retained candidate, if any, that
+establishes the required effect.
+
+Walk candidates in execution order: observation -> proposal -> delivered actions -> observed
+result. A candidate contains only actions actually delivered. already_satisfied and
+nonexecuted_plans are observation facts and must not be added as replay actions. Missing result
+evidence is unknown, not failure. Never invent, edit, duplicate, merge, or change actions, input
+sources, coordinates, or markers. Return retained candidate IDs in execution order. The runtime
+reuses recorded points only under matching viewport and screen similarity. context_anchors must
+exclude instance values, transient messages, dates, and counters.
 """
 
 
@@ -323,6 +341,7 @@ def read_memory_candidates(
 
 def memory_assembly_prompt(source: dict, candidates: list[MemoryCandidate]) -> str:
     values = source["values"]
+    candidate_screens = [candidate.screen for candidate in candidates]
     summaries = []
     for index, candidate in enumerate(candidates):
         response = candidate.response
@@ -345,12 +364,27 @@ def memory_assembly_prompt(source: dict, candidates: list[MemoryCandidate]) -> s
         after = {}
         if after_id and (Path(source["source_case"]) / "visual" / after_id).is_dir():
             after = read_screen(Path(source["source_case"]), after_id)
+        after_phash = after.get("screen_phash")
+        matching_later_candidates = []
+        if isinstance(after_phash, int):
+            for later in candidates[index + 1 :]:
+                later_phash = later.screen.get("screen_phash")
+                if not isinstance(later_phash, int):
+                    continue
+                distance = (after_phash ^ later_phash).bit_count()
+                if distance <= 6:
+                    matching_later_candidates.append(
+                        {"candidate_id": later.candidate_id, "phash_distance": distance}
+                    )
         summaries.append(
             {
                 "candidate_id": candidate.candidate_id,
                 "trace_index": candidate.trace_index,
                 "previous_candidate_id": candidates[index - 1].candidate_id if index else None,
                 "screen_kind": response.get("screen_kind", "unknown"),
+                "screen_phash": candidate_screens[index].get("screen_phash"),
+                "after_screen_phash": after_phash,
+                "matching_later_candidates": matching_later_candidates,
                 "taught_step_id": response.get("taught_step_id"),
                 "ocr": [
                     _redact(str(block["text"]), values) for block in candidate.screen.get("ocr", [])

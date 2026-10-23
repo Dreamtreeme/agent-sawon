@@ -623,5 +623,57 @@ def test_critic_graph_keeps_execution_order_and_excludes_wholly_skipped_plan(tmp
     assert source_data["nonexecuted_plans"][0]["already_satisfied"][0]["source"] == "hbl_no"
     prompt = memory_assembly_prompt(source_data, loaded)
     assert '"previous_candidate_id": "c000"' in prompt
+    assert '"screen_phash":' in prompt
+    assert '"after_screen_phash":' in prompt
+    assert '"matching_later_candidates":' in prompt
     method = compile_memory(source_data, loaded, draft(), method_id="critic")
     assert len({g.trace_index for g in method.action_groups}) == 2
+
+
+def test_critic_prompt_identifies_synthetic_later_candidate_on_same_result_screen(tmp_path):
+    """Synthetic trace: expose a possible span boundary without declaring it redundant."""
+    from brain.demo_learning.memory_compilation import memory_assembly_prompt
+    from brain.demo_learning.methods import read_screen
+
+    after = tmp_path / "visual" / "after-1"
+    atomic_write_json(after / "markers.json", {"image_size": [800, 600], "markers": []})
+    atomic_write_json(after / "ocr.json", {"blocks": screen("Additional fields")["ocr"]})
+    Image.new("RGB", (800, 600), "white").save(after / "capture.png")
+    result_screen = read_screen(tmp_path, "after-1")
+    synthetic = [
+        MemoryCandidate(
+            "c000",
+            "a" * 64,
+            "before-1",
+            1,
+            screen("Main fields"),
+            response(target=1, intent="select_tab"),
+            observed_transitions=(
+                {
+                    "after_obs_id": "after-1",
+                    "intent": "select_tab",
+                    "observed_effect": "changed",
+                },
+            ),
+        ),
+        MemoryCandidate(
+            "c001",
+            "b" * 64,
+            "after-1",
+            2,
+            result_screen,
+            response(target=2, source="hbl_no"),
+        ),
+    ]
+    source_data = {**source(), "source_case": str(tmp_path)}
+    prompt = memory_assembly_prompt(source_data, synthetic)
+    payload = json.loads(prompt[prompt.index("{") :])
+
+    assert payload["candidates"][0]["after_screen_phash"] == result_screen["screen_phash"]
+    assert payload["candidates"][0]["matching_later_candidates"] == [
+        {"candidate_id": "c001", "phash_distance": 0}
+    ]
+    rules = " ".join(prompt[: prompt.index("{")].split())
+    assert "Review contiguous candidate spans counterfactually" in rules
+    assert "supporting evidence, never proof of redundancy" in rules
+    assert "same visible action may establish different effects" in rules
