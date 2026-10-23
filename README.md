@@ -47,10 +47,13 @@ git clone https://github.com/Dreamtreeme/agent-sawon.git
 git clone https://github.com/Dreamtreeme/agent-sawon-bench.git
 Set-Location agent-sawon
 .\scripts\setup.ps1 -Gui
+.\.venv\Scripts\python.exe -m pip install -e '../agent-sawon-bench[relay]'
 ```
 
 `setup.ps1`은 core와 bench, 공개 인터페이스를 core의 `.venv`에 editable 설치합니다.
-비GUI 테스트만 할 때는 `-Gui`를 생략할 수 있습니다.
+`-Gui`와 별개로 실제 화면 중계에는 `relay` extra가 필요합니다. 위 두 번째 설치 명령은
+PyAutoGUI를 포함한 중계 의존성을 같은 가상환경에 설치합니다. 비GUI 테스트만 할 때는
+`-Gui`와 relay extra 설치를 생략할 수 있습니다.
 
 ### Mock ERP 한 건 실행
 
