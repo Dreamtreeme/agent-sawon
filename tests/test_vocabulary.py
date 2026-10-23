@@ -1,6 +1,7 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
 Intent schema fixtures were captured from pre-consolidation commit 6ab16c3.
+Decision-family fixtures now describe capture-bound physical input (2026-10-24).
 ScreenMatch/ScreenPlan were updated on 2026-10-21 to expose needs_refinement for scanning fallback.
 """
 
@@ -123,26 +124,26 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
         ),
         (ScreenPlan, "f8d743c08394db79aa116684d613a912f391ce91b4a23ebd784dfe009acba305"),
         (ScreenMatch, "f8d743c08394db79aa116684d613a912f391ce91b4a23ebd784dfe009acba305"),
-        (Decision, "2fcaf3300563865b937899768e96893b5de15ede16e9e71f926926b6994d77e5"),
+        (Decision, "0dd9a48fb753c30ea6f54d65c1272bfc631435abedc33d3864e138bf412f5bf0"),
         (
             WireActDecision,
-            "efb06160b99057fe6b6f1e96bb70cd9955b2830292d151e1e482f0c2a51aae50",
+            "934351453c32a3e6e2dd9ed009242bf1821962426e2525c5c81dc84dc3a9f1a8",
         ),
         (
             DecisionResponse,
-            "48c940b67a75445c4a1e83dcc61ae6ca91cd39b675d26edb2d6c86a6e3716bb6",
+            "4d9656f93d9c67fb899b06b47e59fe11cf6da39eb37019c40b05e522afe06559",
         ),
         (
             SaveReviewResponse,
-            "2031c643fb515d71ebe135f5753f117f08124c416dfc41175ba23f16d68cf71e",
+            "df4d869aa37754a0680ee8c431149e73520243c7222fb5fa35008ad09c98f6cc",
         ),
         (
             ScreenFillPlan,
-            "d9aae053bdb9ed55358132dafc40ea6ab1a1ceaf0420d892b7f0d317ca5945a2",
+            "901a70c77c434069224da425d0304e43c8b051c39934c8b6f7908ede884f0d3b",
         ),
         (
             LoginScreenPlan,
-            "2286447ae531c3ed16b84a669fb924987f5700e4de8bfa392fcb26128d49d0d0",
+            "0c3348524763e3f67827f360493ebf424cd2bc8fb91378c8dc001451c06bb258",
         ),
         (
             ActionTransition,

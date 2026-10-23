@@ -144,4 +144,3 @@ and has no three-consecutive-success estimate. These runs do not measure ERP ent
 `pipeline.handoff.validate_prepared_case`는 READY 상태, 추출 레코드, 검사 결과와
 기존 실행 로그를 확인합니다. `brain.run --prepared-case`는 이 검증을 거쳐 동일
 케이스의 ERP 입력을 시작하며 서류 추출 비용도 전체 한도에 포함합니다.
-구형 UIA 캐시 격리 옵션은 더 이상 전달하지 않습니다.

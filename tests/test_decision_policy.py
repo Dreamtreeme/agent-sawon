@@ -159,7 +159,7 @@ def test_duplicate_checkpoint_freezes_ui_until_result_evidence_or_stop():
 def test_field_readback_removes_verified_sources_and_prevents_early_save():
     facts = ExecutionFacts("enter", field_names=("hbl_no", "packages.unit"), duplicate_clear=True)
     first = action("fill", screen="editor", kind="set_text", source="hbl_no")
-    option = action("select_option", screen="editor", kind="select_option", source="packages.unit")
+    option = action("fill", screen="editor", kind="set_text", source="packages.unit")
     save = action("save", screen="editor")
     assert_contract(DecisionPolicy(facts), first, True)
     assert_contract(DecisionPolicy(facts), option, True)
@@ -184,7 +184,6 @@ def test_partner_selection_and_search_remain_available_during_unfinished_entry()
         action("search", screen="partner"),
         action("select_option", screen="partner", kind="double_click"),
         action("select_option", screen="partner", kind="key", keys="enter"),
-        action("select_option", screen="partner", kind="select_option", option="Observed option"),
     ]
     for payload in allowed:
         assert_contract(policy, payload, True)
@@ -261,7 +260,6 @@ def test_broad_action_types_cannot_bypass_intent_or_source_contract():
         (case_id, payload, None, None)
         for case_id, payload in (
             ("navigate-as-text", action("navigate", kind="set_text", source="hbl_no")),
-            ("navigate-as-option", action("navigate", kind="select_option", source="hbl_no")),
             ("navigate-as-key", action("navigate", kind="key", keys="enter")),
             ("navigate-as-wait", action("navigate", kind="wait")),
             ("search-as-double-click", action("search", kind="double_click")),

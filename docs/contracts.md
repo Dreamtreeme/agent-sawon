@@ -183,3 +183,12 @@ OCR은 pHash 거리와 관계없이 매 캡처에서 다시 실행한다. 따라
 텍스트를 이전 프레임에서 가져오지 않는다. pHash 유사도 자체는 입력값 또는 업무 완료의 증명이 아니다.
 입력칸 값 OCR은 독립 검출기의 작은 경계 오차를 허용하기 위해 OCR 상자의 85% 이상이 해당
 `edit`/`combobox` 영역에 포함되면 연결한다. 일반 텍스트와 구조 부모의 포함 계약은 바꾸지 않는다.
+
+## 화면 전용 공개 관찰
+
+relay의 `Observation`은 `visual_only` 캡처 봉투이며 `elements=[]`이다. 화면이
+차단되지 않았다면 창과 캡처 geometry가 필요하다. `SceneObservation`만 OCR 의미
+요소와 부모·행 관계를 가진다. `UIElement`에는 외부 자동화 식별자 필드가 없다.
+relay 입력은 내부 요소 ref를 현재 캡처의 `ImageTarget`으로 변환한 뒤 전달한다.
+트리 탐색 깊이 설정은 사용하지 않는다. 공용 계약을 바꾸면 bench schema export와
+core의 HTTP·장면 테스트를 함께 확인한다.

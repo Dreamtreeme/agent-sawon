@@ -60,7 +60,7 @@ def main(argv=None) -> int:
         parser.error("A finite budget up to $50 is required")
     if not 1 <= args.samples <= 120:
         parser.error("Samples must be 1..120")
-    source = HttpRelay(args.relay_url, os.environ.get("SAWON_RELAY_TOKEN", ""), visual=True)
+    source = HttpRelay(args.relay_url, os.environ.get("SAWON_RELAY_TOKEN", ""))
     health = source.health()
     if not health.get("observation_only"):
         parser.error("Relay must be observation-only")

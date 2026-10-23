@@ -1,10 +1,10 @@
 """Business gates consume visual semantics and emit only capture-bound pixels."""
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 from sawon_interfaces import (
-    Action,
     CaptureGeometry,
     ImageTarget,
     Observation,
@@ -29,7 +29,7 @@ class VisualFixture(FakeRelay):
             item.model_copy(update={"bbox": (int(item.ref[1:]) * 10, 10, 8, 20)})
             for item in original.elements
         ]
-        data = original.model_dump()
+        data = original.wire.model_dump()
         data.update(
             observation_mode="visual_only",
             elements=[],
@@ -63,13 +63,23 @@ class VisualFixture(FakeRelay):
         assert len(targets) == 1
         data = action.model_dump(mode="json")
         data["target"] = {"ref": targets[0].ref}
-        result = super().act(Action.model_validate(data))
+        result = super().act(
+            SimpleNamespace(
+                root=SimpleNamespace(
+                    **{
+                        **data,
+                        "action_id": action.root.action_id,
+                        "target": SimpleNamespace(ref=targets[0].ref),
+                    }
+                )
+            )
+        )
         self.actions[-1] = action
         return result
 
 
 class SyntheticScanner:
-    """Perception output fixture. No desktop/UIA is accessed in this test."""
+    """Perception output fixture. No desktop is accessed in this test."""
 
     def __init__(self, relay):
         self.relay = relay

@@ -1,4 +1,4 @@
-"""Local scene graph, distinct from the relay's UIA-free wire observation."""
+"""Local scene graph, distinct from the relay's capture-only wire observation."""
 
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ class SemanticDetection(Detection):
 class SceneObservation(BaseModel):
     """Internal semantics reuse element shape, but are explicitly OCR/vision evidence.
 
-    No constructed UIA Observation is sent to or accepted from the relay. The
+    No constructed semantic Observation is sent to or accepted from the relay. The
     original wire observation (with empty elements) is retained for auditing.
     """
 
@@ -118,8 +118,6 @@ class SceneObservation(BaseModel):
     def validate_scene(self):
         if self.wire.observation_mode != "visual_only" or self.wire.elements:
             raise ValueError("visual_scene_requires_isolated_wire")
-        if any(item.automation_id is not None for item in self.elements):
-            raise ValueError("visual_scene_cannot_contain_automation_ids")
         refs = {item.ref: item.parent_ref for item in self.elements}
         if len(refs) != len(self.elements):
             raise ValueError("duplicate_visual_ref")

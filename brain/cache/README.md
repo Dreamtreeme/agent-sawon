@@ -45,7 +45,6 @@ for that run and the ordinary visual cache/model path continues.
 `[visual_match_cache]`의 `enabled`와 `path`로 설정합니다. 캐시 결과도 현재 화면의
 대상 연결과 공통 실행 검증을 거칩니다. 전체 업무 성공 시 새 후보를 승격합니다.
 
-구형 UIA 필드 캐시와 관찰값 변화 기반 시연 변환기는 제거됐습니다.
 `[cache]`, `--cache-path`, `--cache-isolation`, `--cache-snapshot`은 지원하지 않습니다.
 현재 방법 학습은 실행된 화면 입력 묶음과 그 실행 기록을 사용합니다.
 

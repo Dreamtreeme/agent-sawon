@@ -263,7 +263,7 @@ def test_fetch_verifies_png_hash_geometry_and_refuses_redirect_paths(tmp_path):
     Image.new("RGB", (400, 200)).save(data, format="PNG")
     raw = data.getvalue()
     observation = wire().model_copy(update={"screen_hash": hashlib.sha1(raw).hexdigest()})
-    relay = HttpRelay("http://localhost:8765", "synthetic", visual=True)
+    relay = HttpRelay("http://localhost:8765", "synthetic")
 
     class Opener:
         calls = 0

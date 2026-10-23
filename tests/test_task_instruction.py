@@ -252,7 +252,9 @@ def test_task_instruction_contains_business_intent_without_ui_steps():
 
 def test_generic_search_does_not_require_or_mutate_legacy_query_state(tmp_path):
     record = TaskInputRecord(case_id="invoice-17", inputs={"invoice.number": "INV-17"})
-    relay = FakeRelay(record)
+    from test_visual_workflow import SyntheticScanner, VisualFixture
+
+    relay = VisualFixture(record)
     log = RunLog(tmp_path, case_id=record.case_id, agent_id="generic-task-test")
     brain = Brain(
         record=record,
@@ -271,7 +273,7 @@ def test_generic_search_does_not_require_or_mutate_legacy_query_state(tmp_path):
         requirements=["Use the supplied invoice number."],
         completion_conditions=["The matching invoice is visible."],
     )
-    brain.observation = relay.observe()
+    brain.observation = SyntheticScanner(relay).scan(relay.observe())
     search = DecisionResponse.model_validate(
         {
             "decision": decision(

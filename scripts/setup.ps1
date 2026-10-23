@@ -15,7 +15,7 @@ try {
     & $PythonExe -m pip install -e "$BenchRoot/interfaces" -e "$BenchRoot[dev]" -e '.[dev,pipeline]'
     if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
     if ($Gui) {
-        & $PythonExe -m pip install -e "$BenchRoot[gui]"
+        & $PythonExe -m pip install -e "$BenchRoot[relay]"
         if ($LASTEXITCODE -ne 0) { throw 'GUI dependency installation failed.' }
     }
 } finally { Pop-Location }

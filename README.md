@@ -47,13 +47,11 @@ git clone https://github.com/Dreamtreeme/agent-sawon.git
 git clone https://github.com/Dreamtreeme/agent-sawon-bench.git
 Set-Location agent-sawon
 .\scripts\setup.ps1 -Gui
-.\.venv\Scripts\python.exe -m pip install -e '../agent-sawon-bench[relay]'
 ```
 
 `setup.ps1`은 core와 bench, 공개 인터페이스를 core의 `.venv`에 editable 설치합니다.
-`-Gui`와 별개로 실제 화면 중계에는 `relay` extra가 필요합니다. 위 두 번째 설치 명령은
-PyAutoGUI를 포함한 중계 의존성을 같은 가상환경에 설치합니다. 비GUI 테스트만 할 때는
-`-Gui`와 relay extra 설치를 생략할 수 있습니다.
+`-Gui`는 실제 화면 중계에 필요한 bench의 `relay` extra를 설치합니다.
+화면 실행이 필요 없는 개발 환경에서는 `-Gui`를 생략할 수 있습니다.
 
 ### Mock ERP 한 건 실행
 
@@ -96,7 +94,7 @@ Get-Content "$runDir/summary.json"
 성공한 신규 입력의 기대 결과는 `task_success=true`, `erp_task_success=true`, `matched_fields=10`입니다.
 개별 `trial_result.json`과 전체 `results.jsonl`, `summary.json`이 생성됩니다. 실패한 경우에도
 결과의 `status`·`reason`과 case 로그를 확인하고 기존 폴더를 덮어쓰지 않습니다.
-실행 중 다른 앱이 전경을 차지하지 않도록 합니다. 자세한 옵션은 [하네스 안내](../agent-sawon-bench/harness/README.md)에 있습니다.
+실행 중 다른 앱이 전경을 차지하지 않도록 합니다. 자세한 옵션은 [하네스 안내](../agent-sawon-bench/docs/archive/retired-tree-interface/harness/README.md)에 있습니다.
 
 ## 입력과 결과
 

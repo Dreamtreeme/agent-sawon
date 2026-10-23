@@ -36,7 +36,6 @@ class BrainSettings(BaseModel):
     guard_mode: Literal["enforce", "observe_only"] = "enforce"
     model_call_reserve_usd: float = Field(default=0.025, ge=0, allow_inf_nan=False)
     http_timeout_seconds: float = Field(default=30, gt=0, le=120)
-    observation_max_depth: int = Field(default=12, ge=1, le=30)
     max_summary_elements: int = Field(default=500, ge=20, le=2000)
     navigation_history_size: int = Field(default=12, ge=4, le=64)
 

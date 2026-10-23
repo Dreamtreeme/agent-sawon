@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
-from sawon_interfaces import ActionResult, Observation, ShipmentRecord, UIElement, WindowInfo
+from sawon_interfaces import ActionResult, ShipmentRecord, UIElement, WindowInfo
+from test_visual_scene import wire as capture_wire
 
 from brain.graph.engine import Brain, field_matches, values_for
 from brain.graph.save_review import SaveReviewResponse
@@ -20,6 +20,7 @@ from brain.relay import HttpRelay
 from brain.run import main
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInstruction
+from brain.visual.scene import SceneObservation
 from models.base import MeasuredModelClient, ProviderReply, TokenUsage
 from sawon_runtime.storage import RunLog, StateStore
 
@@ -128,14 +129,17 @@ class FakeRelay:
                 )
                 for item in items
             ]
-        return Observation(
-            obs_id=uuid4(),
-            ts=datetime.now(UTC),
-            active_window=window,
-            windows=[window],
+        wire = capture_wire().model_copy(
+            update={
+                "active_window": window,
+                "windows": [window],
+                "blocked_reason": "outside_allowlist" if self.blocked else None,
+            }
+        )
+        return SceneObservation(
+            wire=wire,
+            screen_kind=self.mode if self.mode in {"query", "editor"} else "login",
             elements=items,
-            screen_hash="0" * 40,
-            blocked_reason="outside_allowlist" if self.blocked else None,
         )
 
     def act(self, action):
@@ -325,13 +329,11 @@ def test_blocked_foreground_stops_before_decision_or_input(tmp_path, record):
 def test_summary_preserves_grid_relationships_and_omits_ids(record):
     observation = FakeRelay(record, duplicate=True).observe()
     original = observation.elements[-1]
-    observation.elements[-1] = original.model_copy(update={"automation_id": "private-id"})
     for strategy in ("flat_fields", "label_grouped"):
         summary = json.loads(summarize(observation, strategy))
         cell = next(item for item in summary["elements"] if item["ref"] == original.ref)
         assert cell["parent_ref"] == "e6"
         assert cell["value"] == original.value
-        assert "private-id" not in json.dumps(summary)
     grouped = json.loads(summarize(observation, "label_grouped"))
     assert grouped["elements"][-1]["region"][-1]["ref"] == "e6"
 
@@ -339,12 +341,12 @@ def test_summary_preserves_grid_relationships_and_omits_ids(record):
 def test_snapshot_redaction_scrubs_all_ui_strings(record):
     observation = FakeRelay(record).observe()
     secret = "TOKEN"
-    for field in ("name", "label_hint", "value", "automation_id"):
+    for field in ("name", "label_hint", "value"):
         setattr(observation.elements[1], field, f"{field}: {secret}")
-    observation.active_window = observation.active_window.model_copy(
+    observation.wire.active_window = observation.active_window.model_copy(
         update={"title": f"active title {secret}", "process": f"active process {secret}"}
     )
-    observation.windows = [
+    observation.wire.windows = [
         observation.active_window.model_copy(),
         observation.windows[0].model_copy(
             update={
@@ -354,10 +356,10 @@ def test_snapshot_redaction_scrubs_all_ui_strings(record):
             }
         ),
     ]
-    observation.blocked_reason = f"blocked {secret}"
+    observation.wire.blocked_reason = f"blocked {secret}"
     redacted = redact(observation, (secret,))
     assert secret not in redacted.model_dump_json()
-    for field in ("name", "label_hint", "value", "automation_id"):
+    for field in ("name", "label_hint", "value"):
         assert getattr(redacted.elements[1], field) == f"{field}: [REDACTED]"
     assert redacted.active_window.title == "active title [REDACTED]"
     assert redacted.active_window.process == "active process [REDACTED]"

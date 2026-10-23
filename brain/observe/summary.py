@@ -46,18 +46,21 @@ def redact(observation: Observation, secrets: tuple[str, ...]) -> Observation:
     # Only UI-provided strings can contain entered credentials. Never rewrite
     # refs, UUIDs, schema versions, timestamps or hashes when a short credential
     # happens to match protocol metadata: that would corrupt identity validation.
+    from brain.visual.scene import SceneObservation
+
     data = observation.model_dump(mode="json")
+    envelope = data["wire"] if isinstance(observation, SceneObservation) else data
     for item in data["elements"]:
-        for field in ("name", "label_hint", "value", "automation_id"):
+        for field in ("name", "label_hint", "value"):
             if field in item:
                 item[field] = clean(item[field])
-    for window in [*data["windows"], data["active_window"]]:
+    for window in [*envelope["windows"], envelope["active_window"]]:
         if window is not None:
             window["title"] = clean(window["title"])
             window["process"] = clean(window["process"])
-    if data.get("blocked_reason") is not None:
-        data["blocked_reason"] = clean(data["blocked_reason"])
-    return Observation.model_validate(data)
+    if envelope.get("blocked_reason") is not None:
+        envelope["blocked_reason"] = clean(envelope["blocked_reason"])
+    return type(observation).model_validate(data)
 
 
 def ancestors(element: UIElement, elements: list[UIElement]) -> list[UIElement]:

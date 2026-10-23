@@ -30,7 +30,7 @@ def server():
                 self.end_headers()
                 return
             if self.path == "/health":
-                value = {"ok": True}
+                value = {"ok": True, "observation_mode": "visual_only"}
             elif self.path.startswith("/observe?"):
                 value = {
                     "obs_id": str(uuid4()),
@@ -103,8 +103,8 @@ def server():
 
 def test_authenticated_health_observe_and_act():
     with server() as (url, requests):
-        relay = HttpRelay(url, "fixture-token", max_depth=12)
-        assert relay.health() == {"ok": True}
+        relay = HttpRelay(url, "fixture-token")
+        assert relay.health() == {"ok": True, "observation_mode": "visual_only"}
         observation = relay.observe()
         assert observation.blocked_reason == "no_foreground"
         action = Action.model_validate(
@@ -118,7 +118,7 @@ def test_authenticated_health_observe_and_act():
         )
         assert relay.act(action).action_id == action.root.action_id
         assert all(item[1] == "Bearer fixture-token" for item in requests)
-        assert requests[1][0] == "/observe?screenshot=false&max_depth=12"
+        assert requests[1][0] == "/observe?screenshot=false"
         assert requests[2][2] == action.model_dump(mode="json")
 
 

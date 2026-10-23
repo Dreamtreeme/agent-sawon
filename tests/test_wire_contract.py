@@ -139,20 +139,6 @@ def test_wire_schema_accepts_every_supported_action_and_result_branch():
         ),
         ("wait", decision(intent="wait", action={"type": "wait", "duration_ms": 0})),
         ("focus", decision(action={"type": "focus_window", "handle": 99})),
-        (
-            "option-source",
-            decision(
-                intent="select_option",
-                action={"type": "select_option", "ref": "e1", "source": "packages.unit"},
-            ),
-        ),
-        (
-            "option-name",
-            decision(
-                intent="select_option",
-                action={"type": "select_option", "ref": "e1", "option": "CT"},
-            ),
-        ),
         ("stop", decision("stop", "stop")),
         ("duplicate", decision("duplicate_clear", "verify", grid_ref="e2")),
         ("complete", complete()),

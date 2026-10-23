@@ -100,8 +100,6 @@ def main(argv: list[str] | None = None) -> int:
             args.relay_url,
             os.environ.get("SAWON_RELAY_TOKEN", ""),
             timeout=settings.http_timeout_seconds,
-            max_depth=settings.observation_max_depth,
-            visual=True,
         )
 
         if args.visual_ocr_config is None:

@@ -29,7 +29,7 @@ def test_action_guard_rejects_disabled_query_and_editor_inputs(record):
     relay = FakeRelay(record)
     cases = []
     query = relay.observe()
-    query.elements = [
+    query.elements[:] = [
         item.model_copy(update={"enabled": False}) if item.ref == "e1" else item
         for item in query.elements
     ]
@@ -44,7 +44,7 @@ def test_action_guard_rejects_disabled_query_and_editor_inputs(record):
     relay.mode = "editor"
     editor = relay.observe()
     ref = relay.field_refs["consignee"]
-    editor.elements = [
+    editor.elements[:] = [
         item.model_copy(update={"enabled": False}) if item.ref == ref else item
         for item in editor.elements
     ]

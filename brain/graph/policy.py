@@ -20,8 +20,6 @@ from brain.graph.schemas import (
     FieldName,
     FocusChoice,
     KeyChoice,
-    NamedOptionChoice,
-    SourceOptionChoice,
     TextChoice,
     WaitChoice,
     WireActDecision,
@@ -120,8 +118,6 @@ class _ActionRule:
     click_types: tuple[str, ...] = ()
     text_sources: tuple[str, ...] = ()
     keys: tuple[str, ...] = ()
-    option_sources: tuple[str, ...] = ()
-    named_option: bool = False
     focus: bool = False
     wait: bool = False
 
@@ -133,10 +129,6 @@ class _ActionRule:
             actions.append({"type": ["set_text", "type_text"], "source": list(self.text_sources)})
         if self.keys:
             actions.append({"type": ["key"], "keys": list(self.keys)})
-        if self.option_sources:
-            actions.append({"type": ["select_option"], "source": list(self.option_sources)})
-        if self.named_option:
-            actions.append({"type": ["select_option"], "requires": ["observed_option_name"]})
         if self.focus:
             actions.append({"type": ["focus_window"], "requires": ["observed_window_handle"]})
         if self.wait:
@@ -187,8 +179,6 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
                         work_screens,
                         click_types=("click", "double_click"),
                         keys=("enter",),
-                        option_sources=facts.field_names,
-                        named_option=True,
                     ),
                 ]
             )
@@ -245,8 +235,6 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
                         ("editor", "partner"),
                         click_types=("click", "double_click"),
                         keys=("enter",),
-                        option_sources=facts.remaining_fields,
-                        named_option=True,
                     ),
                     _ActionRule("search", ("partner",), click_types=("click",), keys=("enter",)),
                 ]
@@ -283,16 +271,6 @@ def _action_model(rule: _ActionRule) -> Any:
         alternatives.append(
             create_model(name + "Key", __base__=KeyChoice, keys=(_literal(rule.keys), ...))
         )
-    if rule.option_sources:
-        alternatives.append(
-            create_model(
-                name + "SourceOption",
-                __base__=SourceOptionChoice,
-                source=(_literal(rule.option_sources), ...),
-            )
-        )
-    if rule.named_option:
-        alternatives.append(NamedOptionChoice)
     if rule.focus:
         alternatives.append(FocusChoice)
     if rule.wait:

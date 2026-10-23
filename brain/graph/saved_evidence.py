@@ -80,7 +80,7 @@ class SavedEvidence:
             return
         target = next((e for e in before.elements if e.ref == choice.ref), None)
         if (
-            choice.type in {"set_text", "type_text", "select_option"}
+            choice.type in {"set_text", "type_text"}
             or decision.intent in {"save", "confirm_save", "query_input", "search", "select_option"}
             or (target is not None and target.role in {"checkbox", "combobox"})
         ):

@@ -1147,8 +1147,6 @@ class Brain:
         reconciled = reconcile_observation(observation, self.values, self.identity_input_key)
         self.reconciled_observation = reconciled
         if not isinstance(observation, SceneObservation):
-            # Legacy UIA observations have no trusted screen-kind contract here;
-            # keep their existing action-verification path during migration.
             return
         query = reconciled.query_input
         if self.phase not in {"duplicate_query", "final_query"}:
@@ -2992,8 +2990,7 @@ class Brain:
                 self._stage_visual_match_candidate(pending)
             self.pending = None
             # Reuse an already interpreted visual scene for every visual action.
-            # UIA keeps its cheap fresh-state read before the next selection.
-            return "review" if isinstance(observation, SceneObservation) else "observation"
+            return "review"
         except VisualGroundingError as exc:
             record_rejection(
                 self.log, "engine._verify_node", exc, response=self.visual_proposal or self.decision

@@ -71,8 +71,6 @@ def validate_action_guard(request: ActionGuardRequest) -> None:
                 source=choice.source,
                 ref=choice.ref,
             )
-    if isinstance(observation, SceneObservation) and choice.type == "select_option":
-        raise GuardStop("visual_select_requires_click_or_keyboard")
     if (
         request.phase != "task"
         and decision.intent == "search"
@@ -279,10 +277,8 @@ def wire_action(request: ActionWiringRequest, services: ActionWiringServices) ->
         "reason": decision.intent,
     }
     if choice.type not in {"wait", "focus_window"}:
-        data["target"] = {"ref": choice.ref}
-        if isinstance(observation, SceneObservation):
-            data["target"], data["obs_id"] = _fresh_visual_target(request, services, observation)
-            data["schema_version"] = "0.2"
+        data["target"], data["obs_id"] = _fresh_visual_target(request, services, observation)
+        data["schema_version"] = "0.2"
     if choice.type in {"set_text", "type_text"}:
         data["text"] = request.credentials.get(choice.source) or request.values.get(
             choice.source, ""
@@ -293,8 +289,6 @@ def wire_action(request: ActionWiringRequest, services: ActionWiringServices) ->
             data["wheel_delta"] = -600 if choice.keys == "pagedown" else 600
         else:
             data["keys"] = choice.keys
-    elif choice.type == "select_option":
-        data["option"] = request.values.get(choice.source, choice.option)
     elif choice.type == "focus_window":
         data["handle"] = choice.handle
     elif choice.type == "wait":

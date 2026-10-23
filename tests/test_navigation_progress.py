@@ -55,8 +55,8 @@ class NavigationRelay(FakeRelay):
             )
         elif self.active_change == "window":
             changed = observation.active_window.model_copy(update={"handle": 2})
-            observation.active_window = changed
-            observation.windows = [changed]
+            observation.wire.active_window = changed
+            observation.wire.windows = [changed]
         self.current_tab_ref = "e9"
         self.current_alternate_ref = "e13"
         if self.volatile:
@@ -67,7 +67,7 @@ class NavigationRelay(FakeRelay):
             self.current_tab_ref = mapping["e9"]
             if self.alternate:
                 self.current_alternate_ref = mapping["e13"]
-            observation.elements = [
+            observation.elements[:] = [
                 item.model_copy(
                     update={
                         "ref": mapping[item.ref],

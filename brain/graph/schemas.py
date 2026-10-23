@@ -40,7 +40,6 @@ class Choice(StrictModel):
         "set_text",
         "type_text",
         "key",
-        "select_option",
         "focus_window",
         "wait",
     ]
@@ -52,7 +51,6 @@ class Choice(StrictModel):
     )
     source: FieldName | None = None
     keys: str | None = None
-    option: str | None = None
     handle: int | None = None
     duration_ms: int = Field(default=250, ge=0, le=3000)
 
@@ -157,18 +155,6 @@ class KeyChoice(WireModel):
     keys: KeyInput
 
 
-class SourceOptionChoice(WireModel):
-    type: Literal["select_option"]
-    ref: NonemptyRef
-    source: FieldName
-
-
-class NamedOptionChoice(WireModel):
-    type: Literal["select_option"]
-    ref: NonemptyRef
-    option: Annotated[str, Field(min_length=1, pattern=r"\S")]
-
-
 class FocusChoice(WireModel):
     type: Literal["focus_window"]
     handle: int
@@ -179,15 +165,7 @@ class WaitChoice(WireModel):
     duration_ms: int = Field(default=250, ge=0, le=3000)
 
 
-WireChoice = (
-    ClickChoice
-    | TextChoice
-    | KeyChoice
-    | SourceOptionChoice
-    | NamedOptionChoice
-    | FocusChoice
-    | WaitChoice
-)
+WireChoice = ClickChoice | TextChoice | KeyChoice | FocusChoice | WaitChoice
 
 
 class WireEvidence(WireModel):
