@@ -15,7 +15,6 @@ from brain.graph.schemas import Decision, DecisionResponse, KeyChoice, WireActDe
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
 from brain.graph.screen_decision import (
     ActionCapability,
-    ActionCompletion,
     MatchAction,
     ScreenMatch,
     ScreenPlan,
@@ -47,42 +46,15 @@ def _schema_digest(model) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def test_key_contract_schemas_match_preconsolidation_json_and_order():
+def test_key_choice_schema_matches_preconsolidation_json_and_order():
     assert _schema_digest(KeyChoice) == (
         "ad74921e277d1127dbfd069fd1e5d35c52cd87b4e10553b4b3973dd2740c88c5"
-    )
-    assert _schema_digest(MatchAction) == (
-        "e1141149898cddcf1a0dcd4019971be67d87c8038d77ee946b7ac9f26309e59b"
     )
 
 
 def test_navigation_keys_preserve_the_existing_tuple_subset():
     assert isinstance(NAVIGATION_KEY_INPUTS, tuple)
     assert NAVIGATION_KEY_INPUTS == tuple(key for key in KEY_INPUT_VALUES if key != "enter")
-
-
-@pytest.mark.parametrize(
-    ("model", "digest"),
-    [
-        (ControlMeaning, "3f15cd8cd1a1feb8bca4fe7afe81c98069ca8081f0467c4659483ec3cff43c6e"),
-        (VisualControl, "44b8a87d6caa5c94fa9ff1674ad5a267725d98afe3b22a3b0aeff222dd120a5e"),
-        (Detection, "0e6893dbc589bc2911076bb4e7a08b672036167373240ad063f3a28d1f09182c"),
-        (
-            SemanticDetection,
-            "4bb02cfe9fbffb82400d576b99007a631014b3ce54e807dae954cc07a29caa26",
-        ),
-        (ScreenMatch, "f8d743c08394db79aa116684d613a912f391ce91b4a23ebd784dfe009acba305"),
-    ],
-)
-def test_control_role_schemas_match_recorded_json_and_order(model, digest):
-    payload = json.dumps(
-        model.model_json_schema(),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    fixture = (_SCHEMA_FIXTURES / f"{model.__name__}.schema.json").read_text(encoding="utf-8")
-    assert payload == fixture
-    assert hashlib.sha256(payload.encode("utf-8")).hexdigest() == digest
 
 
 def test_action_control_roles_keep_existing_keys_sets_and_registered_values():
@@ -136,15 +108,18 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
 @pytest.mark.parametrize(
     ("model", "digest"),
     [
+        (ControlMeaning, "3f15cd8cd1a1feb8bca4fe7afe81c98069ca8081f0467c4659483ec3cff43c6e"),
+        (VisualControl, "44b8a87d6caa5c94fa9ff1674ad5a267725d98afe3b22a3b0aeff222dd120a5e"),
+        (Detection, "0e6893dbc589bc2911076bb4e7a08b672036167373240ad063f3a28d1f09182c"),
+        (
+            SemanticDetection,
+            "4bb02cfe9fbffb82400d576b99007a631014b3ce54e807dae954cc07a29caa26",
+        ),
         (ActionCapability, "b4169d25a010e0a3e3979cffe29a8c38e73e1c328f52e298d364d32412fc7d06"),
         (MatchAction, "e1141149898cddcf1a0dcd4019971be67d87c8038d77ee946b7ac9f26309e59b"),
         (
             TargetedMatchAction,
             "75145be6d606bba3fb0115feda23d5222595748319343efbe7b67308fa4ea259",
-        ),
-        (
-            ActionCompletion,
-            "382b47754e866a0ea5883240fcbf14f7a714090510376c9e7c12e4b6da1ee4e1",
         ),
         (ScreenPlan, "f8d743c08394db79aa116684d613a912f391ce91b4a23ebd784dfe009acba305"),
         (ScreenMatch, "f8d743c08394db79aa116684d613a912f391ce91b4a23ebd784dfe009acba305"),
@@ -175,7 +150,7 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
         ),
     ],
 )
-def test_action_intent_schemas_match_recorded_json_and_order(model, digest):
+def test_vocabulary_schemas_match_recorded_json_and_order(model, digest):
     payload = json.dumps(
         model.model_json_schema(),
         ensure_ascii=False,

@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from .screen_batch import LoginScreenPlan, ScreenFillPlan
 
 
-def bind_proposal(proposal: BaseModel, prefix: str, allowed_refs: set[str]) -> dict:
+def bind_proposal(proposal: dict, prefix: str, allowed_refs: set[str]) -> dict:
     """Translate marker references only; record sources and other text stay literal."""
 
     def ref(value):
@@ -32,7 +32,7 @@ def bind_proposal(proposal: BaseModel, prefix: str, allowed_refs: set[str]) -> d
             }
         return value
 
-    return visit(proposal.model_dump(mode="json"))
+    return visit(proposal)
 
 
 def adapt_proposal(proposal: dict, schema: type[BaseModel]) -> BaseModel:

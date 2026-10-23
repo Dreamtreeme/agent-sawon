@@ -119,18 +119,6 @@ class MatchCompletionEvidence(BaseModel):
     target: int = Field(ge=0)
 
 
-class ActionCompletion(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    operation: Literal["act", "stop"]
-    steps: list[MatchAction] = Field(max_length=50)
-
-    @model_validator(mode="after")
-    def executable_or_stop(self):
-        if (self.operation == "act") != bool(self.steps):
-            raise ValueError("act_requires_steps_stop_requires_none")
-        return self
-
-
 class MethodBinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
     slot: str
@@ -2341,12 +2329,9 @@ def compile_match(response: ScreenMatch, observation, schema):
             "next_decision": data,
         }
 
-    # Reuse existing schemas, current-ref grounding and the common executor.
-    class Payload(BaseModel):
-        model_config = ConfigDict(extra="allow")
-
+    # Bind the assembled payload directly; the execution schema validates it below.
     bound = bind_proposal(
-        Payload.model_validate(data),
+        data,
         "e" + str(observation.obs_id.int) + "0",
         {e.ref for e in observation.elements},
     )

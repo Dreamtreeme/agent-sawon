@@ -1,5 +1,7 @@
 """Current screen proposals use local references and fresh capture geometry."""
 
+from copy import deepcopy
+
 import pytest
 from test_brain import decision, text_choice
 from test_brain import record as record
@@ -14,10 +16,13 @@ def test_current_policy_rejects_wrong_phase_action_and_unknown_marker():
 
     proposal = DecisionResponse.model_validate(
         {"decision": decision(intent="query_input", action=text_choice("hbl_no", "m5"))}
-    )
+    ).model_dump(mode="json")
+    original = deepcopy(proposal)
     with pytest.raises(ValueError, match="unknown_marker"):
         bind_proposal(proposal, "e10", {"e106"})
     bound = bind_proposal(proposal, "e10", {"e105"})
+    assert bound["decision"]["action"]["ref"] == "e105"
+    assert proposal == original
     policy = DecisionPolicy(
         ExecutionFacts(phase="enter", duplicate_clear=True, field_names=("hbl_no",))
     )

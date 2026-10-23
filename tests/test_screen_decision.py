@@ -2072,15 +2072,6 @@ def test_empty_action_is_completed_once_or_explicitly_stopped(tmp_path, record, 
         assert brain.result.reason == "model_requested_stop"
 
 
-def test_missing_action_completion_cannot_repeat_empty_act():
-    from pydantic import ValidationError
-
-    from brain.graph.screen_decision import ActionCompletion
-
-    with pytest.raises(ValidationError, match="act_requires_steps"):
-        ActionCompletion(operation="act", steps=[])
-
-
 def test_final_proof_preserves_grid_row_and_field_evidence():
     from test_brain import element
 
