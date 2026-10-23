@@ -1,6 +1,6 @@
 # 현재 시각 경로
 
-기준일: 2026-10-21. 현재 운영 기준은 [`docs/current-runtime.md`](../../docs/current-runtime.md),
+기준일: 2026-10-23. 현재 운영 기준은 [`docs/current-runtime.md`](../../docs/current-runtime.md),
 그래프와 공개 계약은 [`docs/contracts.md`](../../docs/contracts.md)를 따릅니다. 이전 시각 경로의
 상세 실험 기록은 [`docs/archive/reports/brain-visual-readme-20261018.md`](../../docs/archive/reports/brain-visual-readme-20261018.md)에 보존합니다.
 
@@ -16,7 +16,8 @@
 
 캡처 직후 기존 viewport·pHash 조건으로 기억을 검색합니다. 일치하면 필드 bbox·입력 키·절차를
 인출하여 OmniParser를 생략하고, 미일치하면 OmniParser로 bbox를 찾습니다. 현재 문자열은
-두 경로 모두 OCR로 읽습니다. 바이트까지 동일한 관찰은 OCR·탐지를 재사용하지만 현재 문맥 회상,
+두 경로 모두 새 `scan()`마다 OCR로 읽습니다. 캡처가 같아도 OCR을 생략하지 않습니다.
+같은 관찰을 다시 판단하는 `rematch()`와 보완 탐지는 이미 읽은 OCR을 사용하며, 현재 문맥 회상,
 패턴 매칭, 화면 판단은 같은 순서로 실행합니다.
 로컬 의미 탐지는 주어진 후보를 분류하며, 업무 모델의 ScreenMapping은 의미 이름과 bbox를
 선택합니다. 기억이 불충분하면 모델의 `needs_refinement` 응답으로 같은 캡처·OCR에서
