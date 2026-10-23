@@ -348,41 +348,141 @@ def test_synthetic_no_progress_preserves_current_alternative_plan(tmp_path, reco
     assert len(relay.actions) == 1 and not model.prompts
 
 
-def test_synthetic_repeated_target_preserves_current_alternative_plan(tmp_path, record):
-    """Synthetic relay: an old repeated target must not discard the current screen plan."""
+def test_synthetic_repeated_target_alternative_plan_skips_coordinate_model(tmp_path, record):
+    """Synthetic relay: a different current target makes old-click refinement unnecessary."""
     from brain.graph.screen_decision import ScreenMatch
 
     brain, relay, model = setup(
         tmp_path,
         record,
-        {},
-        enabled=False,
-        intent="navigate",
+        {"outcome": "replan", "explanation": "Would be redundant"},
+        intent="search",
         target_role="button",
+        expected_failure="semantic_target_repeated",
     )
+    brain.phase = "task"
     brain._act_node()
     assert brain.pending is not None
     scope = brain.pending["progress_scope"]
     assert not brain.click_refinement.repeated_target(brain.pending, scope)
-    alternative = ScreenMatch(
-        screen_kind="query",
-        controls=[],
-        procedure_step="open-new-record",
-        steps=[{"target": 9, "action": "click", "intent": "navigate", "point": [240, 120]}],
-    )
     observe = brain._observe
 
-    def observe_with_plan():
+    def observe_with_alternative_plan():
         observation = observe()
-        brain.visual_proposal = alternative
+        prefix = "e" + str(observation.obs_id.int) + "0"
+        alternative_target = element(prefix + "9", "button", name="New record")
+        alternative_target.bbox = (220, 100, 100, 30)
+        observation = observation.model_copy(
+            update={"elements": [*observation.elements, alternative_target]}
+        )
+        brain.observation = observation
+        brain.visual_proposal = ScreenMatch(
+            screen_kind="query",
+            controls=[],
+            procedure_step="open-new-record",
+            steps=[{"target": 9, "action": "click", "intent": "navigate", "point": [270, 115]}],
+        )
         brain.visual_proposal_obs_id = observation.obs_id
         return observation
 
-    brain._observe = observe_with_plan
+    brain._observe = observe_with_alternative_plan
     relay.changed = True
 
-    assert brain._verify_node() == "review"
-    assert brain.visual_proposal is alternative
+    outcome = brain._verify_node()
+    relation_events = [
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "repeated_target_current_plan"
+    ]
+    assert relation_events and relation_events[-1].payload["relation"] == "alternative"
+    assert outcome == "review"
+    assert brain.visual_proposal.procedure_step == "open-new-record"
     assert brain.pending is None
     assert brain.feedback[-1]["reason"] == "semantic_target_repeated"
-    assert len(relay.actions) == 1 and not model.prompts
+    assert not model.prompts
+
+
+def test_synthetic_repeated_target_same_plan_keeps_coordinate_model(tmp_path, record):
+    """Synthetic relay: the same current target still receives coordinate refinement."""
+    from brain.graph.screen_decision import ScreenMatch
+
+    brain, relay, model = setup(
+        tmp_path,
+        record,
+        {"outcome": "retry", "x": 160, "y": 35, "explanation": "Use another point"},
+        intent="search",
+        target_role="button",
+        expected_failure="semantic_target_repeated",
+    )
+    brain.phase = "task"
+    brain._act_node()
+    assert brain.pending is not None
+    scope = brain.pending["progress_scope"]
+    assert not brain.click_refinement.repeated_target(brain.pending, scope)
+    observe = brain._observe
+
+    def observe_with_same_plan():
+        observation = observe()
+        brain.visual_proposal = ScreenMatch(
+            screen_kind="query",
+            controls=[],
+            procedure_step="check-duplicate",
+            steps=[{"target": 8, "action": "click", "intent": "navigate", "point": [110, 35]}],
+        )
+        brain.visual_proposal_obs_id = observation.obs_id
+        return observation
+
+    brain._observe = observe_with_same_plan
+    relay.changed = True
+
+    assert brain._verify_node() == "execution"
+    assert len(model.prompts) == 1
+    relation = next(
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "repeated_target_current_plan"
+    )
+    assert relation.payload["relation"] == "same"
+
+
+def test_synthetic_repeated_target_unknown_plan_reobserves(tmp_path, record):
+    """Synthetic relay: an unresolved current target cannot bypass coordinate review."""
+    from brain.graph.screen_decision import ScreenMatch
+
+    brain, relay, model = setup(
+        tmp_path,
+        record,
+        {"outcome": "replan", "explanation": "No reliable correction"},
+        intent="search",
+        target_role="button",
+        expected_failure="semantic_target_repeated",
+    )
+    brain.phase = "task"
+    brain._act_node()
+    assert brain.pending is not None
+    scope = brain.pending["progress_scope"]
+    assert not brain.click_refinement.repeated_target(brain.pending, scope)
+    observe = brain._observe
+
+    def observe_with_unresolved_plan():
+        observation = observe()
+        brain.visual_proposal = ScreenMatch(
+            screen_kind="query",
+            controls=[],
+            procedure_step="unknown",
+            steps=[{"target": 99, "action": "click", "intent": "navigate", "point": [300, 150]}],
+        )
+        brain.visual_proposal_obs_id = observation.obs_id
+        return observation
+
+    brain._observe = observe_with_unresolved_plan
+    relay.changed = True
+
+    assert brain._verify_node() == "observation"
+    assert len(model.prompts) == 1
+    relation = next(
+        event
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "repeated_target_current_plan"
+    )
+    assert relation.payload["relation"] == "unknown"

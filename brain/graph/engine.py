@@ -2501,6 +2501,36 @@ class Brain:
             and not self.visual_proposal.needs_refinement
         )
 
+    def _current_plan_relation(
+        self, pending: PendingAction, observation: Observation
+    ) -> Literal["alternative", "same", "unknown"]:
+        """Compare the next grounded action with the failed point action."""
+
+        if not self._current_plan_ready(observation):
+            return "unknown"
+        steps = self.visual_proposal.steps
+        if not steps:
+            return "unknown"
+        current = steps[0]
+        previous = pending["choice"]
+        if current.action not in {"click", "double_click"}:
+            return "alternative"
+        if current.action != previous.type:
+            return "alternative"
+        previous_target = pending.get("click_target")
+        if previous_target is None:
+            return "unknown"
+        prefix = "e" + str(observation.obs_id.int) + "0"
+        current_ref = prefix + str(current.target)
+        current_element = next(
+            (element for element in observation.elements if element.ref == current_ref), None
+        )
+        if current_element is None:
+            return "unknown"
+        current_key = semantic_target_key(navigation_target(current_element, observation))
+        previous_key = semantic_target_key(previous_target)
+        return "same" if current_key == previous_key else "alternative"
+
     def _verify_navigation(
         self,
         pending: PendingAction,
@@ -2632,18 +2662,29 @@ class Brain:
 
     def _verify_repeated_target(
         self, pending: PendingAction, observation: Observation
-    ) -> WorkerNode | None:
+    ) -> tuple[WorkerNode | None, Literal["alternative", "same", "unknown"]]:
         current_scope = (
             f"{self.phase}:{self._decision_policy().current_step}:{self.business_revision}"
         )
         if not self.click_refinement.repeated_target(pending, current_scope):
-            return None
+            return None, "unknown"
+        plan_relation = self._current_plan_relation(pending, observation)
+        self.log.append(
+            "verify",
+            payload={
+                "check": "repeated_target_current_plan",
+                "obs_id": str(observation.obs_id),
+                "relation": plan_relation,
+            },
+        )
         self.pending = None
-        if self._try_click_refinement(pending, observation, failure="semantic_target_repeated"):
+        if plan_relation != "alternative" and self._try_click_refinement(
+            pending, observation, failure="semantic_target_repeated"
+        ):
             self.execution_authorized = True
-            return "execution"
+            return "execution", plan_relation
         self._last_exploration_failure_key = pending.get("exploration_action_key")
-        return self._fail("semantic_target_repeated")
+        return self._fail("semantic_target_repeated"), plan_relation
 
     def _verify_text_input(
         self,
@@ -2966,9 +3007,13 @@ class Brain:
                     return outcome
                 if selected_effect is not None:
                     observed_effect = selected_effect
-            outcome = self._verify_repeated_target(pending, observation)
+            outcome, plan_relation = self._verify_repeated_target(pending, observation)
             if outcome is not None:
-                if outcome == "observation" and self._current_plan_ready(observation):
+                if (
+                    outcome == "observation"
+                    and plan_relation == "alternative"
+                    and self._current_plan_ready(observation)
+                ):
                     return "review"
                 return outcome
             outcome, observation, observed_effect = self._verify_text_input(
