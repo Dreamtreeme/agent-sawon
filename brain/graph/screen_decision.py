@@ -203,6 +203,13 @@ class ScreenMatch(SemanticDetection, ScreenPlan):
     )
     needs_image: bool = False
 
+    @classmethod
+    def from_plan(cls, interpretation: SemanticDetection, plan: ScreenPlan) -> ScreenMatch:
+        """New plan fields win, including any full interpretation returned by the model."""
+        return cls.model_validate({**interpretation.model_dump(), **plan.model_dump()}).model_copy(
+            update={"mapping": plan.mapping}
+        )  # mapping is excluded from model_dump.
+
     @model_validator(mode="before")
     @classmethod
     def collect_action_bindings(cls, value):
@@ -1659,9 +1666,7 @@ def select_screen_response(
             ScreenPlan,
             page=page,
         )
-        response = ScreenMatch.model_validate(
-            {**grounded.model_dump(), **plan.model_dump()}
-        ).model_copy(update={"mapping": plan.mapping})
+        response = ScreenMatch.from_plan(grounded, plan)
         write_decision_artifact(services, "cached-plan", response)
         services.log.append(
             "verify",
@@ -1915,9 +1920,7 @@ def validate_or_replan(
             ScreenPlan,
             page=request.page,
         )
-        corrected = ScreenMatch.model_validate(
-            {**interpretation.model_dump(), **plan.model_dump()}
-        ).model_copy(update={"mapping": plan.mapping})
+        corrected = ScreenMatch.from_plan(interpretation, plan)
         corrected = prepare_screen_plan(
             request, services, corrected, prepared.capability, active_fields
         )
