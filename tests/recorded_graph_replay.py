@@ -1,7 +1,8 @@
 """Offline recorded graph runner. External I/O is fake; graph/scanner/state code is real.
 
-Private recordings stay outside Git. Renewal observations are reconstructed from
-recorded renewal events, not original relay JSON. No SDK or desktop is opened.
+Private recordings stay outside Git. Prefer raw relay observations when recorded.
+Legacy renewal envelopes are synthetic; missing failed observations stop replay.
+No SDK or desktop is opened.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ class RecordedInputs:
             json.loads(line)
             for line in (source / "run_log.jsonl").read_text(encoding="utf-8").splitlines()
         ]
-        self.observations = deque(e for e in self.events if e["kind"] == "observe")
+        self.observations = self._observations()
         self.requests = deque(
             e
             for e in self.events
@@ -77,6 +78,32 @@ class RecordedInputs:
         self.model_count = 0
         self.action_count = 0
 
+    def _observations(self):
+        raw_path = self.source / "relay-observations.jsonl"
+        if raw_path.is_file():
+            self.observation_source = "raw_relay"
+            return deque(
+                {"seq": number, "payload": {"raw_wire": json.loads(line)}}
+                for number, line in enumerate(raw_path.read_text(encoding="utf-8").splitlines(), 1)
+            )
+        self.observation_source = "legacy_events"
+        observed = {
+            e["payload"].get("obs_id")
+            for e in self.events
+            if e["kind"] == "observe" and "snapshot" in e["payload"]
+        }
+        # Perception can fail before an observe snapshot is emitted. Keep its slot
+        # rather than consuming the next successful observation at the wrong time.
+        return deque(
+            e
+            for e in self.events
+            if e["kind"] == "observe"
+            or (
+                e["payload"].get("check") == "screen_similarity"
+                and e["payload"].get("obs_id") not in observed
+            )
+        )
+
     def require(self, condition, message):
         if not condition:
             self.errors.append(message)
@@ -100,6 +127,15 @@ class RecordedRelay:
         t = self.tape
         e = t.pop(t.observations, "observe")
         p = e["payload"]
+        if "raw_wire" in p:
+            wire = Observation.model_validate(p["raw_wire"])
+            t.images[str(wire.obs_id)] = t.source / "relay-captures" / f"{wire.obs_id}.png"
+            return wire
+        t.require(
+            p.get("check") != "screen_similarity",
+            f"seq {e['seq']}: missing raw observation for {p.get('obs_id')} "
+            "(perception has no final snapshot; later observations were not substituted)",
+        )
         if "snapshot" in p:
             snapshot = t.source / p["snapshot"]
             t.require(snapshot.is_file(), f"seq {e['seq']}: missing snapshot {p['snapshot']}")
@@ -334,6 +370,7 @@ def replay(source, config, output, goal):
             "batches": len(tape.batches),
         },
         "reconstructed_renewals": tape.renewals,
+        "observation_source": tape.observation_source,
         "verified": sorted(brain.verified),
         "post_save_verified": sorted(brain.post_save_verified),
     }
