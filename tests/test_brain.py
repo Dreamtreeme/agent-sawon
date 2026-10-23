@@ -456,24 +456,6 @@ def test_cli_setup_failure_has_durable_result_and_never_reuses_case(tmp_path, re
     assert (case_dir / "run_log.jsonl").read_bytes() == log
 
 
-class StructuralRowRelay(FakeRelay):
-    def __init__(self, record, *, row_role="Custom"):
-        super().__init__(record)
-        self.row_role = row_role
-
-    def observe(self):
-        observation = super().observe()
-        if self.saved:
-            next(item for item in observation.elements if item.ref == "e6").role = self.row_role
-        observation.elements.extend(
-            [
-                element("e70", "Custom", parent="e4" if self.mode == "query" else "e0"),
-                element("e71", "Header", name="Column heading", parent="e70"),
-            ]
-        )
-        return observation
-
-
 @pytest.mark.parametrize("shape", ["empty", "headers", "mixed", "nested_rows", "outside_grid"])
 def test_generic_container_requires_unambiguous_direct_grid_cells(shape):
     items = [
