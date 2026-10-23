@@ -1810,20 +1810,36 @@ def validate_or_replan(
             raise
         if str(error) not in _REPLANNABLE_MATCH_ERRORS:
             raise
-        if str(error) == "screen_match_action_surface_mismatch":
+        if str(error) in {
+            "screen_match_action_surface_mismatch",
+            "screen_match_action_target_uncertain",
+        }:
+            if str(error) == "screen_match_action_surface_mismatch":
+                correction_instruction = (
+                    "Re-read the CURRENT screen and return a corrected interpretation and "
+                    "plan. For every step, choose a target marker whose allowed_actions "
+                    "contains the requested action. OCR markers may only be click targets "
+                    "when their visible text is the requested tab, button, menu, link, row, "
+                    "or cell; "
+                    "never fill or send keys to OCR. Keep controls and steps target IDs "
+                    "consistent."
+                )
+                artifact_kind = "action-surface-correction"
+                correction_check = "action_surface_corrected"
+            else:
+                correction_instruction = (
+                    "The proposed action target will be disabled by local visual confidence. "
+                    "Re-read the whole CURRENT screen and choose another confidently grounded "
+                    "action. If the selected taught step's expected result is already visible, "
+                    "advance to the next applicable taught step instead of repeating it."
+                )
+                artifact_kind = "uncertain-target-correction"
+                correction_check = "uncertain_action_target_corrected"
             correction_state = {
                 **prepared.state,
                 "correction": {
                     "error": str(error),
-                    "instruction": (
-                        "Re-read the CURRENT screen and return a corrected interpretation and "
-                        "plan. For every step, choose a target marker whose allowed_actions "
-                        "contains the requested action. OCR markers may only be click targets "
-                        "when their visible text is the requested tab, button, menu, link, row, "
-                        "or cell; "
-                        "never fill or send keys to OCR. Keep controls and steps target IDs "
-                        "consistent."
-                    ),
+                    "instruction": correction_instruction,
                     "rejected_target_ids": sorted(step.target for step in response.steps),
                 },
             }
@@ -1843,51 +1859,11 @@ def validate_or_replan(
             corrected = prepare_screen_plan(
                 request, services, corrected, prepared.capability, active_fields
             )
-            write_decision_artifact(services, "action-surface-correction", corrected)
+            write_decision_artifact(services, artifact_kind, corrected)
             services.log.append(
                 "verify",
                 payload={
-                    "check": "action_surface_corrected",
-                    "rejected_target_ids": sorted(step.target for step in response.steps),
-                    "corrected_target_ids": sorted(step.target for step in corrected.steps),
-                },
-            )
-            return corrected
-        if str(error) == "screen_match_action_target_uncertain":
-            correction_state = {
-                **prepared.state,
-                "correction": {
-                    "error": str(error),
-                    "instruction": (
-                        "The proposed action target will be disabled by local visual confidence. "
-                        "Re-read the whole CURRENT screen and choose another confidently grounded "
-                        "action. If the selected taught step's expected result is already visible, "
-                        "advance to the next applicable taught step instead of repeating it."
-                    ),
-                    "rejected_target_ids": sorted(step.target for step in response.steps),
-                },
-            }
-            corrected = _call_screen_decision(
-                services,
-                "replan_after_rejection",
-                SCREEN_DECISION_RULES
-                + prepared.guard_rules
-                + prepared.taught_rules
-                + prepared.method_rules
-                + json.dumps(correction_state, ensure_ascii=False),
-                ScreenMatch,
-                page=request.page,
-            )
-            corrected = local_response(corrected, request.screen)
-            corrected = bind_value_evidence_to_controls(services, corrected, request.screen)
-            corrected = prepare_screen_plan(
-                request, services, corrected, prepared.capability, active_fields
-            )
-            write_decision_artifact(services, "uncertain-target-correction", corrected)
-            services.log.append(
-                "verify",
-                payload={
-                    "check": "uncertain_action_target_corrected",
+                    "check": correction_check,
                     "rejected_target_ids": sorted(step.target for step in response.steps),
                     "corrected_target_ids": sorted(step.target for step in corrected.steps),
                 },
