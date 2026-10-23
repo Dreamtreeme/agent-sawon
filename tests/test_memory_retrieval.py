@@ -3,6 +3,8 @@
 import hashlib
 import json
 from copy import deepcopy
+from functools import cache
+from io import BytesIO
 from uuid import uuid4
 
 import pytest
@@ -19,12 +21,21 @@ from brain.graph.memory_retrieval import open_memory_library
 from brain.graph.screen_decision import MethodBinding, ScreenMatch
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
+from brain.visual.action_rebind import perceptual_hash
 from brain.visual.markers import Marker, build_markers, ground_meanings
 from brain.visual.scene import ControlMeaning, bind_scene
 from pipeline.schemas import OcrBlock
 from sawon_runtime.storage import RunLog, atomic_write_json
 
-TEST_SCREEN_PHASH = 10945075410289642384  # 400x200 white fixture capture.
+
+@cache
+def synthetic_screen_phash():
+    # Synthetic white capture: floating-point DCT rounding differs across platforms.
+    # These tests exercise memory routing, not a platform-specific numeric hash.
+    capture = BytesIO()
+    Image.new("RGB", (400, 200), "white").save(capture, format="PNG")
+    capture.seek(0)
+    return perceptual_hash(capture)
 
 
 def test_compiled_only_library_does_not_replay_raw_model_trace(tmp_path):
@@ -207,7 +218,7 @@ def catalog(label="Customer", shift=0):
     inputs = [marker for marker in markers if marker.source == "omniparser"]
     screen = {
         "image_size": [400, 200],
-        "screen_phash": TEST_SCREEN_PHASH,
+        "screen_phash": synthetic_screen_phash(),
         "ocr": [block.model_dump(mode="json") for block in blocks],
         "markers": [marker.model_dump(mode="json") for marker in markers],
     }
@@ -701,7 +712,7 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
     submit = controls_by_box[(100, 120, 100, 30)]
     screen = {
         "image_size": [400, 200],
-        "screen_phash": TEST_SCREEN_PHASH,
+        "screen_phash": synthetic_screen_phash(),
         "ocr": [block.model_dump(mode="json") for block in blocks],
         "markers": [marker.model_dump(mode="json") for marker in markers],
     }
