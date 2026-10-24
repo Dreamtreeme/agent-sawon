@@ -83,3 +83,34 @@ hit-test를 함께 확인하고, 허용 ERP를 앞으로 올리기 전후에 hit
 
 원문·캡처는 커밋하지 않는다. 이 변경은 보고서뿐이며 링크·경로와 `git diff --check`를
 확인했다. 제품 코드가 바뀌지 않아 전체 단위 테스트는 반복하지 않았다.
+
+## 정리 전후 커밋 대조
+
+사용자의 정리 이전과의 차이 질문에 따라, 성공 091의 bench `1bdeba4`, UIA 삭제
+`a51c717`, 진단 추가 `26697db`를 비교했다. 핵심 거절 분기·조기 반환이 정리에서
+새로 생겼다는 근거는 없다. 그러나 모든 변경을 동작 보존으로 묶어서도 안 된다.
+
+| 대상 | 확인 결과 |
+|---|---|
+| force_foreground 조기 반환 | `90039b0`(2026-09-30)에 도입. 091과 현재 모두 존재 |
+| UIA 정리 전후 네이티브 동작 | force_foreground, _point_guard, hit_test_window, _visual_point, _check_visual_point의 AST가 `1bdeba4`와 `a51c717`에서 각각 동일 |
+| visual_only focus_window | 기존의 force_foreground 분기를 남기고 다른 모드의 set_focus 분기를 제거. 091도 visual_only 사용 |
+| 오류 전달 | core `f6540c5`와 `6444527`의 graph/execution.py diff 없음. 일반 relay_action_failed 변환은 기존 동작 |
+| 실제 ERP 버튼 처리 변경 | `a51c717`에서 UiContext.cs의 BeginInvoke 예약을 제거하고 button.Click += action으로 즉시 호출. 실행 시점 변경이며 단순 주석 삭제가 아님 |
+| 시작 경로 차이 | 091/092 desktop_handoff=false, 093–099=true. false에서는 relay_managed_focus로 startup 활성화를 생략하고, true에서는 별도 harness 활성화/안정화 경로 사용 |
+| 진단 추가 | 파일 쓰기·추가 상태 읽기로 타이밍에 영향 가능. 098에서 이미 동일 오류가 발생했으므로 최초 발생 원인으로 볼 근거 없음 |
+
+099의 두 `point_authorization` 기록을 Window 객체로 복원해 위 세 커밋에서 추출한
+실제 `_check_visual_point` 함수에 읽기 전용으로 넣었다. backend는 기록된 active/hit을
+반환하는 fake다. 세 버전 모두 두 건을 `point_outside_allowed_window`로 거절했다.
+같은 전경 핸들을 반환하는 네이티브 fake에서도 세 버전 모두 BringWindowToTop/활성화
+호출 0회였다. 이는 해당 분기 비교이며 과거 Windows 상태나 전체 ERP 재현은 아니다.
+
+반례도 있다. 정리 이후 bench `5ae931f`의 092와 093은 ERP10/10·정상 종료했다.
+093은 handoff=true였으므로 이 옵션 하나만으로 실패를 확정할 수 없다. 099는 첫 입력
+전 거절되어 ERP 버튼 콜백에도 도달하지 않았다. 예약→즉시 호출 변경은 별도 영향 평가
+대상이지만 이번 로그인 전 hit-test 불일치의 직접 원인으로 볼 수 없다.
+
+따라서 비교 실험에서 먼저 통제할 것은 **091과 달라진 시작 옵션**이다. 같은 현재 코드에서
+handoff=false/true를 비교해야 하며, 원격 모델 없이 초기 활성화·좌표 검사만으로 확인할 수 있다.
+이번 조사에서는 파일럿 재실행이나 제품 변경을 하지 않았다.
