@@ -46,6 +46,9 @@ flowchart TD
 - **Decision**: Observation에서 생성한 화면 계획을 공통 실행 계약으로 확정합니다. 계획이
   없거나 다시 판단해야 하면 같은 `screen_decision` 경로로 들어갑니다. 현재 `screen_matching`
   설정은 화면 해석과 다음 행동을 한 응답으로 얻으므로 최초 모델 판단은 Observation 안에서 일어납니다.
+  저장 후 상세 검토가 처음 확정되는 경계에서는 Observation의 현재 증거를 보존하고 다음 계획만
+  해제합니다. Decision은 갱신된 검토 문맥과 기존 캡처·해석으로 다시 선택합니다. 상세 재진입은
+  검토 메모를 초기화하지 않으며 같은 사유로 반복 재판단하지 않습니다.
 - **Review**: 모델 제안과 현재 관찰 근거를 연결하고 다음 route를 정합니다. 현재 설정의
   `guard_mode = "observe_only"`를 존중하며 과거의 엄격한 휴리스틱을 지침만 보고 복원하지 않습니다.
 - **Execution**: 준비된 `ExecutionRequest`를 공통 실행기에 전달하고 `ExecutionResult`를

@@ -159,7 +159,15 @@ def test_pending_last_record_fill_proposes_save_without_mutating_verified_fields
     assert proposed["checkpoint"] == "save"
     assert proposed["conditional"]
     assert proposed["remaining_fields"] == []
-    assert proposed["pending_actions"] == [{"intent": "fill", "source": last_field}]
+    assert proposed["pending_actions"] == [
+        {
+            "intent": "fill",
+            "source": last_field,
+            "screen_kind": "editor",
+            "action": "set_text",
+            "subgoal": "fill-entry",
+        }
+    ]
     assert proposed["allowed_intents"] == [
         "cancel",
         "navigate",
@@ -239,7 +247,15 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
     state = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
     assert matched.procedure_step == "task-action"
     assert "select_tab" in state["capability"]["actions"]
-    assert state["execution"]["pending_actions"] == [{"intent": "select_option", "source": None}]
+    assert state["execution"]["pending_actions"] == [
+        {
+            "intent": "select_option",
+            "source": None,
+            "screen_kind": "partner",
+            "action": "click",
+            "subgoal": "select-shipper",
+        }
+    ]
     assert "shipper" not in brain.verified
     assert state["execution"]["pending_actions"][0]["intent"] == "select_option"
     assert "shipper" in state["notebook"]["anticipated_verified_inputs"]

@@ -215,7 +215,13 @@ def execution_context(request: ExecutionContextRequest) -> dict:
         "allowed_intents": sorted({c["intent"] for c in proposal_prompt["allowed_next_choices"]}),
         "guidance": phase_instruction(proposal),
         "pending_actions": [
-            {"intent": d.intent, "source": d.action.source if d.action else None}
+            {
+                "intent": d.intent,
+                "source": d.action.source if d.action else None,
+                "screen_kind": d.screen_kind,
+                "action": d.action.type if d.action else None,
+                "subgoal": d.subgoal,
+            }
             for d in decisions
             if d
         ],

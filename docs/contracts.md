@@ -67,6 +67,19 @@ flowchart LR
 복사본이 아니다. 확인된 필드가 후속 화면에서 보이지 않는 것만으로 전체 메모를 지우지 않는다.
 현재 관찰값 불일치와 증거 대체는 갱신 사유다. 메모에 기록된 입력 확인과 ERP 저장 완료는 구분한다.
 
+`execution_context.pending_actions`는 직전 행동의 intent·입력 source와 출발 screen_kind,
+물리 action 종류, 의도한 subgoal을 전달한다. subgoal은 계획의 목적이며 관찰된 성공 사실이
+아니다. 과거 frame ref와 좌표를 현재 행동 대상으로 재노출하지 않는다.
+
+저장 후 상세 화면의 첫 관찰에서는 `scan()`이 해석과 다음 계획을 함께 생성한 뒤
+`_begin_saved_detail_review()`가 검토 범위와 교육 완료를 확정한다. 이 경계에서는 현재 증거를
+먼저 보존하고 확정 전의 다음 계획·후보·계획 오류만 해제한다. Decision은 같은 캡처와 해석에서
+갱신된 문맥으로 다시 선택하며 OCR·탐지를 반복하지 않는다. `screen_plan_context_changed`로
+이를 기록한다. 해당 경계에서 모델 호출이 하나 늘 수 있으며 매 화면 적용하는 규칙은 아니다.
+상세 재진입은 pending 전환을 소비하지만 누적 검토 증거를 초기화하지 않는다. 교육 단계의
+선택만으로 관찰된 완료를 되돌리거나 완료 단계로 교육 초점을 덮어쓰지 않는다. 앞 단계로 가는
+행동을 거절하는 규칙은 아니며 미완료 교육 단계의 재선택은 유지한다.
+
 `ScreenMatch.from_plan`은 새 계획의 값을 기존 화면 해석보다 우선한다. 전체 ScreenMatch가
 반환되면 controls·화면 종류도 새 응답을 사용한다. 직렬화에서 제외되는 mapping은 명시적으로
 연결한다. 호출 위치는 `screen_decision.py`의 기존 해석 기반 `grounded_screen_plan` 경로와
