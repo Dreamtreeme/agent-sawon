@@ -56,6 +56,17 @@ flowchart LR
 
 ### 입력 메모와 계획 결합
 
+`ScreenMapping.observed_step_results`는 교육 단계 ID, 현재 관찰 결과, 완료 여부를 담는다.
+모델은 현재 화면과 이미 전달한 행동을 교육 완료 조건에 대조해 답한다.
+`ScreenPlan`/`ScreenMatch`가 같은 목록을 전달하고
+`_remember_model_task_evidence()`가 관찰 경로와 별도 선택 경로 모두에서 실행 전에
+완료된 항목을 기존 `completed_taught_steps`에 누적한다. 등록된 교육 ID만 반영하며 중복은 무시한다.
+다음 요청의 `taught_procedure_progress.completed_step_ids`에 노출한다. 관찰 설명 원문은
+해당 응답 기록에 보존하며 완료 ID와 별도의 진행 상태 복사본을 만들지 않는다. 행동 선택·전달만으로
+완료를 추론하거나 전체 업무 성공으로 바꾸지 않는다. 기존 응답은 빈 목록으로 읽는다.
+화면 캐시는 전체 판단 문맥이 일치할 때 응답을 재사용하며, 편찬 메서드에는 이 실행의
+완료 목록을 새로 저장하지 않는다. 모델 없는 메서드가 임의로 교육 완료를 만들어내지 않는다.
+
 | 상태 | 의미 |
 |---|---|
 | `verified` | 현재 실행에서 확인한 입력과 대상 descriptor |

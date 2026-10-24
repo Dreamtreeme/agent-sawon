@@ -3,6 +3,7 @@
 Intent schema fixtures were captured from pre-consolidation commit 6ab16c3.
 Decision-family fixtures now describe capture-bound physical input (2026-10-24).
 ScreenMatch/ScreenPlan were updated on 2026-10-21 to expose needs_refinement for scanning fallback.
+On 2026-10-24 they also expose observed_step_results; vocabulary is unchanged.
 """
 
 import hashlib
@@ -122,8 +123,8 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
             TargetedMatchAction,
             "75145be6d606bba3fb0115feda23d5222595748319343efbe7b67308fa4ea259",
         ),
-        (ScreenPlan, "f8d743c08394db79aa116684d613a912f391ce91b4a23ebd784dfe009acba305"),
-        (ScreenMatch, "f8d743c08394db79aa116684d613a912f391ce91b4a23ebd784dfe009acba305"),
+        (ScreenPlan, "1b5fb21969e667ce9d14d80f016e960a116f3103672144f3f4a51945b3cdfdd0"),
+        (ScreenMatch, "1b5fb21969e667ce9d14d80f016e960a116f3103672144f3f4a51945b3cdfdd0"),
         (Decision, "0dd9a48fb753c30ea6f54d65c1272bfc631435abedc33d3864e138bf412f5bf0"),
         (
             WireActDecision,

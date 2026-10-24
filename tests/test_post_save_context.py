@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from sawon_interfaces import ActionResult
 from test_brain import record as record
 from test_screen_decision import named_response, setup_brain
@@ -18,6 +19,78 @@ def taught_task():
             Path(__file__).resolve().parents[1] / "examples/shipment-user-taught-task.json"
         ).read_bytes()
     )
+
+
+@pytest.mark.parametrize("route", ["observation", "selection"])
+def test_synthetic_query_outcome_is_remembered_before_next_action(tmp_path, record, route):
+    # Synthetic 097-shaped reply, not a claim that the real model chooses correctly.
+    response = named_response(
+        screen_kind="query",
+        taught_step_id="open-new-record",
+        observed_step_results=[
+            {"step_id": step, "observed_result": "조회 결과 0건", "completed": True}
+            for step in ["check-duplicate", "check-duplicate", "unknown-step"]
+        ]
+        + [
+            {
+                "step_id": "open-new-record",
+                "observed_result": "query, not editor",
+                "completed": False,
+            }
+        ],
+        fields={
+            "Reference": {
+                "role": "edit",
+                "bbox": [100, 15, 150, 30],
+                "value": record.fields.hbl_no.value,
+            },
+            "Result": {"role": "text", "bbox": [10, 110, 150, 25], "value": "조회 결과 0건"},
+            "New": {"role": "button", "bbox": [270, 60, 90, 30]},
+        },
+        steps=[{"target": "New", "action": "click", "intent": "navigate", "point": [310, 75]}],
+    )
+    replies = (
+        [response]
+        if route == "observation"
+        else [
+            {**response, "observed_step_results": []},
+            response,
+        ]
+    )
+    brain, model, relay, *_ = setup_brain(tmp_path, record, replies, task_instruction=taught_task())
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    brain.active_taught_step = "check-duplicate"
+    brain._observe()
+    if route == "selection":
+        assert brain.completed_taught_steps == set(), "selecting next work is not completion"
+        brain.visual_proposal = None
+    assert brain._select_node() == "review"
+    assert brain.completed_taught_steps == {"check-duplicate"}
+    assert brain._taught_procedure_progress()["completed_step_ids"] == ["check-duplicate"]
+    assert brain.active_taught_step == "open-new-record"
+    completion_events = [
+        e
+        for e in brain.log.read_all()
+        if e.payload.get("check") == "taught_procedure_step_completed"
+    ]
+    assert len(completion_events) == 1, "repeated declarations are idempotent"
+    sent = []
+
+    def fake_act(action):
+        assert brain.completed_taught_steps == {"check-duplicate"}
+        sent.append(action.root.target.image_point)
+        return ActionResult(
+            action_id=action.root.action_id,
+            ok=True,
+            duration_ms=0,
+            post_obs_id=relay.current.obs_id,
+        )
+
+    relay.act = fake_act
+    assert brain._review_node() == "execution"
+    assert brain._act_node() == "observation"
+    assert sent == [(310, 75)]
+    assert len(model.prompts) == len(replies), "committing outcome needs no extra call"
 
 
 def test_synthetic_detail_response_commits_evidence_then_executes_without_recall(tmp_path, record):

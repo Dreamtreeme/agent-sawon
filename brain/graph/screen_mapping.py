@@ -52,6 +52,15 @@ class NamedCompletionEvidence(BaseModel):
     target: str
 
 
+class ObservedStepResult(BaseModel):
+    """Current visual outcome of a taught step, independent of the next action."""
+
+    model_config = ConfigDict(extra="forbid")
+    step_id: str
+    observed_result: str
+    completed: bool
+
+
 class ScreenMapping(BaseModel):
     model_config = ConfigDict(extra="forbid")
     screen_kind: Literal["login", "menu", "query", "editor", "partner", "dialog", "unknown"] = (
@@ -67,6 +76,10 @@ class ScreenMapping(BaseModel):
     assignments: dict[str, str] = Field(
         default_factory=dict,
         description="Visible field name -> user input key, e.g. 수량 -> packages.count",
+    )
+    observed_step_results: list[ObservedStepResult] = Field(
+        default_factory=list,
+        description="Evaluate the focused/delivered taught steps against CURRENT visible results",
     )
     steps: list[NamedAction] = Field(default_factory=list)
     evidence: list[NamedEvidence] = Field(default_factory=list)
@@ -382,6 +395,11 @@ use screen_kind, fields.value and assignments/evidence to report what is visible
 steps from that observed outcome plus prior memory. The runtime commits these observations before
 executing these same steps; do not wait for another turn just to acknowledge a completed action.
 Use taught_step_id for the work your next steps perform, not the already delivered action.
+Before choosing steps, return observed_step_results for the focused step and any delivered step
+whose result is now visible. In observed_result, describe the CURRENT result relevant to that
+step's completion condition, including non-input status text. Set completed from that comparison,
+not from delivery alone. A result already visible need not be produced again just to acknowledge it.
+Then choose steps for the remaining work using these results and prior memory in this same response.
 If saved_result_open_pending is true and the screenshot is the opened detail editor, the requery
 step has succeeded: review the saved values here; do not close and repeat the same query.
 For saved_detail_candidate, verified_inputs is empty for the new review, not a claim that

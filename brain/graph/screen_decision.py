@@ -46,7 +46,7 @@ from .execution import GuardStop, PendingAction
 from .model_call import ResponseT, ScreenModelCall
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision, FieldName
-from .screen_mapping import ScreenMapping, ScreenMappingWire, mapping_prompt
+from .screen_mapping import ObservedStepResult, ScreenMapping, ScreenMappingWire, mapping_prompt
 from .visual_turn import adapt_proposal, bind_proposal
 
 
@@ -171,6 +171,7 @@ class ScreenPlan(MethodChoice):
         return value
 
     procedure_step: str
+    observed_step_results: list[ObservedStepResult] = Field(default_factory=list)
     steps: list[MatchAction] = Field(default_factory=list, max_length=50)
     requested_instruction_ids: list[str] = Field(default_factory=list, max_length=40)
     operation: Literal["act", "duplicate_clear", "duplicate_found", "complete", "stop"] = "act"

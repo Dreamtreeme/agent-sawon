@@ -36,6 +36,9 @@ def test_synthetic_composition_preserves_mapping_and_uses_new_plan(
             ],
             "purpose": "new plan",
             "expected_result": "next screen",
+            "observed_step_results": [
+                {"step_id": "observed-step", "observed_result": "visible result", "completed": True}
+            ],
             "needs_refinement": False,
             "evidence": [{"field": "hbl_no", "target": "Next"}],
         }
@@ -86,5 +89,8 @@ def test_synthetic_composition_preserves_mapping_and_uses_new_plan(
     assert response.steps == plan.steps
     assert response.purpose == "new plan"
     assert response.expected_result == "next screen"
+    assert [item.model_dump() for item in response.observed_step_results] == [
+        {"step_id": "observed-step", "observed_result": "visible result", "completed": True}
+    ]
     assert response.evidence == plan.evidence
     assert snapshots == (meaning.model_dump(), plan.model_dump(), plan.mapping.model_dump())

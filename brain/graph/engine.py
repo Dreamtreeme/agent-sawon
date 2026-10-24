@@ -525,7 +525,7 @@ class Brain:
             return
         order = {step.id: index for index, step in enumerate(task.procedure)}
         completed = order.get(taught_step_id)
-        if completed is None:
+        if completed is None or taught_step_id in self.completed_taught_steps:
             return
         self.completed_taught_steps.add(taught_step_id)
         current = order.get(self.active_taught_step or "", -1)
@@ -1967,7 +1967,7 @@ class Brain:
                 self._record_verified_field(evidence.field, item)
 
     def _remember_model_task_evidence(self, response) -> None:
-        """Persist the screen model's current editor evidence as task progress.
+        """Persist observed taught completions and field evidence before execution.
 
         The model owns visual reading and semantic binding. Observed values use
         the same comparison as no-op input elimination, before batch review.
@@ -1976,6 +1976,9 @@ class Brain:
         """
         if self.task_instruction is None or not self.settings.visual_model_only_review:
             return
+        for result in response.observed_step_results:
+            if result.completed:
+                self._complete_taught_procedure_step(result.step_id)
         assert self.observation is not None
         prefix = "e" + str(self.observation.obs_id.int) + "0"
         by_ref = {item.ref: item for item in self.observation.elements}
