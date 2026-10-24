@@ -190,7 +190,8 @@ def test_synthetic_pending_context_preserves_action_and_source_screen(tmp_path, 
         action=Choice(type="double_click", ref="old-row"),
     )
     brain.pending = {"decision": decision}
-    action = brain._execution_context(anticipate=True)["pending_actions"][0]
+    action = brain._execution_context(anticipate=True)["last_delivered_actions"][0]
+    assert action["delivery_status"] == "succeeded"
     assert action["screen_kind"] == "query"
     assert action["action"] == "double_click"
     assert action["subgoal"] == "open saved row"

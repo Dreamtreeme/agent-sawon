@@ -58,6 +58,9 @@ Luna, Gemini, Jev와 replay 어댑터는 비교·재생 코드일 수 있으며 
 입력값 이외의 교육 완료도 같은 응답의 `observed_step_results`로 받아 실행 전에 진행 메모에
 누적합니다. 완료 조건 해석은 현재 화면을 본 모델이 맡으며 특정 업무의 결과 문구를 코드가
 파싱해 다음 행동을 강제하지 않습니다.
+모델 요청은 실행 완료 행동을 `last_delivered_actions`와 `delivery_status=succeeded`로
+표현하고, 결과 관찰 대기를 `awaiting_visual_result_review`로 구분합니다. 행동 전달의
+성공이 교육 단계나 전체 업무 완료를 뜻하지는 않습니다.
 구형 `--procedure`/`procedure_path` 진입점은 사용하지 않습니다.
 
 ## 화면 관찰과 의미 매핑

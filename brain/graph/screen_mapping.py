@@ -390,8 +390,9 @@ If inputs are offscreen, navigate
 or scroll to expose them. Complete only from the user's required saved/requeried evidence.
 Use current evidence and prior verified inputs; absence on this screen does not erase memory.
 The notebook and focused taught step describe progress BEFORE this screenshot is interpreted.
-pending_actions were already delivered, not actions to execute again. In this ONE response,
-use screen_kind, fields.value and assignments/evidence to report what is visible now, then choose
+last_delivered_actions were successfully executed, not actions to execute again.
+In this ONE response, use screen_kind, fields.value and assignments/evidence to report what is
+visible now, then choose
 steps from that observed outcome plus prior memory. The runtime commits these observations before
 executing these same steps; do not wait for another turn just to acknowledge a completed action.
 Use taught_step_id for the work your next steps perform, not the already delivered action.

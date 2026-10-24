@@ -214,8 +214,9 @@ def execution_context(request: ExecutionContextRequest) -> dict:
         "checkpoint": proposal.current_step,
         "allowed_intents": sorted({c["intent"] for c in proposal_prompt["allowed_next_choices"]}),
         "guidance": phase_instruction(proposal),
-        "pending_actions": [
+        "last_delivered_actions": [
             {
+                "delivery_status": "succeeded",
                 "intent": d.intent,
                 "source": d.action.source if d.action else None,
                 "screen_kind": d.screen_kind,

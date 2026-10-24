@@ -78,9 +78,12 @@ flowchart LR
 복사본이 아니다. 확인된 필드가 후속 화면에서 보이지 않는 것만으로 전체 메모를 지우지 않는다.
 현재 관찰값 불일치와 증거 대체는 갱신 사유다. 메모에 기록된 입력 확인과 ERP 저장 완료는 구분한다.
 
-`execution_context.pending_actions`는 직전 행동의 intent·입력 source와 출발 screen_kind,
+`execution_context.last_delivered_actions`는 relay가 성공 응답한 직전 행동의
+`delivery_status=succeeded`, intent·입력 source와 출발 screen_kind,
 물리 action 종류, 의도한 subgoal을 전달한다. subgoal은 계획의 목적이며 관찰된 성공 사실이
 아니다. 과거 frame ref와 좌표를 현재 행동 대상으로 재노출하지 않는다.
+모델 문맥의 `awaiting_visual_result_review`는 행동이 실행 대기라는 뜻이 아니라
+현재 화면에서 그 결과를 확인할 차례임을 나타낸다. 내부 실행 상태 `pending`은 그대로다.
 
 저장 후 상세 화면의 첫 관찰에서는 `scan()`이 해석과 다음 계획을 함께 생성한 뒤
 `_begin_saved_detail_review()`가 검토 범위와 교육 완료를 확정한다. 모델은 요청의 메모를 직전

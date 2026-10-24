@@ -18,7 +18,7 @@ def recall_context(request: ScreenDecisionRequest) -> dict:
     pending_verification_fields = sorted(
         {
             item["source"]
-            for item in contract["pending_actions"]
+            for item in contract["last_delivered_actions"]
             if item["intent"] == "fill" and item["source"] in request.values
         }
     )
@@ -38,8 +38,8 @@ def recall_context(request: ScreenDecisionRequest) -> dict:
     notebook = {
         "phase": request.phase,
         "checkpoint": request.policy.current_step,
-        "pending_verification": request.pending_verification,
-        "pending_actions": contract["pending_actions"],
+        "awaiting_visual_result_review": request.pending_verification,
+        "last_delivered_actions": contract["last_delivered_actions"],
         # 누적 raw feedback 대신 정제된 스크래치패드와 최근 N턴 버퍼를 주입한다.
         "scratchpad": context_layers["scratchpad"],
         "recent_turns": context_layers["recent_turns_buffer"],

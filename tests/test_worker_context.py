@@ -159,8 +159,9 @@ def test_pending_last_record_fill_proposes_save_without_mutating_verified_fields
     assert proposed["checkpoint"] == "save"
     assert proposed["conditional"]
     assert proposed["remaining_fields"] == []
-    assert proposed["pending_actions"] == [
+    assert proposed["last_delivered_actions"] == [
         {
+            "delivery_status": "succeeded",
             "intent": "fill",
             "source": last_field,
             "screen_kind": "editor",
@@ -247,8 +248,9 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
     state = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
     assert matched.procedure_step == "task-action"
     assert "select_tab" in state["capability"]["actions"]
-    assert state["execution"]["pending_actions"] == [
+    assert state["execution"]["last_delivered_actions"] == [
         {
+            "delivery_status": "succeeded",
             "intent": "select_option",
             "source": None,
             "screen_kind": "partner",
@@ -257,7 +259,11 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
         }
     ]
     assert "shipper" not in brain.verified
-    assert state["execution"]["pending_actions"][0]["intent"] == "select_option"
+    assert state["execution"]["last_delivered_actions"][0]["intent"] == "select_option"
+    assert state["notebook"]["awaiting_visual_result_review"] is True
+    assert "pending_actions" not in state["execution"]
+    assert "pending_actions" not in state["notebook"]
+    assert "pending_verification" not in state["notebook"]
     assert "shipper" in state["notebook"]["anticipated_verified_inputs"]
     assert "shipper" not in state["execution"]["remaining_inputs"]
     assert "shipper" in state["notebook"]["remaining_inputs"]
