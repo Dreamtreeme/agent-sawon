@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from sawon_interfaces import ActionResult
 from test_brain import record as record
 from test_screen_decision import named_response, setup_brain
 
@@ -44,7 +45,7 @@ def test_synthetic_093_detail_transition_replans_from_committed_evidence(tmp_pat
         procedure_step="task-action",
         steps=[{"target": "More", "action": "click", "intent": "select_tab", "point": [310, 75]}],
     )
-    brain, model, _, ocr, detector, _ = setup_brain(
+    brain, model, relay, ocr, detector, _ = setup_brain(
         tmp_path, record, [close, review], task_instruction=taught_task()
     )
     brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
@@ -62,6 +63,21 @@ def test_synthetic_093_detail_transition_replans_from_committed_evidence(tmp_pat
     assert not state["notebook"]["workflow_state"]["saved_result_open_pending"]
     assert state["taught_procedure_progress"]["focused_step_id"] == "verify-requeried-record"
     assert ocr.calls == detector.calls == 1, "reuse the same capture and interpretation"
+    sent = []
+
+    def fake_act(action):
+        sent.append(action.root)
+        return ActionResult(
+            action_id=action.root.action_id,
+            ok=True,
+            duration_ms=0,
+            post_obs_id=relay.current.obs_id,
+        )
+
+    relay.act = fake_act
+    assert brain._review_node() == "execution"
+    assert brain._act_node() == "observation"
+    assert [action.target.image_point for action in sent] == [(310, 75)]
 
 
 def test_synthetic_093_reentry_consumes_pending_without_erasing_review(tmp_path, record):
@@ -73,7 +89,9 @@ def test_synthetic_093_reentry_consumes_pending_without_erasing_review(tmp_path,
     brain.post_save_verified = {"hbl_no", "shipper"}
     brain._begin_saved_detail_review("query")
     assert brain.saved_detail_transition_pending, "a query frame does not prove opening"
-    brain._begin_saved_detail_review("editor")
+    assert brain._begin_saved_detail_review("editor") is False, (
+        "reentry needs no extra plan refresh"
+    )
     assert not brain.saved_detail_transition_pending
     assert brain.saved_detail_transition_step is None
     assert brain.post_save_verified == {"hbl_no", "shipper"}
