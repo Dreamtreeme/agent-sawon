@@ -30,61 +30,91 @@ class MissingRetrievedEvidence(AssertionError):
     """Only measured warm memo loss is expected, not setup or other failures."""
 
 
-def test_synthetic_known_field_refreshes_without_repeated_plan_evidence(tmp_path, record):
-    # Synthetic captures/provider replies: real scanner -> scene -> notebook -> next prompt.
-    initial = observed_response(record)
-    next_action = {
-        **deepcopy(initial),
-        "fields": {"Continue": initial["fields"]["Continue"]},
-        "assignments": {},
-        "evidence": [],
+@pytest.mark.parametrize("compiled_hint", [False, True], ids=["run-local", "unscoped-compiled"])
+def test_synthetic_screen_nodes_isolate_tabs_and_refresh_current_fields(
+    tmp_path, record, compiled_hint
+):
+    # Synthetic 105 regression: identical screenshot/pHash, different active tabs.
+    main = observed_response(record)
+    main["screen_path"] = ["Registration", "Basic"]
+    main["assignments"] = {"Reference": "hbl_no"}
+    extra = deepcopy(main)
+    extra["screen_path"] = ["Registration", "Additional"]
+    extra["fields"] = {
+        "MBL": {**main["fields"]["Reference"], "value": record.fields.mbl_no.value},
+        "Continue": main["fields"]["Continue"],
     }
+    extra["assignments"] = {"MBL": "mbl_no"}
+    scrolled = deepcopy(main)
+    scrolled["fields"]["Reference"]["bbox"] = [100, 65, 150, 30]
+    hidden = deepcopy(main)
+    hidden["fields"] = {"Continue": main["fields"]["Continue"]}
+    hidden["assignments"] = {}
+    changed = deepcopy(scrolled)
+    changed["fields"]["Reference"]["value"] = "CHANGED-REFERENCE"
+    unidentified = deepcopy(hidden)
+    unidentified["screen_path"] = []
     brain, model = prepare_worker(
-        tmp_path / "refresh", record, [initial, next_action, next_action, next_action, next_action]
+        tmp_path / "nodes", record, [main, extra, scrolled, changed, hidden, unidentified]
     )
     brain.screen_scanner.reuse_similar = True
     brain._observe()
-    first_id = str(brain.observation.obs_id)
-    assert brain.observed_inputs["hbl_no"]["value"] == record.fields.hbl_no.value
-
-    original_read = brain.screen_scanner.ocr.read
-    blocks = original_read(None)
-    # A changed OCR id and a glyph box crossing the lower input border must not lose meaning.
-    value_block = next(b for b in blocks if b.id == 9)
-    current = [b for b in blocks if b.id != 9] + [
-        value_block.model_copy(update={"id": 109, "bbox": (105, 30, 90, 29)})
+    basic_key = json.dumps(main["screen_path"])
+    additional_key = json.dumps(extra["screen_path"])
+    basic_before = deepcopy(brain.screen_nodes[basic_key])
+    if compiled_hint:
+        # Synthetic legacy artifact without node identity; never current-view evidence.
+        brain.screen_scanner.retrieve_screen_memory = lambda screen: {
+            "fields": [{"name": "Reference", "source": "hbl_no", **main["fields"]["Reference"]}],
+            "distance": 0,
+            "groups": [],
+        }
+    # Put another tab's value exactly where the previous Reference was located.
+    blocks = brain.screen_scanner.ocr.read(None)
+    current = [
+        b.model_copy(update={"text": record.fields.mbl_no.value}) if b.id == 9 else b
+        for b in blocks
     ]
     brain.screen_scanner.ocr.read = lambda page: current
     brain._observe()
-    assert brain.observed_inputs["hbl_no"]["observation_id"] != first_id
+    assert brain.current_screen_path == extra["screen_path"]
+    assert brain.screen_nodes[basic_key] == basic_before
+    assert set(brain.screen_nodes[additional_key]["observed_inputs"]) == {"mbl_no"}
+    assert set(
+        brain.screen_scanner.observed_input_bindings(str(brain.observation.obs_id)).values()
+    ) == {"mbl_no"}
     assert brain.observed_inputs["hbl_no"]["value"] == record.fields.hbl_no.value
     assert "hbl_no" in brain.verified
-    assert brain.visual_proposal.evidence == []  # The action did not repeat the field claim.
-
+    # Returning to Basic and scrolling must replace the old field position, not revive it.
+    current = [b.model_copy(update={"text": "OTHER FIELD"}) if b.id == 9 else b for b in blocks]
+    current.append(
+        OcrBlock(id=109, text=record.fields.hbl_no.value, bbox=(110, 70, 90, 15), confidence=1)
+    )
+    brain._observe()
+    assert brain.current_screen_path == main["screen_path"]
+    node = brain.screen_nodes[basic_key]
+    assert node["fields"]["hbl_no"]["bbox"] == [100, 65, 150, 30]
+    assert node["observed_inputs"]["hbl_no"]["value"] == record.fields.hbl_no.value
+    assert "hbl_no" in brain.verified
+    inputs = [e for e in brain.observation.elements if e.role == "edit"]
+    assert len(inputs) == 1 and inputs[0].bbox[1] == 65
     current[-1] = current[-1].model_copy(update={"text": "CHANGED-REFERENCE"})
     brain._observe()
-    assert brain.observed_inputs["hbl_no"]["value"] == "CHANGED-REFERENCE"
+    assert node["observed_inputs"]["hbl_no"]["value"] == "CHANGED-REFERENCE"
     assert "hbl_no" not in brain.verified
-    last_seen = brain.observed_inputs["hbl_no"]["observation_id"]
-
-    current.pop()  # Not observed is not the same as cleared; do not invent a new reading.
+    last_seen = deepcopy(node)
     brain._observe()
-    assert brain.observed_inputs["hbl_no"]["observation_id"] == last_seen
-    assert "CHANGED-REFERENCE" in model.prompts[-1]
-    memo = json.loads((brain.case_dir / "task-notebook.json").read_text(encoding="utf-8"))
-    assert memo["observed_inputs"]["hbl_no"]["value"] == "CHANGED-REFERENCE"
-
-    original_observe = brain.relay.observe
-
-    def different_window():
-        wire = original_observe()
-        window = wire.active_window.model_copy(update={"handle": 999})
-        return wire.model_copy(update={"active_window": window, "windows": [window]})
-
-    brain.relay.observe = different_window
-    brain._observe()
+    assert brain.screen_nodes[basic_key]["observed_inputs"] == last_seen["observed_inputs"]
+    assert brain.screen_nodes[basic_key]["fields"] == last_seen["fields"]
     assert brain.screen_scanner.observed_input_bindings(str(brain.observation.obs_id)) == {}
-    assert brain.observed_inputs["hbl_no"]["observation_id"] == last_seen
+    brain._observe()
+    assert brain.current_screen_path == []  # Never infer the previous node when unidentified.
+    assert len(brain.screen_nodes) == 3  # Parent plus two children, no scroll node.
+    memo = json.loads((brain.case_dir / "task-notebook.json").read_text(encoding="utf-8"))
+    assert memo["screen_nodes"] == brain.screen_nodes
+    assert len(model.prompts) == 6  # No extra model call for choosing a node.
+    assert '"screen_nodes"' in model.prompts[2]
+    assert record.fields.mbl_no.value in model.prompts[2]
 
 
 def observed_response(record):

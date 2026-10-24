@@ -286,6 +286,8 @@ class ScreenDecisionRequest:
     grounded_interpretation: SemanticDetection | None = None
     proposal: ScreenMatch | None = None
     observed_inputs: Mapping[str, dict] = field(default_factory=dict)
+    screen_nodes: Mapping[str, dict] = field(default_factory=dict)
+    current_screen_path: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

@@ -32,6 +32,9 @@ Luna, Gemini, Jev와 replay 어댑터는 비교·재생 코드일 수 있으며 
 실행하고 문맥·패턴·판단 순서를 거친다. 카탈로그 유사도도 `methods.max_phash_distance`를
 사용하며 SHA256 완전일치는 사용하지 않는다. 성공 기록 정제는 Memory Compilation이다.
 분기 조건과 저장 형식은 [용어와 코드 대응](runtime-terminology.md)에 명시한다.
+모델은 화면 판단 응답의 `screen_path`로 부모 창과 활성 탭을 선택한다. 실행 중 기억은
+`screen_nodes`에 분리해 보관하며, pHash 유사도만으로 이전 필드를 현재 관찰에 추가하지 않는다.
+경로 없는 과거 편찬 기록의 노드를 추정하지 않으며, 새 매핑이 있을 때 노드 기억을 갱신한다.
 
 1. `pipeline`이 문서를 렌더링하고 GPU OCR·추출·교차 검증을 수행합니다.
 2. `brain.run`이 `TaskInstruction`, 입력 record, 설정과 relay를 연결합니다.

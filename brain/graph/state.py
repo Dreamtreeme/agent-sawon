@@ -73,6 +73,8 @@ class ProgressState:
     rolling_context: RollingContextManager = field(default_factory=RollingContextManager)
     verified: dict[str, dict] = field(default_factory=dict)
     observed_inputs: dict[str, dict] = field(default_factory=dict)
+    screen_nodes: dict[str, dict] = field(default_factory=dict)
+    current_screen_path: list[str] = field(default_factory=list)
     evidence_ledger: EvidenceLedger = field(default_factory=EvidenceLedger)
     query_value_verified: bool = False
     query_submitted: bool = False

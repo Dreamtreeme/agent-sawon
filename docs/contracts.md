@@ -78,22 +78,32 @@ flowchart LR
 복사본이 아니다. 확인된 필드가 후속 화면에서 보이지 않는 것만으로 전체 메모를 지우지 않는다.
 현재 관찰값 불일치와 증거 대체는 갱신 사유다. 메모에 기록된 입력 확인과 ERP 저장 완료는 구분한다.
 
-### 같은 화면의 필드 연결과 관찰값 갱신
+### 화면 노드 선택과 관찰 기억
 
-`ScreenScanner._SceneCatalog.selected_fields`는 현재 화면의 의미 이름·role·bbox·업무 입력
-source를 보관한다. 같은 창·크기의 pHash 유사 화면에서는 이 연결을 새 marker 번호에 다시
-배치한다. 과거 `value`는 가져오지 않고 현재 OCR로 읽는다. 입력칸 경계에서 OCR 글자 상자의
-높이가 넘치는 경우에는 기존 면적 포함 판정 외에 가로 포함률과 세로 중심 위치로 연결한다.
-라벨만 같다는 이유로 다른 창이나 이동한 레이아웃의 좌표를 재사용하지 않는다.
+`ScreenMapping.screen_path`는 현재 이미지에서 모델이 선택한 부모 창 → 활성 탭/하위 화면의
+의미 경로다. 기존 이름을 재사용하고 스크롤은 같은 경로를 유지한다. 빈 경로는 미식별이며
+이전 경로를 자동 승계하지 않는다. 이 필드는 기존 화면 판단 응답에 포함되며 추가 호출은 없다.
 
-`observed_input_bindings()`는 현재 observation에 해당하는 연결만 반환한다.
-`_remember_model_task_evidence()`는 이 연결과 현재 응답의 evidence를 함께 읽어 행동 계획이
-다시 언급하지 않은 필드도 갱신한다. `ProgressState.observed_inputs`는 업무 입력 키별 최근
-관찰값·라벨·관찰 ID·화면 종류·entry/saved_detail 범위를 보관하며, `notebook.remember()`와
-`context_recall.recall_context()`가 각각 JSON과 다음 모델 요청에 전달한다.
-이 메모는 현재 보이는 필드 목록이나 저장 성공 선언이 아니다. 안 보이거나 OCR 값이 없으면
-직전 관찰 기록을 유지하고, 현재 읽은 값이 입력 요구와 다르면 verified 증거를 무효화한다.
-저장 후 검토에는 현재 관찰로 다시 연결된 값만 기록하며 과거 entry 기록을 승격하지 않는다.
+`ProgressState.screen_nodes`는 경로의 JSON 문자열을 키로, path·업무 키별 fields(라벨·role·bbox·
+관찰 ID)·observed_inputs를 보관한다. 부모 경로도 생성하지만 열어보지 않은 탭의 내용은 만들지
+않는다. `current_screen_path`는 마지막 해석한 화면이며 다음 캡처의 정체성을 보증하지 않는다.
+`context_recall`은 이를 previous_screen_path로 표시하고 모든 노드의 과거 사실을 업무 문맥으로
+전달한다. 모델은 현재 노드를 먼저 선택하고 그 노드의 기억을 참고해 현재 보이는 필드만 응답한다.
+좌표는 마지막 관찰 위치이지 다음 캡처에 바로 적용할 절대 위치가 아니다.
+
+`ScreenMapping.local_payload`는 현재 selected_fields를 교체한다. `ScreenScanner`는 모델의
+현재 매핑에 이전 노드 필드를 보충하지 않는다. 실행 중 pHash 카탈로그는 탐지 기하만 재사용하며,
+필드의 의미·source를 자동 승계하지 않는다. 경로 없는 과거 편찬물은 특정 노드로 배정하지 않는다.
+그 기존 메서드 실행 경로는 유지하며, 노드 기억은 새 의미 매핑이 있는 관찰에서만 갱신한다.
+노드별 기억은 현재 실행 수명이며 이번 변경은 편찬물에 화면 트리를 저장하는 기능이 아니다.
+
+`observed_input_bindings()`는 현재 observation의 연결만 반환한다. `_remember_model_task_evidence`
+는 현재 매핑과 evidence로 읽은 값을 활성 노드 및 전체 업무 observed_inputs에 기록한다.
+안 보이는 필드의 마지막 관찰은 유지하며 다른 노드의 좌표에서 다시 읽지 않는다. 현재 읽은 값이
+입력 요구와 다르면 기존 verified 무효화는 유지한다. entry/saved_detail 범위를 보존하며 entry
+기억을 저장 후 증거로 승격하지 않는다. `notebook.remember()`가 노드·활성 경로를 JSON에 저장하고
+`context_recall`이 다음 요청에 전달한다. 모델 경계·생산자는 screen_mapping/scanning/engine,
+상태 소유자는 state, 소비자는 context_recall/notebook이다. 공개 relay 계약은 변경하지 않는다.
 
 `execution_context.last_delivered_actions`는 relay가 성공 응답한 직전 행동의
 `delivery_status=succeeded`, intent·입력 source와 출발 screen_kind,

@@ -133,7 +133,7 @@ def test_synthetic_similarity_routes_before_ocr_and_shared_context(tmp_path, sim
         "pattern_matching",
         "decision",
     ]
-    assert ('"remembered_fields"' in model.prompts[0]) is similar
+    assert '"remembered_fields"' not in model.prompts[0]  # Unscoped geometry is not a node.
     assert brain._select_node() == "review"
     assert [a.decision.action.source for a in brain.action_plan.actions] == [
         "customer",
@@ -192,8 +192,8 @@ def test_synthetic_provider_refinement_reenters_scanning_with_same_capture(
     brain._observe()
 
     assert calls == ["capture", "ocr", "model", "detector", "model"]
-    # Run-local layouts now retain field meanings just like compiled layouts.
-    assert '"remembered_fields"' in model.prompts[0]
+    # Similar run-local geometry no longer injects fields from an unselected node.
+    assert '"remembered_fields"' not in model.prompts[0]
     assert '"remembered_fields"' not in model.prompts[1]
     assert brain._select_node() == "review"
     assert [a.decision.action.source for a in brain.action_plan.actions] == [

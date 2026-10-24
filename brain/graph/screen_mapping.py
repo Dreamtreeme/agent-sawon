@@ -66,6 +66,13 @@ class ScreenMapping(BaseModel):
     screen_kind: Literal["login", "menu", "query", "editor", "partner", "dialog", "unknown"] = (
         "unknown"
     )
+    screen_path: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Current semantic screen path: parent window, then active tab/subview. "
+            "Reuse known paths; scrolling does not change the path. Empty means unidentified."
+        ),
+    )
     fields: dict[str, ScreenField] = Field(
         description="Visible semantic names, e.g. 수량, 포장정보/단위. Never marker numbers."
     )
@@ -156,7 +163,9 @@ class ScreenMapping(BaseModel):
         controls = []
         bindings = self.observed_bindings(inputs) if inputs is not None else self.assignments
         text_refs = text_index(screen)
-        geometry = screen.setdefault("selected_fields", {})
+        # The model's current view replaces speculative geometry from a similar capture.
+        screen["screen_path"] = list(self.screen_path)
+        geometry = screen["selected_fields"] = {}
         for name, field in self.fields.items():
             target = ids[name]
             text_ids = [b["id"] for b in screen.get("ocr", []) if contains(field.bbox, b["bbox"])]
@@ -188,6 +197,7 @@ class ScreenMapping(BaseModel):
         result = self.model_dump(
             exclude={
                 "fields",
+                "screen_path",
                 "assignments",
                 "steps",
                 "evidence",
@@ -355,7 +365,6 @@ def mapping_prompt(prompt: str, screen: dict) -> str:
         ],
     }
     if screen.get("memory_fields"):
-        state["screen"]["remembered_fields"] = screen["memory_fields"]
         state["screen"]["retrieved_procedure"] = screen.get("retrieved_procedure", [])
     return CONTEXT_MAPPING_RULES + json.dumps(state, ensure_ascii=False)
 
@@ -364,7 +373,15 @@ CONTEXT_MAPPING_RULES = """Choose the next screen action from recalled context a
 Screen similarity is checked first. A match retrieves field geometry through Memory Retrieval;
 a miss uses Scanning to discover it. Context Recall restores this run's history and progress;
 Pattern Matching then binds known procedures to this situation before this action decision.
-Remembered fields supply meaning, geometry and input source keys, with CURRENT OCR values.
+First identify screen_path from the CURRENT image: parent window and active tab/subview.
+Use the same names as notebook.screen_nodes when returning to a known view. A scroll stays
+in the same node; another tab selects a sibling. Do not invent contents of unopened tabs.
+Select the node before interpreting fields. Only that node's remembered fields belong to
+this view; other nodes are historical context, not visible fields. Return all currently
+readable business fields and their assignments, including fields not used by the next action.
+Prior geometry is a hint, never a current observation. Reground fields on the current image.
+An empty screen_path means unidentified and must not select the previous node implicitly.
+Remembered fields are candidates, not proof of the current node or current values.
 Retrieved procedures describe learned actions, not actions already completed in this run.
 Combine them with this run's inputs, notebook and visible evidence to choose the next action.
 If a required visible control is missing from the candidates, return needs_refinement=true

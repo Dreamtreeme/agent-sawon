@@ -186,6 +186,8 @@ class Brain:
     rolling_context = progress_property("rolling_context")
     verified = progress_property("verified")
     observed_inputs = progress_property("observed_inputs")
+    screen_nodes = progress_property("screen_nodes")
+    current_screen_path = progress_property("current_screen_path")
     evidence_ledger = progress_property("evidence_ledger")
     query_value_verified = progress_property("query_value_verified")
     query_submitted = progress_property("query_submitted")
@@ -382,6 +384,8 @@ class Brain:
             values=self.values,
             verified_fields=frozenset(model_verified),
             observed_inputs=self.observed_inputs,
+            screen_nodes=self.screen_nodes,
+            current_screen_path=self.current_screen_path,
             execution_contract=contract,
             required_verification=tuple(required_verification(self.pending)),
             post_action_review=post_action_review,
@@ -1986,6 +1990,36 @@ class Brain:
         by_ref = {item.ref: item for item in self.observation.elements}
         recorded = []
         superseded = []
+        # A node is selected by the current semantic response, not by image similarity.
+        self.current_screen_path = (
+            list(response.mapping.screen_path) if response.mapping is not None else []
+        )
+        node = None
+        if self.current_screen_path:
+            for depth in range(1, len(self.current_screen_path) + 1):
+                path = self.current_screen_path[:depth]
+                key = json.dumps(path, ensure_ascii=False)
+                node = self.screen_nodes.setdefault(
+                    key, {"path": path, "fields": {}, "observed_inputs": {}}
+                )
+            node["observation_id"] = str(self.observation.obs_id)
+            for name, source in response.mapping.observed_bindings(self.values).items():
+                field = response.mapping.fields[name]
+                node["fields"][source] = {
+                    "label": name,
+                    "role": field.role,
+                    "bbox": list(field.bbox),
+                    "observation_id": str(self.observation.obs_id),
+                }
+        self.log.append(
+            "verify",
+            payload={
+                "check": "screen_node_selected",
+                "path": self.current_screen_path,
+                "obs_id": str(self.observation.obs_id),
+                "source": "model_mapping" if response.mapping is not None else "unidentified",
+            },
+        )
         if response.mapping is not None:
             for name, source in response.mapping.observed_bindings(self.values).items():
                 if not field_matches(source, response.mapping.fields[name].value, self.values):
@@ -2012,7 +2046,10 @@ class Brain:
                 "observation_id": str(self.observation.obs_id),
                 "screen_kind": self.observation.screen_kind,
                 "scope": "saved_detail" if self.model_saved_detail_review else "entry",
+                "screen_path": list(self.current_screen_path),
             }
+            if node is not None:
+                node["observed_inputs"][source] = dict(self.observed_inputs[source])
             if not field_matches(source, element.value, self.values):
                 self.verified.pop(source, None)
                 self.post_save_verified.discard(source)

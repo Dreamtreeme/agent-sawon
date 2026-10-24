@@ -47,6 +47,8 @@ def recall_context(request: ScreenDecisionRequest) -> dict:
         "required_verification": required,
         "available_credentials": list(request.available_credentials),
         "observed_inputs": dict(request.observed_inputs),
+        "screen_nodes": dict(request.screen_nodes),
+        "previous_screen_path": list(request.current_screen_path),
     }
     if request.phase == "task":
         notebook.update(

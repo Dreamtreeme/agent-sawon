@@ -249,17 +249,11 @@ class ScreenScanner:
         )
         if reuse_catalog:
             assert previous.detection is not None
-            remembered = {
-                "fields": [
-                    {k: v for k, v in item.items() if k != "value"}
-                    for item in previous.selected_fields.values()
-                ]
-            }
             catalog, detector_ms = self._build_catalog(
                 page,
                 cache_key,
                 blocks,
-                remembered,
+                None,
                 ocr_ms,
                 reused_boxes=previous.boxes,
             )
@@ -652,7 +646,7 @@ class ScreenScanner:
                 request = self._semantic_request(page, path, marked_path, markers, blocks)
                 continue
             try:
-                if catalog.memory is not None:
+                if catalog.memory is not None and "screen_path" not in request.screen:
                     controls = {control.id: control for control in meanings.controls}
                     selected_fields = request.screen.get("selected_fields", {})
                     represented = [
@@ -691,7 +685,7 @@ class ScreenScanner:
                     wire, blocks, detection, threshold=self.threshold, secrets=self.secrets
                 )
                 selected = request.screen.get("selected_fields", {})
-                for item in selected.values():
+                for item in [] if "screen_path" in request.screen else selected.values():
                     sources = {
                         old["source"]
                         for old in catalog.selected_fields.values()
