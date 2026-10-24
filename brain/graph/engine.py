@@ -1235,32 +1235,14 @@ class Brain:
             self.visual_proposal_obs_id = observation.obs_id
         self.observation = observation
         self.review = None
-        detail_review_started = False
         if isinstance(observation, SceneObservation):
-            detail_review_started = self._begin_saved_detail_review(observation.screen_kind)
-        # In combined visual mode the model grounds the current screen while it is
-        # being observed.  Publish that observation evidence before the Review
-        # node runs.  Previously the bindings were delayed until Selection, so the
-        # saved-record reviewer always saw an empty current screen and the worker
-        # could plan another action from evidence the reviewer had never received.
+            self._begin_saved_detail_review(observation.screen_kind)
+        # One response observes the pending action's outcome and plans from it.
+        # Commit its review scope and current values before compiling/delivering
+        # those same steps. Committing observations does not invalidate that plan.
         if self.visual_proposal is not None and self.visual_proposal_obs_id == observation.obs_id:
             self._bind_saved_evidence(self.visual_proposal)
             self._remember_model_task_evidence(self.visual_proposal)
-            if detail_review_started:
-                # scan() planned before it could establish the new review scope.
-                # Keep its current evidence; select once from the committed scope
-                # using the same capture/interpretation, without another scan.
-                self.log.append(
-                    "verify",
-                    payload={
-                        "check": "screen_plan_context_changed",
-                        "reason": "saved_detail_review_started",
-                        "obs_id": str(observation.obs_id),
-                    },
-                )
-                self.visual_proposal = None
-                self.visual_match_candidate = None
-                self.visual_plan_error = None
         self.observation_number += 1
         relative = f"observations/{self.observation_number:04d}.json"
         atomic_write_json(self.case_dir / relative, observation)
@@ -2858,7 +2840,7 @@ class Brain:
         for fact in new_facts:
             self.rolling_context.mark_milestone(f"검증 완료: {fact}")
 
-    def _begin_saved_detail_review(self, screen_kind: str) -> bool:
+    def _begin_saved_detail_review(self, screen_kind: str) -> None:
         """Consume an observed transition; initialize its review ledger only once."""
         if not (
             self.phase == "task"
@@ -2867,12 +2849,12 @@ class Brain:
             and self.saved_detail_transition_pending
             and screen_kind == "editor"
         ):
-            return False
+            return
         taught_step = self.saved_detail_transition_step
         self.saved_detail_transition_pending = False
         self.saved_detail_transition_step = None
         if self.model_saved_detail_review:
-            return False
+            return
         # Entry evidence cannot satisfy persisted detail review. Reentry, unlike
         # starting this scope, must not erase previously reviewed fields.
         self.post_save_query_identity_verified = True
@@ -2887,7 +2869,6 @@ class Brain:
                 "obs_id": str(self.observation.obs_id) if self.observation else None,
             },
         )
-        return True
 
     def _post_save_model_evidence_complete(self) -> bool:
         """Return whether one post-save detail episode covers every task input."""

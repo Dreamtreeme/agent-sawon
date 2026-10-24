@@ -3473,10 +3473,12 @@ def test_detail_observation_commits_review_before_current_evidence(
     assert "hbl_no" in brain.post_save_verified  # Later verification cannot clear it again.
     if rejected_next_plan:
         assert brain.visual_match_candidate is None
-        # A rejection of the pre-commit plan must not reject its replacement.
-        # The separate synthetic 093 replay exercises that next selection.
-        assert brain.visual_proposal is None
-        assert brain.visual_plan_error is None
+        # Current evidence survives a bad next action; committing it must not
+        # erase that action's validation error or silently authorize execution.
+        assert brain.visual_proposal is not None
+        assert brain.visual_plan_error is not None
+        with pytest.raises(ValueError, match="screen_match_action_surface_mismatch"):
+            brain._selection_call("unused", ScreenMatch)
         assert "hbl_no" in brain.post_save_verified
         assert "hbl_no" in brain.verified
         assert brain.model_saved_detail_review

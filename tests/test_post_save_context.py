@@ -20,12 +20,12 @@ def taught_task():
     )
 
 
-def test_synthetic_093_detail_transition_replans_from_committed_evidence(tmp_path, record):
-    # The first fake reproduces the observed wrong Close plan, not model intelligence.
-    # The second tests what context the real selection path receives after commitment.
-    close = named_response(
+def test_synthetic_detail_response_commits_evidence_then_executes_without_recall(tmp_path, record):
+    # Synthetic fake: one response observes the delivered transition and plans onward.
+    # It tests runtime order/call count, not whether a real model chooses correctly.
+    response = named_response(
         screen_kind="editor",
-        taught_step_id="requery-saved-record",
+        taught_step_id="verify-requeried-record",
         procedure_step="task-action",
         fields={
             "Reference": {
@@ -33,20 +33,12 @@ def test_synthetic_093_detail_transition_replans_from_committed_evidence(tmp_pat
                 "bbox": [100, 15, 150, 30],
                 "value": record.fields.hbl_no.value,
             },
-            "Close": {"role": "button", "bbox": [270, 15, 90, 30]},
+            "More": {"role": "tabitem", "bbox": [270, 60, 90, 30]},
         },
-        steps=[{"target": "Close", "action": "click", "intent": "navigate", "point": [310, 28]}],
-    )
-    review = named_response(
-        screen_kind="editor",
-        taught_step_id="verify-requeried-record",
-        fields={"More": {"role": "tabitem", "bbox": [270, 60, 90, 30]}},
-        assignments={},
-        procedure_step="task-action",
         steps=[{"target": "More", "action": "click", "intent": "select_tab", "point": [310, 75]}],
     )
     brain, model, relay, ocr, detector, _ = setup_brain(
-        tmp_path, record, [close, review], task_instruction=taught_task()
+        tmp_path, record, [response], task_instruction=taught_task()
     )
     brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
     brain.save_issued = True
@@ -54,18 +46,26 @@ def test_synthetic_093_detail_transition_replans_from_committed_evidence(tmp_pat
     brain.saved_detail_transition_pending = True
     brain.saved_detail_transition_step = "requery-saved-record"
     brain._observe()
+    assert brain.visual_proposal is not None, (
+        "retain the plan made from this response's observations"
+    )
+    assert brain.post_save_verified == {"hbl_no"}
+    assert brain.model_saved_detail_review
+    assert not brain.saved_detail_transition_pending
+    assert "requery-saved-record" in brain.completed_taught_steps
+    assert brain.active_taught_step == "verify-requeried-record"
     assert brain._select_node() == "review"
-    assert brain.decision.intent == "select_tab", "pre-commit Close must not reach execution"
-    assert len(model.prompts) == 2
+    assert brain.decision.intent == "select_tab"
+    assert len(model.prompts) == 1
     state = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
-    assert state["notebook"]["verified_inputs"] == ["hbl_no"]
-    assert state["notebook"]["workflow_state"]["post_save_detail_review"]
-    assert not state["notebook"]["workflow_state"]["saved_result_open_pending"]
-    assert state["taught_procedure_progress"]["focused_step_id"] == "verify-requeried-record"
+    assert state["notebook"]["workflow_state"]["saved_result_open_pending"]
+    assert state["taught_procedure_progress"]["focused_step_id"] == "requery-saved-record"
     assert ocr.calls == detector.calls == 1, "reuse the same capture and interpretation"
     sent = []
 
     def fake_act(action):
+        assert brain.post_save_verified == {"hbl_no"}, "commit observations before delivery"
+        assert not brain.saved_detail_transition_pending
         sent.append(action.root)
         return ActionResult(
             action_id=action.root.action_id,
@@ -78,6 +78,7 @@ def test_synthetic_093_detail_transition_replans_from_committed_evidence(tmp_pat
     assert brain._review_node() == "execution"
     assert brain._act_node() == "observation"
     assert [action.target.image_point for action in sent] == [(310, 75)]
+    assert len(model.prompts) == 1
 
 
 def test_synthetic_093_reentry_consumes_pending_without_erasing_review(tmp_path, record):
@@ -89,9 +90,7 @@ def test_synthetic_093_reentry_consumes_pending_without_erasing_review(tmp_path,
     brain.post_save_verified = {"hbl_no", "shipper"}
     brain._begin_saved_detail_review("query")
     assert brain.saved_detail_transition_pending, "a query frame does not prove opening"
-    assert brain._begin_saved_detail_review("editor") is False, (
-        "reentry needs no extra plan refresh"
-    )
+    brain._begin_saved_detail_review("editor")
     assert not brain.saved_detail_transition_pending
     assert brain.saved_detail_transition_step is None
     assert brain.post_save_verified == {"hbl_no", "shipper"}

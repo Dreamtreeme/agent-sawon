@@ -376,7 +376,12 @@ Do not guess targets or results revealed only after a screen change; observe the
 If inputs are offscreen, navigate
 or scroll to expose them. Complete only from the user's required saved/requeried evidence.
 Use current evidence and prior verified inputs; absence on this screen does not erase memory.
-First evaluate pending_actions against this screenshot, then plan from their observed outcome.
+The notebook and focused taught step describe progress BEFORE this screenshot is interpreted.
+pending_actions were already delivered, not actions to execute again. In this ONE response,
+use screen_kind, fields.value and assignments/evidence to report what is visible now, then choose
+steps from that observed outcome plus prior memory. The runtime commits these observations before
+executing these same steps; do not wait for another turn just to acknowledge a completed action.
+Use taught_step_id for the work your next steps perform, not the already delivered action.
 If saved_result_open_pending is true and the screenshot is the opened detail editor, the requery
 step has succeeded: review the saved values here; do not close and repeat the same query.
 For saved_detail_candidate, verified_inputs is empty for the new review, not a claim that
