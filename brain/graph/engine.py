@@ -185,6 +185,7 @@ class Brain:
     credential_submissions = progress_property("credential_submissions")
     rolling_context = progress_property("rolling_context")
     verified = progress_property("verified")
+    observed_inputs = progress_property("observed_inputs")
     evidence_ledger = progress_property("evidence_ledger")
     query_value_verified = progress_property("query_value_verified")
     query_submitted = progress_property("query_submitted")
@@ -380,6 +381,7 @@ class Brain:
             phase=self.phase,
             values=self.values,
             verified_fields=frozenset(model_verified),
+            observed_inputs=self.observed_inputs,
             execution_contract=contract,
             required_verification=tuple(required_verification(self.pending)),
             post_action_review=post_action_review,
@@ -1990,20 +1992,34 @@ class Brain:
                     self.verified.pop(source, None)
                     self.post_save_verified.discard(source)
                     self.evidence_ledger.invalidate(source, "current_observed_value_differs")
-        for evidence in response.evidence:
-            element = by_ref.get(prefix + str(evidence.target))
+        bindings = self.screen_scanner.observed_input_bindings(str(self.observation.obs_id))
+        bindings.update({prefix + str(item.target): item.field for item in response.evidence})
+        for ref, source in bindings.items():
+            if source not in self.values:
+                continue
+            element = by_ref.get(ref)
             readable_roles = {"edit", "combobox"}
             if response.screen_kind == "editor":
                 readable_roles.update({"text", "cell"})
             if element is None or element.role.casefold() not in readable_roles:
                 continue
-            if not field_matches(evidence.field, element.value, self.values):
-                self.verified.pop(evidence.field, None)
-                self.post_save_verified.discard(evidence.field)
-                self.evidence_ledger.invalidate(evidence.field, "current_observed_value_differs")
+            # Missing OCR is unknown, not proof that the old value was cleared.
+            if element.value is None:
                 continue
-            superseded.extend(self._record_model_evidence(evidence.field, element))
-            recorded.append(evidence.field)
+            self.observed_inputs[source] = {
+                "label": element.name,
+                "value": element.value,
+                "observation_id": str(self.observation.obs_id),
+                "screen_kind": self.observation.screen_kind,
+                "scope": "saved_detail" if self.model_saved_detail_review else "entry",
+            }
+            if not field_matches(source, element.value, self.values):
+                self.verified.pop(source, None)
+                self.post_save_verified.discard(source)
+                self.evidence_ledger.invalidate(source, "current_observed_value_differs")
+                continue
+            superseded.extend(self._record_model_evidence(source, element))
+            recorded.append(source)
         if recorded:
             self.log.append(
                 "verify",

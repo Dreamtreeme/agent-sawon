@@ -154,6 +154,7 @@ class ScreenMapping(BaseModel):
             raise KeyError(reference)
 
         controls = []
+        bindings = self.observed_bindings(inputs) if inputs is not None else self.assignments
         text_refs = text_index(screen)
         geometry = screen.setdefault("selected_fields", {})
         for name, field in self.fields.items():
@@ -182,8 +183,8 @@ class ScreenMapping(BaseModel):
                 )
             )
             geometry[str(target)] = dict(name=name, **field.model_dump())
-            if name in self.assignments:
-                geometry[str(target)]["source"] = self.assignments[name]
+            if name in bindings:
+                geometry[str(target)]["source"] = bindings[name]
         result = self.model_dump(
             exclude={
                 "fields",

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import perf_counter
+from uuid import UUID
 
 from sawon_interfaces import Observation, UIElement
 
@@ -248,11 +249,17 @@ class ScreenScanner:
         )
         if reuse_catalog:
             assert previous.detection is not None
+            remembered = {
+                "fields": [
+                    {k: v for k, v in item.items() if k != "value"}
+                    for item in previous.selected_fields.values()
+                ]
+            }
             catalog, detector_ms = self._build_catalog(
                 page,
                 cache_key,
                 blocks,
-                memory,
+                remembered,
                 ocr_ms,
                 reused_boxes=previous.boxes,
             )
@@ -310,7 +317,17 @@ class ScreenScanner:
                     id=offset + i, bbox=item["bbox"], source="model_selected", confidence=1
                 )
                 markers.append(marker)
-                selected_fields[str(marker.id)] = item
+                selected_fields[str(marker.id)] = dict(item)
+        # A reused layout carries meanings, never values from its old capture.
+        for item in selected_fields.values():
+            if item["role"] in {"edit", "combobox"}:
+                literal = [
+                    block
+                    for block in sorted(blocks, key=lambda b: (b.bbox[1], b.bbox[0]))
+                    if contains_control_text(item["bbox"], block.bbox)
+                ]
+                if literal and all(block.confidence >= self.threshold for block in literal):
+                    item["value"] = " ".join(block.text for block in literal)
         regions = []
         detector_ms = (perf_counter() - local_started) * 1000
         atomic_write_json(
@@ -674,8 +691,22 @@ class ScreenScanner:
                     wire, blocks, detection, threshold=self.threshold, secrets=self.secrets
                 )
                 selected = request.screen.get("selected_fields", {})
+                for item in selected.values():
+                    sources = {
+                        old["source"]
+                        for old in catalog.selected_fields.values()
+                        if old.get("source")
+                        and old["role"] == item["role"]
+                        and same_control_region(old["bbox"], item["bbox"])
+                    }
+                    if not item.get("source") and len(sources) == 1:
+                        item["source"] = next(iter(sources))
                 scene = self._apply_field_values(wire, scene, selected)
-                catalog.selected_fields = selected
+                catalog.selected_fields = {
+                    str(control.id): selected[str(control.id)]
+                    for control in detection.controls
+                    if str(control.id) in selected
+                }
                 scene = scene.model_copy(update={"capture_phash": request.screen["screen_phash"]})
                 break
             except ValueError as error:
@@ -810,6 +841,17 @@ class ScreenScanner:
         )
         return request, catalog.interpretation()
 
+    def observed_input_bindings(self, observation_id: str) -> dict[str, str]:
+        """Current-frame input references with previously established business meanings."""
+        catalog = self._catalog
+        if catalog is None or catalog.page.image_path.parent.name != observation_id:
+            return {}
+        return {
+            "e" + str(UUID(observation_id).int) + "0" + ref: item["source"]
+            for ref, item in catalog.selected_fields.items()
+            if item.get("source") and item["role"] in {"edit", "combobox"}
+        }
+
     def _apply_field_values(self, wire, scene, selected):
         prefix = "e" + str(wire.obs_id.int) + "0"
         elements = []
@@ -850,6 +892,7 @@ class ScreenScanner:
         scene = bind_scene(
             wire, catalog.blocks, detection, threshold=self.threshold, secrets=self.secrets
         )
+        previous_fields = list(catalog.selected_fields.values())
         catalog.selected_fields = {
             str(control.id): {
                 "name": control.visual_description,
@@ -857,6 +900,19 @@ class ScreenScanner:
             }
             for control in meanings.controls
         }
+        for item in catalog.selected_fields.values():
+            previous = next(
+                (
+                    old
+                    for old in previous_fields
+                    if old["name"] == item["name"]
+                    and old["role"] == item["role"]
+                    and same_control_region(old["bbox"], item["bbox"])
+                ),
+                None,
+            )
+            if previous is not None and previous.get("source"):
+                item["source"] = previous["source"]
         scene = self._apply_field_values(wire, scene, catalog.selected_fields)
         catalog.markers = list(by_id.values())
         catalog.detection = detection

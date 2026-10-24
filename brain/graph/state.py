@@ -72,6 +72,7 @@ class ProgressState:
     credential_submissions: dict[str, dict] = field(default_factory=dict)
     rolling_context: RollingContextManager = field(default_factory=RollingContextManager)
     verified: dict[str, dict] = field(default_factory=dict)
+    observed_inputs: dict[str, dict] = field(default_factory=dict)
     evidence_ledger: EvidenceLedger = field(default_factory=EvidenceLedger)
     query_value_verified: bool = False
     query_submitted: bool = False

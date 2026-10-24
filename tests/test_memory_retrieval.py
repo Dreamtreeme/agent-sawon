@@ -192,7 +192,8 @@ def test_synthetic_provider_refinement_reenters_scanning_with_same_capture(
     brain._observe()
 
     assert calls == ["capture", "ocr", "model", "detector", "model"]
-    assert ('"remembered_fields"' in model.prompts[0]) is not identical
+    # Run-local layouts now retain field meanings just like compiled layouts.
+    assert '"remembered_fields"' in model.prompts[0]
     assert '"remembered_fields"' not in model.prompts[1]
     assert brain._select_node() == "review"
     assert [a.decision.action.source for a in brain.action_plan.actions] == [

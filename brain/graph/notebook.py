@@ -39,6 +39,7 @@ def remember(brain: Brain) -> dict:
             "proposed_capability": brain.procedure_step,
             "available_inputs": sorted(brain.values),
             "verified_inputs": sorted(brain.verified),
+            "observed_inputs": brain.observed_inputs,
             "remaining_inputs": sorted(set(brain.values) - set(brain.verified)),
         }
     )

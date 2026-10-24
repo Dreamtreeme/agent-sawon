@@ -79,6 +79,10 @@ class VisualFixture(FakeRelay):
 
 
 class SyntheticScanner:
+    def observed_input_bindings(self, observation_id):
+        # This fake supplies scenes directly; it has no learned field catalog.
+        return {}
+
     """Perception output fixture. No desktop is accessed in this test."""
 
     def __init__(self, relay):

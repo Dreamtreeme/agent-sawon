@@ -149,8 +149,13 @@ def mostly_contains(outer: tuple, inner: tuple, minimum: float = 0.95) -> bool:
 
 
 def contains_control_text(control: tuple, text: tuple) -> bool:
-    """Allow OCR glyph boxes to cross an input border by a few pixels."""
-    return mostly_contains(control, text, minimum=0.85)
+    """Allow glyph-height overflow while keeping the text within the input's width."""
+    x, y, width, height = control
+    a, b, w, h = text
+    horizontal_coverage = max(0, min(x + width, a + w) - max(x, a)) / max(1, w)
+    return mostly_contains(control, text, minimum=0.85) or (
+        horizontal_coverage >= 0.85 and y <= b + h / 2 < y + height
+    )
 
 
 def overlap(left, right) -> float:

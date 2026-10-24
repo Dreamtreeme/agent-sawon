@@ -30,6 +30,63 @@ class MissingRetrievedEvidence(AssertionError):
     """Only measured warm memo loss is expected, not setup or other failures."""
 
 
+def test_synthetic_known_field_refreshes_without_repeated_plan_evidence(tmp_path, record):
+    # Synthetic captures/provider replies: real scanner -> scene -> notebook -> next prompt.
+    initial = observed_response(record)
+    next_action = {
+        **deepcopy(initial),
+        "fields": {"Continue": initial["fields"]["Continue"]},
+        "assignments": {},
+        "evidence": [],
+    }
+    brain, model = prepare_worker(
+        tmp_path / "refresh", record, [initial, next_action, next_action, next_action, next_action]
+    )
+    brain.screen_scanner.reuse_similar = True
+    brain._observe()
+    first_id = str(brain.observation.obs_id)
+    assert brain.observed_inputs["hbl_no"]["value"] == record.fields.hbl_no.value
+
+    original_read = brain.screen_scanner.ocr.read
+    blocks = original_read(None)
+    # A changed OCR id and a glyph box crossing the lower input border must not lose meaning.
+    value_block = next(b for b in blocks if b.id == 9)
+    current = [b for b in blocks if b.id != 9] + [
+        value_block.model_copy(update={"id": 109, "bbox": (105, 30, 90, 29)})
+    ]
+    brain.screen_scanner.ocr.read = lambda page: current
+    brain._observe()
+    assert brain.observed_inputs["hbl_no"]["observation_id"] != first_id
+    assert brain.observed_inputs["hbl_no"]["value"] == record.fields.hbl_no.value
+    assert "hbl_no" in brain.verified
+    assert brain.visual_proposal.evidence == []  # The action did not repeat the field claim.
+
+    current[-1] = current[-1].model_copy(update={"text": "CHANGED-REFERENCE"})
+    brain._observe()
+    assert brain.observed_inputs["hbl_no"]["value"] == "CHANGED-REFERENCE"
+    assert "hbl_no" not in brain.verified
+    last_seen = brain.observed_inputs["hbl_no"]["observation_id"]
+
+    current.pop()  # Not observed is not the same as cleared; do not invent a new reading.
+    brain._observe()
+    assert brain.observed_inputs["hbl_no"]["observation_id"] == last_seen
+    assert "CHANGED-REFERENCE" in model.prompts[-1]
+    memo = json.loads((brain.case_dir / "task-notebook.json").read_text(encoding="utf-8"))
+    assert memo["observed_inputs"]["hbl_no"]["value"] == "CHANGED-REFERENCE"
+
+    original_observe = brain.relay.observe
+
+    def different_window():
+        wire = original_observe()
+        window = wire.active_window.model_copy(update={"handle": 999})
+        return wire.model_copy(update={"active_window": window, "windows": [window]})
+
+    brain.relay.observe = different_window
+    brain._observe()
+    assert brain.screen_scanner.observed_input_bindings(str(brain.observation.obs_id)) == {}
+    assert brain.observed_inputs["hbl_no"]["observation_id"] == last_seen
+
+
 def observed_response(record):
     return named_response(
         screen_kind="dialog",  # 070: an intermediate dialog must not erase pending review.

@@ -6,7 +6,7 @@ import json
 import re
 import unicodedata
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Protocol
 from uuid import uuid4
@@ -285,6 +285,7 @@ class ScreenDecisionRequest:
     policy: DecisionPolicy
     grounded_interpretation: SemanticDetection | None = None
     proposal: ScreenMatch | None = None
+    observed_inputs: Mapping[str, dict] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

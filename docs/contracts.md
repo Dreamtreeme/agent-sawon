@@ -78,6 +78,23 @@ flowchart LR
 복사본이 아니다. 확인된 필드가 후속 화면에서 보이지 않는 것만으로 전체 메모를 지우지 않는다.
 현재 관찰값 불일치와 증거 대체는 갱신 사유다. 메모에 기록된 입력 확인과 ERP 저장 완료는 구분한다.
 
+### 같은 화면의 필드 연결과 관찰값 갱신
+
+`ScreenScanner._SceneCatalog.selected_fields`는 현재 화면의 의미 이름·role·bbox·업무 입력
+source를 보관한다. 같은 창·크기의 pHash 유사 화면에서는 이 연결을 새 marker 번호에 다시
+배치한다. 과거 `value`는 가져오지 않고 현재 OCR로 읽는다. 입력칸 경계에서 OCR 글자 상자의
+높이가 넘치는 경우에는 기존 면적 포함 판정 외에 가로 포함률과 세로 중심 위치로 연결한다.
+라벨만 같다는 이유로 다른 창이나 이동한 레이아웃의 좌표를 재사용하지 않는다.
+
+`observed_input_bindings()`는 현재 observation에 해당하는 연결만 반환한다.
+`_remember_model_task_evidence()`는 이 연결과 현재 응답의 evidence를 함께 읽어 행동 계획이
+다시 언급하지 않은 필드도 갱신한다. `ProgressState.observed_inputs`는 업무 입력 키별 최근
+관찰값·라벨·관찰 ID·화면 종류·entry/saved_detail 범위를 보관하며, `notebook.remember()`와
+`context_recall.recall_context()`가 각각 JSON과 다음 모델 요청에 전달한다.
+이 메모는 현재 보이는 필드 목록이나 저장 성공 선언이 아니다. 안 보이거나 OCR 값이 없으면
+직전 관찰 기록을 유지하고, 현재 읽은 값이 입력 요구와 다르면 verified 증거를 무효화한다.
+저장 후 검토에는 현재 관찰로 다시 연결된 값만 기록하며 과거 entry 기록을 승격하지 않는다.
+
 `execution_context.last_delivered_actions`는 relay가 성공 응답한 직전 행동의
 `delivery_status=succeeded`, intent·입력 source와 출발 screen_kind,
 물리 action 종류, 의도한 subgoal을 전달한다. subgoal은 계획의 목적이며 관찰된 성공 사실이
