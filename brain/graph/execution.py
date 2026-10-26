@@ -32,6 +32,8 @@ class PendingAction(TypedDict):
     decision: Decision
     source_window_handle: int
     source_navigation_state: str
+    source_screen_path: NotRequired[list[str]]
+    structure_observation: NotRequired[dict]
     transition: ActionTransition
     descriptor: NotRequired[dict]
     navigation_target: NotRequired[dict]

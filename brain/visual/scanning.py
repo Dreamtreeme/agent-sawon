@@ -153,6 +153,7 @@ class ScreenScanner:
         max_phash_distance: int = 6,
         model_led_semantics: bool = False,
         retrieve_screen_memory: Callable[[dict], dict | None] | None = None,
+        on_capture: Callable[[Observation], None] | None = None,
     ):
         self.relay, self.ocr, self.case_dir, self.log = relay, ocr, case_dir, log
         self.detect, self.secrets, self.threshold = detect, secrets, threshold
@@ -162,6 +163,7 @@ class ScreenScanner:
         self.max_phash_distance = max_phash_distance
         self.model_led_semantics = model_led_semantics
         self.retrieve_screen_memory = retrieve_screen_memory
+        self.on_capture = on_capture
         self._catalog: _SceneCatalog | None = None
         self._catalogs: dict[tuple, _SceneCatalog] = {}
         self._action_captures: dict[str, Path] = {}
@@ -183,6 +185,8 @@ class ScreenScanner:
         started = perf_counter()
         folder = self.case_dir / "visual" / str(wire.obs_id)
         path = self.relay.screenshot(wire, folder / "capture.png")
+        if self.on_capture is not None:
+            self.on_capture(wire)
         shot = wire.screenshot
         assert shot is not None
         cache_key = (

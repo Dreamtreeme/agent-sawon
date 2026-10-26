@@ -308,6 +308,7 @@ class Brain:
             self.case_dir,
             self.log,
             self._detect_visual,
+            on_capture=self._capture_action_effect,
             secrets=self.secrets,
             threshold=settings.visual_min_confidence,
             detector=OmniParserDetector(settings.visual_detector, self.log),
@@ -432,7 +433,7 @@ class Brain:
         saved_record_review = (
             self.saved_evidence.snapshot(self.values) if self.saved_evidence.session_id else None
         )
-        return execution_context(
+        context = execution_context(
             ExecutionContextRequest(
                 policy=policy or self._decision_policy(),
                 pending=self.pending if anticipate else None,
@@ -443,6 +444,10 @@ class Brain:
                 saved_identity_field=self.saved_evidence.identity_field,
             )
         )
+
+        if anticipate and self.pending is not None:
+            context["last_action_observation"] = self.pending.get("structure_observation")
+        return context
 
     def _decide_visual_screen(
         self, screen: dict, page, *, interpretation=None, proposal=None, defer_plan_errors=False
@@ -1603,15 +1608,8 @@ class Brain:
         )
 
     def _failed_exploration_transitions(self) -> list[dict]:
-        # Combined visual perception plans before the newly captured scene is
-        # installed. Never attach failures from the previous screen while an
-        # action is awaiting observation; the following no-pending reread has
-        # the correct semantic state.
-        if self.observation is None or self.pending is not None:
-            return []
-        return self.exploration.prompt_context(
-            navigation_state(self.observation), self._exploration_goal_key()
-        )
+        # Historical observations are context, not a current-screen prohibition.
+        return self.exploration.recent_context(self.settings.max_feedback_history)
 
     def _submitted_credentials(self) -> list[str]:
         observation = self.observation
@@ -2105,7 +2103,7 @@ class Brain:
                 navigation_state(self.observation),
                 self._exploration_goal_key(),
                 action_key,
-            )
+            ) and not self.click_refinement.applies(self.observation, decision)
             if exploration_blocked:
                 self._last_exploration_failure_key = action_key
         try:
@@ -2285,6 +2283,7 @@ class Brain:
             "point_refined": point_refined,
             "source_window_handle": self.observation.active_window.handle,
             "source_navigation_state": navigation_state(self.observation),
+            "source_screen_path": list(self.current_screen_path),
             "progress_scope": progress_scope,
             "transition": ActionTransition(
                 action_id=str(action.root.action_id),
@@ -2607,6 +2606,15 @@ class Brain:
         if changed is None:
             return None, None
         if not changed:
+            self._record_exploration_failure(pending, "no_change")
+            if self._current_plan_ready(observation):
+                relation = self._current_plan_relation(pending, observation)
+                if relation != "same":
+                    # A no-motion result can be a focus/preparation action. Let Review
+                    # evaluate the model's alternative or completion, not the old click.
+                    return None, False
+                self.pending = None
+                return self._fail("navigation_no_progress"), False
             self.pending = None
             if self._try_click_refinement(pending, observation):
                 self.execution_authorized = True
@@ -2616,7 +2624,6 @@ class Brain:
                 failed = self.unproductive_navigation.setdefault(observed_state, [])
                 if target not in failed:
                     failed.append(target)
-            self._record_exploration_failure(pending, "no_change")
             return self._fail("navigation_no_progress"), False
         if self.navigation_history.observe(
             pending["source_navigation_state"],
@@ -2691,7 +2698,11 @@ class Brain:
             state_key=pending["source_navigation_state"],
             goal_key=pending["exploration_goal_key"],
             action_key=pending["exploration_action_key"],
-            action=pending["exploration_action"],
+            action={
+                **pending["exploration_action"],
+                "screen_path": pending.get("source_screen_path", []),
+                "window_handle": pending["source_window_handle"],
+            },
             outcome=outcome,
         )
         self.exploration.record(attempt)
@@ -3028,6 +3039,24 @@ class Brain:
                 return outcome
         return "review"
 
+    def _capture_action_effect(self, observation: Observation) -> None:
+        """Publish local capture facts before semantics plans; no business verdict here."""
+        pending = self.pending
+        if pending is None:
+            return
+        previous = pending.get("structure_observation")
+        if previous is not None and previous["after_obs_id"] == str(observation.obs_id):
+            return
+        comparison = {
+            "before_obs_id": str(pending["before_observation"].obs_id),
+            "after_obs_id": str(observation.obs_id),
+            **compare_navigation(pending["before_observation"], observation, self.case_dir),
+        }
+        pending["structure_observation"] = comparison
+        self.log.append("verify", payload={"check": "screen_structure_comparison", **comparison})
+        if comparison["changed"] is False:
+            self._record_exploration_failure(pending, "no_change")
+
     def _verify_node(self) -> WorkerNode:
         assert self.pending is not None
         pending = self.pending
@@ -3053,18 +3082,8 @@ class Brain:
             choice: Choice = self.pending["choice"]
             decision: Decision = self.pending["decision"]
             observed_state = navigation_state(observation)
-            comparison = compare_navigation(
-                pending["before_observation"], observation, self.case_dir
-            )
-            self.log.append(
-                "verify",
-                payload={
-                    "check": "screen_structure_comparison",
-                    "before_obs_id": str(pending["before_observation"].obs_id),
-                    "after_obs_id": str(observation.obs_id),
-                    **comparison,
-                },
-            )
+            self._capture_action_effect(observation)
+            comparison = pending["structure_observation"]
             changed = comparison["changed"]
             observed_effect = ObservedEffect.UNKNOWN
             if changed is not None:

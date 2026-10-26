@@ -34,7 +34,11 @@ class NamedAction(BaseModel):
     action: Literal["fill", "click", "double_click", "key"]
     intent: MatchActionIntent
     source: str | None = None
-    keys: KeyInput | None = None
+    keys: KeyInput | None = Field(
+        default=None,
+        description="For action=key: pagedown/pageup wheel-scroll down/up at point; "
+        "other keys are keyboard input. A click never scrolls automatically.",
+    )
     point: list[float] = Field(
         min_length=2, max_length=2, description="Your chosen original image click/input point"
     )
@@ -404,8 +408,17 @@ fill into steps. purpose explains those same steps; it is not a separate executa
 Preserve the taught route and completion conditions. Requested instruction IDs retrieve details.
 Batch ordered work grounded in this screen, including inputs followed by a submit/search command.
 Do not guess targets or results revealed only after a screen change; observe them in the next turn.
-If inputs are offscreen, navigate
-or scroll to expose them. Complete only from the user's required saved/requeried evidence.
+If inputs are offscreen, use action=key with keys=pagedown (wheel down) or pageup
+(wheel up), choosing a point inside the scrollable region and its declared target.
+No preliminary focus click is required for this wheel action. click only clicks; writing
+"scroll" in purpose does not turn a click into scrolling. Do not request local refinement
+for an offscreen field: the same capture cannot reveal content outside the viewport.
+execution.last_action_observation describes structural movement after the delivered action:
+changed=false is no structural movement, not necessarily task failure (focus may be intended).
+Interpret it together with current values and choose the remaining work in this response.
+notebook.failed_transitions is historical action/result context with its original screen and goal,
+not a blanket prohibition in this view. Avoid repeating an ineffective action in the same situation.
+Complete only from the user's required saved/requeried evidence.
 Use current evidence and prior verified inputs; absence on this screen does not erase memory.
 The notebook and focused taught step describe progress BEFORE this screenshot is interpreted.
 last_delivered_actions were successfully executed, not actions to execute again.

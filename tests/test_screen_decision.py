@@ -3405,7 +3405,7 @@ def test_delivered_value_updates_batch_and_action_memory_without_duplicate_evide
         wire(),
         delivered=[{"choice": decision.action, "decision": decision}],
     )
-    brain.pending = {"execution": execution}
+    brain.pending = {"execution": execution, "before_observation": execution.before}
     brain._observe()
     assert "hbl_no" in brain.verified
     assert brain._verify_screen_batch(execution, brain.observation) == "review"
@@ -3446,6 +3446,7 @@ def test_detail_observation_commits_review_before_current_evidence(
     )
     brain.saved_detail_transition_pending = True
     brain.pending = {
+        "before_observation": wire(),
         "decision": decision,
         "choice": decision.action,
     }

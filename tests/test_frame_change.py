@@ -1,5 +1,6 @@
 """Synthetic captures exercise ORB and the actual post-action verification path."""
 
+import json
 from uuid import uuid4
 
 import cv2
@@ -7,12 +8,12 @@ import numpy as np
 import pytest
 from test_brain import element
 from test_brain import record as record
-from test_screen_decision import setup_brain
+from test_screen_decision import named_response, setup_brain
 from test_visual_scene import wire
 
 from brain.graph.schemas import Choice, Decision
 from brain.graph.transitions import ActionTransition, ExpectedEffect, ObservedEffect
-from brain.observe.progress import compare_navigation, navigation_state
+from brain.observe.progress import compare_navigation, navigation_state, navigation_target
 from brain.visual.frame_change import compare_frames
 from brain.visual.scene import SceneObservation
 
@@ -136,3 +137,106 @@ def test_synthetic_featureless_capture_is_unknown_but_window_and_size_changes_ar
         "changed": True,
         "reason": "window_changed",
     }
+
+
+@pytest.mark.parametrize("next_action", ["scroll", "same"])
+def test_synthetic_capture_feedback_precedes_model_and_preserves_alternative(
+    tmp_path, record, monkeypatch, next_action
+):
+    """Synthetic 110 failure: real scanner/model boundary, no desktop or paid calls."""
+    from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
+
+    response = named_response(
+        screen_kind="editor",
+        steps=[
+            {
+                "target": "Reference",
+                "action": "key",
+                "intent": "navigate",
+                "keys": "pagedown",
+                "point": [175, 30],
+            }
+        ],
+    )
+    if next_action == "same":
+        response = named_response(
+            screen_kind="editor",
+            fields={"Label": {"role": "text", "bbox": [100, 15, 150, 30]}},
+            assignments={},
+            steps=[
+                {"target": "Label", "action": "click", "intent": "navigate", "point": [175, 30]}
+            ],
+        )
+    brain, model, relay, ocr, *_ = setup_brain(tmp_path, record, [response])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+    before = SceneObservation(
+        wire=wire(), elements=[element("e1", "Text", name="Label")], capture_phash=10
+    )
+    image = cv2.resize(synthetic_form(), (400, 200))
+    save_capture(tmp_path, before, image)
+    decision = Decision(
+        screen_kind="editor",
+        operation="act",
+        intent="navigate",
+        subgoal="Expose field",
+        reason="Focus",
+        action=Choice(type="click", ref="e1"),
+    )
+    brain.phase, brain.observation, brain.decision = "task", before, decision
+    brain.pending = {
+        "before_observation": before,
+        "choice": decision.action,
+        "decision": decision,
+        "source_window_handle": 1,
+        "source_navigation_state": navigation_state(before),
+        "source_screen_path": ["Synthetic", "Main"],
+        "click_target": navigation_target(before.elements[0], before),
+        "exploration_action_key": "click:label",
+        "exploration_goal_key": brain._exploration_goal_key(),
+        "exploration_action": {"type": "click", "target": {"name": "Label"}},
+        "transition": ActionTransition(
+            action_id="synthetic-focus",
+            before_obs_id=str(before.obs_id),
+            intent="navigate",
+            expected_effect=ExpectedEffect.NAVIGATION_CHANGE,
+        ),
+    }
+    # Old code would terminate before allowing the newly proposed wheel action.
+    brain.failures["task:explore:click:label"] = brain.settings.max_subgoal_failures
+
+    def screenshot(observation, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(cv2.imencode(".png", image)[1].tobytes())
+        return path
+
+    read = ocr.read
+
+    def read_after_comparison(page):
+        assert brain.pending["structure_observation"]["changed"] is False
+        # A repeated interpretation/callback must not duplicate evidence or counters.
+        brain.screen_scanner.on_capture(relay.current)
+        return read(page)
+
+    monkeypatch.setattr(relay, "screenshot", screenshot)
+    monkeypatch.setattr(ocr, "read", read_after_comparison)
+    assert brain._verify_node() == ("review" if next_action == "scroll" else "finish")
+    if next_action == "scroll":
+        assert brain.result is None and brain.visual_proposal.steps[0].keys == "pagedown"
+    else:
+        assert brain.result.reason.startswith("repeated_subgoal_failure:")
+    assert len(model.prompts) == 1
+    request = json.loads(model.prompts[0][len(CONTEXT_MAPPING_RULES) :])
+    assert request["execution"]["last_action_observation"]["changed"] is False
+    history = request["notebook"]["failed_transitions"]
+    assert len(history) == 1 and history[0]["outcome"] == "no_change"
+    assert history[0]["action"]["screen_path"] == ["Synthetic", "Main"]
+    assert history[0]["scope"] == "historical_observation"
+    assert navigation_state(before) != navigation_state(brain.observation)
+    assert brain._failed_exploration_transitions() == history
+    events = brain.log.read_all()
+    comparisons = [e for e in events if e.payload.get("check") == "screen_structure_comparison"]
+    calls = [e for e in events if e.kind == "model_call"]
+    assert len(comparisons) == 1 and comparisons[0].seq < calls[0].seq
+    assert brain.failures["task:explore:click:label"] == brain.settings.max_subgoal_failures + (
+        next_action == "same"
+    )

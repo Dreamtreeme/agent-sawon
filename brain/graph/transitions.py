@@ -179,6 +179,13 @@ class ExplorationLedger:
         if attempt not in self._attempts:
             self._attempts.append(attempt)
 
+    def recent_context(self, limit: int) -> list[dict]:
+        """Expose bounded history with provenance, even during a pending observation."""
+        return [
+            {**item.model_dump(), "scope": "historical_observation"}
+            for item in list(self._attempts)[-limit:]
+        ]
+
     def failed(self, state_key: str, goal_key: str, action_key: str) -> bool:
         return any(
             item.state_key == state_key
