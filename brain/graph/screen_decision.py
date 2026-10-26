@@ -273,12 +273,10 @@ class ScreenDecisionRequest:
     execution_contract: dict
     required_verification: tuple[dict, ...]
     post_action_review: bool
-    pending_verification: bool
     workflow_flags: Mapping[str, bool]
     context_layers: dict
     recent_feedback: tuple[dict, ...]
     available_credentials: tuple[str, ...]
-    evidence_claims: tuple[dict, ...]
     failed_transitions: tuple[dict, ...]
     saved_record_review: dict | None
     taught_procedure_progress: dict
@@ -287,7 +285,6 @@ class ScreenDecisionRequest:
     policy: DecisionPolicy
     grounded_interpretation: SemanticDetection | None = None
     proposal: ScreenMatch | None = None
-    observed_inputs: Mapping[str, dict] = field(default_factory=dict)
     screen_nodes: Mapping[str, dict] = field(default_factory=dict)
     current_screen_path: list[str] = field(default_factory=list)
 
@@ -438,7 +435,7 @@ Never assume a label, coordinate, menu, tab, screen order, or application-specif
 not visible now. notebook.inputs is the only business input map. Every data-bound step.source and
 evidence.field MUST be one exact key from notebook.inputs, without record./inputs. prefixes and
 never a literal value. Use intent=fill for every business text input, including filters and lookups.
-Use only supplied input keys and current marker IDs. available_inputs is the reusable source list.
+Use only keys from notebook.inputs and current marker IDs.
 remaining_inputs contains values that have not yet been evidenced on any observed screen; it is
 progress context, not a command to overwrite a matching CURRENT value. Before planning actions,
 compare visible values with notebook.inputs. Put every matching direct input in evidence and do

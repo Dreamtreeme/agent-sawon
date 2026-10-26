@@ -404,7 +404,7 @@ def test_business_facts_survive_identical_anonymous_screen_descriptors(tmp_path)
     descriptor = {"role": "edit", "name": "", "label": None, "context": []}
     assert ledger.record("packages.count", descriptor, "obs-1") == ()
     assert ledger.record("packages.unit", descriptor, "obs-2") == ()
-    assert {item["field"] for item in ledger.prompt_context()} == {
+    assert {claim.field for claim in ledger.history if claim.status == "active"} == {
         "packages.count",
         "packages.unit",
     }

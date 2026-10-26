@@ -40,9 +40,7 @@ def test_visual_match_cache_key_ignores_run_metadata_but_keeps_action_context():
         },
         "notebook": {
             "inputs": {"hbl_no": "SEED-A", "shipper": "A"},
-            "evidence_claims": [
-                {"field": "hbl_no", "observation_id": "observation-a", "revision": 3}
-            ],
+            "verified_inputs": ["hbl_no"],
             "recent_turns": [{"target_summary": "click:e-run-a"}],
             "failed_transitions": [{"action_key": "click:target:row"}],
             "workflow_state": {"save_issued": True},
@@ -56,9 +54,7 @@ def test_visual_match_cache_key_ignores_run_metadata_but_keeps_action_context():
         },
         "notebook": {
             "inputs": {"hbl_no": "SEED-B", "shipper": "B"},
-            "evidence_claims": [
-                {"field": "hbl_no", "observation_id": "observation-b", "revision": 8}
-            ],
+            "verified_inputs": ["hbl_no"],
             "recent_turns": [{"target_summary": "click:e-run-b"}],
             "failed_transitions": [{"action_key": "click:target:row"}],
             "workflow_state": {"save_issued": True},

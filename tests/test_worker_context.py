@@ -53,9 +53,6 @@ def test_direct_and_screen_matching_receive_identical_execution_context(
         None,
     )
     matched = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
-    expected.update(
-        available_inputs=sorted(brain.values),
-    )
     assert matched["execution"] == expected
 
 
@@ -161,7 +158,6 @@ def test_pending_last_record_fill_proposes_save_without_mutating_verified_fields
     assert proposed["remaining_fields"] == []
     assert proposed["last_delivered_actions"] == [
         {
-            "delivery_status": "succeeded",
             "intent": "fill",
             "source": last_field,
             "screen_kind": "editor",
@@ -250,7 +246,6 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
     assert "select_tab" in state["capability"]["actions"]
     assert state["execution"]["last_delivered_actions"] == [
         {
-            "delivery_status": "succeeded",
             "intent": "select_option",
             "source": None,
             "screen_kind": "partner",
@@ -260,11 +255,11 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
     ]
     assert "shipper" not in brain.verified
     assert state["execution"]["last_delivered_actions"][0]["intent"] == "select_option"
-    assert state["notebook"]["awaiting_visual_result_review"] is True
+    assert "awaiting_visual_result_review" not in state["notebook"]
     assert "pending_actions" not in state["execution"]
     assert "pending_actions" not in state["notebook"]
     assert "pending_verification" not in state["notebook"]
-    assert "shipper" in state["notebook"]["anticipated_verified_inputs"]
+    assert "anticipated_verified_inputs" not in state["notebook"]
     assert "shipper" not in state["execution"]["remaining_inputs"]
     assert "shipper" in state["notebook"]["remaining_inputs"]
     assert "shipper" not in state["notebook"]["verified_inputs"]
@@ -324,7 +319,6 @@ def test_opening_saved_detail_scopes_request_without_erasing_entry_on_failed_nav
     request = brain._screen_decision_request({}, None)
     assert not request.verified_fields
     assert not request.policy.facts.verified_field_names
-    assert not request.evidence_claims
     assert set(request.execution_contract["remaining_inputs"]) == set(brain.values)
     brain._begin_saved_detail_review("query")
     assert not brain.model_saved_detail_review

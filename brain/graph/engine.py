@@ -192,7 +192,6 @@ class Brain:
     credential_submissions = progress_property("credential_submissions")
     rolling_context = progress_property("rolling_context")
     verified = progress_property("verified")
-    observed_inputs = progress_property("observed_inputs")
     screen_nodes = progress_property("screen_nodes")
     current_screen_path = progress_property("current_screen_path")
     evidence_ledger = progress_property("evidence_ledger")
@@ -379,8 +378,6 @@ class Brain:
         )
         context_layers = self.rolling_context.export_prompt_context(
             current_goal=self.goal,
-            verified_inputs=list(model_verified),
-            remaining_inputs=list(set(self.values) - model_verified),
         )
         saved_record_review = (
             self.saved_evidence.snapshot(self.values) if self.saved_evidence.session_id else None
@@ -391,13 +388,11 @@ class Brain:
             phase=self.phase,
             values=self.values,
             verified_fields=frozenset(model_verified),
-            observed_inputs=self.observed_inputs,
             screen_nodes=self.screen_nodes,
             current_screen_path=self.current_screen_path,
             execution_contract=contract,
             required_verification=tuple(required_verification(self.pending)),
             post_action_review=post_action_review,
-            pending_verification=self.pending is not None,
             workflow_flags={
                 "duplicate_clear": self.duplicate_clear,
                 "query_value_verified": self.query_value_verified,
@@ -413,11 +408,6 @@ class Brain:
             ),
             available_credentials=tuple(
                 sorted(key for key, value in self.credentials.items() if value)
-            ),
-            evidence_claims=tuple(
-                claim
-                for claim in self.evidence_ledger.prompt_context()
-                if claim["field"] in model_verified
             ),
             failed_transitions=tuple(self._failed_exploration_transitions()),
             saved_record_review=saved_record_review,
@@ -1261,13 +1251,13 @@ class Brain:
         self.review = None
         if isinstance(observation, SceneObservation):
             self._begin_saved_detail_review(observation.screen_kind)
+        self.observation_number += 1
         # One response observes the pending action's outcome and plans from it.
         # Commit its review scope and current values before compiling/delivering
         # those same steps. Committing observations does not invalidate that plan.
         if self.visual_proposal is not None and self.visual_proposal_obs_id == observation.obs_id:
             self._bind_saved_evidence(self.visual_proposal)
             self._remember_model_task_evidence(self.visual_proposal)
-        self.observation_number += 1
         relative = f"observations/{self.observation_number:04d}.json"
         atomic_write_json(self.case_dir / relative, observation)
         self.log.append(
@@ -2008,12 +1998,8 @@ class Brain:
         self.current_screen_path = (
             list(response.mapping.screen_path) if response.mapping is not None else []
         )
-        node = (
-            remember_screen(
-                self.screen_nodes, response.mapping, self.values, str(self.observation.obs_id)
-            )
-            if response.mapping is not None
-            else None
+        node = remember_screen(
+            self.screen_nodes, response.mapping, self.values, str(self.observation.obs_id)
         )
         self.log.append(
             "verify",
@@ -2044,27 +2030,20 @@ class Brain:
             # Missing OCR is unknown, not proof that the old value was cleared.
             if element.value is None:
                 continue
-            self.observed_inputs[source] = {
-                "label": element.name,
+            field = node["fields"].setdefault(source, {})
+            node["controls"].pop(element.name, None)
+            field.update(
+                label=element.name,
+                role=element.role,
+                bbox=list(element.bbox),
+                observation_id=str(self.observation.obs_id),
+            )
+            field["last_observation"] = {
                 "value": element.value,
                 "observation_id": str(self.observation.obs_id),
-                "screen_kind": self.observation.screen_kind,
+                "observation_number": self.observation_number,
                 "scope": "saved_detail" if self.model_saved_detail_review else "entry",
-                "screen_path": list(self.current_screen_path),
             }
-            if node is not None:
-                node["observed_inputs"][source] = dict(self.observed_inputs[source])
-                delivery = node["fields"].get(source, {}).get("delivery")
-                if (
-                    delivery is not None
-                    and delivery["scope"] == self.observed_inputs[source]["scope"]
-                    and delivery["observation_id"] != str(self.observation.obs_id)
-                ):
-                    delivery["status"] = (
-                        "observed_match"
-                        if field_matches(source, element.value, self.values)
-                        else "observed_mismatch"
-                    )
             if not field_matches(source, element.value, self.values):
                 self.verified.pop(source, None)
                 self.post_save_verified.discard(source)
@@ -2380,6 +2359,7 @@ class Brain:
                         choice.source,
                         self.values[choice.source],
                         observation_id=str(self.observation.obs_id),
+                        observation_number=self.observation_number,
                         scope="saved_detail" if self.model_saved_detail_review else "entry",
                     )
                 # A successful relay return proves delivery, not business correctness.

@@ -36,14 +36,6 @@ class StructuredScratchpad(BaseModel):
     current_goal: str = Field(
         default="", max_length=200, description="현재 집중하고 있는 상위 목표"
     )
-    verified_inputs: list[str] = Field(
-        default_factory=list,
-        description="현재까지 화면 상에서 검증 완료된 입력 필드 목록",
-    )
-    remaining_inputs: list[str] = Field(
-        default_factory=list,
-        description="아직 화면에 입력/검증되지 않은 잔여 입력 필드 목록",
-    )
 
 
 class RollingContextManager:
@@ -96,29 +88,21 @@ class RollingContextManager:
         self,
         *,
         current_goal: str,
-        verified_inputs: list[str],
-        remaining_inputs: list[str],
     ) -> StructuredScratchpad:
         """현재 에이전트 상태를 기반으로 Layer 1 스크래치패드 생성."""
         return StructuredScratchpad(
             completed_milestones=list(self._completed_milestones),
             current_goal=current_goal[:200],
-            verified_inputs=sorted(verified_inputs),
-            remaining_inputs=sorted(remaining_inputs),
         )
 
     def export_prompt_context(
         self,
         *,
         current_goal: str,
-        verified_inputs: list[str],
-        remaining_inputs: list[str],
     ) -> dict[str, Any]:
         """LLM 프롬프트에 주입할 Layer 1(스크래치패드) + Layer 2(최근 3턴 버퍼) 직렬화."""
         scratchpad = self.build_scratchpad(
             current_goal=current_goal,
-            verified_inputs=verified_inputs,
-            remaining_inputs=remaining_inputs,
         )
         return {
             "scratchpad": scratchpad.model_dump(mode="json"),

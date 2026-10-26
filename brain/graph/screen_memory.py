@@ -11,19 +11,22 @@ if TYPE_CHECKING:
 
 
 def remember_screen(
-    nodes: dict[str, dict], mapping: ScreenMapping, values: Mapping[str, str], observation_id: str
-) -> dict | None:
+    nodes: dict[str, dict],
+    mapping: ScreenMapping | None,
+    values: Mapping[str, str],
+    observation_id: str,
+) -> dict:
     """Expand only visited nodes; absence in a new viewport never deletes discoveries."""
-    node = None
-    for depth in range(1, len(mapping.screen_path) + 1):
-        path = mapping.screen_path[:depth]
+    screen_path = mapping.screen_path if mapping is not None else []
+    # The root holds observations with no identified screen, never the previous screen's facts.
+    for depth in range(len(screen_path) + 1):
+        path = screen_path[:depth]
         node = nodes.setdefault(
             json.dumps(path, ensure_ascii=False),
-            {"path": path, "fields": {}, "controls": {}, "observed_inputs": {}},
+            {"path": path, "fields": {}, "controls": {}},
         )
-    if node is None:
-        return None
-    node["observation_id"] = observation_id
+    if mapping is None:
+        return node
     bindings = mapping.observed_bindings(values)
     for name, field in mapping.fields.items():
         if name in bindings:
@@ -45,6 +48,7 @@ def remember_input_delivery(
     value: str,
     *,
     observation_id: str,
+    observation_number: int,
     scope: str,
 ) -> None:
     """Retain acknowledged input separately from observed values and business success."""
@@ -55,44 +59,35 @@ def remember_input_delivery(
         "value": value,
         "scope": scope,
         "observation_id": observation_id,
-        "status": "awaiting_observation",
+        "observation_number": observation_number,
     }
 
 
 def recall_screen_tree(nodes: Mapping[str, dict]) -> dict:
     """Derive a model view from the one state index; no refs/bboxes imply current visibility."""
-    tree = {}
+    tree = {"fields": {}, "controls": {}, "children": {}}
     for node in nodes.values():
-        children = tree
-        branch = None
+        branch = tree
         for name in node["path"]:
-            branch = children.setdefault(name, {"fields": {}, "controls": {}, "children": {}})
-            children = branch["children"]
-        if branch is None:
-            continue
+            branch = branch["children"].setdefault(
+                name, {"fields": {}, "controls": {}, "children": {}}
+            )
         for source, field in node["fields"].items():
             entry = {
                 "label": field["label"],
                 "role": field["role"],
-                "seen_in_last_view": field["observation_id"] == node.get("observation_id"),
             }
-            observed = node["observed_inputs"].get(source)
+            observed = field.get("last_observation")
             if observed is not None:
                 entry["last_observation"] = {
                     "value": observed["value"],
                     "scope": observed["scope"],
                 }
             if "delivery" in field:
-                entry["delivery"] = {
-                    key: field["delivery"][key] for key in ("value", "scope", "status")
-                }
+                entry["delivery"] = {key: field["delivery"][key] for key in ("value", "scope")}
             branch["fields"][source] = entry
         branch["controls"] = {
-            name: {
-                "role": field["role"],
-                "seen_in_last_view": field["observation_id"] == node.get("observation_id"),
-            }
-            for name, field in node.get("controls", {}).items()
+            name: {"role": field["role"]} for name, field in node.get("controls", {}).items()
         }
     return tree
 
@@ -105,5 +100,9 @@ def pending_screen_inputs(nodes: Mapping[str, dict], scope: str) -> set[str]:
         for source, field in node["fields"].items()
         if (delivery := field.get("delivery"))
         and delivery["scope"] == scope
-        and delivery["status"] == "awaiting_observation"
+        and (
+            (observed := field.get("last_observation")) is None
+            or observed["scope"] != scope
+            or observed["observation_number"] <= delivery["observation_number"]
+        )
     }

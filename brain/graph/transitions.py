@@ -124,16 +124,6 @@ class EvidenceLedger:
             None,
         )
 
-    def prompt_context(self) -> list[dict]:
-        return [
-            {
-                "field": claim.field,
-                "observation_id": claim.observation_id,
-                "revision": claim.revision,
-            }
-            for claim in sorted(self._active.values(), key=lambda item: item.field)
-        ]
-
     @property
     def history(self) -> tuple[EvidenceClaim, ...]:
         return tuple(self._claims)

@@ -469,13 +469,11 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(
     assert state["taught_procedure_progress"]["completed_step_ids"] == []
     assert state["notebook"]["inputs"] == brain.values
     assert state["notebook"]["verified_inputs"] == ["hbl_no"]
-    assert state["notebook"]["available_inputs"] == sorted(brain.values)
     assert state["notebook"]["remaining_inputs"] == sorted(set(brain.values) - {"hbl_no"})
     assert "record" not in state["notebook"]
     assert "remaining_fields" not in state["notebook"]
     persisted = json.loads((tmp_path / "task-notebook.json").read_text(encoding="utf-8"))
     assert persisted["inputs_path"] == "record.json"
-    assert persisted["available_inputs"] == sorted(brain.values)
     assert persisted["remaining_inputs"] == sorted(set(brain.values) - {"hbl_no"})
     assert "record_path" not in persisted
     assert "query_submitted" not in persisted
@@ -2016,9 +2014,7 @@ def test_post_action_review_preserves_next_action_in_same_response(tmp_path, rec
     }
     request, services = matching_contract(brain, screen)
 
-    result = decide_screen(
-        replace(request, post_action_review=True, pending_verification=True), services
-    )
+    result = decide_screen(replace(request, post_action_review=True), services)
 
     assert len(model.prompts) == 1
     assert result.response.operation == "act"
@@ -2043,9 +2039,7 @@ def test_post_action_review_reuses_bound_next_method_without_model_call(tmp_path
     replay = ScreenMatch.model_validate(response(meaning))
     services.memory_retrieval.match_pattern = lambda _screen: replay
 
-    result = decide_screen(
-        replace(request, post_action_review=True, pending_verification=True), services
-    )
+    result = decide_screen(replace(request, post_action_review=True), services)
 
     assert result.response.operation == replay.operation
     assert [(step.target, step.action, step.source) for step in result.response.steps] == [
@@ -2062,7 +2056,7 @@ def test_post_action_review_reuses_promoted_visual_decision_without_model_call(t
         "markers": [marker.model_dump() for marker in markers],
     }
     request, services = matching_contract(brain, screen)
-    request = replace(request, post_action_review=True, pending_verification=True)
+    request = replace(request, post_action_review=True)
     services.memory_retrieval.enabled = False
     services = replace(
         services,
@@ -3477,7 +3471,9 @@ def test_delivered_value_updates_batch_and_action_memory_without_duplicate_evide
     assert not any(
         e.payload.get("reason") == "screen_fill_evidence_missing" for e in brain.log.read_all()
     )
-    assert brain.evidence_ledger.prompt_context()[0]["field"] == "hbl_no"
+    assert {claim.field for claim in brain.evidence_ledger.history if claim.status == "active"} == {
+        "hbl_no"
+    }
     assert brain.rolling_context.recent_turns[-1].target_summary == "set_text:hbl_no"
     target = next(e for e in brain.observation.elements if e.value == brain.values["hbl_no"])
     assert brain._record_verified_field("hbl_no", target)
@@ -3528,7 +3524,7 @@ def test_detail_observation_commits_review_before_current_evidence(
     assert payload["notebook"]["workflow_state"]["saved_result_open_pending"]
     assert payload["notebook"]["evidence_scope"] == "saved_detail_candidate"
     assert payload["notebook"]["verified_inputs"] == []
-    assert payload["notebook"]["scratchpad"]["verified_inputs"] == []
+    assert "verified_inputs" not in payload["notebook"]["scratchpad"]
     assert set(payload["execution"]["remaining_inputs"]) == set(brain.values)
     assert set(brain.verified) == set(brain.values)  # Entry history is not erased.
     checks = [event.payload.get("check") for event in brain.log.read_all()]

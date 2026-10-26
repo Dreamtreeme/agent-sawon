@@ -216,7 +216,6 @@ def execution_context(request: ExecutionContextRequest) -> dict:
         "guidance": phase_instruction(proposal),
         "last_delivered_actions": [
             {
-                "delivery_status": "succeeded",
                 "intent": d.intent,
                 "source": d.action.source if d.action else None,
                 "screen_kind": d.screen_kind,

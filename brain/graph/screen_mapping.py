@@ -386,12 +386,12 @@ readable business fields and their assignments, including fields not used by the
 Prior geometry is a hint, never a current observation. Reground fields on the current image.
 An empty screen_path means unidentified and must not select the previous node implicitly.
 Remembered fields are candidates, not proof of the current node or current values.
-screen_tree organizes visited parent screens and children, their discovered fields and controls.
-seen_in_last_view refers to that node's LAST observation, not this new screenshot. History has no
-current action coordinates: get visible targets from this image, and navigate to hidden targets.
+screen_tree.children organizes visited screens and their children. Root fields have no identified
+screen and must not be assigned to a known node. All tree entries are history, not current
+visibility or action coordinates. Get visible targets from this image; navigate to hidden targets.
 Each field's last_observation is what was read; delivery is what was successfully sent there.
-delivery.status=awaiting_observation means already entered but not reread, even after scrolling or
-other inputs. Do not treat it as never entered. Observe it when needed; correct only from evidence.
+pending_verification_inputs lists delivered inputs with no later reading in this evidence scope,
+even after scrolling or other inputs. Do not treat these as never entered. Correct from evidence.
 remaining_inputs means not yet verified, not necessarily blank or not entered. Use the tree's
 delivery and observation together. Entry facts do not prove saved_detail completion.
 Retrieved procedures describe learned actions, not actions already completed in this run.

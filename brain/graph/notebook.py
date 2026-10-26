@@ -37,9 +37,7 @@ def remember(brain: Brain) -> dict:
         {
             "inputs_path": "record.json",
             "proposed_capability": brain.procedure_step,
-            "available_inputs": sorted(brain.values),
             "verified_inputs": sorted(brain.verified),
-            "observed_inputs": brain.observed_inputs,
             "screen_nodes": brain.screen_nodes,
             "current_screen_path": brain.current_screen_path,
             "remaining_inputs": sorted(set(brain.values) - set(brain.verified)),

@@ -64,8 +64,6 @@ def test_persistent_milestones_survive_eviction():
 
     payload = manager.export_prompt_context(
         current_goal="선적 서류 상세 입력",
-        verified_inputs=["hbl_no"],
-        remaining_inputs=["mbl_no", "shipper"],
     )
 
     # 롤링 버퍼에는 2, 3턴만 남아 있음
@@ -77,4 +75,5 @@ def test_persistent_milestones_survive_eviction():
         "중복 조회 확인: 결과 0건",
     ]
     assert payload["scratchpad"]["current_goal"] == "선적 서류 상세 입력"
-    assert payload["scratchpad"]["verified_inputs"] == ["hbl_no"]
+    assert "verified_inputs" not in payload["scratchpad"]
+    assert "remaining_inputs" not in payload["scratchpad"]

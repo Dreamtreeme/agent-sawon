@@ -579,9 +579,7 @@ def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
     assert turns[0].target_summary == "set_text:hbl_no"
     assert turns[0].observed_effect == "input_value_matches"
     assert turns[0].success
-    memo = brain.rolling_context.export_prompt_context(
-        current_goal=brain.goal, verified_inputs=[source], remaining_inputs=[]
-    )
+    memo = brain.rolling_context.export_prompt_context(current_goal=brain.goal)
     assert memo["scratchpad"]["completed_milestones"] == ["검증 완료: hbl_no"]
 
 

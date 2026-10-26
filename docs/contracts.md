@@ -86,27 +86,32 @@ flowchart LR
 이전 경로를 자동 승계하지 않는다. 이 필드는 기존 화면 판단 응답에 포함되며 추가 호출은 없다.
 
 `ProgressState.screen_nodes`는 화면 트리의 단일 상태 저장소이며 경로의 JSON 문자열로
-인덱싱한다. 노드는 path·업무 키별 fields·이름별 controls·observed_inputs를 보관한다.
+인덱싱한다. 노드는 path·업무 키별 fields·이름별 controls를 보관하고, 관찰값은 각 필드의
+`last_observation` 한 곳에 둔다. 전역 observed_inputs나 노드별 별도 복사본은 두지 않는다.
 `screen_memory.remember_screen()`은 방문한 부모/자식 경로를 만들고 발견한 항목을 누적한다.
 스크롤 뒤 보이지 않는 필드는 삭제하지 않으며 새 관찰 위치는 같은 필드에 갱신한다.
 버튼과 탭도 controls에 기억하지만 열어보지 않은 탭의 자식 내용은 만들지 않는다.
 라벨·role·bbox·관찰 ID는 마지막 관찰 기록이며 bbox는 스크롤을 보정한 절대좌표가 아니다.
 
-`context_recall`은 같은 상태에서 `screen_tree`를 파생해 부모 이름 → children → 자식 이름의
-중첩 JSON으로 전달한다. 필드는 업무 키로 연결하고 label·role·last_observation·delivery를
-노출한다. `seen_in_last_view`는 해당 노드의 마지막 관찰에 포함됐다는 뜻이며 현재 캡처의
-가시성을 보증하지 않는다. 과거 bbox·ref·관찰 ID는 이 모델용 트리에서 제외한다. 모델은 현재
+`context_recall`은 같은 상태에서 fields·controls·children 구조의 `screen_tree`를 파생한다.
+알려진 화면은 루트 children 아래 이름별로 연결한다. 경로 없는 관찰은 경로 `[]`인 루트
+fields에만 보존하며 마지막으로 방문한 화면에 넣지 않는다. 필드는 업무 키로 연결하고
+label·role·last_observation·delivery를 노출한다. 전체 트리는 과거 사실이며 현재 가시성
+플래그를 보내지 않는다. 과거 bbox·ref·관찰 ID·관찰 순번은 이 모델용 트리에서 제외한다. 모델은 현재
 이미지와 OCR에서 현재 노드와 좌표를 다시 연결한다. `previous_screen_path`도 직전 해석이며
 다음 캡처의 정체성이 아니다. 트리는 읽기 전용 투영으로 별도 상태 복사본을 유지하지 않는다.
 
 relay가 입력 전달을 확인하면 `_accept_dispatched_action()`이 해당 노드·필드의 delivery에
-전달값·관찰 ID·entry/saved_detail 범위·`awaiting_observation`을 기록한다. 다음 입력 배치가
+전달값·관찰 ID·기존 관찰 순번·entry/saved_detail 범위를 기록한다. 다음 입력 배치가
 실행돼도 이 이력은 남는다. 실패한 입력은 기록하지 않으며 부분 전달은 성공한 접두부만 기록한다.
 전달 처리 뒤 `notebook.remember()`로 기존 JSON 파일에 저장한다. 후속 관찰에서 같은 노드와
-범위의 읽을 수 있는 값을 얻으면 기존 값 비교로 `observed_match` 또는 `observed_mismatch`로
-갱신한다. 전달만으로 verified·저장 성공을 만들지 않는다. 안 보이거나 읽지 못한 값은 대기 상태를
-유지한다. `pending_verification_inputs`는 직전 배치뿐 아니라 같은 증거 범위의 누적 대기도
-포함하며, `remaining_inputs`는 미확인 목록이지 미입력 목록이 아니다.
+범위의 읽을 수 있는 값을 얻으면 `last_observation`을 갱신하고 기존 값 비교로 verified를
+갱신한다. delivery의 상태 문자열은 저장하지 않는다. `pending_screen_inputs()`는 관찰값이
+없거나 같은 범위의 관찰 순번이 마지막 전달 당시보다 나중이 아니면 확인 대기로 계산한다.
+실제 관찰 회차를 사용하므로 같은 캡처 ID나 같은 값만으로 재확인을 간주하지 않는다.
+전달만으로 verified·저장 성공을 만들지 않는다. `pending_verification_inputs`는 같은 범위의
+노드별 계산 결과를 합친다. 필드별 전달 기록이 없는 경로만 직전 전달 행동을 참고한다.
+`remaining_inputs`는 미확인 목록이지 미입력 목록이 아니다.
 
 `ScreenMapping.local_payload`는 현재 selected_fields를 교체한다. `ScreenScanner`는 모델의
 현재 매핑에 이전 노드 필드를 보충하지 않는다. 실행 중 pHash 카탈로그는 탐지 기하만 재사용하며,
@@ -115,7 +120,7 @@ relay가 입력 전달을 확인하면 `_accept_dispatched_action()`이 해당 �
 노드별 기억은 현재 실행 수명이며 이번 변경은 편찬물에 화면 트리를 저장하는 기능이 아니다.
 
 `observed_input_bindings()`는 현재 observation의 연결만 반환한다. `_remember_model_task_evidence`
-는 현재 매핑과 evidence로 읽은 값을 활성 노드 및 전체 업무 observed_inputs에 기록한다.
+는 현재 매핑과 evidence로 읽은 값을 활성 노드의 필드에 기록한다.
 안 보이는 필드의 마지막 관찰은 유지하며 다른 노드의 좌표에서 다시 읽지 않는다. 현재 읽은 값이
 입력 요구와 다르면 기존 verified 무효화는 유지한다. entry/saved_detail 범위를 보존하며 entry
 기억을 저장 후 증거로 승격하지 않는다. `notebook.remember()`가 노드·활성 경로를 JSON에 저장하고
@@ -124,11 +129,13 @@ screen_memory, 상태 소유자는 state, 소비자는 context_recall/notebook�
 변경하지 않는다. 이 기억은 현재 실행에 속하며 편찬물에 화면 트리를 영구 저장하는 기능은 아니다.
 
 `execution_context.last_delivered_actions`는 relay가 성공 응답한 직전 행동의
-`delivery_status=succeeded`, intent·입력 source와 출발 screen_kind,
+intent·입력 source와 출발 screen_kind,
 물리 action 종류, 의도한 subgoal을 전달한다. subgoal은 계획의 목적이며 관찰된 성공 사실이
 아니다. 과거 frame ref와 좌표를 현재 행동 대상으로 재노출하지 않는다.
-모델 문맥의 `awaiting_visual_result_review`는 행동이 실행 대기라는 뜻이 아니라
-현재 화면에서 그 결과를 확인할 차례임을 나타낸다. 내부 실행 상태 `pending`은 그대로다.
+이 목록은 execution 한 곳에만 전달한다. 고정 성공 플래그, 별도의 검토 대기 플래그,
+예상 verified 목록과 evidence_claims 원장은 모델 문맥에서 제외한다. 내부 실행 상태
+`pending`과 증거 원장의 무효화·소유권 판단은 유지한다. 실제 verified/remaining 목록은
+notebook에 한 번만 제공하며 scratchpad에 복사하지 않는다. 입력 키는 inputs 자체에서 읽는다.
 
 저장 후 상세 화면의 첫 관찰에서는 `scan()`이 해석과 다음 계획을 함께 생성한 뒤
 `_begin_saved_detail_review()`가 검토 범위와 교육 완료를 확정한다. 모델은 요청의 메모를 직전
