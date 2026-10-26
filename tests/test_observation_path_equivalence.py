@@ -30,6 +30,82 @@ class MissingRetrievedEvidence(AssertionError):
     """Only measured warm memo loss is expected, not setup or other failures."""
 
 
+class ObservationBlockedByPlan(AssertionError):
+    """Synthetic 106 replay reached the specific observation/plan coupling defect."""
+
+
+@pytest.mark.xfail(
+    strict=True, raises=ObservationBlockedByPlan, reason="106 undeclared click target"
+)
+def test_synthetic_106_click_declaration_must_not_discard_observation(tmp_path, record):
+    # Synthetic reduction of seq261/540, using public fixtures, not private ERP data.
+    declared = observed_response(record)
+    control, _ = prepare_worker(tmp_path / "declared", record, [declared])
+    control._observe()
+    assert control.observed_inputs["hbl_no"]["value"] == record.fields.hbl_no.value
+    assert control.visual_proposal.steps[0].point == [280, 75]
+    missing = deepcopy(declared)
+    del missing["fields"]["Continue"]
+    brain, model = prepare_worker(tmp_path / "missing", record, [missing])
+    try:
+        brain._observe()
+    except KeyError as exc:
+        assert exc.args == ("Continue",)
+        assert len(model.prompts) == 1
+        assert "hbl_no" not in brain.observed_inputs
+        raise ObservationBlockedByPlan("Valid observed value lost on undeclared click") from exc
+    assert brain.observed_inputs["hbl_no"]["value"] == record.fields.hbl_no.value
+    assert brain.visual_proposal.steps[0].point == [280, 75]
+
+
+@pytest.mark.xfail(
+    strict=True, raises=ObservationBlockedByPlan, reason="106 unused zero-size field"
+)
+def test_synthetic_106_unused_zero_area_must_not_discard_observation(tmp_path, record):
+    # Synthetic seq469: the added text field has no action, evidence or parent references.
+    valid = observed_response(record)
+    control, _ = prepare_worker(tmp_path / "valid", record, [valid])
+    control._observe()
+    expected = control.observed_inputs["hbl_no"]["value"]
+    invalid = deepcopy(valid)
+    invalid["fields"]["Unused title"] = {"role": "text", "bbox": [10, 8, 0, 0]}
+    brain, model = prepare_worker(tmp_path / "invalid", record, [invalid])
+    try:
+        brain._observe()
+    except ValueError as exc:
+        assert str(exc) == "visual_bbox_outside_capture"
+        assert len(model.prompts) == 1
+        assert "hbl_no" not in brain.observed_inputs
+        raise ObservationBlockedByPlan("Unreferenced zero-area text discarded valid field") from exc
+    assert brain.observed_inputs["hbl_no"]["value"] == expected
+
+
+@pytest.mark.xfail(
+    strict=True, raises=ObservationBlockedByPlan, reason="106 recovery uses old memo"
+)
+def test_synthetic_106_recovery_must_receive_current_observed_memory(tmp_path, record):
+    # Synthetic seq537/540: fake recovery does not prove how a real model would choose.
+    from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
+
+    first = observed_response(record)
+    first.update(steps=[], screen_path=["Registration", "Basic"])
+    final = deepcopy(first)
+    final["operation"] = "stop"
+    brain, model = prepare_worker(tmp_path / "recovery", record, [first, final])
+    brain._observe()
+    assert len(model.prompts) == 2
+    recovered = json.loads(model.prompts[1][len(CONTEXT_MAPPING_RULES) :])
+    assert "hbl_no" in recovered["recovery"]["matched_inputs"]
+    assert brain.observed_inputs["hbl_no"]["value"] == record.fields.hbl_no.value
+    assert brain.current_screen_path == first["screen_path"]
+    notebook = recovered["notebook"]
+    if "hbl_no" not in notebook["observed_inputs"]:
+        assert notebook["screen_nodes"] == {}
+        raise ObservationBlockedByPlan("Recovery sees matching evidence but pre-observation memo")
+    assert notebook["observed_inputs"]["hbl_no"]["value"] == record.fields.hbl_no.value
+    assert json.dumps(first["screen_path"]) in notebook["screen_nodes"]
+
+
 @pytest.mark.parametrize("compiled_hint", [False, True], ids=["run-local", "unscoped-compiled"])
 def test_synthetic_screen_nodes_isolate_tabs_and_refresh_current_fields(
     tmp_path, record, compiled_hint
