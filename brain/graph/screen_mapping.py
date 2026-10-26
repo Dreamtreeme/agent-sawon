@@ -409,7 +409,8 @@ Preserve the taught route and completion conditions. Requested instruction IDs r
 Batch ordered work grounded in this screen, including inputs followed by a submit/search command.
 Do not guess targets or results revealed only after a screen change; observe them in the next turn.
 If inputs are offscreen, use action=key with keys=pagedown (wheel down) or pageup
-(wheel up), choosing a point inside the scrollable region and its declared target.
+(wheel up), choosing a point inside the current image's scrollable region. The wheel point
+does not need to be inside the named field's bbox; the target names the current context.
 No preliminary focus click is required for this wheel action. click only clicks; writing
 "scroll" in purpose does not turn a click into scrolling. Do not request local refinement
 for an offscreen field: the same capture cannot reveal content outside the viewport.

@@ -17,6 +17,19 @@ class PointStep(Protocol):
     intent: str
     point: Sequence[float] | None
     source: str | None
+    keys: str | None
+
+
+def is_wheel_scroll(action: str, keys: str | None) -> bool:
+    return action == "key" and keys in {"pagedown", "pageup"}
+
+
+class VisualPointError(ValueError):
+    """A rejected, entirely undispatched proposal with its offending coordinates."""
+
+    def __init__(self, reason: str, detail: dict) -> None:
+        super().__init__(reason)
+        self.detail = {"type": reason, **detail}
 
 
 @dataclass(frozen=True)
@@ -38,19 +51,46 @@ class VisualPointBindings:
         prefix = "e" + str(observation.obs_id.int) + "0"
         elements = {element.ref: element for element in observation.elements}
         points = {}
-        for step in steps:
-            if step.point is None:
-                if step.action in {"click", "double_click"}:
-                    raise ValueError("visual_click_point_required")
-                continue
+        for index, step in enumerate(steps):
             ref = prefix + str(step.target)
             target = elements.get(ref)
-            if target is None:
-                raise ValueError("visual_click_point_unknown_target")
+            reason = None
+            if step.point is None:
+                if step.action in {"click", "double_click"}:
+                    reason = "visual_click_point_required"
+                else:
+                    continue
+            elif target is None:
+                reason = "visual_click_point_unknown_target"
+            else:
+                x, y = step.point
+                if is_wheel_scroll(step.action, step.keys):
+                    # Wheel input acts at an image point, not inside the named field.
+                    shot = observation.screenshot
+                    if shot is None or not (0 <= x < shot.width and 0 <= y < shot.height):
+                        reason = "visual_point_outside_capture"
+                else:
+                    left, top, width, height = target.bbox
+                    if not (left <= x < left + width and top <= y < top + height):
+                        reason = "visual_click_point_outside_target"
+            if reason is not None:
+                shot = observation.screenshot
+                raise VisualPointError(
+                    reason,
+                    {
+                        "loc": ["steps", index, "point"],
+                        "action": step.action,
+                        "keys": step.keys,
+                        "target": step.target,
+                        "target_name": target.name if target is not None else None,
+                        "target_bbox": list(target.bbox) if target is not None else None,
+                        "point": list(step.point) if step.point is not None else None,
+                        "image_size": [shot.width, shot.height] if shot is not None else None,
+                        "plan_delivery": "not_dispatched",
+                        "delivered_actions": 0,
+                    },
+                )
             x, y = step.point
-            left, top, width, height = target.bbox
-            if not (left <= x < left + width and top <= y < top + height):
-                raise ValueError("visual_click_point_outside_target")
             action = "set_text" if step.action == "fill" else step.action
             source = step.source if step.action == "fill" else None
             bound = BoundVisualPoint(str(observation.obs_id), ref, action, step.intent, (x, y))

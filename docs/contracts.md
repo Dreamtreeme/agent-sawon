@@ -279,6 +279,20 @@ after obs ID와 독립적으로 확인한 사실을 보존한다. 별도 사실�
 
 ## 화면 전용 공개 관찰
 
+### 화면 행동의 좌표와 거절 피드백
+
+`VisualPointBindings.bind`는 click·fill·일반 key의 명시 좌표를 선언한 컨트롤 bbox에
+결합한다. `key+pagedown/pageup`은 휠 동작이므로 컨트롤 bbox 대신 현재 캡처 범위에서
+좌표를 검증한다. 의미 대상 ref는 현재 관찰에 존재해야 하지만 휠 위치를 그 필드 안으로
+옮기지 않는다. 실행기는 동일한 `is_wheel_scroll` 판정으로 휠 명령을 생성한다.
+현재 창·프레임 갱신과 relay의 좌표 범위·전경 검사는 유지한다.
+
+좌표 결합은 계획 전체의 전달 전에 수행한다. `VisualPointError`는 실패한 steps 인덱스
+(0부터 시작), 행동·키·대상 이름·bbox·point·image_size를 보존한다. `_select_node`가
+기존 `_fail(validation_errors=...)` 경계로 이를 전달하여 다음 모델 요청에 포함한다.
+`plan_delivery=not_dispatched`, `delivered_actions=0`은 해당 계획의 앞선 입력도 미전달임을
+뜻한다. 부분 실행, 재시도 횟수, 완료 판정은 변경하지 않는다.
+
 relay의 `Observation`은 `visual_only` 캡처 봉투이며 `elements=[]`이다. 화면이
 차단되지 않았다면 창과 캡처 geometry가 필요하다. `SceneObservation`만 OCR 의미
 요소와 부모·행 관계를 가진다. `UIElement`에는 외부 자동화 식별자 필드가 없다.

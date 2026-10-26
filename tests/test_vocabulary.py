@@ -3,6 +3,7 @@
 ScreenPlan/ScreenMatch fixtures add screen_path for node-scoped memory (2026-10-24).
 ActionTransition adds an unknown structural effect on 2026-10-26; intents are unchanged.
 ScreenMatch/ScreenPlan add wheel-key documentation on 2026-10-26; values are unchanged.
+MatchAction-family point descriptions distinguish wheel regions on 2026-10-26.
 Intent schema fixtures were captured from pre-consolidation commit 6ab16c3.
 Decision-family fixtures now describe capture-bound physical input (2026-10-24).
 ScreenMatch/ScreenPlan were updated on 2026-10-21 to expose needs_refinement for scanning fallback.
@@ -121,10 +122,10 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
             "4bb02cfe9fbffb82400d576b99007a631014b3ce54e807dae954cc07a29caa26",
         ),
         (ActionCapability, "b4169d25a010e0a3e3979cffe29a8c38e73e1c328f52e298d364d32412fc7d06"),
-        (MatchAction, "e1141149898cddcf1a0dcd4019971be67d87c8038d77ee946b7ac9f26309e59b"),
+        (MatchAction, "e5247c320d25596a20050602b7627698974052fcb178bff6e158e7f7c16af5ef"),
         (
             TargetedMatchAction,
-            "75145be6d606bba3fb0115feda23d5222595748319343efbe7b67308fa4ea259",
+            "010d16ae1c205f2e97b7661173dd1ff9f35ba34aa17a3d6b0a4165447c6f755c",
         ),
         (ScreenPlan, "a169726a966eccbd9f6e2a99e1a8040cedd7c2ab5850f1bc485358675528231c"),
         (ScreenMatch, "a169726a966eccbd9f6e2a99e1a8040cedd7c2ab5850f1bc485358675528231c"),

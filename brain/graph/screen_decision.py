@@ -79,7 +79,9 @@ class MatchAction(BaseModel):
         min_length=2,
         max_length=2,
         description=(
-            "Original-image [x,y] point inside target. Required for click/double_click and for "
+            "Original-image [x,y] point inside target, except pagedown/pageup wheel points "
+            "which may be anywhere in the current image's scrollable region. "
+            "Required for click/double_click and for "
             "every action whose target is a model-created control without a local marker."
         ),
     )

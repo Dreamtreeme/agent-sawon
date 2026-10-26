@@ -122,6 +122,7 @@ from .transitions import (
     expected_effect,
     exploration_action_key,
 )
+from .visual_points import VisualPointError
 from .workflow import build_worker_graph
 
 ModelResponseT = TypeVar("ModelResponseT", bound=BaseModel)
@@ -970,6 +971,12 @@ class Brain:
         }
         if validation_errors is not None:
             feedback["validation_errors"] = validation_errors
+            if reason.startswith("selection_error:visual_"):
+                feedback["required_response"] = (
+                    "The entire proposed plan was rejected before dispatch; none of its actions "
+                    "were executed. Correct the step identified by validation_errors.loc using "
+                    "its point, target_bbox and image_size, then resubmit the needed actions."
+                )
 
         if reason == "duplicate_evidence_required":
             feedback["required_response"] = DUPLICATE_EVIDENCE_GUIDANCE
@@ -1879,7 +1886,10 @@ class Brain:
             record_rejection(
                 self.log, "engine._select_node", exc, response=self.visual_proposal or self.decision
             )
-            return self._fail("selection_error:" + str(exc))
+            return self._fail(
+                "selection_error:" + str(exc),
+                validation_errors=[exc.detail] if isinstance(exc, VisualPointError) else None,
+            )
         except Exception as exc:
             record_rejection(
                 self.log, "engine._select_node", exc, response=self.visual_proposal or self.decision

@@ -4,7 +4,7 @@ from test_visual_scene import wire
 
 from brain.graph.schemas import Choice, Decision
 from brain.graph.screen_decision import MatchAction
-from brain.graph.visual_points import VisualPointBindings
+from brain.graph.visual_points import VisualPointBindings, VisualPointError
 from brain.visual.scene import SceneObservation
 
 
@@ -96,3 +96,49 @@ def test_points_are_scoped_to_frame_and_input_source():
         )
         assert bindings.get(observation, selected).point == point, source
         assert bindings.get(scene(), selected) is None, source
+
+
+@pytest.mark.parametrize("keys", ["pagedown", "pageup"])
+def test_wheel_uses_image_point_outside_named_control_but_rejects_outside_capture(keys):
+    observation = scene()
+    bindings = VisualPointBindings()
+    step = MatchAction(target=8, action="key", intent="navigate", keys=keys, point=(300, 150))
+    bindings.bind(observation, [step])
+    selected = decision(observation).model_copy(
+        update={
+            "intent": "navigate",
+            "action": Choice(type="key", ref=observation.elements[0].ref, keys=keys),
+        }
+    )
+    assert bindings.get(observation, selected).point == (300, 150)
+    with pytest.raises(VisualPointError, match="outside_capture") as error:
+        bindings.bind(observation, [step.model_copy(update={"point": [400, 150]})])
+    assert error.value.detail["image_size"] == [400, 200]
+    assert error.value.detail["plan_delivery"] == "not_dispatched"
+
+
+@pytest.mark.parametrize(
+    ("action", "intent", "source", "keys"),
+    [
+        ("click", "navigate", None, None),
+        ("fill", "fill", "hbl_no", None),
+        ("key", "navigate", None, "enter"),
+    ],
+)
+def test_wheel_exception_does_not_relax_other_control_points(action, intent, source, keys):
+    with pytest.raises(VisualPointError, match="outside_target") as error:
+        VisualPointBindings().bind(
+            scene(),
+            [
+                MatchAction(
+                    target=8,
+                    action=action,
+                    intent=intent,
+                    source=source,
+                    keys=keys,
+                    point=(300, 150),
+                )
+            ],
+        )
+    assert error.value.detail["loc"] == ["steps", 0, "point"]
+    assert error.value.detail["target_bbox"] == [20, 30, 200, 40]

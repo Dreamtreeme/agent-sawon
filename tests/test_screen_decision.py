@@ -211,6 +211,71 @@ def matching_contract(brain, screen=None):
     return brain._screen_decision_request(screen, None), services
 
 
+@pytest.mark.parametrize("last_action", ["wheel", "invalid-click"])
+def test_synthetic_fill_then_wheel_crosses_point_binding_or_reports_undispatched_plan(
+    tmp_path, record, last_action
+):
+    # Synthetic equivalent of 113's mixed proposal; uses the existing fake model/relay.
+    from sawon_interfaces import UIElement
+
+    brain, model, *_ = setup_brain(tmp_path, record, [])
+    observed = wire()
+    ref = "e" + str(observed.obs_id.int) + "01"
+    brain.phase = "task"
+    brain.observation = SceneObservation(
+        wire=observed,
+        screen_kind="editor",
+        elements=[UIElement(ref=ref, role="edit", name="Reference", bbox=(20, 30, 200, 40))],
+    )
+    brain.visual_proposal_obs_id = observed.obs_id
+    brain.visual_proposal = ScreenMatch(
+        screen_kind="editor",
+        controls=[],
+        procedure_step="task-action",
+        steps=[
+            {
+                "target": 1,
+                "action": "fill",
+                "intent": "fill",
+                "source": "hbl_no",
+                "point": [100, 50],
+            },
+            {
+                "target": 1,
+                "action": "key" if last_action == "wheel" else "click",
+                "intent": "navigate",
+                "keys": "pagedown" if last_action == "wheel" else None,
+                "point": [300, 150],
+            },
+        ],
+    )
+    route = brain._select_node()
+    if last_action == "wheel":
+        assert route == "review"
+        actions = [
+            brain._wire_action(
+                item.decision.action, item.decision, fresh_observation=observed, log_renewal=False
+            ).root
+            for item in brain.action_plan.actions
+        ]
+        assert [a.type for a in actions] == ["set_text", "scroll"]
+        assert actions[1].target.image_point == (300, 150)
+        assert actions[1].wheel_delta == -600
+    else:
+        assert route == "observation" and brain.action_plan is None
+        request, services = matching_contract(brain)
+        feedback = build_decision_prompt(request, services).state["notebook"]["recent_feedback"][-1]
+        detail = feedback["validation_errors"][0]
+        assert detail["loc"] == ["steps", 1, "point"]
+        assert detail["target_name"] == "Reference"
+        assert detail["target_bbox"] == [20, 30, 200, 40]
+        assert detail["point"] == [300, 150] and detail["image_size"] == [400, 200]
+        assert detail["plan_delivery"] == "not_dispatched" and detail["delivered_actions"] == 0
+        assert "none of its actions" in feedback["required_response"]
+    assert model.prompts == []
+    assert not [e for e in brain.log.read_all() if e.kind == "act"]
+
+
 def test_method_grounding_failure_retries_visual_cache_or_model_once(
     tmp_path, record, task_instruction, monkeypatch
 ):

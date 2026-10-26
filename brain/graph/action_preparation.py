@@ -16,6 +16,7 @@ from sawon_runtime.storage import RunLog
 from .execution import GuardStop
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision
+from .visual_points import is_wheel_scroll
 
 TEXT_INPUT_ROLES = frozenset({"edit", "combobox", "dataitem", "cell"})
 
@@ -48,9 +49,7 @@ def validate_action_guard(request: ActionGuardRequest) -> None:
     by_ref = {item.ref: item for item in observation.elements}
     target = by_ref.get(choice.ref)
     point_only_scroll = bool(
-        isinstance(observation, SceneObservation)
-        and choice.type == "key"
-        and choice.keys in {"pagedown", "pageup"}
+        isinstance(observation, SceneObservation) and is_wheel_scroll(choice.type, choice.keys)
     )
     if choice.type not in {"wait", "focus_window"} and (
         target is None or (not target.enabled and not point_only_scroll)
@@ -284,7 +283,7 @@ def wire_action(request: ActionWiringRequest, services: ActionWiringServices) ->
             choice.source, ""
         )
     elif choice.type == "key":
-        if isinstance(observation, SceneObservation) and choice.keys in {"pagedown", "pageup"}:
+        if isinstance(observation, SceneObservation) and is_wheel_scroll(choice.type, choice.keys):
             data["type"] = "scroll"
             data["wheel_delta"] = -600 if choice.keys == "pagedown" else 600
         else:
