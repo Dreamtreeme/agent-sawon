@@ -240,6 +240,26 @@ OCR은 pHash 거리와 관계없이 매 캡처에서 다시 실행한다. 따라
 입력칸 값 OCR은 독립 검출기의 작은 경계 오차를 허용하기 위해 OCR 상자의 85% 이상이 해당
 `edit`/`combobox` 영역에 포함되면 연결한다. 일반 텍스트와 구조 부모의 포함 계약은 바꾸지 않는다.
 
+### 행동 전후 구조 변화
+
+생산자는 `brain/observe/progress.py:compare_navigation`과
+`brain/visual/frame_change.py:compare_frames`, 소비자는 `Brain._verify_node`이다.
+현재 캡처와 `PendingAction.before_observation`의 캡처를 비교한다. 기존 `navigation_state`는
+이력 묶음의 키로만 사용하며 그 지문의 불일치를 행동 효과로 사용하지 않는다.
+
+ORB는 긴 변 최대 960px, 특징점 최대 1,200개, Hamming 최근접 비율 0.75를 사용한다.
+대응점 20개 이상에서 3px 넘게 이동한 비율이 0.15보다 크거나 대응점 커버리지가 0.5보다
+작으면 구조 변화로 기록한다. 창이나 캡처 크기의 변화도 구분해 기록한다. 캡처 누락과
+대응점 부족은 `changed=null`이며 이동 성공이나 무진행으로 확정하지 않는다.
+이미지 없는 주입 관찰은 기존 의미 관찰 비교를 유지한다.
+
+`verify/check=screen_structure_comparison`에는 비교한 두 obs ID, 방법·사유·판정과 ORB의
+대응점 수·커버리지·이동 비율·계산 시간을 남긴다. `ActionTransition.observed_effect`의
+`unknown`은 관찰은 했지만 구조 변화가 불확실한 경우다. `unchecked`(관찰 전)와 달리
+after obs ID와 독립적으로 확인한 사실을 보존한다. 별도 사실이 없다면 기억 실행 검토에
+`success=None`을 전달하고 해당 행동을 성공한 캐시로 승격하지 않는다.
+입력 검증·저장 결과·완료 검토와 pHash 기반 기억 인출·좌표 재결합 계약은 바꾸지 않는다.
+
 ## 화면 전용 공개 관찰
 
 relay의 `Observation`은 `visual_only` 캡처 봉투이며 `elements=[]`이다. 화면이

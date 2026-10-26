@@ -207,6 +207,7 @@ class ExpectedEffect(StrEnum):
 
 class ObservedEffect(StrEnum):
     UNCHECKED = "unchecked"
+    UNKNOWN = "unknown"
     NO_CHANGE = "no_change"
     CHANGED = "changed"
     INPUT_VALUE_MATCHES = "input_value_matches"

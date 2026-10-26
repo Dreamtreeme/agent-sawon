@@ -26,7 +26,12 @@ from brain.observe.evidence import (
     matching_elements,
     observed_input_surface,
 )
-from brain.observe.progress import navigation_state, navigation_target, semantic_target_key
+from brain.observe.progress import (
+    compare_navigation,
+    navigation_state,
+    navigation_target,
+    semantic_target_key,
+)
 from brain.observe.values import field_matches as field_matches
 from brain.observe.values import values_for as values_for
 from brain.relay import Relay
@@ -2595,9 +2600,11 @@ class Brain:
         observation: Observation,
         decision: Decision,
         observed_state: str,
-        changed: bool,
+        changed: bool | None,
     ) -> tuple[WorkerNode | None, bool | None]:
         if decision.intent not in {"navigate", "select_tab", "login"}:
+            return None, None
+        if changed is None:
             return None, None
         if not changed:
             self.pending = None
@@ -2868,7 +2875,12 @@ class Brain:
             decision,
             choice,
             observed_effect,
-            bool(navigation_change or observed_effect != ObservedEffect.NO_CHANGE),
+            bool(
+                navigation_change
+                or new_facts
+                or observed_effect
+                not in {ObservedEffect.NO_CHANGE, ObservedEffect.UNCHECKED, ObservedEffect.UNKNOWN}
+            ),
             new_facts,
         )
         self._begin_saved_detail_review(self.observation.screen_kind)
@@ -3041,8 +3053,22 @@ class Brain:
             choice: Choice = self.pending["choice"]
             decision: Decision = self.pending["decision"]
             observed_state = navigation_state(observation)
-            changed = observed_state != self.pending["source_navigation_state"]
-            observed_effect = ObservedEffect.CHANGED if changed else ObservedEffect.NO_CHANGE
+            comparison = compare_navigation(
+                pending["before_observation"], observation, self.case_dir
+            )
+            self.log.append(
+                "verify",
+                payload={
+                    "check": "screen_structure_comparison",
+                    "before_obs_id": str(pending["before_observation"].obs_id),
+                    "after_obs_id": str(observation.obs_id),
+                    **comparison,
+                },
+            )
+            changed = comparison["changed"]
+            observed_effect = ObservedEffect.UNKNOWN
+            if changed is not None:
+                observed_effect = ObservedEffect.CHANGED if changed else ObservedEffect.NO_CHANGE
             if (
                 self.phase in {"duplicate_query", "final_query"}
                 and decision.intent == "search"
@@ -3098,7 +3124,13 @@ class Brain:
                 new_facts,
             )
 
-            method_effect_verified = bool(new_facts or observed_effect != ObservedEffect.NO_CHANGE)
+            method_effect_verified = bool(
+                new_facts
+                or observed_effect
+                not in {ObservedEffect.NO_CHANGE, ObservedEffect.UNCHECKED, ObservedEffect.UNKNOWN}
+            )
+            if observed_effect == ObservedEffect.UNKNOWN and not new_facts:
+                method_effect_verified = None
             if method_effect_verified:
                 self._stage_visual_match_candidate(pending)
             self.pending = None

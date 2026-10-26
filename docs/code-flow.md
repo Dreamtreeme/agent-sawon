@@ -42,7 +42,9 @@ flowchart TD
 
 - **Observation**: relay 캡처 직후 화면 유사도를 확인합니다. 일치한 기억에서 필드 기하를
   인출하거나 OmniParser로 탐색하고, 현재 값은 GPU OCR로 읽습니다. 직전 행동이 있으면
-  새 관찰에서 전달 효과를 확인합니다.
+  새 관찰에서 전달 효과를 확인합니다. 구조·위치 변화는 `compare_navigation` →
+  `compare_frames`의 ORB 비교로, 값과 업무 결과는 기존 증거 검토로 확인합니다.
+  이 비교는 추가 모델 호출을 만들지 않습니다.
 - **Decision**: Observation에서 생성한 화면 계획을 공통 실행 계약으로 확정합니다. 계획이
   없거나 다시 판단해야 하면 같은 `screen_decision` 경로로 들어갑니다. 현재 `screen_matching`
   설정은 화면 해석과 다음 행동을 한 응답으로 얻으므로 최초 모델 판단은 Observation 안에서 일어납니다.

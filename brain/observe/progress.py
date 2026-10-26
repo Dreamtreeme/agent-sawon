@@ -2,8 +2,11 @@
 
 import hashlib
 import json
+from pathlib import Path
 
 from sawon_interfaces import Observation, UIElement
+
+from brain.visual.frame_change import compare_frames
 
 from .summary import ancestors
 from .values import compact_normalize
@@ -42,12 +45,7 @@ def semantic_target_key(target: dict) -> str:
 
 
 def navigation_state(observation: Observation) -> str:
-    """Hash the visible semantic tree, preserving duplicate nodes and ancestry.
-
-    Coordinates, AutomationIds, screenshots, provider hashes, focus and ephemeral
-    refs are not evidence that a navigation reached its intended destination.
-    A different fingerprint is only an observed change, never task completion.
-    """
+    """Identify a history bucket, not an action effect or screen-node identity."""
     capture_phash = getattr(observation, "capture_phash", None)
     if capture_phash is not None:
         # Model-selected fields can change between plans on identical pixels.
@@ -89,3 +87,22 @@ def navigation_state(observation: Observation) -> str:
     return hashlib.sha256(
         json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
+
+
+def compare_navigation(before: Observation, after: Observation, case_dir: Path) -> dict:
+    """Compare actual captures independently of the model's changing interpretation."""
+    old_window = before.active_window.handle if before.active_window else None
+    new_window = after.active_window.handle if after.active_window else None
+    if old_window != new_window:
+        return {"method": "window", "changed": True, "reason": "window_changed"}
+    if all(getattr(scene, "capture_phash", None) is None for scene in (before, after)):
+        # Injected semantic observations without captured perception retain their contract.
+        return {
+            "method": "semantic",
+            "changed": navigation_state(before) != navigation_state(after),
+            "reason": "semantic_observations",
+        }
+    return compare_frames(
+        case_dir / "visual" / str(before.obs_id) / "capture.png",
+        case_dir / "visual" / str(after.obs_id) / "capture.png",
+    )

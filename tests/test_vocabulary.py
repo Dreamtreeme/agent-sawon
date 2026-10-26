@@ -1,6 +1,7 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
 ScreenPlan/ScreenMatch fixtures add screen_path for node-scoped memory (2026-10-24).
+ActionTransition adds an unknown structural effect on 2026-10-26; intents are unchanged.
 Intent schema fixtures were captured from pre-consolidation commit 6ab16c3.
 Decision-family fixtures now describe capture-bound physical input (2026-10-24).
 ScreenMatch/ScreenPlan were updated on 2026-10-21 to expose needs_refinement for scanning fallback.
@@ -149,7 +150,7 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
         ),
         (
             ActionTransition,
-            "c404fb5002795b76bd371d98f05b532a6f9cc039addc891d5faf90dab905dda6",
+            "5642cfb971fb5602a6725895b10ea6579aeacf50d04a4f620c1f5f0b2dc6b1ad",
         ),
     ],
 )
