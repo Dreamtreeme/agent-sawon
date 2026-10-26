@@ -378,7 +378,7 @@ Screen similarity is checked first. A match retrieves field geometry through Mem
 a miss uses Scanning to discover it. Context Recall restores this run's history and progress;
 Pattern Matching then binds known procedures to this situation before this action decision.
 First identify screen_path from the CURRENT image: parent window and active tab/subview.
-Use the same names as notebook.screen_nodes when returning to a known view. A scroll stays
+Use the same names as notebook.screen_tree when returning to a known view. A scroll stays
 in the same node; another tab selects a sibling. Do not invent contents of unopened tabs.
 Select the node before interpreting fields. Only that node's remembered fields belong to
 this view; other nodes are historical context, not visible fields. Return all currently
@@ -386,6 +386,14 @@ readable business fields and their assignments, including fields not used by the
 Prior geometry is a hint, never a current observation. Reground fields on the current image.
 An empty screen_path means unidentified and must not select the previous node implicitly.
 Remembered fields are candidates, not proof of the current node or current values.
+screen_tree organizes visited parent screens and children, their discovered fields and controls.
+seen_in_last_view refers to that node's LAST observation, not this new screenshot. History has no
+current action coordinates: get visible targets from this image, and navigate to hidden targets.
+Each field's last_observation is what was read; delivery is what was successfully sent there.
+delivery.status=awaiting_observation means already entered but not reread, even after scrolling or
+other inputs. Do not treat it as never entered. Observe it when needed; correct only from evidence.
+remaining_inputs means not yet verified, not necessarily blank or not entered. Use the tree's
+delivery and observation together. Entry facts do not prove saved_detail completion.
 Retrieved procedures describe learned actions, not actions already completed in this run.
 Combine them with this run's inputs, notebook and visible evidence to choose the next action.
 If a required visible control is missing from the candidates, return needs_refinement=true

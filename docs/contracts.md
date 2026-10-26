@@ -20,6 +20,7 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | 기억 편찬 응답 | `brain/demo_learning/memory_compilation.py`의 `MemoryAssembly` / `MemoryGroupSelection` | 모델 클라이언트, `compile_memory` | 후보 ID로 성공 행동을 선택. context_anchors는 타입 검증 후 첫 8개를 보존하고 초과분 경고 기록 |
 | 인출된 화면·행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup` | `method_from_match`, `compile_memory`, `MemoryRetrieval`, `screen_decision` | 행동 좌표, 관찰 필드 기하·입력 키, 저장 결과 분류·메시지 대상을 보존하고 현재 화면에 결합 |
 | 실행 문맥 회상 | `brain/graph/context_recall.py`의 `recall_context` | `screen_decision.build_decision_prompt` | 이번 실행의 이력·누적 증거·남은 입력·진행 상태를 읽음. 선택·모델 호출·상태 변경 없음 |
+| 화면 트리 기억 | `brain/graph/screen_memory.py`, `ProgressState.screen_nodes` | engine, context_recall, notebook | 방문한 경로별 필드·컨트롤 발견과 입력 전달 이력을 누적. 모델용 트리는 같은 상태에서 파생하며 과거 좌표를 포함하지 않음 |
 | 재탐색 요청 | `ScreenMapping.needs_refinement` → `ScreenPlan`/`ScreenMatch` → `SemanticDetection` | `ScreenScanner._resolve` | 필요한 보이는 컨트롤이 없으면 동일 캡처·OCR로 탐색 재진입. provider 스키마에도 존재 |
 | pHash 유사 캡처의 화면 해석 | `SemanticRequest` / `_SceneCatalog` | `Brain._detect_visual` → `screen_decision` | 로컬 탐지 기하는 재사용하고 OCR은 현재 프레임에서 다시 실행. 현재 문맥·판단은 공통 순서로 수행 |
 | 관찰 경로 선택 | `ScreenScanner.scan` / `MemoryRetrieval.retrieve_screen_memory` | `_SceneCatalog`, `screen_decision` | 캡처 직후 유사도 확인 → 메모리 기하 또는 탐지. 행동 선택은 아직 하지 않음 |
@@ -84,12 +85,28 @@ flowchart LR
 의미 경로다. 기존 이름을 재사용하고 스크롤은 같은 경로를 유지한다. 빈 경로는 미식별이며
 이전 경로를 자동 승계하지 않는다. 이 필드는 기존 화면 판단 응답에 포함되며 추가 호출은 없다.
 
-`ProgressState.screen_nodes`는 경로의 JSON 문자열을 키로, path·업무 키별 fields(라벨·role·bbox·
-관찰 ID)·observed_inputs를 보관한다. 부모 경로도 생성하지만 열어보지 않은 탭의 내용은 만들지
-않는다. `current_screen_path`는 마지막 해석한 화면이며 다음 캡처의 정체성을 보증하지 않는다.
-`context_recall`은 이를 previous_screen_path로 표시하고 모든 노드의 과거 사실을 업무 문맥으로
-전달한다. 모델은 현재 노드를 먼저 선택하고 그 노드의 기억을 참고해 현재 보이는 필드만 응답한다.
-좌표는 마지막 관찰 위치이지 다음 캡처에 바로 적용할 절대 위치가 아니다.
+`ProgressState.screen_nodes`는 화면 트리의 단일 상태 저장소이며 경로의 JSON 문자열로
+인덱싱한다. 노드는 path·업무 키별 fields·이름별 controls·observed_inputs를 보관한다.
+`screen_memory.remember_screen()`은 방문한 부모/자식 경로를 만들고 발견한 항목을 누적한다.
+스크롤 뒤 보이지 않는 필드는 삭제하지 않으며 새 관찰 위치는 같은 필드에 갱신한다.
+버튼과 탭도 controls에 기억하지만 열어보지 않은 탭의 자식 내용은 만들지 않는다.
+라벨·role·bbox·관찰 ID는 마지막 관찰 기록이며 bbox는 스크롤을 보정한 절대좌표가 아니다.
+
+`context_recall`은 같은 상태에서 `screen_tree`를 파생해 부모 이름 → children → 자식 이름의
+중첩 JSON으로 전달한다. 필드는 업무 키로 연결하고 label·role·last_observation·delivery를
+노출한다. `seen_in_last_view`는 해당 노드의 마지막 관찰에 포함됐다는 뜻이며 현재 캡처의
+가시성을 보증하지 않는다. 과거 bbox·ref·관찰 ID는 이 모델용 트리에서 제외한다. 모델은 현재
+이미지와 OCR에서 현재 노드와 좌표를 다시 연결한다. `previous_screen_path`도 직전 해석이며
+다음 캡처의 정체성이 아니다. 트리는 읽기 전용 투영으로 별도 상태 복사본을 유지하지 않는다.
+
+relay가 입력 전달을 확인하면 `_accept_dispatched_action()`이 해당 노드·필드의 delivery에
+전달값·관찰 ID·entry/saved_detail 범위·`awaiting_observation`을 기록한다. 다음 입력 배치가
+실행돼도 이 이력은 남는다. 실패한 입력은 기록하지 않으며 부분 전달은 성공한 접두부만 기록한다.
+전달 처리 뒤 `notebook.remember()`로 기존 JSON 파일에 저장한다. 후속 관찰에서 같은 노드와
+범위의 읽을 수 있는 값을 얻으면 기존 값 비교로 `observed_match` 또는 `observed_mismatch`로
+갱신한다. 전달만으로 verified·저장 성공을 만들지 않는다. 안 보이거나 읽지 못한 값은 대기 상태를
+유지한다. `pending_verification_inputs`는 직전 배치뿐 아니라 같은 증거 범위의 누적 대기도
+포함하며, `remaining_inputs`는 미확인 목록이지 미입력 목록이 아니다.
 
 `ScreenMapping.local_payload`는 현재 selected_fields를 교체한다. `ScreenScanner`는 모델의
 현재 매핑에 이전 노드 필드를 보충하지 않는다. 실행 중 pHash 카탈로그는 탐지 기하만 재사용하며,
@@ -102,8 +119,9 @@ flowchart LR
 안 보이는 필드의 마지막 관찰은 유지하며 다른 노드의 좌표에서 다시 읽지 않는다. 현재 읽은 값이
 입력 요구와 다르면 기존 verified 무효화는 유지한다. entry/saved_detail 범위를 보존하며 entry
 기억을 저장 후 증거로 승격하지 않는다. `notebook.remember()`가 노드·활성 경로를 JSON에 저장하고
-`context_recall`이 다음 요청에 전달한다. 모델 경계·생산자는 screen_mapping/scanning/engine,
-상태 소유자는 state, 소비자는 context_recall/notebook이다. 공개 relay 계약은 변경하지 않는다.
+`context_recall`이 다음 요청에 전달한다. 모델 경계·생산자는 screen_mapping/scanning/engine와
+screen_memory, 상태 소유자는 state, 소비자는 context_recall/notebook이다. 공개 relay 계약은
+변경하지 않는다. 이 기억은 현재 실행에 속하며 편찬물에 화면 트리를 영구 저장하는 기능은 아니다.
 
 `execution_context.last_delivered_actions`는 relay가 성공 응답한 직전 행동의
 `delivery_status=succeeded`, intent·입력 source와 출발 screen_kind,

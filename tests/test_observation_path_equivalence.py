@@ -100,10 +100,10 @@ def test_synthetic_106_recovery_must_receive_current_observed_memory(tmp_path, r
     assert brain.current_screen_path == first["screen_path"]
     notebook = recovered["notebook"]
     if "hbl_no" not in notebook["observed_inputs"]:
-        assert notebook["screen_nodes"] == {}
+        assert notebook["screen_tree"] == {}
         raise ObservationBlockedByPlan("Recovery sees matching evidence but pre-observation memo")
     assert notebook["observed_inputs"]["hbl_no"]["value"] == record.fields.hbl_no.value
-    assert json.dumps(first["screen_path"]) in notebook["screen_nodes"]
+    assert "Basic" in notebook["screen_tree"]["Registration"]["children"]
 
 
 @pytest.mark.parametrize("compiled_hint", [False, True], ids=["run-local", "unscoped-compiled"])
@@ -189,8 +189,21 @@ def test_synthetic_screen_nodes_isolate_tabs_and_refresh_current_fields(
     memo = json.loads((brain.case_dir / "task-notebook.json").read_text(encoding="utf-8"))
     assert memo["screen_nodes"] == brain.screen_nodes
     assert len(model.prompts) == 6  # No extra model call for choosing a node.
-    assert '"screen_nodes"' in model.prompts[2]
+    assert '"screen_tree"' in model.prompts[2]
     assert record.fields.mbl_no.value in model.prompts[2]
+    from brain.graph.screen_memory import recall_screen_tree
+
+    before_projection = deepcopy(brain.screen_nodes)
+    tree = recall_screen_tree(brain.screen_nodes)
+    tabs = tree["Registration"]["children"]
+    assert set(tabs) == {"Basic", "Additional"}
+    assert set(tabs["Basic"]["fields"]) == {"hbl_no"}
+    assert set(tabs["Additional"]["fields"]) == {"mbl_no"}
+    assert "Continue" in tabs["Basic"]["controls"]
+    assert not tabs["Basic"]["fields"]["hbl_no"]["seen_in_last_view"]
+    assert "bbox" not in json.dumps(tree)
+    tree["Registration"]["children"]["Basic"]["fields"]["hbl_no"]["label"] = "changed"
+    assert brain.screen_nodes == before_projection
 
 
 def observed_response(record):
@@ -207,6 +220,169 @@ def observed_response(record):
         evidence=[],
         steps=[{"target": "Continue", "action": "click", "intent": "navigate", "point": [280, 75]}],
     )
+
+
+def test_synthetic_116_screen_tree_keeps_delivered_inputs_across_scrolls(tmp_path, record):
+    # Synthetic reduction of 116: fake model/relay, real observe/plan/dispatch/memory functions.
+    from sawon_interfaces import ActionResult
+
+    from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
+
+    def view(name, source, value, *, steps, bbox=(100, 15, 150, 30)):
+        return named_response(
+            screen_kind="editor",
+            screen_path=["Registration", "Details"],
+            fields={name: {"role": "edit", "bbox": list(bbox), "value": value}},
+            assignments={name: source},
+            steps=steps,
+            operation="act" if steps else "stop",
+        )
+
+    upper = view(
+        "Reference",
+        "hbl_no",
+        "",
+        steps=[
+            {"target": "Reference", "action": "fill", "intent": "fill", "point": [175, 30]},
+            {
+                "target": "Reference",
+                "action": "key",
+                "intent": "navigate",
+                "keys": "pagedown",
+                "point": [300, 130],
+            },
+        ],
+    )
+    lower = view(
+        "Master",
+        "mbl_no",
+        "",
+        steps=[{"target": "Master", "action": "fill", "intent": "fill", "point": [175, 30]}],
+    )
+    lower_done = view("Master", "mbl_no", record.fields.mbl_no.value, steps=[])
+    upper_done = view(
+        "Reference", "hbl_no", record.fields.hbl_no.value, steps=[], bbox=(100, 65, 150, 30)
+    )
+    brain, model, relay, *_ = setup_brain(tmp_path, record, [upper, lower, lower_done, upper_done])
+    brain.settings = brain.settings.model_copy(
+        update={"guard_mode": "observe_only", "visual_model_only_review": True}
+    )
+    sent = []
+
+    def fake_act(action):
+        sent.append(action.root)
+        if action.root.type == "scroll":
+            relay.color = "black"
+        return ActionResult(
+            action_id=action.root.action_id,
+            ok=True,
+            duration_ms=0,
+            post_obs_id=relay.current.obs_id,
+        )
+
+    relay.act = fake_act
+    brain._observe()
+    for label in ["upper then scroll", "lower input"]:
+        assert brain._select_node() == "review", label
+        assert brain._review_node() == "execution", label
+        assert brain._act_node() == "observation", label
+        persisted = json.loads((tmp_path / "task-notebook.json").read_text(encoding="utf-8"))
+        entries = persisted["screen_nodes"][json.dumps(["Registration", "Details"])]["fields"]
+        assert entries["hbl_no"]["delivery"]["status"] == "awaiting_observation", label
+        assert brain._verify_node() == "review", label
+
+    assert [a.type for a in sent] == ["set_text", "scroll", "set_text"]
+    request = json.loads(model.prompts[2][len(CONTEXT_MAPPING_RULES) :])
+    notebook = request["notebook"]
+    node = notebook["screen_tree"]["Registration"]["children"]["Details"]
+    assert set(node["fields"]) == {"hbl_no", "mbl_no"}
+    upper_memory = node["fields"]["hbl_no"]
+    assert upper_memory["delivery"]["value"] == record.fields.hbl_no.value
+    assert upper_memory["delivery"]["status"] == "awaiting_observation"
+    assert not upper_memory["seen_in_last_view"]
+    assert node["fields"]["mbl_no"]["seen_in_last_view"]
+    assert set(notebook["pending_verification_inputs"]) == {"hbl_no", "mbl_no"}
+    assert "bbox" not in json.dumps(notebook["screen_tree"])
+    assert "screen_nodes" not in notebook  # Do not also expose the old flat coordinate memory.
+    assert "hbl_no" not in brain.verified  # Delivery is not visual confirmation.
+    assert "mbl_no" in brain.verified
+
+    brain.pending = None
+    brain._observe()
+    node = brain.screen_nodes[json.dumps(["Registration", "Details"])]
+    assert node["fields"]["hbl_no"]["delivery"]["status"] == "observed_match"
+    assert node["fields"]["hbl_no"]["bbox"] == [100, 65, 150, 30]
+    assert node["observed_inputs"]["mbl_no"]["value"] == record.fields.mbl_no.value
+    assert {"hbl_no", "mbl_no"} <= brain.verified.keys()
+    assert len(model.prompts) == 4  # Tree maintenance introduces no extra model calls.
+
+
+def test_synthetic_screen_tree_partial_delivery_and_saved_review_scope(tmp_path, record):
+    # Fake relay rejects the second input. Only acknowledged delivery may enter the tree.
+    from sawon_interfaces import ActionResult
+
+    from brain.graph.context_recall import recall_context
+
+    data = named_response(
+        screen_kind="editor",
+        screen_path=["Registration"],
+        fields={
+            "Reference": {"role": "edit", "bbox": [100, 15, 150, 30]},
+            "Master": {"role": "edit", "bbox": [100, 65, 150, 30]},
+        },
+        assignments={"Reference": "hbl_no", "Master": "mbl_no"},
+        steps=[
+            {"target": "Reference", "action": "fill", "intent": "fill", "point": [175, 30]},
+            {"target": "Master", "action": "fill", "intent": "fill", "point": [175, 80]},
+        ],
+    )
+    mismatch = deepcopy(data)
+    mismatch.update(steps=[], operation="stop")
+    mismatch["fields"]["Reference"]["value"] = "WRONG-REFERENCE"
+    brain, _, relay, *_ = setup_brain(tmp_path, record, [data, mismatch])
+    brain.settings = brain.settings.model_copy(
+        update={"guard_mode": "observe_only", "visual_model_only_review": True}
+    )
+
+    def fake_act(action):
+        ok = action.root.text == brain.values["hbl_no"]
+        return ActionResult(
+            action_id=action.root.action_id,
+            ok=ok,
+            duration_ms=0,
+            post_obs_id=relay.current.obs_id,
+            error=None if ok else "action_failed",
+        )
+
+    relay.act = fake_act
+    brain._observe()
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    brain._act_node()
+    node = brain.screen_nodes[json.dumps(["Registration"])]
+    assert node["fields"]["hbl_no"]["delivery"]["status"] == "awaiting_observation"
+    assert "delivery" not in node["fields"]["mbl_no"]
+    assert not brain.verified
+    assert brain.pending is None
+
+    def recalled():
+        return recall_context(brain._screen_decision_request({"ocr": [], "markers": []}, None))[
+            "notebook"
+        ]
+
+    assert recalled()["pending_verification_inputs"] == ["hbl_no"]
+    brain.save_issued = True
+    brain.saved_detail_transition_pending = True
+    assert recalled()["evidence_scope"] == "saved_detail_candidate"
+    assert recalled()["pending_verification_inputs"] == []
+    brain.model_saved_detail_review = True
+    assert recalled()["evidence_scope"] == "saved_detail"
+    assert recalled()["pending_verification_inputs"] == []
+    brain.model_saved_detail_review = brain.saved_detail_transition_pending = False
+    brain._observe()
+    assert node["fields"]["hbl_no"]["delivery"]["status"] == "observed_mismatch"
+    assert node["observed_inputs"]["hbl_no"]["value"] == "WRONG-REFERENCE"
+    assert "hbl_no" not in brain.verified
 
 
 def prepare_worker(path, record, responses):

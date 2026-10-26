@@ -101,6 +101,7 @@ from .screen_batch import (
     ScreenFieldVerificationServices,
     verify_screen_fields,
 )
+from .screen_memory import remember_input_delivery, remember_screen
 from .selection import (
     SelectionRequest,
     SelectionServices,
@@ -2007,23 +2008,13 @@ class Brain:
         self.current_screen_path = (
             list(response.mapping.screen_path) if response.mapping is not None else []
         )
-        node = None
-        if self.current_screen_path:
-            for depth in range(1, len(self.current_screen_path) + 1):
-                path = self.current_screen_path[:depth]
-                key = json.dumps(path, ensure_ascii=False)
-                node = self.screen_nodes.setdefault(
-                    key, {"path": path, "fields": {}, "observed_inputs": {}}
-                )
-            node["observation_id"] = str(self.observation.obs_id)
-            for name, source in response.mapping.observed_bindings(self.values).items():
-                field = response.mapping.fields[name]
-                node["fields"][source] = {
-                    "label": name,
-                    "role": field.role,
-                    "bbox": list(field.bbox),
-                    "observation_id": str(self.observation.obs_id),
-                }
+        node = (
+            remember_screen(
+                self.screen_nodes, response.mapping, self.values, str(self.observation.obs_id)
+            )
+            if response.mapping is not None
+            else None
+        )
         self.log.append(
             "verify",
             payload={
@@ -2063,6 +2054,17 @@ class Brain:
             }
             if node is not None:
                 node["observed_inputs"][source] = dict(self.observed_inputs[source])
+                delivery = node["fields"].get(source, {}).get("delivery")
+                if (
+                    delivery is not None
+                    and delivery["scope"] == self.observed_inputs[source]["scope"]
+                    and delivery["observation_id"] != str(self.observation.obs_id)
+                ):
+                    delivery["status"] = (
+                        "observed_match"
+                        if field_matches(source, element.value, self.values)
+                        else "observed_mismatch"
+                    )
             if not field_matches(source, element.value, self.values):
                 self.verified.pop(source, None)
                 self.post_save_verified.discard(source)
@@ -2371,6 +2373,15 @@ class Brain:
                         },
                     )
             if choice.source in self.values:
+                if self.settings.visual_model_only_review:
+                    remember_input_delivery(
+                        self.screen_nodes,
+                        self.current_screen_path,
+                        choice.source,
+                        self.values[choice.source],
+                        observation_id=str(self.observation.obs_id),
+                        scope="saved_detail" if self.model_saved_detail_review else "entry",
+                    )
                 # A successful relay return proves delivery, not business correctness.
                 # It still separates unrelated failures while semantic reread remains
                 # responsible for verified fields and business progress.
@@ -2512,6 +2523,10 @@ class Brain:
                     update={"source": item.planned.effect_source}
                 )
             execution.delivered.append(pending)
+        if execution.delivered and self.settings.screen_matching:
+            from .notebook import remember
+
+            remember(self)
         if result.error is not None:
             for pending in execution.delivered:
                 log_transition(self.log, pending)

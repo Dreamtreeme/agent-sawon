@@ -73,6 +73,8 @@ class ProgressState:
     rolling_context: RollingContextManager = field(default_factory=RollingContextManager)
     verified: dict[str, dict] = field(default_factory=dict)
     observed_inputs: dict[str, dict] = field(default_factory=dict)
+    # One path-indexed tree: discovered fields/controls, observations and acknowledged deliveries.
+    # Context Recall projects its hierarchy without exposing historical action coordinates.
     screen_nodes: dict[str, dict] = field(default_factory=dict)
     current_screen_path: list[str] = field(default_factory=list)
     evidence_ledger: EvidenceLedger = field(default_factory=EvidenceLedger)

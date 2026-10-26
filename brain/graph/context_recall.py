@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 from brain.input_binding import MODEL_INPUTS_NAME
 from brain.visual.marker_contract import model_screen
 
+from .screen_memory import pending_screen_inputs, recall_screen_tree
+
 if TYPE_CHECKING:
     from .screen_decision import ScreenDecisionRequest
 
@@ -15,12 +17,20 @@ def recall_context(request: ScreenDecisionRequest) -> dict:
     """Restore current history, evidence and unfinished work without changing state."""
     contract = request.execution_contract
     required = request.required_verification
+    evidence_scope = (
+        "saved_detail"
+        if request.workflow_flags.get("post_save_detail_review")
+        else "saved_detail_candidate"
+        if request.workflow_flags.get("saved_result_open_pending")
+        else "entry"
+    )
     pending_verification_fields = sorted(
         {
             item["source"]
             for item in contract["last_delivered_actions"]
             if item["intent"] == "fill" and item["source"] in request.values
         }
+        | pending_screen_inputs(request.screen_nodes, evidence_scope)
     )
     # Generic input keys are reusable across screens. Keep action eligibility
     # broad while exposing a separate, model-owned coverage ledger. Calling
@@ -47,20 +57,14 @@ def recall_context(request: ScreenDecisionRequest) -> dict:
         "required_verification": required,
         "available_credentials": list(request.available_credentials),
         "observed_inputs": dict(request.observed_inputs),
-        "screen_nodes": dict(request.screen_nodes),
+        "screen_tree": recall_screen_tree(request.screen_nodes),
         "previous_screen_path": list(request.current_screen_path),
     }
     if request.phase == "task":
         notebook.update(
             {
                 "verified_inputs": sorted(request.verified_fields),
-                "evidence_scope": (
-                    "saved_detail"
-                    if request.workflow_flags.get("post_save_detail_review")
-                    else "saved_detail_candidate"
-                    if request.workflow_flags.get("saved_result_open_pending")
-                    else "entry"
-                ),
+                "evidence_scope": evidence_scope,
                 "evidence_claims": list(request.evidence_claims),
                 "failed_transitions": list(request.failed_transitions),
                 "anticipated_verified_inputs": (
