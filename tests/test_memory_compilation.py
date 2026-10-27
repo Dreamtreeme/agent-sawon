@@ -170,10 +170,14 @@ def test_synthetic_compilation_preserves_passive_field_mapping_but_not_old_value
         {
             "screen_kind": "editor",
             "fields": {
-                "Reference": {"role": "text", "bbox": [100, 40, 200, 30], "value": "HBL-001"},
+                "Reference": {
+                    "source": "hbl_no",
+                    "role": "text",
+                    "bbox": [100, 40, 200, 30],
+                    "value": "HBL-001",
+                },
                 "Save": {"role": "button", "bbox": [600, 500, 100, 40]},
             },
-            "assignments": {"Reference": "hbl_no"},
             "steps": [{"target": "Save", "action": "click", "intent": "save", "point": [650, 520]}],
         }
     )
@@ -372,8 +376,9 @@ def create_successful_case(tmp_path):
     mapping = ScreenMapping.model_validate(
         {
             "screen_kind": "editor",
-            "fields": {"Reference": {"role": "edit", "bbox": [150, 280, 180, 40]}},
-            "assignments": {"Reference": "hbl_no"},
+            "fields": {
+                "Reference": {"source": "hbl_no", "role": "edit", "bbox": [150, 280, 180, 40]}
+            },
             "steps": [
                 {"target": "Reference", "action": "fill", "intent": "fill", "point": [200, 300]}
             ],

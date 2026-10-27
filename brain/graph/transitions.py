@@ -77,7 +77,7 @@ class EvidenceLedger:
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    def record(self, field: str, descriptor: dict, observation_id: str) -> tuple[str, ...]:
+    def record(self, field: str, descriptor: dict, observation_id: str) -> None:
         """Update one business fact; similar screen descriptors cannot erase other facts."""
 
         surface_key = self.surface_key(descriptor)
@@ -87,7 +87,7 @@ class EvidenceLedger:
             and current.observation_id == observation_id
             and current.surface_key == surface_key
         ):
-            return ()
+            return
         self.invalidate(field, "newer_observation")
         claim = EvidenceClaim(
             field=field,
@@ -97,7 +97,7 @@ class EvidenceLedger:
         )
         self._claims.append(claim)
         self._active[field] = claim
-        return ()
+        return
 
     def invalidate(self, field: str, reason: str) -> bool:
         claim = self._active.pop(field, None)

@@ -146,8 +146,9 @@ def test_screen_wire_restores_inline_target_nulls_without_losing_zero_or_source(
     raw = {
         "screen_kind": "editor",
         "procedure_step": "task-action",
-        "fields": [{"name": "Reference", "role": "edit", "bbox": [0, 0, 100, 30]}],
-        "assignments": [{"name": "Reference", "source": "hbl_no"}],
+        "fields": [
+            {"name": "Reference", "source": "hbl_no", "role": "edit", "bbox": [0, 0, 100, 30]}
+        ],
         "taught_step_id": "fill-details",
         "method_id": None,
         "grid": "Reference",

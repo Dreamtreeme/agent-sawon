@@ -513,7 +513,19 @@ def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
             ]
         }
     )
+    from brain.graph.screen_mapping import ScreenMapping
+
     proposal = ScreenMatch(
+        mapping=ScreenMapping(
+            fields={
+                original.name: {
+                    "source": source,
+                    "role": original.role.casefold(),
+                    "bbox": list(original.bbox),
+                    "value": brain.values[source],
+                }
+            }
+        ),
         screen_kind="editor",
         procedure_step="task-action",
         controls=[],

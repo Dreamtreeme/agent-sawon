@@ -209,7 +209,6 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
         screen_kind="editor",
         procedure_step="open-additional-entry",
         fields={"Additional": {"role": "button", "bbox": [100, 15, 150, 30]}},
-        assignments={},
         steps=[
             {"target": "Additional", "action": "click", "intent": "select_tab", "point": [175, 30]}
         ],

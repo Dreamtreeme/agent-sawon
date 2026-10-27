@@ -40,6 +40,7 @@ def test_synthetic_query_outcome_is_remembered_before_next_action(tmp_path, reco
         ],
         fields={
             "Reference": {
+                "source": "hbl_no",
                 "role": "edit",
                 "bbox": [100, 15, 150, 30],
                 "value": record.fields.hbl_no.value,
@@ -102,6 +103,7 @@ def test_synthetic_detail_response_commits_evidence_then_executes_without_recall
         procedure_step="task-action",
         fields={
             "Reference": {
+                "source": "hbl_no",
                 "role": "edit",
                 "bbox": [100, 15, 150, 30],
                 "value": record.fields.hbl_no.value,

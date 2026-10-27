@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from brain.cache import ScreenPatternCache, screen_pattern_key
 
 
@@ -5,6 +8,16 @@ def test_visual_match_cache_promotes_only_a_successful_run(tmp_path):
     path = tmp_path / "visual.json"
     state = {"screen": {"markers": [1]}, "workflow": {"phase": "enter"}}
     key = screen_pattern_key(state)
+    # Synthetic pre-source-contract key: preserve its file but never parse the old response.
+    old_key = hashlib.sha256(
+        json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    legacy = ScreenPatternCache(tmp_path / "previous.json", enabled=True)
+    legacy.stage(old_key, {"assignments": {"Reference": "hbl_no"}})
+    assert legacy.finish(success=True) == 1
+    before = legacy.path.read_bytes()
+    assert legacy.lookup(state) is None
+    assert legacy.path.read_bytes() == before
 
     failed = ScreenPatternCache(path, enabled=True)
     failed.stage(key, {"procedure_step": "fill"})

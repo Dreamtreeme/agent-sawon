@@ -163,7 +163,6 @@ def test_synthetic_provider_refinement_reenters_scanning_with_same_capture(
         [
             {
                 "fields": [],
-                "assignments": [],
                 "steps": [],
                 "needs_refinement": True,
                 "purpose": "Synthetic: a required visible control is missing from memory.",
@@ -278,10 +277,9 @@ def setup(
         "method_id": method.id,
         "purpose": "Enter customer and reference",
         "fields": {
-            name: {"role": "edit", "bbox": list(box.bbox), "value": ""}
-            for name, box in zip(names, boxes, strict=True)
+            name: {"source": source, "role": "edit", "bbox": list(box.bbox), "value": ""}
+            for name, box, source in zip(names, boxes, ("customer", "reference"), strict=True)
         },
-        "assignments": dict(zip(names, ("customer", "reference"), strict=True)),
         "steps": [
             {
                 "target": name,
@@ -335,7 +333,7 @@ def setup(
         case_id="method-runtime", inputs={"customer": "New customer B", "reference": "ORDER-B"}
     )
     log = RunLog(tmp_path / "case", case_id=record.case_id, agent_id="test")
-    model = ScriptedModel(log, [model_response] if changed_label else [])
+    model = ScriptedModel(log, [model_response, model_response])
     brain = Brain(
         record=record,
         goal=task.objective,
@@ -432,20 +430,25 @@ def test_synthetic_phash_memory_jitter_reaches_notebook_without_duplicate_contro
             )
         )
 
+    reply = next(model.decisions)
+    for field in reply["fields"].values():
+        field["value"] = brain.values[field["source"]]
+    reply.update(operation="stop", steps=[])
+    model.decisions = iter([reply])
     brain._observe()
 
     assert set(brain.verified) == {"customer", "reference"}
     inputs = [element for element in brain.observation.elements if element.role == "edit"]
     assert len(inputs) == 2
     assert all(element.enabled and element.value for element in inputs)
-    assert model.prompts == [] and relay.actions == []
+    assert len(model.prompts) == 1 and relay.actions == []
     recognition = next(
         e.payload for e in brain.log.read_all() if e.payload.get("check") == "screen_similarity"
     )
     assert recognition["matched"] and recognition["distance"] == 1
 
 
-def test_synthetic_memory_evidence_survives_scene_grounding_and_updates_notebook(tmp_path):
+def test_synthetic_geometry_evidence_alone_does_not_update_model_owned_notebook(tmp_path):
     # Synthetic current OCR, using the real binder, scene projection and memo update.
     brain, model, relay = setup(tmp_path)
     original = brain.memory_retrieval.library.methods()[0]
@@ -504,13 +507,16 @@ def test_synthetic_memory_evidence_survives_scene_grounding_and_updates_notebook
     brain.observation = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
     brain._remember_model_task_evidence(response)
 
-    assert set(brain.verified) == {"customer", "reference"}
+    assert brain.verified == {}
+    assert brain.screen_nodes == {}
     assert not brain.save_issued
     assert model.prompts == [] and relay.actions == []
 
 
 @pytest.mark.parametrize("observe_again", [False, True])
-def test_compiled_coordinates_reach_executor_without_model(tmp_path, observe_again):
+def test_synthetic_compiled_memory_uses_current_model_coordinates_at_executor(
+    tmp_path, observe_again
+):
     brain, model, relay = setup(tmp_path)
     brain._observe()
     first_id = brain.observation.obs_id
@@ -527,11 +533,11 @@ def test_compiled_coordinates_reach_executor_without_model(tmp_path, observe_aga
     assert brain.pending is not None
     assert relay.entered == ["New customer B", "ORDER-B"]
     assert [list(action.root.target.image_point) for action in relay.actions[:2]] == [
-        [175, 55],
-        [175, 125],
+        [125, 50],
+        [125, 120],
     ]
-    assert model.prompts == []
-    assert not any(event.kind == "model_call" for event in brain.log.read_all())
+    assert len(model.prompts) == 1 + int(observe_again)
+    assert sum(event.kind == "model_call" for event in brain.log.read_all()) == len(model.prompts)
     reuse = next(
         event
         for event in brain.log.read_all()
@@ -551,7 +557,7 @@ def test_compiled_coordinates_reach_executor_without_model(tmp_path, observe_aga
     assert education.payload["procedure_step_ids"] == [
         step.id for step in brain.task_instruction.procedure
     ]
-    assert brain.memory_retrieval.state.history[-1]["origin"] == "reuse"
+    assert brain.memory_retrieval.state.history[-1]["origin"] == "adaptation"
     assert brain.memory_retrieval.state.history[-1]["status"] == "delivered"
     assert brain.memory_retrieval.state.used
     # A rejected new source mapping must not reactivate the previous valid one.

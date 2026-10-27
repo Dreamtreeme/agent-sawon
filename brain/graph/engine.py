@@ -1925,27 +1925,23 @@ class Brain:
                 del self.verified[field]
                 self.evidence_ledger.invalidate(field, "visible_evidence_changed")
 
-    def _record_model_evidence(self, field: str, element: UIElement) -> tuple[str, ...]:
+    def _record_model_evidence(self, field: str, descriptor: dict, value: str | None) -> None:
         """Record model evidence while preserving one owner per semantic surface."""
 
         assert self.observation is not None
-        descriptor = describe(element, self.observation.elements)
-        superseded = self.evidence_ledger.record(field, descriptor, str(self.observation.obs_id))
-        for previous in superseded:
-            self.verified.pop(previous, None)
+        self.evidence_ledger.record(field, descriptor, str(self.observation.obs_id))
         self.verified[field] = descriptor
         if (
             self.save_issued
             and self.observation.screen_kind == "query"
             and field == self.identity_input_key
-            and element.role.casefold() not in {"edit", "combobox"}
-            and field_matches(field, element.value or element.name, self.values)
+            and descriptor["role"].casefold() not in {"edit", "combobox"}
+            and field_matches(field, value or descriptor["name"], self.values)
         ):
             self.post_save_query_identity_verified = True
         if self.model_saved_detail_review:
             self.post_save_verified.add(field)
         self._record_progress("field:" + field)
-        return superseded
 
     def _input_surfaces(self, source: str | None) -> set[str]:
         if self.task_instruction is not None and source in self.values:
@@ -1960,7 +1956,9 @@ class Brain:
         if not surface_allowed or not field_matches(source, element.value, self.values):
             return False
         if self.task_instruction is not None and self.settings.visual_model_only_review:
-            self._record_model_evidence(source, element)
+            self._record_model_evidence(
+                source, describe(element, self.observation.elements), element.value
+            )
             return True
         self.verified[source] = describe(element, self.observation.elements)
         self._record_progress("field:" + source)
@@ -1990,16 +1988,18 @@ class Brain:
             if result.completed:
                 self._complete_taught_procedure_step(result.step_id)
         assert self.observation is not None
-        prefix = "e" + str(self.observation.obs_id.int) + "0"
-        by_ref = {item.ref: item for item in self.observation.elements}
+        mapping = response.mapping
+        if mapping is None:
+            return
         recorded = []
-        superseded = []
-        # A node is selected by the current semantic response, not by image similarity.
-        self.current_screen_path = (
-            list(response.mapping.screen_path) if response.mapping is not None else []
-        )
-        node = remember_screen(
-            self.screen_nodes, response.mapping, self.values, str(self.observation.obs_id)
+        self.current_screen_path = list(mapping.screen_path)
+        remember_screen(
+            self.screen_nodes,
+            mapping,
+            self.values,
+            str(self.observation.obs_id),
+            observation_number=self.observation_number,
+            scope="saved_detail" if self.model_saved_detail_review else "entry",
         )
         self.log.append(
             "verify",
@@ -2007,49 +2007,24 @@ class Brain:
                 "check": "screen_node_selected",
                 "path": self.current_screen_path,
                 "obs_id": str(self.observation.obs_id),
-                "source": "model_mapping" if response.mapping is not None else "unidentified",
+                "source": "model_mapping",
             },
         )
-        if response.mapping is not None:
-            for name, source in response.mapping.observed_bindings(self.values).items():
-                if not field_matches(source, response.mapping.fields[name].value, self.values):
-                    self.verified.pop(source, None)
-                    self.post_save_verified.discard(source)
-                    self.evidence_ledger.invalidate(source, "current_observed_value_differs")
-        bindings = self.screen_scanner.observed_input_bindings(str(self.observation.obs_id))
-        bindings.update({prefix + str(item.target): item.field for item in response.evidence})
-        for ref, source in bindings.items():
-            if source not in self.values:
+        for name, field in mapping.fields.items():
+            source = field.source
+            if source not in self.values or "value" not in field.model_fields_set:
                 continue
-            element = by_ref.get(ref)
-            readable_roles = {"edit", "combobox"}
-            if response.screen_kind == "editor":
-                readable_roles.update({"text", "cell"})
-            if element is None or element.role.casefold() not in readable_roles:
-                continue
-            # Missing OCR is unknown, not proof that the old value was cleared.
-            if element.value is None:
-                continue
-            field = node["fields"].setdefault(source, {})
-            node["controls"].pop(element.name, None)
-            field.update(
-                label=element.name,
-                role=element.role,
-                bbox=list(element.bbox),
-                observation_id=str(self.observation.obs_id),
-            )
-            field["last_observation"] = {
-                "value": element.value,
-                "observation_id": str(self.observation.obs_id),
-                "observation_number": self.observation_number,
-                "scope": "saved_detail" if self.model_saved_detail_review else "entry",
-            }
-            if not field_matches(source, element.value, self.values):
+            if not field_matches(source, field.value, self.values):
                 self.verified.pop(source, None)
                 self.post_save_verified.discard(source)
                 self.evidence_ledger.invalidate(source, "current_observed_value_differs")
                 continue
-            superseded.extend(self._record_model_evidence(source, element))
+            # The descriptor and reading have the same owner as the screen-tree fact.
+            self._record_model_evidence(
+                source,
+                {"role": field.role, "name": name, "label": name, "context": []},
+                field.value,
+            )
             recorded.append(source)
         if recorded:
             self.log.append(
@@ -2058,7 +2033,6 @@ class Brain:
                     "check": "model_task_evidence_recorded",
                     "reviewer": "screen_model",
                     "fields": sorted(set(recorded)),
-                    "superseded_fields": sorted(set(superseded)),
                     "obs_id": str(self.observation.obs_id),
                 },
             )

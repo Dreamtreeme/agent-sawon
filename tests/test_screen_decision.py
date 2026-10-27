@@ -350,8 +350,14 @@ def named_response(**overrides):
     """Provider fixture: semantic names and chosen geometry, with no detector handles."""
     return {
         "screen_kind": "query",
-        "fields": {"Reference": {"role": "edit", "bbox": [100, 15, 150, 30], "value": ""}},
-        "assignments": {"Reference": "hbl_no"},
+        "fields": {
+            "Reference": {
+                "source": "hbl_no",
+                "role": "edit",
+                "bbox": [100, 15, 150, 30],
+                "value": "",
+            }
+        },
         "procedure_step": "enter-duplicate-key",
         "steps": [
             {
@@ -1130,6 +1136,7 @@ def test_model_only_review_retains_named_text_evidence_without_input_detection(
         steps=[],
         fields={
             "Reference": {
+                "source": "hbl_no",
                 "role": "text",
                 "bbox": [10, 20, 60, 15],
                 "value": record.fields.hbl_no.value,
@@ -1329,6 +1336,8 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(tmp_path, record,
 def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
     tmp_path, record, task_instruction, has_review
 ):
+    from brain.graph.screen_mapping import ScreenMapping
+
     brain, model, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
     request, services = matching_contract(brain)
     request = replace(request, phase="save_result")
@@ -1339,6 +1348,7 @@ def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
     def bind_method(screen):
         bound.append(screen)
         return ScreenMatch(
+            mapping=ScreenMapping(fields={}),
             screen_kind="dialog",
             procedure_step="task-action",
             controls=[
@@ -1355,13 +1365,17 @@ def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
     services = replace(services, cache=cache)
     prepared = build_decision_prompt(request, services)
     cached = ScreenMatch(
+        mapping=ScreenMapping(fields={}, operation="stop"),
         screen_kind="dialog",
         controls=[],
         procedure_step="inspect-save",
         operation="stop",
         expected_result="Inspect the current save result",
     )
-    cache.stage(screen_pattern_key(prepared.state), cached.model_dump(mode="json"))
+    cache.stage(
+        screen_pattern_key(prepared.state),
+        {**cached.model_dump(mode="json"), "mapping": cached.mapping.model_dump(mode="json")},
+    )
     assert cache.finish(success=True) == 1
 
     selected = select_screen_response(request, services, prepared)
@@ -1373,7 +1387,7 @@ def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
         assert selected.cache_hit is None
         assert not selected.used_image
     else:
-        assert selected.response == cached
+        assert selected.response.operation == cached.operation
         assert selected.cache_hit is not None
     assert bound == [request.screen]
     assert model.prompts == []
@@ -1382,7 +1396,6 @@ def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
 def test_similar_capture_reruns_ocr_but_reuses_detector_geometry(tmp_path, record):
     next_action = named_response(
         fields={"Next": {"role": "button", "bbox": [100, 15, 150, 30]}},
-        assignments={},
         steps=[{"target": "Next", "action": "click", "intent": "navigate", "point": [175, 30]}],
     )
     brain, model, relay, ocr, detector, _ = setup_brain(
@@ -2028,9 +2041,9 @@ def test_post_action_review_preserves_next_action_in_same_response(tmp_path, rec
     assert result.response.needs_refinement is False
 
 
-def test_post_action_review_reuses_bound_next_method_without_model_call(tmp_path, record):
+def test_synthetic_mappingless_method_requires_current_model_observation(tmp_path, record):
     blocks, _, markers, meaning = fixture()
-    brain, model, *_ = setup_brain(tmp_path, record, [])
+    brain, model, *_ = setup_brain(tmp_path, record, [named_response()])
     screen = {
         "ocr": [block.model_dump() for block in blocks],
         "markers": [marker.model_dump() for marker in markers],
@@ -2042,15 +2055,18 @@ def test_post_action_review_reuses_bound_next_method_without_model_call(tmp_path
     result = decide_screen(replace(request, post_action_review=True), services)
 
     assert result.response.operation == replay.operation
-    assert [(step.target, step.action, step.source) for step in result.response.steps] == [
-        (step.target, step.action, step.source) for step in replay.steps
-    ]
-    assert model.prompts == []
+    assert result.response.mapping.fields["Reference"].source == "hbl_no"
+    assert len(model.prompts) == 1
+    assert any(
+        e.payload.get("context", {}).get("purpose") == "grounded_screen_plan"
+        for e in brain.log.read_all()
+        if e.kind == "model_call"
+    )
 
 
-def test_post_action_review_reuses_promoted_visual_decision_without_model_call(tmp_path, record):
+def test_synthetic_mappingless_cache_requires_current_model_observation(tmp_path, record):
     blocks, _, markers, meaning = fixture()
-    brain, model, *_ = setup_brain(tmp_path, record, [])
+    brain, model, *_ = setup_brain(tmp_path, record, [named_response()])
     screen = {
         "ocr": [block.model_dump() for block in blocks],
         "markers": [marker.model_dump() for marker in markers],
@@ -2069,10 +2085,8 @@ def test_post_action_review_reuses_promoted_visual_decision_without_model_call(t
 
     result = decide_screen(request, services)
 
-    assert [(step.target, step.action, step.source) for step in result.response.steps] == [
-        (step.target, step.action, step.source) for step in cached.steps
-    ]
-    assert model.prompts == []
+    assert result.response.mapping.fields["Reference"].source == "hbl_no"
+    assert len(model.prompts) == 1
     assert any(
         event.kind == "cache_hit" and event.payload.get("check") == "visual_match_cache"
         for event in brain.log.read_all()
@@ -2083,8 +2097,7 @@ def test_empty_action_recovery_preserves_education_and_current_observed_values(t
     initial = named_response(steps=[])
     initial["fields"]["Reference"]["value"] = record.fields.hbl_no.value
     recovered = named_response(
-        fields={"Continue": {"role": "button", "bbox": [250, 15, 80, 30]}},
-        assignments={},
+        fields={**initial["fields"], "Continue": {"role": "button", "bbox": [250, 15, 80, 30]}},
         steps=[{"target": "Continue", "action": "click", "intent": "navigate", "point": [280, 30]}],
     )
     taught = TaskInstruction.model_validate_json(
@@ -2892,6 +2905,9 @@ def test_synthetic_fallback_education_survives_empty_action_recovery(tmp_path, r
             ],
         }
     )
+    from brain.graph.screen_mapping import ScreenMapping
+
+    proposal = proposal.model_copy(update={"mapping": ScreenMapping(fields={})})
     request, services = matching_contract(brain, screen)
 
     result = decide_screen(replace(request, proposal=proposal), services)
@@ -3055,8 +3071,14 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(tmp_pa
 
     raw = {
         "screen_kind": "query",
-        "fields": {"Reference": {"role": "edit", "bbox": [100, 15, 150, 30], "value": ""}},
-        "assignments": {"Reference": "hbl_no"},
+        "fields": {
+            "Reference": {
+                "source": "hbl_no",
+                "role": "edit",
+                "bbox": [100, 15, 150, 30],
+                "value": "",
+            }
+        },
         "steps": [{"target": "Reference", "action": "fill", "intent": "fill", "point": [125, 28]}],
     }
     brain, model, _, _, _, _ = setup_brain(tmp_path, record, [raw])
@@ -3068,9 +3090,10 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(tmp_pa
     assert brain.action_plan.actions[0].decision.action.source == "hbl_no"
     # Raw provider artifact is semantic, executor refs are generated afterwards.
     artifact = next((tmp_path / "matching").glob("*-semantic-mapping.json"))
-    assert json.loads(artifact.read_text(encoding="utf-8"))["assignments"] == {
-        "Reference": "hbl_no"
-    }
+    assert (
+        json.loads(artifact.read_text(encoding="utf-8"))["fields"]["Reference"]["source"]
+        == "hbl_no"
+    )
     # Check the actual provider prompt after ScreenMapping rebuilds it.
     assert model.prompts[0].startswith("Choose the next screen action")
     for stage in ("Scanning", "Pattern Matching", "Memory Retrieval"):
@@ -3119,12 +3142,12 @@ def test_semantic_mapping_accepts_input_key_references_and_normalizes_evidence_f
             "screen_kind": "query",
             "fields": {
                 "House B/L 번호": {
+                    "source": "hbl_no",
                     "role": "edit",
                     "bbox": [100, 15, 150, 30],
                     "value": "HBL-23",
                 }
             },
-            "assignments": {"House B/L 번호": "hbl_no"},
             "steps": [
                 {
                     "target": "hbl_no",
@@ -3182,7 +3205,7 @@ def test_review_evidence_without_assignments_uses_input_keys(operation):
         field_names=tuple(inputs),
         verified_field_names=tuple(item.field for item in response.evidence),
     )
-    mapping.assignments = {"Ambiguous": "right"}
+    mapping.fields["Ambiguous"].source = "right"
     assert (
         ScreenMatch.model_validate(mapping.local_payload({}, inputs)).evidence[-1].field == "right"
     )
@@ -3196,12 +3219,12 @@ def test_semantic_mapping_resolves_unique_visible_value_and_ignores_irrelevant_r
             "screen_kind": "editor",
             "fields": {
                 "추가 정보 수량": {
+                    "source": "packages.count",
                     "role": "edit",
                     "bbox": [120, 193, 451, 32],
                     "value": "12",
                 }
             },
-            "assignments": {"추가 정보 수량": "packages.count"},
             "evidence": [{"field": "수량", "target": "12"}],
             "repair_fields": ["additional destination value"],
         }
@@ -3300,10 +3323,9 @@ def test_named_fields_replace_number_recovery_for_mixed_targets(tmp_path, record
     first = named_response()
     data = named_response(
         fields={
-            "Reference": {"role": "edit", "bbox": [100, 15, 150, 30]},
-            "New reference": {"role": "edit", "bbox": [100, 90, 150, 30]},
+            "Reference": {"source": "hbl_no", "role": "edit", "bbox": [100, 15, 150, 30]},
+            "New reference": {"source": "mbl_no", "role": "edit", "bbox": [100, 90, 150, 30]},
         },
-        assignments={"Reference": "hbl_no", "New reference": "mbl_no"},
         steps=[
             {"target": "Reference", "action": "fill", "intent": "fill", "point": [125, 28]},
             {"target": "New reference", "action": "fill", "intent": "fill", "point": [126, 103]},
@@ -3339,7 +3361,7 @@ def test_named_input_then_command_executes_and_observes_once(tmp_path, record, t
 
     data = named_response(
         fields={
-            "Reference": {"role": "edit", "bbox": [100, 15, 150, 30]},
+            "Reference": {"source": "hbl_no", "role": "edit", "bbox": [100, 15, 150, 30]},
             "Command": {"role": "button", "bbox": [270, 15, 90, 30]},
         },
         steps=[
@@ -3389,7 +3411,7 @@ def test_named_mixed_plan_failure_records_only_delivered_prefix(tmp_path, record
 
     data = named_response(
         fields={
-            "Reference": {"role": "edit", "bbox": [100, 15, 150, 30]},
+            "Reference": {"source": "hbl_no", "role": "edit", "bbox": [100, 15, 150, 30]},
             "Command": {"role": "button", "bbox": [270, 15, 90, 30]},
         },
         steps=[

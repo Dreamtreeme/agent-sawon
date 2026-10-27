@@ -1,5 +1,7 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
+ScreenMatch/ScreenPlan embed source in fields, removing assignments (2026-10-27).
+
 ScreenPlan/ScreenMatch fixtures add screen_path for node-scoped memory (2026-10-24).
 ActionTransition adds an unknown structural effect on 2026-10-26; intents are unchanged.
 ScreenMatch/ScreenPlan add wheel-key documentation on 2026-10-26; values are unchanged.
@@ -127,8 +129,8 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
             TargetedMatchAction,
             "010d16ae1c205f2e97b7661173dd1ff9f35ba34aa17a3d6b0a4165447c6f755c",
         ),
-        (ScreenPlan, "a169726a966eccbd9f6e2a99e1a8040cedd7c2ab5850f1bc485358675528231c"),
-        (ScreenMatch, "a169726a966eccbd9f6e2a99e1a8040cedd7c2ab5850f1bc485358675528231c"),
+        (ScreenPlan, "d7623825298369863b57e3ca6e14211da406e38a03c28b66a7f781e42c4a0c4c"),
+        (ScreenMatch, "d7623825298369863b57e3ca6e14211da406e38a03c28b66a7f781e42c4a0c4c"),
         (Decision, "0dd9a48fb753c30ea6f54d65c1272bfc631435abedc33d3864e138bf412f5bf0"),
         (
             WireActDecision,

@@ -7,7 +7,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import perf_counter
-from uuid import UUID
 
 from sawon_interfaces import Observation, UIElement
 
@@ -838,17 +837,6 @@ class ScreenScanner:
             reused=catalog.reused,
         )
         return request, catalog.interpretation()
-
-    def observed_input_bindings(self, observation_id: str) -> dict[str, str]:
-        """Current-frame input references with previously established business meanings."""
-        catalog = self._catalog
-        if catalog is None or catalog.page.image_path.parent.name != observation_id:
-            return {}
-        return {
-            "e" + str(UUID(observation_id).int) + "0" + ref: item["source"]
-            for ref, item in catalog.selected_fields.items()
-            if item.get("source") and item["role"] in {"edit", "combobox"}
-        }
 
     def _apply_field_values(self, wire, scene, selected):
         prefix = "e" + str(wire.obs_id.int) + "0"

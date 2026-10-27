@@ -162,7 +162,6 @@ def test_synthetic_capture_feedback_precedes_model_and_preserves_alternative(
         response = named_response(
             screen_kind="editor",
             fields={"Label": {"role": "text", "bbox": [100, 15, 150, 30]}},
-            assignments={},
             steps=[
                 {"target": "Label", "action": "click", "intent": "navigate", "point": [175, 30]}
             ],

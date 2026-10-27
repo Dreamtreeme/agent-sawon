@@ -147,6 +147,7 @@ class ScreenPlan(MethodChoice):
         "properties/row": "",
         "properties/save_result": "",
         "$defs/NamedAction/properties/source": "",
+        "$defs/NamedScreenField/properties/source": "",
         "$defs/NamedAction/properties/keys": "",
     }
 
@@ -1694,6 +1695,17 @@ def select_screen_response(
         )
         write_decision_artifact(services, "markers", response)
         response = local_response(response, screen)
+    if response.mapping is None and (method_proposal is not None or cache_hit is not None):
+        response = _call_screen_decision(
+            services,
+            "grounded_screen_plan",
+            prepared.prompt,
+            ScreenMatch,
+            page=page,
+        )
+        response = local_response(response, screen)
+        method_proposal = None
+        cache_hit = None
     if response.requested_instruction_ids:
         by_id = {step.id: step for step in request.task_instruction.procedure}
         requested = list(dict.fromkeys(response.requested_instruction_ids))
@@ -1973,8 +1985,9 @@ def ground_screen_response(
                     services,
                     "missing_actions_recovery",
                     "The current form was matched but operation=act had no executable steps. "
-                    "Return only the missing steps for this procedure goal using these CURRENT "
-                    "control IDs and source keys. Never infer that an action already happened. "
+                    "Return the complete current observation and the missing steps for this goal. "
+                    "Your response replaces the prior observation, including corrected fields. "
+                    "Never infer that an action already happened. "
                     "If no valid action is available, return operation=stop and steps=[].\n"
                     + json.dumps(
                         {
@@ -1988,6 +2001,11 @@ def ground_screen_response(
                                     "evidence."
                                 ),
                                 "matched_inputs": [item.field for item in response.evidence],
+                                "current_observation": (
+                                    response.mapping.model_dump(exclude_unset=True)
+                                    if response.mapping is not None
+                                    else None
+                                ),
                             },
                             "controls": model_controls(response.controls, screen),
                         },
@@ -1996,22 +2014,6 @@ def ground_screen_response(
                     ScreenMatch,
                     page=page if used_image else None,
                 )
-                if response.mapping is not None and completion.mapping is not None:
-                    # No action or capture occurred during this repair. Preserve the
-                    # observed fields when the reply supplies only the next action.
-                    mapping = completion.mapping.model_copy(
-                        update={
-                            "fields": {**response.mapping.fields, **completion.mapping.fields},
-                            "assignments": {
-                                **response.mapping.assignments,
-                                **completion.mapping.assignments,
-                            },
-                            "evidence": [*response.mapping.evidence, *completion.mapping.evidence],
-                        }
-                    )
-                    completion = ScreenMatch.model_validate(
-                        mapping.local_payload(screen, request.values)
-                    ).model_copy(update={"mapping": mapping})
                 response = local_response(completion, screen)
                 services.log.append(
                     "verify",
@@ -2195,7 +2197,7 @@ def decide_screen(
                 {
                     **response.model_dump(mode="json"),
                     **(
-                        {"mapping": response.mapping.model_dump(mode="json")}
+                        {"mapping": response.mapping.model_dump(mode="json", exclude_unset=True)}
                         if response.mapping
                         else {}
                     ),

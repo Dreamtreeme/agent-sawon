@@ -131,19 +131,18 @@ def test_synthetic_screen_nodes_isolate_tabs_and_refresh_current_fields(
     # Synthetic 105 regression: identical screenshot/pHash, different active tabs.
     main = observed_response(record)
     main["screen_path"] = ["Registration", "Basic"]
-    main["assignments"] = {"Reference": "hbl_no"}
+    main["fields"]["Reference"]["source"] = "hbl_no"
     extra = deepcopy(main)
     extra["screen_path"] = ["Registration", "Additional"]
     extra["fields"] = {
         "MBL": {**main["fields"]["Reference"], "value": record.fields.mbl_no.value},
         "Continue": main["fields"]["Continue"],
     }
-    extra["assignments"] = {"MBL": "mbl_no"}
+    extra["fields"]["MBL"]["source"] = "mbl_no"
     scrolled = deepcopy(main)
     scrolled["fields"]["Reference"]["bbox"] = [100, 65, 150, 30]
     hidden = deepcopy(main)
     hidden["fields"] = {"Continue": main["fields"]["Continue"]}
-    hidden["assignments"] = {}
     changed = deepcopy(scrolled)
     changed["fields"]["Reference"]["value"] = "CHANGED-REFERENCE"
     unidentified = deepcopy(hidden)
@@ -174,7 +173,7 @@ def test_synthetic_screen_nodes_isolate_tabs_and_refresh_current_fields(
     assert brain.screen_nodes[basic_key] == basic_before
     assert set(observed_inputs(brain, extra["screen_path"])) == {"mbl_no"}
     assert set(
-        brain.screen_scanner.observed_input_bindings(str(brain.observation.obs_id)).values()
+        field.source for field in brain.visual_proposal.mapping.fields.values() if field.source
     ) == {"mbl_no"}
     assert (
         observed_inputs(brain, main["screen_path"])["hbl_no"]["value"] == record.fields.hbl_no.value
@@ -200,7 +199,7 @@ def test_synthetic_screen_nodes_isolate_tabs_and_refresh_current_fields(
     last_seen = deepcopy(node)
     brain._observe()
     assert brain.screen_nodes[basic_key]["fields"] == last_seen["fields"]
-    assert brain.screen_scanner.observed_input_bindings(str(brain.observation.obs_id)) == {}
+    assert all(field.source is None for field in brain.visual_proposal.mapping.fields.values())
     brain._observe()
     assert brain.current_screen_path == []  # Never infer the previous node when unidentified.
     assert len(brain.screen_nodes) == 4  # Root, parent and two children; no scroll node.
@@ -229,6 +228,7 @@ def observed_response(record):
         screen_kind="dialog",  # 070: an intermediate dialog must not erase pending review.
         fields={
             "Reference": {
+                "source": "hbl_no",
                 "role": "edit",
                 "bbox": [100, 15, 150, 30],
                 "value": record.fields.hbl_no.value,
@@ -238,6 +238,105 @@ def observed_response(record):
         evidence=[],
         steps=[{"target": "Continue", "action": "click", "intent": "navigate", "point": [280, 75]}],
     )
+
+
+def test_synthetic_model_memory_delta_is_not_reinterpreted_from_ocr(tmp_path, record):
+    # Synthetic fake model response, real observe/memory/recall functions; no ERP/API.
+    from brain.graph.context_recall import recall_context
+
+    response = observed_response(record)
+    response["screen_path"] = ["Registration", "Basic"]
+    brain, model = prepare_worker(tmp_path / "model-memory", record, [response])
+    brain._observe()
+    plan_before = brain.visual_proposal.model_dump()
+    # A subsequent executor projection disagrees with the model's saved reading.
+    # It must not overwrite the model-owned memory through the evidence loop.
+    brain.observation = brain.observation.model_copy(
+        update={
+            "elements": [
+                item.model_copy(update={"value": "OCR-PROJECTION-DIFFERS"})
+                if item.role == "edit"
+                else item
+                for item in brain.observation.elements
+            ]
+        }
+    )
+    brain._remember_model_task_evidence(brain.visual_proposal)
+    recalled = recall_context(brain._screen_decision_request({"ocr": [], "markers": []}, None))
+    memory = recalled["notebook"]["screen_tree"]["children"]["Registration"]["children"]["Basic"][
+        "fields"
+    ]["hbl_no"]
+    assert memory["last_observation"]["value"] == record.fields.hbl_no.value
+    assert "hbl_no" in brain.verified
+    assert brain.evidence_ledger.owner(brain.verified["hbl_no"]) == "hbl_no"
+    assert brain.visual_proposal.model_dump() == plan_before
+    assert len(model.prompts) == 1
+    assert not any(event.kind == "act" for event in brain.log.read_all())
+
+
+def test_synthetic_memory_uses_explicit_model_bindings_and_preserves_unseen_values():
+    from brain.graph.screen_mapping import ScreenMapping
+    from brain.graph.screen_memory import remember_screen
+
+    nodes = {}
+    values = {"reference": "EXPECTED", "other": "OTHER"}
+    mapping = ScreenMapping(
+        screen_path=["Editor"],
+        fields={
+            "Ref": {
+                "source": "reference",
+                "role": "text",
+                "bbox": [10, 10, 40, 20],
+                "value": "READ",
+            }
+        },
+    )
+    node = remember_screen(nodes, mapping, values, "frame-1", observation_number=1, scope="entry")
+    assert node["fields"]["reference"]["last_observation"]["value"] == "READ"
+    # Hidden/omitted readings do not clear a fact; an explicit blank does.
+    for label, fields, expected in [
+        ("offscreen", {}, "READ"),
+        (
+            "unread",
+            {"Ref": {"source": "reference", "role": "text", "bbox": [10, 10, 40, 20]}},
+            "READ",
+        ),
+        (
+            "empty",
+            {"Ref": {"source": "reference", "role": "text", "bbox": [10, 10, 40, 20], "value": ""}},
+            "",
+        ),
+    ]:
+        update = mapping.model_copy(update={"fields": ScreenMapping(fields=fields).fields})
+        remember_screen(nodes, update, values, label, observation_number=2, scope="entry")
+        assert node["fields"]["reference"]["last_observation"]["value"] == expected, label
+    # Neither a fill plan nor an equal literal value creates an observed binding.
+    unmapped = ScreenMapping(
+        screen_path=["Other"],
+        fields={
+            "Ref": {
+                "source": "EXPECTED",
+                "role": "edit",
+                "bbox": [10, 10, 40, 20],
+                "value": "EXPECTED",
+            }
+        },
+        steps=[
+            {
+                "target": "Ref",
+                "action": "fill",
+                "intent": "fill",
+                "source": "reference",
+                "point": [20, 20],
+            }
+        ],
+    )
+    other = remember_screen(
+        nodes, unmapped, values, "frame-3", observation_number=3, scope="saved_detail"
+    )
+    assert other["fields"] == {}
+    assert "Ref" in other["controls"]
+    assert node["fields"]["reference"]["last_observation"]["scope"] == "entry"
 
 
 def test_synthetic_116_screen_tree_keeps_delivered_inputs_across_scrolls(tmp_path, record):
@@ -250,8 +349,7 @@ def test_synthetic_116_screen_tree_keeps_delivered_inputs_across_scrolls(tmp_pat
         return named_response(
             screen_kind="editor",
             screen_path=["Registration", "Details"],
-            fields={name: {"role": "edit", "bbox": list(bbox), "value": value}},
-            assignments={name: source},
+            fields={name: {"source": source, "role": "edit", "bbox": list(bbox), "value": value}},
             steps=steps,
             operation="act" if steps else "stop",
         )
@@ -354,10 +452,9 @@ def test_synthetic_screen_tree_partial_delivery_and_saved_review_scope(tmp_path,
         screen_kind="editor",
         screen_path=["Registration"],
         fields={
-            "Reference": {"role": "edit", "bbox": [100, 15, 150, 30]},
-            "Master": {"role": "edit", "bbox": [100, 65, 150, 30]},
+            "Reference": {"source": "hbl_no", "role": "edit", "bbox": [100, 15, 150, 30]},
+            "Master": {"source": "mbl_no", "role": "edit", "bbox": [100, 65, 150, 30]},
         },
-        assignments={"Reference": "hbl_no", "Master": "mbl_no"},
         steps=[
             {"target": "Reference", "action": "fill", "intent": "fill", "point": [175, 30]},
             {"target": "Master", "action": "fill", "intent": "fill", "point": [175, 80]},
@@ -538,8 +635,7 @@ def run_route(path, record, route, *, mutate=None):
         initial = {**deepcopy(raw), "steps": []}
         next_action_only = {
             **deepcopy(raw),
-            "fields": {"Continue": raw["fields"]["Continue"]},
-            "assignments": {},
+            "fields": deepcopy(raw["fields"]),
         }
         responses = [initial, next_action_only]
     cache_path = path / "cache.json"
@@ -594,7 +690,7 @@ def run_route(path, record, route, *, mutate=None):
                 },
                 method_id="synthetic-warm",
             )
-        responses = []
+        responses = [raw] if compiled is not None else []
     brain, model = prepare_worker(path / "current", record, responses)
     if route == "model-to-pattern-cache":
         brain.visual_match_cache = ScreenPatternCache(cache_path, enabled=True)
@@ -630,7 +726,7 @@ def run_route(path, record, route, *, mutate=None):
     ), f"{route}: current value was not received"
     assert observed_inputs(brain)["hbl_no"]["value"] == record.fields.hbl_no.value, route
     if route == "model-to-compiled-memory":
-        assert not model.prompts
+        assert len(model.prompts) == 1
         assert sum(e.payload.get("check") == "method_bound" for e in brain.log.read_all()) == 1
         if "hbl_no" not in brain.verified:
             raise MissingRetrievedEvidence(
@@ -686,7 +782,7 @@ def run_route(path, record, route, *, mutate=None):
         return semantic_memory(brain)
     expected_calls = (
         0
-        if route.startswith("model-to-")
+        if route == "model-to-pattern-cache"
         else 2
         if route in {"empty-action-recovery", "identical-capture"}
         else 1
@@ -796,3 +892,18 @@ def test_synthetic_semantic_response_variants_preserve_executable_action(tmp_pat
                 for p in artifacts
             )
     assert results[0] == results[1], variant
+
+
+def test_synthetic_118_recovery_replaces_mistaken_header_observation(tmp_path, record):
+    # Synthetic reduction of 118: fake responses, actual observation/recovery/memory pipeline.
+    first = observed_response(record)
+    first["steps"] = []
+    first["fields"]["Mistaken header"] = {"role": "edit", "bbox": [10, 120, 90, 20], "value": ""}
+    first["fields"]["Mistaken header"]["source"] = "description"
+    final = observed_response(record)
+    brain, model = prepare_worker(tmp_path / "header", record, [first, final])
+    brain._observe()
+    assert len(model.prompts) == 2
+    assert "Mistaken header" not in brain.visual_proposal.mapping.fields
+    assert "description" not in observed_inputs(brain)
+    assert observed_inputs(brain)["hbl_no"]["value"] == record.fields.hbl_no.value

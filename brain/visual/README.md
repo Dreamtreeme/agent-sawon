@@ -32,7 +32,7 @@ Florence-2의 기능 캡션은 빈 입력칸을 `Maximize`, `Center` 등으로 �
 1. `brain/visual/scanning.py`의 로컬 의미 탐지는 이미 검출된 후보를 분류하기 위해 현재
    catalog의 marker ID를 사용할 수 있습니다. 이 번호는 후보 bbox를 가리키는 임시 handle입니다.
 2. `brain/graph/screen_mapping.py`의 업무 판단은 OCR text+bbox와 detector control bbox를 받아
-   `수량`, `포장정보/단위` 같은 의미 이름을 만듭니다. `ScreenMapping`의 field, assignment,
+   `수량`, `포장정보/단위` 같은 의미 이름을 만듭니다. `ScreenMapping`의 field(source 포함),
    step과 evidence는 detector 번호를 업무 key로 사용하지 않습니다.
 
 따라서 OCR/OmniParser 번호가 다음 캡처에서 바뀌어도 notebook과 업무 입력의 의미 key가 번호에

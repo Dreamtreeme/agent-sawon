@@ -12,12 +12,19 @@ if TYPE_CHECKING:
 
 def remember_screen(
     nodes: dict[str, dict],
-    mapping: ScreenMapping | None,
+    mapping: ScreenMapping,
     values: Mapping[str, str],
     observation_id: str,
+    *,
+    observation_number: int,
+    scope: str,
 ) -> dict:
-    """Expand only visited nodes; absence in a new viewport never deletes discoveries."""
-    screen_path = mapping.screen_path if mapping is not None else []
+    """Apply the model's current node, bindings and readings as a memory delta.
+
+    Do not infer observations from the next action, matching input values or OCR
+    handles. Omitted fields preserve discoveries from earlier viewports.
+    """
+    screen_path = mapping.screen_path
     # The root holds observations with no identified screen, never the previous screen's facts.
     for depth in range(len(screen_path) + 1):
         path = screen_path[:depth]
@@ -25,12 +32,9 @@ def remember_screen(
             json.dumps(path, ensure_ascii=False),
             {"path": path, "fields": {}, "controls": {}},
         )
-    if mapping is None:
-        return node
-    bindings = mapping.observed_bindings(values)
     for name, field in mapping.fields.items():
-        if name in bindings:
-            entry = node["fields"].setdefault(bindings[name], {})
+        if field.source in values:
+            entry = node["fields"].setdefault(field.source, {})
             node["controls"].pop(name, None)
         else:
             # Buttons/tabs are remembered as discoveries, not invented child screens.
@@ -38,6 +42,13 @@ def remember_screen(
         entry.update(
             label=name, role=field.role, bbox=list(field.bbox), observation_id=observation_id
         )
+        if field.source in values and "value" in field.model_fields_set:
+            entry["last_observation"] = {
+                "value": field.value,
+                "observation_id": observation_id,
+                "observation_number": observation_number,
+                "scope": scope,
+            }
     return node
 
 

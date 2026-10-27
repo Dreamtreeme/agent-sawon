@@ -24,6 +24,9 @@ class ScreenField(BaseModel):
         max_length=4,
         description="Original image x,y,width,height of the actual control, not its caption",
     )
+    source: str | None = Field(
+        default=None, description="Exact business input key for this field; null for other controls"
+    )
     value: str = ""
     enabled: bool = True
 
@@ -84,10 +87,6 @@ class ScreenMapping(BaseModel):
         default=False,
         description="Request local scanning when a required visible control is missing",
     )
-    assignments: dict[str, str] = Field(
-        default_factory=dict,
-        description="Visible field name -> user input key, e.g. 수량 -> packages.count",
-    )
     observed_step_results: list[ObservedStepResult] = Field(
         default_factory=list,
         description="Evaluate the focused/delivered taught steps against CURRENT visible results",
@@ -123,9 +122,6 @@ class ScreenMapping(BaseModel):
                 entry["name"]: {k: v for k, v in entry.items() if k != "name"}
                 for entry in value["fields"]
             }
-            assignments = value.get("assignments", [])
-            if isinstance(assignments, list):
-                value["assignments"] = {entry["name"]: entry["source"] for entry in assignments}
         return value
 
     def local_payload(self, screen: dict, inputs: Mapping[str, str] | None = None) -> dict:
@@ -137,9 +133,7 @@ class ScreenMapping(BaseModel):
             if reference in ids:
                 return reference
             matching_names = [
-                name
-                for name, source in self.assignments.items()
-                if source == reference and name in ids
+                name for name, field in self.fields.items() if field.source == reference
             ]
             if len(matching_names) == 1:
                 return matching_names[0]
@@ -165,7 +159,7 @@ class ScreenMapping(BaseModel):
             raise KeyError(reference)
 
         controls = []
-        bindings = self.observed_bindings(inputs) if inputs is not None else self.assignments
+        bindings = {name: field.source for name, field in self.fields.items() if field.source}
         text_refs = text_index(screen)
         # The model's current view replaces speculative geometry from a similar capture.
         screen["screen_path"] = list(self.screen_path)
@@ -202,7 +196,6 @@ class ScreenMapping(BaseModel):
             exclude={
                 "fields",
                 "screen_path",
-                "assignments",
                 "steps",
                 "evidence",
                 "completion_evidence",
@@ -220,7 +213,7 @@ class ScreenMapping(BaseModel):
                 s.model_dump(),
                 target=ids[field_name(s.target)],
                 source=s.source
-                or (self.assignments.get(field_name(s.target)) if s.action == "fill" else None),
+                or (self.fields[field_name(s.target)].source if s.action == "fill" else None),
             )
             for s in self.steps
         ]
@@ -231,7 +224,7 @@ class ScreenMapping(BaseModel):
                 name = field_name(item.target)
             except KeyError:
                 continue
-            canonical_field = self.assignments.get(name, item.field)
+            canonical_field = self.fields[name].source or item.field
             if inputs is not None:
                 canonical_field = resolve_input_key(canonical_field, inputs) or resolve_input_key(
                     self.fields[name].value or None, inputs
@@ -248,8 +241,12 @@ class ScreenMapping(BaseModel):
         # Explicit evidence uses the same observed value, rather than overriding it.
         if inputs is not None:
             seen = {(item["field"], item["target"]) for item in evidence}
-            for name, source in self.observed_bindings(inputs).items():
-                if field_matches(source, self.fields[name].value, inputs):
+            for name, source in bindings.items():
+                if (
+                    source in inputs
+                    and "value" in self.fields[name].model_fields_set
+                    and field_matches(source, self.fields[name].value, inputs)
+                ):
                     pair = (source, ids[name])
                     if pair not in seen:
                         evidence.append(dict(field=source, target=ids[name]))
@@ -279,7 +276,7 @@ class ScreenMapping(BaseModel):
                 result["message_targets"].append(target)
         screen["unresolved_annotations"] = unresolved
         result["repair_fields"] = (
-            [self.assignments.get(name, name) for name in self.repair_fields]
+            [bindings.get(name, name) for name in self.repair_fields]
             if self.save_result == "rejected"
             else []
         )
@@ -294,42 +291,15 @@ class ScreenMapping(BaseModel):
         )
         return result
 
-    def observed_bindings(self, inputs: Mapping[str, str]) -> dict[str, str]:
-        """Canonical inputs that the model associated with current visible fields."""
-        bindings = dict(self.assignments)
-        for step in self.steps:
-            if step.action == "fill" and step.source is not None:
-                bindings.setdefault(step.target, step.source)
-        for item in self.evidence:
-            if item.target in self.fields:
-                bindings.setdefault(item.target, item.field)
-        result = {}
-        for name, source in bindings.items():
-            if name not in self.fields:
-                continue
-            canonical = resolve_input_key(source, inputs) or resolve_input_key(
-                self.fields[name].value or None, inputs
-            )
-            if canonical is not None:
-                result[name] = canonical
-        return result
-
 
 class NamedScreenField(ScreenField):
     name: str
-
-
-class FieldAssignment(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    name: str
-    source: str
 
 
 class ScreenMappingWire(ScreenMapping):
     """Strict providers need declared object keys; names remain strings, never marker IDs."""
 
     fields: list[NamedScreenField]
-    assignments: list[FieldAssignment] = Field(default_factory=list)
 
 
 def mapping_prompt(prompt: str, screen: dict) -> str:
@@ -352,7 +322,7 @@ def mapping_prompt(prompt: str, screen: dict) -> str:
     if "post_action_review" in state:
         state["review_instruction"] = (
             "Review the already delivered inputs against current visible values. Return their "
-            "observed values and assignments, and plan the next action from those observations; "
+            "observed values and field source keys, then plan from those observations; "
             "do not repeat matching inputs."
         )
     if state.get("taught_procedure_progress", {}).get("retrieved_step_ids"):
@@ -382,7 +352,7 @@ Use the same names as notebook.screen_tree when returning to a known view. A scr
 in the same node; another tab selects a sibling. Do not invent contents of unopened tabs.
 Select the node before interpreting fields. Only that node's remembered fields belong to
 this view; other nodes are historical context, not visible fields. Return all currently
-readable business fields and their assignments, including fields not used by the next action.
+readable business fields with their source keys, including fields not used by the next action.
 Prior geometry is a hint, never a current observation. Reground fields on the current image.
 An empty screen_path means unidentified and must not select the previous node implicitly.
 Remembered fields are candidates, not proof of the current node or current values.
@@ -400,17 +370,23 @@ If a required visible control is missing from the candidates, return needs_refin
 and steps=[] to request local scanning on this capture. Do not use this for offscreen controls.
 An image match does not mean earlier input values are still present or the task is complete.
 Name fields by visible meaning; qualify duplicate names by section. Never use detector numbers.
-Return fields as named entries (name, role, bbox, value) and assignments as name/source entries.
+Return fields as named entries (name, source, role, bbox, value). source is the exact business
+input key or null for a non-business control. Never put literal input data in source.
 Every target in steps, evidence, completion_evidence and message_targets, and grid/row references,
 must use an exact name declared in fields. For a save message, include its visible text region in
 fields and reference that field name in message_targets; do not use an undeclared message sentence
 or a summary such as "saved values match" as a target. Put explanations in purpose/expected_result.
 Associate each name with the actual control bbox and choose the precise action point yourself.
-OCR captions identify meaning, not necessarily the writable location. assignments maps those names
-to exact input keys. The executor supplies current values; source must not contain literal data.
-Read current values first. Matching fields.value and assignments become notebook evidence;
-evidence can name additional bindings, but is not a duplicate checklist and cannot override values.
-Include assignments for reviewed fields too, even when no input action is needed.
+OCR captions identify meaning, not necessarily the writable location. fields.source links each field
+to its exact input key. The executor supplies current values; source must not contain literal data.
+Read current values first. Matching fields.value and fields.source become notebook evidence;
+evidence is not a duplicate checklist and cannot override field sources or readings.
+Include source for reviewed fields too, even when no input action is needed.
+screen_path, fields.source and fields.value are your memory update for this observation.
+Use the previous screen_tree, delivered actions and CURRENT image/OCR to select the node,
+associate exact input keys and report current readings. The runtime merges these readings
+into that node; it does not infer memory bindings from your next action or equal input values.
+An explicitly empty value records a visible empty field. Omitted fields retain earlier memory.
 steps contains only work still needed after these observations: never copy an already satisfied
 fill into steps. purpose explains those same steps; it is not a separate executable plan.
 Preserve the taught route and completion conditions. Requested instruction IDs retrieve details.
@@ -431,7 +407,7 @@ Complete only from the user's required saved/requeried evidence.
 Use current evidence and prior verified inputs; absence on this screen does not erase memory.
 The notebook and focused taught step describe progress BEFORE this screenshot is interpreted.
 last_delivered_actions were successfully executed, not actions to execute again.
-In this ONE response, use screen_kind, fields.value and assignments/evidence to report what is
+In this ONE response, use screen_kind, fields.value and fields.source to report what is
 visible now, then choose
 steps from that observed outcome plus prior memory. The runtime commits these observations before
 executing these same steps; do not wait for another turn just to acknowledge a completed action.
