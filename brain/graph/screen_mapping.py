@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from brain.input_binding import resolve_input_key
 from brain.observe.values import field_matches
 from brain.visual.marker_contract import text_index
 from brain.visual.scene import contains
@@ -129,7 +127,7 @@ class ScreenMapping(BaseModel):
         next_id = max((m["id"] for m in screen.get("markers", [])), default=0) + 1
         ids = {name: next_id + i for i, name in enumerate(self.fields)}
 
-        def field_name(reference: str, fallback_roles: tuple[ControlRole, ...] = ()) -> str:
+        def field_name(reference: str) -> str:
             if reference in ids:
                 return reference
             matching_names = [
@@ -137,25 +135,6 @@ class ScreenMapping(BaseModel):
             ]
             if len(matching_names) == 1:
                 return matching_names[0]
-            folded = reference.strip().casefold()
-            semantic_matches = [
-                name
-                for name in self.fields
-                if len(folded) >= 3 and (folded in name.casefold() or name.casefold() in folded)
-            ]
-            if len(semantic_matches) == 1:
-                return semantic_matches[0]
-            value_matches = [
-                name
-                for name, field in self.fields.items()
-                if field.value and field.value == reference
-            ]
-            if len(value_matches) == 1:
-                return value_matches[0]
-            for role in fallback_roles:
-                role_matches = [name for name, field in self.fields.items() if field.role == role]
-                if len(role_matches) == 1:
-                    return role_matches[0]
             raise KeyError(reference)
 
         controls = []
@@ -190,8 +169,6 @@ class ScreenMapping(BaseModel):
                 )
             )
             geometry[str(target)] = dict(name=name, **field.model_dump())
-            if name in bindings:
-                geometry[str(target)]["source"] = bindings[name]
         result = self.model_dump(
             exclude={
                 "fields",
@@ -217,56 +194,32 @@ class ScreenMapping(BaseModel):
             )
             for s in self.steps
         ]
-        evidence = []
-        unresolved = []
-        for item in self.evidence:
-            try:
-                name = field_name(item.target)
-            except KeyError:
-                continue
-            canonical_field = self.fields[name].source or item.field
-            if inputs is not None:
-                canonical_field = resolve_input_key(canonical_field, inputs) or resolve_input_key(
-                    self.fields[name].value or None, inputs
-                )
-                if canonical_field is None:
-                    unresolved.append({"kind": "evidence", "target": name, "field": item.field})
-                    continue
-            elif re.fullmatch(r"[A-Za-z0-9_.-]+", canonical_field) is None:
-                continue
-            if inputs is None or field_matches(canonical_field, self.fields[name].value, inputs):
-                evidence.append(dict(item.model_dump(), field=canonical_field, target=ids[name]))
-        # A model-selected binding plus its observed value is already a field
-        # observation. Do not require the model to repeat it in a second list.
-        # Explicit evidence uses the same observed value, rather than overriding it.
-        if inputs is not None:
-            seen = {(item["field"], item["target"]) for item in evidence}
-            for name, source in bindings.items():
-                if (
-                    source in inputs
-                    and "value" in self.fields[name].model_fields_set
-                    and field_matches(source, self.fields[name].value, inputs)
-                ):
-                    pair = (source, ids[name])
-                    if pair not in seen:
-                        evidence.append(dict(field=source, target=ids[name]))
-                        seen.add(pair)
-        result["evidence"] = evidence
+        # Fields own input bindings and readings, exactly as in screen memory.
+        # The optional evidence list cannot invent or override a field's source.
+        result["evidence"] = [
+            dict(field=source, target=ids[name])
+            for name, source in bindings.items()
+            if "value" in self.fields[name].model_fields_set
+            and (
+                inputs is None
+                or (source in inputs and field_matches(source, self.fields[name].value, inputs))
+            )
+        ]
 
         # Optional annotations must not discard an otherwise executable plan.
         # Unresolved references contribute no evidence; completion remains separate.
-        def annotation_target(
-            reference: str, kind: str, roles: tuple[ControlRole, ...] = ()
-        ) -> int | None:
+        unresolved = []
+
+        def annotation_target(reference: str, kind: str) -> int | None:
             try:
-                return ids[field_name(reference, roles)]
+                return ids[field_name(reference)]
             except KeyError:
                 unresolved.append({"kind": kind, "target": reference})
                 return None
 
         result["completion_evidence"] = []
         for item in self.completion_evidence:
-            target = annotation_target(item.target, "completion_evidence", ("row", "cell", "table"))
+            target = annotation_target(item.target, "completion_evidence")
             if target is not None:
                 result["completion_evidence"].append(dict(item.model_dump(), target=target))
         result["message_targets"] = []
@@ -274,7 +227,6 @@ class ScreenMapping(BaseModel):
             target = annotation_target(name, "message_targets")
             if target is not None:
                 result["message_targets"].append(target)
-        screen["unresolved_annotations"] = unresolved
         result["repair_fields"] = (
             [bindings.get(name, name) for name in self.repair_fields]
             if self.save_result == "rejected"
@@ -282,13 +234,12 @@ class ScreenMapping(BaseModel):
         )
         uses_result = self.operation in {"duplicate_clear", "duplicate_found", "complete"}
         result["grid"] = (
-            ids[field_name(self.grid, ("table",))]
-            if uses_result and self.grid is not None
-            else None
+            annotation_target(self.grid, "grid") if uses_result and self.grid is not None else None
         )
         result["row"] = (
-            ids[field_name(self.row, ("row",))] if uses_result and self.row is not None else None
+            annotation_target(self.row, "row") if uses_result and self.row is not None else None
         )
+        screen["unresolved_annotations"] = unresolved
         return result
 
 

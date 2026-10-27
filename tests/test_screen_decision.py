@@ -34,8 +34,6 @@ from brain.graph.screen_decision import (
     compile_screen_action_plan,
     decide_screen,
     enforce_taught_input_surfaces,
-    omit_nonblocking_image_request,
-    omit_nonblocking_refinement,
     select_screen_response,
     task_action_contract,
     validate_action_surfaces,
@@ -372,6 +370,55 @@ def named_response(**overrides):
     }
 
 
+def test_synthetic_current_field_source_is_not_reinferred_from_equal_input_value():
+    from brain.graph.screen_mapping import ScreenMapping
+
+    # Synthetic conflicting model annotations: only the declared field source owns the reading.
+    mapping = ScreenMapping(
+        fields={
+            "Quantity": {
+                "role": "edit",
+                "bbox": [0, 0, 100, 20],
+                "source": "unknown",
+                "value": "12",
+            },
+            "Weight": {"role": "edit", "bbox": [0, 30, 100, 20], "source": "weight", "value": "20"},
+        },
+        evidence=[{"field": "packages.count", "target": "Quantity"}],
+    )
+    payload = mapping.local_payload(
+        {}, {"packages.count": "12", "packages.unit": "CT", "weight": "20"}
+    )
+    assert [(item["field"], item["target"]) for item in payload["evidence"]] == [("weight", 2)]
+
+
+@pytest.mark.parametrize(
+    "target", ["12", "Quantity", "first row"], ids=["value", "substring", "role"]
+)
+def test_synthetic_completion_reference_is_not_guessed_from_value_name_or_role(target):
+    from brain.graph.screen_mapping import ScreenMapping
+
+    mapping = ScreenMapping(
+        fields={"Quantity input": {"role": "row", "bbox": [0, 0, 100, 20], "value": "12"}},
+        completion_evidence=[{"condition_index": 0, "target": target}],
+    )
+    screen = {}
+    payload = mapping.local_payload(screen, {})
+    assert payload["completion_evidence"] == []
+    assert screen["unresolved_annotations"] == [{"kind": "completion_evidence", "target": target}]
+
+
+def test_synthetic_model_refinement_request_survives_an_executable_action(tmp_path, record):
+    # Existing fake provider, real decision path: defined actions do not cancel uncertainty.
+    brain, model, *_ = setup_brain(tmp_path, record, [named_response(needs_refinement=True)])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+    request, services = matching_contract(brain)
+    result = decide_screen(request, services)
+    assert result.response.needs_refinement is True
+    assert result.response.steps[0].source == "hbl_no"
+    assert len(model.prompts) == 1
+
+
 def test_task_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path, record):
     brain, model, _, _, _, _ = setup_brain(
         tmp_path, record, [named_response()], task_instruction=None
@@ -408,11 +455,13 @@ def test_named_current_evidence_is_bound_without_a_second_grounding_call(
     data["fields"].update(
         {
             "Master": {
+                "source": "mbl_no",
                 "role": "text",
                 "bbox": [10, 20, 60, 15],
                 "value": record.fields.mbl_no.value,
             },
             "Shipper": {
+                "source": "shipper",
                 "role": "text",
                 "bbox": [10, 45, 60, 15],
                 "value": record.fields.shipper.value,
@@ -1214,34 +1263,28 @@ def test_task_capability_allows_save_after_prior_evidence_without_hiding_inputs(
     assert "save" in capability.actions
 
 
-def test_ocr_role_mismatch_keeps_requested_image_and_refinement(tmp_path, record):
-    class BrainStub:
-        log = RunLog(tmp_path, case_id="ocr-role-mismatch", agent_id="test")
+def test_synthetic_requested_image_is_not_cancelled_by_defined_action_targets(tmp_path, record):
+    # Synthetic cached response and fake call, exercising the real selection path.
+    blocks, _, markers, meaning = fixture()
+    brain, _, *_ = setup_brain(tmp_path, record, [])
+    screen = {
+        "ocr": [block.model_dump() for block in blocks],
+        "markers": [marker.model_dump() for marker in markers],
+    }
+    request, services = matching_contract(brain, screen)
+    initial = ScreenMatch.model_validate(response(meaning, needs_image=True))
+    services.memory_retrieval.enabled = False
+    calls = []
 
-    response = ScreenMatch.model_validate(
-        {
-            "screen_kind": "editor",
-            "procedure_step": "task-action",
-            "controls": [{"id": 5, "role": "window", "confidence": 0.95}],
-            "steps": [
-                {
-                    "target": 5,
-                    "action": "key",
-                    "intent": "navigate",
-                    "keys": "pagedown",
-                }
-            ],
-            "needs_image": True,
-            "needs_refinement": True,
-        }
-    )
-    screen = {"markers": [{"id": 5, "source": "ocr"}]}
+    def fake_call(prompt, schema, *, page=None):
+        calls.append(prompt)
+        return initial.model_copy(update={"needs_image": len(calls) == 1})
 
-    assert omit_nonblocking_image_request(BrainStub(), response, screen).needs_image
-    assert omit_nonblocking_refinement(BrainStub(), response, screen).needs_refinement
-    checks = {event.payload.get("check") for event in BrainStub.log.read_all()}
-    assert "nonblocking_image_request_omitted" not in checks
-    assert "nonblocking_refinement_omitted" not in checks
+    services = replace(services, call=fake_call)
+    result = select_screen_response(request, services, build_decision_prompt(request, services))
+    assert len(calls) == 2
+    assert result.response.needs_image is False
+    assert result.response.steps == initial.steps
 
 
 def test_generic_task_discards_prose_source_from_non_binding_click(
@@ -3170,7 +3213,7 @@ def test_semantic_mapping_accepts_input_key_references_and_normalizes_evidence_f
 
 
 @pytest.mark.parametrize("operation", ["act", "complete"])
-def test_review_evidence_without_assignments_uses_input_keys(operation):
+def test_review_evidence_uses_only_declared_field_sources(operation):
     from brain.graph.screen_mapping import ScreenMapping
 
     inputs = {
@@ -3181,16 +3224,16 @@ def test_review_evidence_without_assignments_uses_input_keys(operation):
         "right": "shared",
     }
     visible = {
-        "송하인": "Sender",
-        "Consignee": "Receiver",
-        "MBL No.": "MBL-1",
-        "Unknown": "not supplied",
-        "Ambiguous": "shared",
+        "송하인": ("shipper", "Sender"),
+        "Consignee": ("consignee", "Receiver"),
+        "MBL No.": ("mbl_no", "MBL-1"),
+        "Unknown": (None, "not supplied"),
+        "Ambiguous": (None, "shared"),
     }
     mapping = ScreenMapping(
         fields={
-            name: {"role": "edit", "bbox": [0, 0, 100, 20], "value": value}
-            for name, value in visible.items()
+            name: {"source": source, "role": "edit", "bbox": [0, 0, 100, 20], "value": value}
+            for name, (source, value) in visible.items()
         },
         evidence=[{"field": name, "target": name} for name in visible],
         operation=operation,
@@ -3199,7 +3242,7 @@ def test_review_evidence_without_assignments_uses_input_keys(operation):
     response = ScreenMatch.model_validate(mapping.local_payload(screen, inputs))
     assert [item.field for item in response.evidence] == ["shipper", "consignee", "mbl_no"]
     assert response.operation == operation
-    assert {item["field"] for item in screen["unresolved_annotations"]} == {"Unknown", "Ambiguous"}
+    assert screen["unresolved_annotations"] == []
     ExecutionFacts(
         phase="task",
         field_names=tuple(inputs),
@@ -3211,7 +3254,7 @@ def test_review_evidence_without_assignments_uses_input_keys(operation):
     )
 
 
-def test_semantic_mapping_resolves_unique_visible_value_and_ignores_irrelevant_repairs():
+def test_semantic_mapping_field_reading_supplies_evidence_without_value_target_guessing():
     from brain.graph.screen_mapping import ScreenMapping
 
     mapping = ScreenMapping.model_validate(
@@ -3257,7 +3300,7 @@ def test_semantic_mapping_omits_unassigned_descriptive_evidence():
     assert response.evidence == []
 
 
-def test_semantic_mapping_resolves_unique_result_roles_for_completion():
+def test_semantic_mapping_uses_explicit_result_names_for_completion():
     from brain.graph.screen_mapping import ScreenMapping
 
     mapping = ScreenMapping.model_validate(
@@ -3268,11 +3311,11 @@ def test_semantic_mapping_resolves_unique_result_roles_for_completion():
                 "저장된 결과 행": {"role": "row", "bbox": [30, 170, 1100, 45]},
             },
             "operation": "complete",
-            "grid": "결과 그리드",
-            "row": "1",
+            "grid": "조회 결과",
+            "row": "저장된 결과 행",
             "completion_evidence": [
-                {"condition_index": 0, "target": "1"},
-                {"condition_index": 1, "target": "1"},
+                {"condition_index": 0, "target": "저장된 결과 행"},
+                {"condition_index": 1, "target": "저장된 결과 행"},
             ],
         }
     )
@@ -3284,7 +3327,7 @@ def test_semantic_mapping_resolves_unique_result_roles_for_completion():
     assert {item.target for item in response.completion_evidence} == {response.row}
 
 
-def test_semantic_mapping_resolves_unique_descriptive_name_fragment():
+def test_semantic_mapping_never_retargets_actions_from_a_descriptive_fragment():
     from brain.graph.screen_mapping import ScreenMapping
 
     mapping = ScreenMapping.model_validate(
@@ -3312,8 +3355,10 @@ def test_semantic_mapping_resolves_unique_descriptive_name_fragment():
         }
     )
 
+    with pytest.raises(KeyError, match="Save Completion Close"):
+        mapping.local_payload({})
+    mapping.steps[0].target = "Save Completion Close Button"
     response = ScreenMatch.model_validate(mapping.local_payload({}))
-
     assert response.steps[0].target != response.grid
     assert response.grid is None  # An act plan does not consume result-grid metadata.
 

@@ -1270,67 +1270,6 @@ def validate_match_plan(
         return response
 
 
-def _action_targets_have_groundable_roles(response: ScreenMatch, screen: dict) -> bool:
-    """Return whether every immediate target can carry its proposed semantic role."""
-
-    markers = {marker["id"]: marker for marker in screen.get("markers", [])}
-    controls = {control.id: control for control in response.controls}
-    for step in response.steps:
-        marker = markers.get(step.target)
-        control = controls.get(step.target)
-        if marker is None or control is None:
-            return False
-        if not marker_role_allowed(marker.get("source", ""), control.role):
-            return False
-    return True
-
-
-def omit_nonblocking_refinement(
-    services: ScreenDecisionServices, response: ScreenMatch, screen: dict
-) -> ScreenMatch:
-    """Do not refine unrelated future work when the current action is grounded."""
-    if not response.needs_refinement or response.operation != "act" or not response.steps:
-        return response
-    control_ids = {control.id for control in response.controls}
-    action_targets = {step.target for step in response.steps}
-    if not action_targets <= control_ids or not _action_targets_have_groundable_roles(
-        response, screen
-    ):
-        return response
-    services.log.append(
-        "verify",
-        payload={
-            "check": "nonblocking_refinement_omitted",
-            "action_targets": sorted(action_targets),
-            "reason": "current_action_controls_already_defined",
-        },
-    )
-    return response.model_copy(update={"needs_refinement": False})
-
-
-def omit_nonblocking_image_request(
-    services: ScreenDecisionServices, response: ScreenMatch, screen: dict
-) -> ScreenMatch:
-    """A grounded immediate action does not need another copy of the same image."""
-    if not response.needs_image or response.operation != "act" or not response.steps:
-        return response
-    control_ids = {control.id for control in response.controls}
-    action_targets = {step.target for step in response.steps}
-    if not action_targets <= control_ids or not _action_targets_have_groundable_roles(
-        response, screen
-    ):
-        return response
-    services.log.append(
-        "verify",
-        payload={
-            "check": "nonblocking_image_request_omitted",
-            "action_targets": sorted(action_targets),
-            "reason": "current_action_controls_already_defined",
-        },
-    )
-    return response.model_copy(update={"needs_image": False})
-
-
 def validate_action_surfaces(
     services: ScreenDecisionServices, response: ScreenMatch, screen: dict
 ) -> ScreenMatch:
@@ -1778,7 +1717,6 @@ def select_screen_response(
             response = response.model_copy(update={"requested_instruction_ids": []})
         cache_hit = None
         method_proposal = None
-    response = omit_nonblocking_image_request(services, response, screen)
     used_image = cache_hit is None and method_proposal is None
     if response.needs_image:
         response = _call_screen_decision(
@@ -1795,7 +1733,6 @@ def select_screen_response(
         )
         write_decision_artifact(services, "image", response)
         response = local_response(response, screen)
-        response = omit_nonblocking_image_request(services, response, screen)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
     response = bind_value_evidence_to_controls(services, response, screen)
@@ -1968,7 +1905,6 @@ def ground_screen_response(
     ):
         screen, page = request.screen, request.page
         required = request.required_verification
-        response = omit_nonblocking_refinement(services, response, screen)
         if not response.needs_refinement:
             response = sanitize_unused_controls(services, request.phase, response, screen, required)
             response = retain_action_targets(services, response, screen, page)
