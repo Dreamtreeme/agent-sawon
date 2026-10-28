@@ -1732,7 +1732,6 @@ def ground_screen_response(
         screen, page = request.screen, request.page
         required = request.required_verification
         if not response.needs_refinement:
-            response = sanitize_unused_controls(services, request.phase, response, screen, required)
             response = retain_action_targets(services, response, screen, page)
             response = retain_verification(
                 services,
