@@ -277,21 +277,8 @@ class ScreenMappingWire(ScreenMapping):
     fields: list[NamedScreenField]
 
 
-def mapping_prompt(prompt: str, screen: dict) -> str:
-    decoder = json.JSONDecoder()
-    state = None
-    for offset, char in enumerate(prompt):
-        if char != "{":
-            continue
-        try:
-            candidate, _ = decoder.raw_decode(prompt[offset:])
-        except ValueError:
-            continue
-        if isinstance(candidate, dict) and "screen" in candidate:
-            state = candidate
-            break
-    if state is None:
-        raise ValueError("screen_mapping_context_missing")
+def mapping_prompt(context: dict, screen: dict) -> str:
+    state = dict(context)
     state.pop("grounded_interpretation", None)
     # Preserve call purpose as data, without reintroducing numeric-target instructions.
     if "post_action_review" in state:

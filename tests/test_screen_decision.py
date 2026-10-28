@@ -20,13 +20,10 @@ from brain.graph.policy import DecisionPolicy, ExecutionFacts
 from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
 from brain.graph.screen_decision import (
-    OBSERVE_ONLY_TARGET_RULES,
-    SCREEN_PLAN_RULES,
     TARGET_GROUNDING_RULES,
     ActionCapability,
     ScreenDecisionServices,
     ScreenMatch,
-    ScreenPlan,
     ScreenSelection,
     bind_value_evidence_to_controls,
     build_decision_prompt,
@@ -161,8 +158,6 @@ def setup_brain(tmp_path, record, responses, *, task_instruction=None):
 
     def route(prompt):
         item = next(plans)
-        if prompt.startswith((SCREEN_PLAN_RULES, SCREEN_PLAN_RULES)):
-            return {key: value for key, value in item.items() if key in ScreenPlan.model_fields}
         if prompt.startswith(CONTEXT_MAPPING_RULES):
             assert "fields" in item, "Provider fixtures must use semantic names and coordinates"
         if prompt.startswith(TARGET_GROUNDING_RULES):
@@ -508,7 +503,7 @@ def test_task_is_loaded_and_new_screen_match_is_one_combined_call(tmp_path, reco
     )
     assert len(model.prompts) == 1
     assert model.prompts[0].startswith(CONTEXT_MAPPING_RULES)
-    assert OBSERVE_ONLY_TARGET_RULES not in model.prompts[0]
+    assert model.prompts[0].startswith(CONTEXT_MAPPING_RULES)
     assert brain.action_plan.actions[0].decision.action.source == "hbl_no"
     assert brain.action_plan.actions[0].decision.action.ref.startswith(
         "e" + str(brain.observation.obs_id.int)
@@ -3486,7 +3481,7 @@ def test_mapping_preserves_review_and_retrieval_purpose_and_ignores_unused_grid(
         "point": [300, 150],
     }
     screen = {"memory_fields": ["Reference"], "retrieved_procedure": [{"steps": [stored]}]}
-    prompt = mapping_prompt("old numeric instructions" + json.dumps(state), screen)
+    prompt = mapping_prompt(state, screen)
     payload = json.loads(prompt[len(CONTEXT_MAPPING_RULES) :])
     assert "already delivered" in payload["review_instruction"]
     assert "not another retrieval" in payload["education_instruction"]

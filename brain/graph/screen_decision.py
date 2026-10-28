@@ -320,10 +320,6 @@ class DecisionPromptContext:
     state: dict
     capability: ActionCapability
     active_fields: frozenset[str]
-    prompt: str
-    guard_rules: str
-    taught_rules: str
-    method_rules: str
 
 
 @dataclass(frozen=True)
@@ -351,69 +347,6 @@ def write_decision_artifact(services: ScreenDecisionServices, kind: str, value: 
     atomic_write_json(services.case_dir / "matching" / f"{uuid4().hex}-{kind}.json", value)
 
 
-SCREEN_BOUNDARY_BATCH_RULES = """
-Return ordered actions grounded in the CURRENT screen. Inputs may precede a submit/search command.
-Do not invent targets or outcomes revealed only after a screen change; observe them next turn.
-For login, fill the available remaining credentials and then submit the login command.
-"""
-
-
-TASK_INPUT_RULES = """
-Distinguish field captions and column headers from the editable areas they name.
-Match values to the data scope requested by the user (record or line item), not merely to a
-same-text label in another section. Ground an input in its actual visible editable area.
-Never classify a rectangle containing multiple smaller closed rectangles as an edit/combobox;
-it is a container or grid candidate. When an input boundary is clipped at the viewport edge,
-scroll to expose that input instead of borrowing a nearby table or container rectangle.
-An OCR input marker must enclose that input's own current literal value, never its nearby label.
-Treat OCR primarily as text evidence. A step target MUST name a marker whose allowed_actions
-contains the requested action. An OCR marker may be a click target when its visible text is itself
-the tab, button, menu, link, row, or cell to activate; it is never a fill or keyboard target.
-"""
-
-
-SCREEN_PLAN_RULES = (
-    """Choose the next screen action from recalled execution context.
-Use the supplied grounded screen interpretation as immutable evidence.
-Use the user task description, input data and runtime notebook to choose the next action from the
-execution contract. The task description is business intent, not a UI route. Do not assume labels,
-menus, tabs, coordinates or screen order that are absent from the current interpretation. Return one
-ordered current-screen batch. For complete, map
-CURRENT visible proof to the applicable zero-based user completion condition in completion_evidence;
-map visible business values separately in evidence. notebook.inputs is the canonical input map:
-every data-bound step.source and evidence.field MUST be one exact key from notebook.inputs, without
-record./inputs. prefixes and never a literal value. Use intent=fill for every business text input,
-including filters and lookups. Treat a visible status or result as current evidence: when it already
-shows a command's expected effect, do not repeat that command; advance the task from that result.
-When a remaining input caption is visible but its writable boundary is clipped or absent at a
-scrolling viewport edge, expose that boundary with grounded scrolling before stopping. Do not
-reselect a current tab to expose a caption that is already visible. A merged OCR marker containing
-multiple tab captions does not identify an inactive tab; visible panel content is stronger proof.
-Return only task-plan schema fields and never reclassify controls or invent IDs.
-Prefer grounded_interpretation.controls. When a necessary CURRENT action target exists in
-screen.markers but was omitted from grounded_interpretation.controls, you may reference that real
-marker ID; the runtime will ground only that target before execution. Omit incidental past-row
-evidence that is not needed for this CURRENT action or completion decision.
-"""
-    + TASK_INPUT_RULES
-    + SCREEN_BOUNDARY_BATCH_RULES
-)
-
-
-OBSERVE_ONLY_TARGET_RULES = """
-Experimental model-trust mode is active. The current marker catalog is useful evidence, but it is
-not an exhaustive list of visible click targets. When a clearly visible control needed for the
-next action has no standalone marker because OCR merged adjacent labels or local detection omitted
-it, you may assign a new nonnegative control ID and use it consistently in controls and steps.
-For that control, provide its visible role, confidence_policy=argmax, and a precise
-visual_description.
-For EVERY action on a new control ID, provide an original-image point inside the intended visible
-control. This includes fill and keyboard actions on a clearly visible blank edit field; the point
-is how the runtime binds your semantic control to CURRENT-screen geometry.
-This is an explicit exception to the preceding no-invented-ID rule. Do not use the exception for
-hidden controls or targets outside the CURRENT image.
-"""
-
 TARGET_GROUNDING_RULES = """Ground only the listed action target markers on the CURRENT image.
 The existing task plan is immutable: do not replace, reorder, or add actions.
 Return each required_target_id exactly once in controls, plus only a necessary visible parent.
@@ -424,118 +357,6 @@ boxes, values, actions, or hidden controls. Report uncertainty when the role can
 The requested action must appear in that marker's allowed_actions. OCR click proxies may retain
 role=text when their visible caption is the requested click target; they cannot be writable or
 keyboard targets.
-"""
-
-
-SCREEN_DECISION_RULES = (
-    """Choose the next screen action using the task, input data, notebook and CURRENT screen.
-Screen similarity comes first: a match uses Memory Retrieval; a miss uses Scanning.
-Both routes restore Context Recall before Pattern Matching and action selection, combining
-available learned methods and current task progress to choose the next action.
-The task description contains business intent and completion conditions, not a fixed UI route.
-Choose the next grounded action that advances the objective from the current evidence. Decide
-whether to fill visible inputs, use a visible lookup/selection control, navigate, save, or verify.
-Never assume a label, coordinate, menu, tab, screen order, or application-specific route that is
-not visible now. notebook.inputs is the only business input map. Every data-bound step.source and
-evidence.field MUST be one exact key from notebook.inputs, without record./inputs. prefixes and
-never a literal value. Use intent=fill for every business text input, including filters and lookups.
-Use only keys from notebook.inputs and current marker IDs.
-remaining_inputs contains values that have not yet been evidenced on any observed screen; it is
-progress context, not a command to overwrite a matching CURRENT value. Before planning actions,
-compare visible values with notebook.inputs. Put every matching direct input in evidence and do
-not fill it again, even when it was previously listed in remaining_inputs.
-When a remaining input caption is visible but its writable boundary is clipped or absent at a
-scrolling viewport edge, ground a current control in that viewport and use scrolling to expose the
-whole input before stopping. Do not reselect a current tab to expose a caption already visible.
-A merged OCR marker containing multiple tab captions does not identify an inactive tab; use the
-visible panel content as stronger evidence of the current view.
-Define each steps[].target as the selected control object (id, role, OCR links, confidence).
-Use controls only for additional evidence/parent controls; evidence may reference action target
-IDs. Preserve the exact original-image action point in steps[].point. During operation=act,
-omit past-row evidence unrelated to the current action.
-In generic task mode those inputs remain reusable across screens: verified_inputs reports prior
-evidence but does not mean a value is already present in a different current form.
-When notebook.workflow_state.save_issued is true, the run is verifying the record that it just
-saved. A matching row on that post-save query is the expected saved record, not a pre-entry
-duplicate. Continue the user-taught post-save review instead of returning duplicate_found or stop.
-When notebook.workflow_state.post_save_detail_review is true, the saved result row has already
-been opened and verified_inputs contains only fields re-read from that persisted detail. Review
-the saved record; do not fill or save again. Navigate only to expose remaining_inputs. Once no
-remaining inputs exist, use CURRENT visible evidence for the applicable completion condition and
-return operation=complete instead of revisiting a previously reviewed tab.
-The execution contract is the complete list of actions currently allowed by code. Return one
-current-screen action batch, preserving the requested order of inputs and commands.
-A field-bound lookup navigation must map the current field input in evidence so its selected value
-can be checked on return. Complete only when CURRENT visible evidence supports an applicable
-user-authored completion condition. Map each supporting marker to its zero-based condition_index
-in completion_evidence; map visible business values separately in evidence. Follow all constraints
-and never transmit or approve. Treat a visible status or result as current evidence: when it already
-shows a command's expected effect, do not repeat that command; advance the task from that result.
-operation=act MUST contain at least one executable step in this response. Never return an empty
-act for a later completion call. In generic task phase, do not return duplicate_clear or
-duplicate_found: record the visible query evidence and choose the next taught action in the same
-response.
-If a required input is not visible, choose an untried CURRENT affordance whose expected effect can
-expose it. failed_transitions lists actions that already produced no change or a cycle for this same
-screen state and goal gap; do not repeat them. Incomplete work alone is not a terminal reason to
-stop while another grounded transition can expose the missing input or completion evidence.
-"""
-    + TASK_INPUT_RULES
-)
-
-TAUGHT_PROCEDURE_RULES = """
-taught_procedure_progress.index lists every available user instruction. The detailed steps are
-focused context, not a restriction on navigation or proof of completion. Revisit an earlier step
-when the current screen requires it. If details for another step are needed, return its ID in
-requested_instruction_ids with steps=[]; the runtime supplies those instructions before any action.
-Request all needed IDs together. Do not infer that preceding steps completed from a selected ID.
-The user-taught procedure is the authoritative program route. Select taught_step_id from that
-ordered procedure. Use the current screen to bind that step's target and verify its completion;
-do not replace the taught route with another workflow. Repeat a step when it requires several
-screen-boundary actions. Advance only when current evidence or the just-delivered action supports
-the preceding completion. If required content is below the current viewport, use grounded
-navigation such as pagedown rather than reporting a missing detector control. operation=complete
-is allowed only for the final taught step and its completion evidence.
-Each taught step's actions preserve the user's actual button, tab and field instructions.
-Treat target as a semantic CURRENT-screen label, never as a stored coordinate. For fill actions,
-input_key identifies the value the user associated with that target. The procedure describes the
-expected route. Fill only inputs associated with the selected taught step; select the appropriate
-step when another taught group is visible. Perform taught navigation actions in order across
-as many screen-boundary batches as needed; use exploration only when a taught target cannot be
-grounded on the current screen.
-For a fill action, surface=null means a standalone direct input. surface=table_cell explicitly
-authorizes a grid cell and surface=any authorizes either. Do not bind a direct_input to a line-item
-or detail-table cell merely because its column caption resembles the business input name.
-For every fill and field-evidence binding, match the CURRENT control's printed label to the target
-text paired with that exact input_key in taught_procedure. Never assign a different remaining input
-to a visible field merely because that value has not been evidenced yet.
-After saving, opening a query result must target the current row or cell carrying the literal
-notebook.inputs value named by task.identity_input_key. A query caption or input control is not the
-saved result row.
-"""
-
-RETRIEVED_MEMORY_RULES = """
-Memory Retrieval exposes method_memory: learned ways to achieve purposes, with slots and observed
-screen branches. Use relevant methods as task know-how. Return purpose as the specific business
-subgoal of this batch, preserving it until achieved. When a method fits, return its method_id
-and method_bindings mapping its slots to exact current notebook.inputs keys. Keep these meanings
-across changed labels/layouts. If this screen needs a different way to perform that purpose,
-return the appropriate CURRENT steps and controls with the same method_id and bindings: the
-runtime will retain this observed variant for subsequent use. Choose steps from current evidence,
-not the historical marker numbers. Current execution/results in method_memory are this run's
-progress, not business completion proof. A null method_id means a new purpose or no suitable method.
-For navigation into the screen that will perform a learned method, select that method_id and its
-bindings NOW so the next observed screen can use it directly. Select only for the current or
-immediately next subgoal; after a delivered batch the next purpose is chosen from new evidence.
-"""
-
-POST_ACTION_REVIEW_RULES = """
-This call reviews the result of a field batch that was already executed. Describe the current
-screen and map every readable supplied input to evidence. In the SAME response, choose the next
-grounded action that advances the task when one is visible. Do not repeat a delivered field input.
-Return completion only when current evidence supports it, and stop only when no grounded action or
-supported completion is available. Review and next-action planning are one decision boundary; do
-not defer the action to a later model call.
 """
 
 
@@ -1492,27 +1313,8 @@ def build_decision_prompt(
     methods = services.memory_retrieval
     if methods.enabled:
         state["method_memory"] = methods.prompt_context()
-    method_rules = RETRIEVED_MEMORY_RULES if methods.enabled else ""
-    guard_rules = (
-        OBSERVE_ONLY_TARGET_RULES if services.settings.guard_mode == "observe_only" else ""
-    )
-    taught_rules = TAUGHT_PROCEDURE_RULES if request.task_instruction.procedure else ""
-    prompt = (
-        SCREEN_DECISION_RULES
-        + guard_rules
-        + taught_rules
-        + method_rules
-        + (POST_ACTION_REVIEW_RULES if request.post_action_review else "")
-        + json.dumps(state, ensure_ascii=False)
-    )
     return DecisionPromptContext(
-        state=state,
-        capability=capability,
-        active_fields=frozenset(active_fields),
-        prompt=prompt,
-        guard_rules=guard_rules,
-        taught_rules=taught_rules,
-        method_rules=method_rules,
+        state=state, capability=capability, active_fields=frozenset(active_fields)
     )
 
 
@@ -1611,11 +1413,7 @@ def select_screen_response(
         plan = _call_screen_decision(
             services,
             "grounded_screen_plan",
-            SCREEN_PLAN_RULES
-            + prepared.guard_rules
-            + prepared.taught_rules
-            + prepared.method_rules
-            + json.dumps(plan_state, ensure_ascii=False),
+            mapping_prompt(plan_state, screen),
             ScreenPlan,
             page=page,
         )
@@ -1646,7 +1444,7 @@ def select_screen_response(
                 if request.workflow_flags.get("save_issued")
                 else "screen_decision"
             ),
-            prepared.prompt,
+            mapping_prompt(prepared.state, screen),
             ScreenMatch,
             page=page,
         )
@@ -1681,7 +1479,7 @@ def select_screen_response(
         response = _call_screen_decision(
             services,
             "grounded_screen_plan",
-            prepared.prompt,
+            mapping_prompt(prepared.state, screen),
             ScreenMatch,
             page=page,
         )
@@ -1735,12 +1533,7 @@ def select_screen_response(
         response = _call_screen_decision(
             services,
             "education_retrieval",
-            SCREEN_DECISION_RULES
-            + prepared.guard_rules
-            + prepared.taught_rules
-            + prepared.method_rules
-            + json.dumps(expanded, ensure_ascii=False)
-            + "\nRequested details are present. Return the decision, not another retrieval.",
+            mapping_prompt(expanded, screen),
             ScreenMatch,
             page=page,
         )
@@ -1765,12 +1558,7 @@ def select_screen_response(
         response = _call_screen_decision(
             services,
             "image_recovery",
-            SCREEN_DECISION_RULES
-            + prepared.guard_rules
-            + prepared.taught_rules
-            + prepared.method_rules
-            + json.dumps(prepared.state, ensure_ascii=False)
-            + "\nResolve the reported ambiguity with this image.",
+            mapping_prompt(prepared.state, screen),
             ScreenMatch,
             page=page,
         )
@@ -1846,11 +1634,7 @@ def validate_or_replan(
             corrected = _call_screen_decision(
                 services,
                 "replan_after_rejection",
-                SCREEN_DECISION_RULES
-                + prepared.guard_rules
-                + prepared.taught_rules
-                + prepared.method_rules
-                + json.dumps(correction_state, ensure_ascii=False),
+                mapping_prompt(correction_state, request.screen),
                 ScreenMatch,
                 page=request.page,
             )
@@ -1907,11 +1691,7 @@ def validate_or_replan(
         plan = _call_screen_decision(
             services,
             "replan_after_rejection",
-            SCREEN_PLAN_RULES
-            + prepared.guard_rules
-            + prepared.taught_rules
-            + prepared.method_rules
-            + json.dumps(correction_state, ensure_ascii=False),
+            mapping_prompt(correction_state, request.screen),
             ScreenPlan,
             page=request.page,
         )
@@ -1963,12 +1743,7 @@ def ground_screen_response(
                 completion = _call_screen_decision(
                     services,
                     "missing_actions_recovery",
-                    "The current form was matched but operation=act had no executable steps. "
-                    "Return the complete current observation and the missing steps for this goal. "
-                    "Your response replaces the prior observation, including corrected fields. "
-                    "Never infer that an action already happened. "
-                    "If no valid action is available, return operation=stop and steps=[].\n"
-                    + json.dumps(
+                    mapping_prompt(
                         {
                             **prepared.state,
                             "recovery": {
@@ -1988,7 +1763,7 @@ def ground_screen_response(
                             },
                             "controls": model_controls(response.controls, screen),
                         },
-                        ensure_ascii=False,
+                        request.screen,
                     ),
                     ScreenMatch,
                     page=page if used_image else None,
@@ -2029,10 +1804,12 @@ def decide_screen(
         context={"screen": request.screen, "phase": request.phase, "decision_id": decision_id},
     ):
         original_call = services.call
+        prompt_sizes = []
 
         def traced_call(
             prompt: str, schema: type[ResponseT], *, page: RenderedPage | None = None
         ) -> ResponseT:
+            prompt_sizes.append(len(prompt))
             with model_call_context(
                 decision_id=decision_id,
                 frame=str(request.page.image_path) if request.page else None,
@@ -2044,7 +1821,7 @@ def decide_screen(
                         capture = page.image_path.parent / "capture.png"
                         if capture.is_file():
                             model_page = page.model_copy(update={"image_path": capture})
-                    mapped = original_call(mapping_prompt(prompt, screen), schema, page=model_page)
+                    mapped = original_call(prompt, schema, page=model_page)
                     if mapped.mapping is not None:
                         write_decision_artifact(services, "semantic-mapping", mapped.mapping)
                         payload = mapped.mapping.local_payload(screen, request.values)
@@ -2078,7 +1855,6 @@ def decide_screen(
         prepared = build_decision_prompt(request, services)
         state = prepared.state
         capability = prepared.capability
-        prompt = prepared.prompt
         selection = select_screen_response(request, services, prepared)
         response = selection.response
         cache_hit = selection.cache_hit
@@ -2197,7 +1973,7 @@ def decide_screen(
                 "expected_result": response.expected_result,
                 "purpose": response.purpose,
                 "method_id": response.method_id,
-                "prompt_chars": len(prompt),
+                "prompt_chars": sum(prompt_sizes),
             },
         )
         if services.memory_retrieval.enabled and response != method_proposal:

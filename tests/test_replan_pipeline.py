@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from brain.graph import screen_decision as decision
+from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
 
 
 @pytest.mark.parametrize(
@@ -48,10 +49,6 @@ def test_synthetic_replan_keeps_corrected_target_and_rejects_invalid_correction(
         state={"memo": "preserved"},
         capability=decision.ActionCapability(goal="synthetic", completion="synthetic"),
         active_fields=frozenset({"hbl_no"}),
-        prompt="unused",
-        guard_rules="guard\n",
-        taught_rules="education\n",
-        method_rules="memory\n",
     )
 
     def call(_services, purpose, prompt, schema, *, page):
@@ -107,7 +104,7 @@ def test_synthetic_replan_keeps_corrected_target_and_rejects_invalid_correction(
         assert len(requests) == 1, error
         purpose, prompt, schema, page = requests[0]
         assert (purpose, schema, page) == ("replan_after_rejection", decision.ScreenMatch, None)
-        prefix = decision.SCREEN_DECISION_RULES + "guard\neducation\nmemory\n"
+        prefix = CONTEXT_MAPPING_RULES
         assert prompt.startswith(prefix), error
         payload = json.loads(prompt[len(prefix) :])
         assert payload["memo"] == "preserved"
