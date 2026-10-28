@@ -118,3 +118,14 @@ post_action_review의 기대값은 제품 변환 결과가 아니라 원본 응�
 3 existing xfailed (40.16초), Ruff 통과. 제품 동작은 ERP 실행 중 변경하지 않았다.
 128 새 탐색 ERP 10/10, exit 0, 비용 $0.0306696. 126 실패가 C3 때문에 해결됐다고
 주장하지 않는다. 비결정적인 모델 실행이며 C3은 같은 실제 프레임 변환을 유지한다.
+
+
+## C4 — 중간 marker 문자열과 재귀 순회 제거
+
+compile_match에서 현재 observation ref를 직접 생성하고 allowed_refs 검사를 유지했다.
+bind_proposal 30줄을 삭제했다. 이 함수를 직접 호출하던 테스트는 compile_match 경계에서
+존재하지 않는 타깃 거절, 실제 e105 참조 생성, 원본 target 불변, 잘못된 단계의 계약 거절을
+검증하도록 옮겼다. adapt_proposal은 실제 실행 스키마 조립에 필요하므로 유지한다.
+관련 155 passed, 전체 728 passed / 3 existing xfailed (42.45초), Ruff 통과.
+129 기억 인출: ERP 10/10, exit 0, 19.219초, 원격 0회, $0, 24행동,
+11개 그룹+완료 결합 1회. 최종 상세 화면의 저장 번호와 하단 값도 확인했다.

@@ -48,7 +48,7 @@ from .model_call import ResponseT, ScreenModelCall
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision, FieldName
 from .screen_mapping import ObservedStepResult, ScreenMapping, ScreenMappingWire, mapping_prompt
-from .visual_turn import adapt_proposal, bind_proposal
+from .visual_turn import adapt_proposal
 
 
 class ActionCapability(BaseModel):
@@ -1989,8 +1989,16 @@ def decide_screen(
 def compile_match(response: ScreenMatch, observation, schema, *, log: RunLog | None = None):
     from .schemas import DecisionResponse
 
+    prefix = "e" + str(observation.obs_id.int) + "0"
+    allowed_refs = {element.ref for element in observation.elements}
+
     def ref(target):
-        return None if target is None else f"m{target}"
+        if target is None:
+            return None
+        result = prefix + str(target)
+        if result not in allowed_refs:
+            raise ValueError("visual_proposal_unknown_marker")
+        return result
 
     def decision(action=None):
         return {
@@ -2080,13 +2088,7 @@ def compile_match(response: ScreenMatch, observation, schema, *, log: RunLog | N
             "next_decision": data,
         }
 
-    # Bind the assembled payload directly; the execution schema validates it below.
-    bound = bind_proposal(
-        data,
-        "e" + str(observation.obs_id.int) + "0",
-        {e.ref for e in observation.elements},
-    )
-    result = adapt_proposal(bound, schema)
+    result = adapt_proposal(data, schema)
     if normalized_acknowledgement and log is not None:
         log.append(
             "verify",

@@ -1,12 +1,13 @@
 """Current screen proposals use local references and fresh capture geometry."""
 
-from copy import deepcopy
+from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 from test_brain import decision, text_choice
 from test_brain import record as record
 
-from brain.graph.visual_turn import adapt_proposal, bind_proposal
+from brain.graph.screen_decision import ScreenMatch, compile_match
 from brain.visual.scene import SemanticDetection
 
 
@@ -14,20 +15,26 @@ def test_current_policy_rejects_wrong_phase_action_and_unknown_marker():
     from brain.graph.policy import DecisionPolicy, ExecutionFacts
     from brain.graph.schemas import DecisionResponse
 
-    proposal = DecisionResponse.model_validate(
-        {"decision": decision(intent="query_input", action=text_choice("hbl_no", "m5"))}
-    ).model_dump(mode="json")
-    original = deepcopy(proposal)
+    proposal = ScreenMatch(
+        screen_kind="query",
+        procedure_step="task-action",
+        controls=[],
+        steps=[
+            dict(target=5, action="fill", intent="query_input", source="hbl_no", point=[10, 20])
+        ],
+    )
+    observation = SimpleNamespace(obs_id=UUID(int=1), elements=[SimpleNamespace(ref="e106")])
     with pytest.raises(ValueError, match="unknown_marker"):
-        bind_proposal(proposal, "e10", {"e106"})
-    bound = bind_proposal(proposal, "e10", {"e105"})
-    assert bound["decision"]["action"]["ref"] == "e105"
-    assert proposal == original
+        compile_match(proposal, observation, DecisionResponse)
+    observation.elements = [SimpleNamespace(ref="e105")]
+    bound = compile_match(proposal, observation, DecisionResponse)
+    assert bound.decision.action.ref == "e105"
+    assert proposal.steps[0].target == 5
     policy = DecisionPolicy(
         ExecutionFacts(phase="enter", duplicate_clear=True, field_names=("hbl_no",))
     )
     with pytest.raises(ValueError):
-        adapt_proposal(bound, policy.response_schema())
+        compile_match(proposal, observation, policy.response_schema())
     # Metadata does not turn local semantic detection into a persistence claim.
     assert "next_step" not in SemanticDetection.model_fields
 
