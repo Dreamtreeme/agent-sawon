@@ -37,7 +37,11 @@ def anthropic_provider_schema(schema: type[BaseModel]) -> dict[str, Any]:
 
 
 def _screen_codec(schema: type[BaseModel]) -> NullableWireCodec:
-    return NullableWireCodec(schema.model_json_schema(), getattr(schema, "anthropic_nulls", {}))
+    return NullableWireCodec(
+        schema.model_json_schema(),
+        getattr(schema, "anthropic_nulls", {}),
+        getattr(schema, "anthropic_unions", {}),
+    )
 
 
 def _provider_schema(codec: NullableWireCodec) -> dict[str, Any]:

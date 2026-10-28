@@ -336,7 +336,12 @@ bbox 안을 클릭한다는 의미가 아니다. 별도의 포커스 클릭을 �
 모델에 회상시키는 retrieved_procedure도 새 scroll 표현으로 투영하되 저장된 원본은 수정하지 않는다.
 화면 캐시 키는 새 응답 계약으로 구분하므로 이전 형식의 응답을 그대로 읽지 않는다.
 과거 실행을 편찬할 때 매핑에서는 필드 기하만 읽고, 행동은 실제 전달 이력에서 얻은 steps를 사용한다.
-Anthropic nullable codec은 action discriminator로 응답 형식을 찾아 해당 source의 null만 복원한다.
+Anthropic 전송에서는 ScreenPlan/ScreenMatch의 `anthropic_unions`가 지정한 steps만 단일 객체로
+펼친다. action/target/intent/point/source/keys/direction을 전송하며 미사용 필드는 빈 문자열로
+표현한다. `models/schema.py`의 기존 codec이 action discriminator로 내부 형식을 선택하고
+미사용 필드의 명시적 빈 값만 제거한다. 비어 있지 않은 혼합 필드는 유지하여 기존 Pydantic
+검증에서 거절한다. source의 null 복원과 실행 의미는 유지한다. 다른 공급자·원본 모델 스키마는
+변경하지 않는다. 전송 계측의 codec은 `nullable-sentinels-flat-actions-v2`로 구분한다.
 화면 밖 필드는 동일 캡처의 탐지 보완으로 노출되지 않는다.
 
 ## 화면 전용 공개 관찰

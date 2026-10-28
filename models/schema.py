@@ -12,7 +12,12 @@ class NullableWireCodec:
 
     version = "nullable-sentinels-v1"
 
-    def __init__(self, schema: dict[str, Any], nulls: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        schema: dict[str, Any],
+        nulls: dict[str, Any],
+        unions: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
         self.original = deepcopy(schema)
         for path, sentinel in nulls.items():
             field = self.original
@@ -22,6 +27,54 @@ class NullableWireCodec:
         self.schema = deepcopy(self.original)
         self.fields = 0
         self._transform(self.schema)
+        self.union_defaults = {}
+        for path, defaults in (unions or {}).items():
+            original, wire = self.original, self.schema
+            for part in path.split("/"):
+                original, wire = original[part], wire[part]
+            self.union_defaults[id(original)] = defaults
+            self._flatten_union(wire, defaults)
+        if unions:
+            self.version = "nullable-sentinels-flat-actions-v2"
+
+    def _flatten_union(self, node: dict, defaults: dict[str, Any]) -> None:
+        """Flatten an opted-in tagged union only on the provider wire."""
+        tag = node["discriminator"]["propertyName"]
+        references = list(dict.fromkeys(node["discriminator"]["mapping"].values()))
+        properties = {}
+        tags = []
+        for reference in references:
+            branch = self.schema["$defs"][reference.rsplit("/", 1)[-1]]
+            for name, spec in branch["properties"].items():
+                if name == tag:
+                    tags.extend(spec.get("enum", [spec.get("const")]))
+                elif name not in properties:
+                    properties[name] = deepcopy(spec)
+                elif spec.get("description") != properties[name].get("description"):
+                    properties[name]["description"] = (
+                        properties[name].get("description", "") + " " + spec.get("description", "")
+                    ).strip()
+        properties = {tag: {"type": "string", "enum": tags}, **properties}
+        for name, sentinel in defaults.items():
+            spec = properties[name]
+            if "enum" in spec and sentinel not in spec["enum"]:
+                spec["enum"].append(sentinel)
+            spec["description"] = (
+                spec.get("description", "")
+                + f" Use {json.dumps(sentinel)} when this action does not use {name}."
+            ).strip()
+        node.clear()
+        node.update(
+            type="object",
+            properties=properties,
+            required=list(properties),
+            additionalProperties=False,
+        )
+        # Remove only now-unreferenced branch definitions, preserving other contracts.
+        serialized = json.dumps(self.schema)
+        for reference in references:
+            if json.dumps(reference) not in serialized:
+                del self.schema["$defs"][reference.rsplit("/", 1)[-1]]
 
     def _transform(self, node: Any) -> None:
         if isinstance(node, dict):
@@ -63,7 +116,23 @@ class NullableWireCodec:
                 discriminator = spec["discriminator"]
                 reference = discriminator["mapping"].get(item.get(discriminator["propertyName"]))
                 if reference is not None:
-                    return visit(item, {"$ref": reference})
+                    defaults = self.union_defaults.get(id(spec), {})
+                    allowed = self.original["$defs"][reference.rsplit("/", 1)[-1]]["properties"]
+                    item = dict(item)
+                    if not encode:
+                        for key, sentinel in defaults.items():
+                            if (
+                                key not in allowed
+                                and type(item.get(key)) is type(sentinel)
+                                and item.get(key) == sentinel
+                            ):
+                                item.pop(key)
+                    result = visit(item, {"$ref": reference})
+                    if encode:
+                        for key, sentinel in defaults.items():
+                            if key not in allowed:
+                                result.setdefault(key, deepcopy(sentinel))
+                    return result
             if WIRE_NULL in spec:
                 if encode and item is None:
                     return deepcopy(spec[WIRE_NULL])

@@ -140,6 +140,9 @@ class MethodChoice(BaseModel):
 class ScreenPlan(MethodChoice):
     """Task decision over a previously grounded screen interpretation."""
 
+    anthropic_unions: ClassVar[dict[str, dict[str, Any]]] = {
+        "properties/steps/items": {"source": "", "keys": "", "direction": ""},
+    }
     anthropic_nulls: ClassVar[dict[str, Any]] = {
         "properties/taught_step_id": "",
         "properties/method_id": "",

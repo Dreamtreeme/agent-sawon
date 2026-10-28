@@ -82,12 +82,8 @@ def test_screen_schema_removes_anthropic_optional_grammar_branches(contract):
             if node.get("type") == "object" and isinstance(properties, dict):
                 required = set(node.get("required", []))
                 optional.extend(key for key in properties if key not in required)
-                unions.extend(
-                    key
-                    for key, value in properties.items()
-                    if isinstance(value, dict)
-                    and ("anyOf" in value or isinstance(value.get("type"), list))
-                )
+            if "anyOf" in node or "oneOf" in node or isinstance(node.get("type"), list):
+                unions.append(node)
             for child in node.values():
                 inspect(child)
         elif isinstance(node, list):
@@ -98,11 +94,7 @@ def test_screen_schema_removes_anthropic_optional_grammar_branches(contract):
     assert optional == []
     assert unions == []  # Local complexity check; actual provider acceptance is tested separately.
     if contract is ScreenMatch:
-        assert schema["properties"]["steps"]["items"]["anyOf"] == [
-            {"$ref": "#/$defs/NamedAction"},
-            {"$ref": "#/$defs/NamedKeyAction"},
-            {"$ref": "#/$defs/NamedScrollAction"},
-        ]
+        assert schema["properties"]["steps"]["items"]["type"] == "object"
 
 
 def test_long_prompt_tier_changes_all_haiku_rates(tmp_path):
@@ -193,36 +185,49 @@ def test_screen_wire_restores_inline_target_nulls_without_losing_zero_or_source(
     }
     original = deepcopy(raw)
     original_schema = ScreenMatch.model_json_schema()
-    codec = NullableWireCodec(original_schema, ScreenMatch.anthropic_nulls)
+    codec = NullableWireCodec(
+        original_schema, ScreenMatch.anthropic_nulls, ScreenMatch.anthropic_unions
+    )
     encoded = codec.convert(raw, encode=True)
     assert encoded["steps"][0]["target"] == encoded["grid"] == "Reference"
     assert encoded["steps"][0]["point"] == [0, 0]
     assert encoded["steps"][1]["point"] == [5, 5]
     assert encoded["steps"][2]["source"] == ""
     assert encoded["steps"][3]["direction"] == "up"
+    assert encoded["steps"][3]["source"] == encoded["steps"][3]["keys"] == ""
+    assert encoded["steps"][2]["keys"] == encoded["steps"][2]["direction"] == ""
     sdk.messages.create.return_value.content[0].text = json.dumps(encoded)
     result = client.complete_json("current screen", ScreenMatch)
     assert result.response == ScreenMatch.model_validate(original)
     assert raw == original
     assert ScreenMatch.model_json_schema() == original_schema
     payload = log.read_all()[-1].payload
-    assert payload["wire_schema_codec"] == "nullable-sentinels-v1"
-    assert payload["wire_schema_union_count"] == 1
+    assert payload["wire_schema_codec"] == "nullable-sentinels-flat-actions-v2"
+    assert payload["wire_schema_union_count"] == 0
     assert len(payload["wire_schema_sha256"]) == 64
     sent = sdk.messages.create.call_args.kwargs["output_config"]["format"]["schema"]
     assert payload["wire_schema_utf8_bytes"] == len(
         json.dumps(sent, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
     )
-    assert "keys" not in sent["$defs"]["NamedAction"]["properties"]
-    assert "pageup" not in sent["$defs"]["NamedKeyAction"]["properties"]["keys"]["enum"]
-    assert "keys" not in sent["$defs"]["NamedScrollAction"]["properties"]
+    action = sent["properties"]["steps"]["items"]["properties"]
+    assert "pageup" not in action["keys"]["enum"]
+    assert action["direction"]["enum"] == ["up", "down", ""]
     assert "x-anthropic-null" not in json.dumps(sent)
     # Invalid nonempty payloads still fail the original domain validation with usage retained.
-    encoded["steps"][1]["keys"] = "not-a-key"
-    sdk.messages.create.return_value.content[0].text = json.dumps(encoded)
-    with pytest.raises(ValueError):
-        client.complete_json("current screen", ScreenMatch)
-    assert log.read_all()[-1].cost.usd is not None
+    for index, key, value in [
+        (1, "keys", "not-a-key"),
+        (1, "keys", "pageup"),
+        (2, "keys", "pageup"),
+        (2, "direction", "up"),
+        (3, "keys", "tab"),
+        (3, "source", "hbl_no"),
+    ]:
+        invalid = deepcopy(encoded)
+        invalid["steps"][index][key] = value
+        sdk.messages.create.return_value.content[0].text = json.dumps(invalid)
+        with pytest.raises(ValueError):
+            client.complete_json(f"invalid step {index}: {key}={value}", ScreenMatch)
+        assert log.read_all()[-1].cost.usd is not None, (index, key, value)
 
 
 def test_wire_metadata_survives_api_failure_and_does_not_leak_to_next_call(tmp_path):
@@ -238,7 +243,7 @@ def test_wire_metadata_survives_api_failure_and_does_not_leak_to_next_call(tmp_p
     with pytest.raises(BadRequestError):
         client.complete_json("screen", ScreenMatch)
     failed = log.read_all()[-1]
-    assert failed.payload["wire_schema_codec"] == "nullable-sentinels-v1"
+    assert failed.payload["wire_schema_codec"] == "nullable-sentinels-flat-actions-v2"
     assert failed.payload["http_status"] == 400
     assert failed.cost.usd is None
     assert sdk.messages.create.call_count == 1
