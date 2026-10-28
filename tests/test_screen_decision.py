@@ -3235,52 +3235,29 @@ def test_review_evidence_uses_only_declared_field_sources(operation):
     )
 
 
-# Cleanup audit C1/C5: preserve evidence derived from explicit field readings.
-def test_semantic_mapping_field_reading_supplies_evidence_without_value_target_guessing():
+# Cleanup audit C1/C5: historical annotations cannot override field-derived evidence.
+@pytest.mark.parametrize("source", ["packages.count", None], ids=["bound-reading", "unassigned"])
+def test_saved_mapping_ignores_retired_evidence_and_preserves_field_readings(source):
     from brain.graph.screen_mapping import ScreenMapping
 
-    mapping = ScreenMapping.model_validate(
-        {
-            "screen_kind": "editor",
-            "fields": {
-                "추가 정보 수량": {
-                    "source": "packages.count",
-                    "role": "edit",
-                    "bbox": [120, 193, 451, 32],
-                    "value": "12",
-                }
-            },
-            "evidence": [{"field": "수량", "target": "12"}],
-            "repair_fields": ["additional destination value"],
-        }
+    raw = {
+        "fields": {
+            "수량": {"role": "edit", "bbox": [120, 193, 451, 32], "source": source, "value": "12"}
+        },
+        "evidence": [{"field": "description", "target": "absent target"}],
+        "repair_fields": ["additional destination value"],
+    }
+    mapping = ScreenMapping.model_validate(raw)
+    payload = mapping.local_payload({})
+    assert [item["field"] for item in payload["evidence"]] == ([source] if source else [])
+    assert payload["repair_fields"] == []
+    assert "evidence" not in mapping.model_dump()
+    assert "evidence" not in ScreenMatch.model_json_schema()["properties"]
+    assert (
+        ScreenMapping.model_validate({k: v for k, v in raw.items() if k != "evidence"}) == mapping
     )
-
-    response = ScreenMatch.model_validate(mapping.local_payload({}))
-
-    assert response.evidence[0].field == "packages.count"
-    assert response.repair_fields == []
-
-
-# Cleanup audit C1: review obsolete response evidence contract; retain source/value behavior.
-def test_semantic_mapping_omits_unassigned_descriptive_evidence():
-    from brain.graph.screen_mapping import ScreenMapping
-
-    mapping = ScreenMapping.model_validate(
-        {
-            "screen_kind": "query",
-            "fields": {
-                "조회 결과": {"role": "table", "bbox": [30, 160, 1100, 500]},
-            },
-            "evidence": [
-                {"field": "조회 결과가 비어 있음", "target": "조회 결과"},
-                {"field": "설명뿐인 항목", "target": "존재하지 않는 대상"},
-            ],
-        }
-    )
-
-    response = ScreenMatch.model_validate(mapping.local_payload({}))
-
-    assert response.evidence == []
+    with pytest.raises(ValueError):
+        ScreenMapping.model_validate({**raw, "unknown_contract_field": True})
 
 
 def test_semantic_mapping_uses_explicit_result_names_for_completion():

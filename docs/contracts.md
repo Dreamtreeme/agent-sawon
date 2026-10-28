@@ -132,6 +132,12 @@ relay가 입력 전달을 확인하면 `_accept_dispatched_action()`이 해당 �
 노드별 계산 결과를 합친다. 필드별 전달 기록이 없는 경로만 직전 전달 행동을 참고한다.
 `remaining_inputs`는 미확인 목록이지 미입력 목록이 아니다.
 
+모델 응답은 `fields.source/value`로 입력 증거를 전달한다. 별도 모델용 `evidence` 목록은
+사용하지 않으며 과거 로그/캐시에 남은 이 항목은 읽을 때만 무시한다. 내부 실행 계약의
+`ScreenMatch.evidence`와 `completion_evidence`는 유지한다. 모델 JSON 파싱 시에는 의미 매핑만
+보관하고, 실제 화면과 입력이 제공된 시점에 실행 참조와 입력 증거를 한 번 생성한다.
+최종 모델 프롬프트는 상태 dict에서 직접 만들며 중간 숫자 프롬프트를 역파싱하지 않는다.
+
 `ScreenMapping.local_payload`는 현재 selected_fields를 교체한다. `ScreenScanner`는 모델의
 현재 매핑에 이전 노드 필드를 보충하지 않는다. 실행 중 pHash 카탈로그는 탐지 기하만 재사용하며,
 필드의 의미·source를 자동 승계하지 않는다. 경로 없는 과거 편찬물은 특정 노드로 배정하지 않는다.

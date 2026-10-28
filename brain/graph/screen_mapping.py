@@ -65,12 +65,6 @@ class NamedScrollAction(NamedTarget):
     direction: ScrollDirection
 
 
-class NamedEvidence(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    field: str
-    target: str
-
-
 class NamedCompletionEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
     condition_index: int
@@ -112,7 +106,6 @@ class ScreenMapping(BaseModel):
     steps: list[
         Annotated[NamedAction | NamedKeyAction | NamedScrollAction, Field(discriminator="action")]
     ] = Field(default_factory=list)
-    evidence: list[NamedEvidence] = Field(default_factory=list)
     completion_evidence: list[NamedCompletionEvidence] = Field(default_factory=list)
     operation: Literal["act", "duplicate_clear", "duplicate_found", "complete", "stop"] = "act"
     purpose: str = ""
@@ -132,6 +125,9 @@ class ScreenMapping(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def named_entries(cls, value):
+        # Read historical mappings without restoring their unused duplicate evidence contract.
+        if isinstance(value, dict) and "evidence" in value:
+            value = {key: item for key, item in value.items() if key != "evidence"}
         if (
             cls is ScreenMapping
             and isinstance(value, dict)
@@ -358,7 +354,7 @@ Associate each name with the actual control bbox and choose the precise action p
 OCR captions identify meaning, not necessarily the writable location. fields.source links each field
 to its exact input key. The executor supplies current values; source must not contain literal data.
 Read current values first. Matching fields.value and fields.source become notebook evidence;
-evidence is not a duplicate checklist and cannot override field sources or readings.
+Do not return a separate evidence list; field sources and readings are authoritative.
 Include source for reviewed fields too, even when no input action is needed.
 screen_path, fields.source and fields.value are your memory update for this observation.
 Use the previous screen_tree, delivered actions and CURRENT image/OCR to select the node,
