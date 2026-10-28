@@ -1567,7 +1567,8 @@ def select_screen_response(
         response = local_response(response, screen)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
-    response = bind_value_evidence_to_controls(services, response, screen)
+    if response.mapping is None:
+        response = bind_value_evidence_to_controls(services, response, screen)
     return ScreenSelection(response, cache_hit, method_proposal, used_image, prepared)
 
 
@@ -1640,7 +1641,8 @@ def validate_or_replan(
                 page=request.page,
             )
             corrected = local_response(corrected, request.screen)
-            corrected = bind_value_evidence_to_controls(services, corrected, request.screen)
+            if corrected.mapping is None:
+                corrected = bind_value_evidence_to_controls(services, corrected, request.screen)
             corrected = prepare_screen_plan(
                 request, services, corrected, prepared.capability, active_fields
             )
