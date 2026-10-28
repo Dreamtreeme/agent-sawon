@@ -163,7 +163,7 @@ def test_memory_compiler_preserves_purpose_points_and_trace_order(tmp_path):
     ]
 
 
-def test_synthetic_compilation_preserves_passive_field_mapping_but_not_old_value(tmp_path):
+def test_synthetic_compilation_preserves_model_readings_as_input_references(tmp_path):
     # Synthetic successful save screen: the reference is observed, never filled in this batch.
     original = screen("Shipment editor")
     mapping = ScreenMapping.model_validate(
@@ -178,6 +178,7 @@ def test_synthetic_compilation_preserves_passive_field_mapping_but_not_old_value
                     "value": "HBL-001",
                 },
                 "Save": {"role": "button", "bbox": [600, 500, 100, 40]},
+                "Blank": {"role": "edit", "bbox": [300, 40, 80, 30], "value": ""},
             },
             "steps": [{"target": "Save", "action": "click", "intent": "save", "point": [650, 520]}],
         }
@@ -188,7 +189,9 @@ def test_synthetic_compilation_preserves_passive_field_mapping_but_not_old_value
     group = method.action_groups[0]
     assert group.screen_path == ["Shipment", "Details"]
     assert group.field_sources == {"Reference": "hbl_no"}
-    assert {f.name for f in group.observed_fields} == {"Reference", "Save"}
+    assert {f.name for f in group.observed_fields} == {"Reference", "Save", "Blank"}
+    assert group.field_values == {"Reference": {"source": "hbl_no"}, "Blank": ""}
+    assert "Save" not in group.field_values  # An omitted reading must not become an empty one.
     assert "HBL-001" not in method.model_dump_json()
     library = MethodLibrary(tmp_path / "passive-memory.json", enabled=True)
     library.upsert(method)
@@ -481,6 +484,7 @@ def test_synthetic_completion_survives_recorded_trace_compilation_without_old_va
     assert restored.completion.targets[0].target.bbox == (150, 280, 180, 40)
     assert restored.completion.targets[0].slot == "hbl_no"
     assert restored.completion.targets[0].condition_indexes == [0]
+    assert restored.completion.field_values == {"Reference": {"source": "hbl_no"}}
     assert "HBL-001" not in restored.model_dump_json()
 
 

@@ -542,7 +542,9 @@ def compile_memory(
     )
     if completion := source.get("completion"):
         method = (
-            method_completion_from_match(completion["screen"], completion["response"], method)
+            method_completion_from_match(
+                completion["screen"], completion["response"], method, source["values"]
+            )
             or method
         )
         if method.completion is not None:

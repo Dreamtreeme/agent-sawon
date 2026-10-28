@@ -190,7 +190,7 @@ class ScreenMapping(BaseModel):
                     candidate_confidence=1,
                 )
             )
-            geometry[str(target)] = dict(name=name, **field.model_dump())
+            geometry[str(target)] = dict(name=name, **field.model_dump(exclude_unset=True))
         result = self.model_dump(
             exclude={
                 "fields",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
 from math import log
@@ -83,9 +84,11 @@ class MethodActionGroup(BaseModel):
     screen_phash: int | None = None
     image_size: tuple[int, int] | None = None
     # Screen memory includes passive fields, not just the next action's targets.
-    # Only meaning/geometry/source bindings persist; values come from the current OCR.
     observed_fields: list[MethodTarget] = Field(default_factory=list)
     field_sources: dict[str, str] = Field(default_factory=dict)
+    # Model readings: omitted keys are unknown; strings include explicit blanks;
+    # {"source": input_key} refers to the matching value in the new run's record.
+    field_values: dict[str, str | dict[str, str]] | None = None
     save_result: (
         Literal["rejected", "confirmation_required", "ready_for_query", "unknown"] | None
     ) = None
@@ -111,6 +114,7 @@ class MethodCompletion(BaseModel):
     screen_path: list[str] = Field(default_factory=list)
     screen_phash: int | None = None
     image_size: tuple[int, int] | None = None
+    field_values: dict[str, str | dict[str, str]] | None = None
 
 
 class LearnedMethod(BaseModel):
@@ -162,6 +166,38 @@ def group_input_sources(
             if action.action == "fill" and action.slot is not None
         },
     }
+
+
+def remembered_field_values(screen: dict, values: Mapping[str, str]) -> dict | None:
+    """Preserve model readings, never reconstruct them from OCR or planned inputs."""
+    fields = screen.get("selected_fields")
+    if fields is None:
+        return None
+    return {
+        field["name"]: (
+            {"source": field["source"]}
+            if field.get("source") in values
+            and field_matches(field["source"], field["value"], values)
+            else field["value"]
+        )
+        for field in fields.values()
+        if "value" in field
+    }
+
+
+def bind_remembered_values(
+    field_values: dict | None, sources: Mapping[str, str], values: Mapping[str, str]
+) -> dict[str, str]:
+    """Resolve remembered input references while preserving literal model observations."""
+    result = {}
+    for name, value in (field_values or {}).items():
+        if isinstance(value, dict):
+            source = sources.get(value["source"], value["source"])
+            if source in values:
+                result[name] = values[source]
+        else:
+            result[name] = value
+    return result
 
 
 class MethodDocument(BaseModel):
@@ -256,6 +292,7 @@ def compile_method_candidate(
                         target.model_dump(mode="json") for target in compiled.observed_fields
                     ],
                     "field_sources": compiled.field_sources,
+                    "field_values": compiled.field_values,
                 },
                 sort_keys=True,
                 ensure_ascii=False,
@@ -516,6 +553,7 @@ def method_from_match(
         image_size=screen.get("image_size"),
         observed_fields=observed_fields,
         field_sources=field_sources,
+        field_values=remembered_field_values(screen, values or {}),
         save_result=response.get("save_result") if has_save_review else None,
         message_targets=message_targets if has_save_review else [],
         repair_fields=list(response.get("repair_fields", [])) if has_save_review else [],
@@ -534,7 +572,7 @@ def method_from_match(
 
 
 def method_completion_from_match(
-    screen: dict, response: dict, method: LearnedMethod
+    screen: dict, response: dict, method: LearnedMethod, values: Mapping[str, str] | None = None
 ) -> LearnedMethod | None:
     """Compile model-approved final proof into current-value-bound method evidence."""
 
@@ -601,6 +639,7 @@ def method_completion_from_match(
         screen_path=list(screen.get("screen_path", [])),
         screen_phash=screen.get("screen_phash"),
         image_size=screen.get("image_size"),
+        field_values=remembered_field_values(screen, values or {}),
     )
     return method.model_copy(update={"slots": slots, "completion": completion})
 
@@ -1006,7 +1045,13 @@ class MethodLibrary:
         if method is None or method.completion is None:
             return None
         sources = {slot.name: slot_map.get(slot.name, slot.source_key) for slot in method.slots}
-        blocks = {block["id"]: block for block in screen.get("ocr", [])}
+        if method.completion.field_values is None:
+            return None
+        readings = bind_remembered_values(
+            method.completion.field_values,
+            {slot.source_key: sources[slot.name] for slot in method.slots},
+            values,
+        )
         controls: dict[int, dict] = {}
         evidence = []
         completion_evidence = []
@@ -1030,10 +1075,9 @@ class MethodLibrary:
                 return None
             marker, label_ids = bound
             text_ids = _marker_text_ids(marker, screen, item.target.role)
-            visible = [blocks[text_id]["text"] for text_id in text_ids if text_id in blocks]
-            if visible:
-                visible.append(" ".join(visible))
-            if not any(field_matches(source, text, values) for text in visible):
+            if item.target.name not in readings or not field_matches(
+                source, readings[item.target.name], values
+            ):
                 return None
             _register_bound_target(screen, item.target, marker)
             controls[marker["id"]] = ControlMeaning(

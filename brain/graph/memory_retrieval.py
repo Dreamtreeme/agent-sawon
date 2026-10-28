@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,7 @@ from brain.cache.methods import (
     MethodDocument,
     MethodLibrary,
     MethodSlot,
+    bind_remembered_values,
     compile_method_candidate,
     group_input_sources,
     method_completion_from_match,
@@ -21,7 +23,7 @@ from brain.cache.methods import (
     screen_similarity_distance,
 )
 from brain.task_instruction import TaskInstruction
-from brain.visual.scene import contains_control_text, same_control_region
+from brain.visual.scene import same_control_region
 from brain.vocabulary import SCROLL_DIRECTION_KEYS
 from sawon_runtime.storage import RunLog, atomic_write_json
 
@@ -38,6 +40,8 @@ class RetrievalContext:
     inputs: Mapping[str, str]
     credentials: Mapping[str, str | None]
     observation_id: str | None
+    screen_nodes: Mapping[str, dict] = field(default_factory=dict)
+    evidence_scope: str = "entry"
 
 
 @dataclass
@@ -304,6 +308,14 @@ class MemoryRetrieval:
                         for action in group.actions
                     ],
                     "expected_result": group.expected_result,
+                    "field_values": bind_remembered_values(
+                        group.field_values,
+                        {
+                            slot.source_key: bindings.get(slot.name, slot.source_key)
+                            for slot in method.slots
+                        },
+                        self._binding_values(),
+                    ),
                 }
             )
             for target in [*group.observed_fields, *group.targets]:
@@ -421,7 +433,13 @@ class MemoryRetrieval:
                     if item.target.bbox is not None
                 }
                 response = self._restore_mapping(
-                    screen, response, method.completion.screen_path, fields
+                    screen,
+                    response,
+                    method.completion.screen_path,
+                    fields,
+                    method.completion.field_values,
+                    method,
+                    mapping,
                 )
             self.state.purpose = response.purpose
             self.state.bindings[method.id] = mapping
@@ -477,7 +495,9 @@ class MemoryRetrieval:
                 for target in [*group.observed_fields, *group.targets]
                 if target.bbox is not None
             }
-            response = self._restore_mapping(screen, response, group.screen_path, fields)
+            response = self._restore_mapping(
+                screen, response, group.screen_path, fields, group.field_values, method, mapping
+            )
         self.state.purpose = response.purpose
         self.state.bindings[method.id] = mapping
         self.state.pending = {
@@ -504,18 +524,31 @@ class MemoryRetrieval:
         )
         return response
 
-    def _restore_mapping(self, screen, response, screen_path, fields):
-        """Restore learned meaning; only literal readings come from this capture."""
+    def _restore_mapping(self, screen, response, screen_path, fields, values, method, bindings):
+        """Recall model-owned readings and this run's newer memo; OCR cannot replace either."""
         from .screen_decision import ScreenMatch
 
-        for entry in fields.values():
-            entry["value"] = " ".join(
-                block["text"]
-                for block in sorted(
-                    screen.get("ocr", []), key=lambda b: (b["bbox"][1], b["bbox"][0])
+        if values is None:
+            return response  # Missing historical model readings use the existing recovery path.
+        readings = bind_remembered_values(
+            values,
+            {slot.source_key: bindings.get(slot.name, slot.source_key) for slot in method.slots},
+            self._binding_values(),
+        )
+        node = self.task_context.screen_nodes.get(json.dumps(screen_path, ensure_ascii=False), {})
+        for name, entry in fields.items():
+            if name in readings:
+                entry["value"] = readings[name]
+            memo = node.get("fields", {}).get(entry.get("source"), {})
+            observed, delivery = memo.get("last_observation"), memo.get("delivery")
+            if (
+                observed
+                and observed["scope"] == self.task_context.evidence_scope
+                and (
+                    not delivery or observed["observation_number"] > delivery["observation_number"]
                 )
-                if contains_control_text(entry["bbox"], block["bbox"])
-            )
+            ):
+                entry["value"] = observed["value"]
         names = {int(ref): item["name"] for ref, item in screen.get("selected_fields", {}).items()}
         steps = []
         directions = {key: direction for direction, key in SCROLL_DIRECTION_KEYS.items()}
@@ -543,7 +576,8 @@ class MemoryRetrieval:
             mapping.local_payload(screen, self.task_context.inputs)
         )
         screen["memory_fields"] = [
-            dict(name=name, **field.model_dump()) for name, field in mapping.fields.items()
+            dict(name=name, **field.model_dump(exclude_unset=True))
+            for name, field in mapping.fields.items()
         ]
         return restored.model_copy(
             update={"mapping": mapping, "method_bindings": response.method_bindings}
@@ -656,7 +690,7 @@ class MemoryRetrieval:
             if previous is None:
                 return
             learned = method_completion_from_match(
-                screen, response.model_dump(mode="json"), previous
+                screen, response.model_dump(mode="json"), previous, self._binding_values()
             )
             if learned is not None and learned.completion is not None:
                 self.state.staged_completions[learned.id] = learned.completion

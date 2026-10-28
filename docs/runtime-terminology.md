@@ -11,15 +11,16 @@ Memory Retrieval은 **과거에 배운 업무 방법**을 가져온다. Context 
 | 단계 | 질문 | 입력 → 출력 | 코드 |
 |---|---|---|---|
 | 화면 유사도 | 이 화면을 경험했는가? | 현재 캡처·업무 식별 → 가까운 기억 또는 미일치 | `ScreenScanner.scan`, `screen_similarity_distance` |
-| Memory Retrieval | 이 업무를 어떻게 처리했는가? | 일치한 기억 → 필드 이름·bbox·입력 key·학습한 절차 | `MemoryRetrieval.retrieve_screen_memory` |
+| Memory Retrieval | 이 업무를 어떻게 처리했는가? | 일치한 기억 → 필드 이름·bbox·입력 key·모델 확인값·학습한 절차 | `MemoryRetrieval.retrieve_screen_memory` |
 | Scanning | 현재 무엇이 보이는가? | 캡처 → OCR 텍스트·OmniParser 후보 영역 | `ScreenScanner._build_catalog` |
 | Context Recall | 이번 실행은 어디까지 왔는가? | 현재 상태 → 메모·이력·완료/미완료 입력·진행 중 행동·교육 위치 | `context_recall.recall_context` |
 | Pattern Matching | 배운 방법을 지금 적용할 수 있는가? | 현재 화면·진행 상태 → 결합된 메서드 또는 화면 캐시 | `screen_decision.match_screen_pattern` |
 | 화면 판단 | 다음에 무엇을 할 것인가? | 위 결과 → 실행 계획 또는 탐색 요청 | `screen_decision.decide_screen`, `select_screen_response` |
-| Memory Compilation | 성공 경험에서 무엇을 재사용할 것인가? | 성공 실행 기록 → 절차·필드 대응·좌표를 담은 기억 | `compile_memory` |
+| Memory Compilation | 성공 경험에서 무엇을 재사용할 것인가? | 성공 실행 기록 → 절차·필드 대응·좌표·모델 확인값을 담은 기억 | `compile_memory` |
 
 Context Recall에는 모델 호출·행동 선택·상태 변경이 없다. 모델 호출과 응답 검증·복구는
-`screen_decision.py`가 소유한다. 기억의 이전 업무 값은 현재 입력 완료의 증거로 사용하지 않는다.
+`screen_decision.py`가 소유한다. 업무 입력과 일치한 모델 확인값은 입력 키 참조로 편찬해
+현재 record의 값을 연결한다. 과거 업무의 입력 문자열을 그대로 복사하지 않는다.
 
 ## 화면 처리 그래프
 
@@ -28,8 +29,8 @@ flowchart TD
     CAP[현재 캡처] --> SIM{화면 유사도}
     SIM -->|일치| MEM[Memory Retrieval: 업무 지식 인출]
     SIM -->|미일치| SCAN[Scanning: OCR·OmniParser]
-    MEM --> OCR[현재 값 OCR]
-    OCR --> CTX[Context Recall: 이번 실행 상태]
+    MEM --> READINGS[모델 확인값·입력 키 연결 인출]
+    READINGS --> CTX[Context Recall: 이번 실행 상태]
     SCAN --> CTX
     CTX --> PAT[Pattern Matching: 현재 상황에 결합]
     PAT --> DEC[화면 판단: 기억·캐시 또는 모델]
@@ -59,19 +60,20 @@ flowchart TD
 - `retrieve_screen_memory`는 이름·bbox·role뿐 아니라 현재 슬롯에 연결한 `source`와
   `procedure`를 반환한다. 행동 후보가 선택되지 않아도 이 정보는 모델에 전달된다.
   인출만으로 `pending`, `used`, `verified`를 갱신하지 않는다.
-- `group_input_sources`를 기억 인출과 현재 값 증거 연결이 함께 사용한다. 현재 OCR 값과 입력값의
-  비교는 복원된 `ScreenMapping.local_payload`와 공용 값 비교를 사용한다. 경로가 없는 과거
+- `group_input_sources`를 기억 인출과 입력 키 연결이 함께 사용한다. 모델이 확인한 값과
+  누적 메모를 복원한 `ScreenMapping.local_payload`는 기존 공용 값 비교를 사용한다. 경로가 없는 과거
   기억만 `bind_visible_value_evidence`를 거친다. 기억에 있는 절차는 실행 완료 이력이 아니다.
 - 정상 인출은 저장된 `screen_path`·필드 의미·입력 키·행동으로 매핑을 복원하며 모델을 부르지
   않는다. 다음 계획 미결합, 입력/저장 결과 불일치, 실행 검증 실패, 기억 누락이 모델 복구 사유다.
-  복구 요청에는 인출된 필드 연결과 현재 OCR 값을 함께 전달한다. 최종 완료 응답도 판단 로그의
-  매핑에서 편찬하며 현재 값 확인과 기존 완료 검증을 거친다.
+  복구 요청에는 인출된 필드 연결·모델 확인값·누적 메모와 현재 OCR을 구분해 전달한다.
+  최종 완료 응답도 판단 로그의 매핑에서 편찬하며 기존 완료 검증을 거친다.
 - 모델의 `ScreenMapping.needs_refinement`가 `ScreenPlan`/`ScreenMatch`를 지나
   `SemanticDetection`까지 전달된다. 기억에 필요한 보이는 컨트롤이 없으면 같은 캡처·OCR로
   OmniParser를 실행하고 다시 공통 문맥·패턴·판단 경로로 들어간다. 빈 행동 보완 호출로 바꾸지 않는다.
 - 화면 밖 컨트롤은 탐색 요청 신호로 대신 처리하지 않고 기존 이동·스크롤 행동으로 찾는다.
   재탐지 이후에는 기존 보완 탐지의 종료 조건을 사용한다.
-- 예전 기억은 빈 관찰 필드 기본값으로 읽는다. 저장되지 않은 추가 필드·입력 대응은 성공 기록을
+- 예전 기억은 빈 관찰 필드 기본값과 `field_values=None`으로 읽는다. 값 누락을 OCR로 채우지 않는다.
+  저장되지 않은 모델 확인값·추가 필드·입력 대응은 성공 기록을
   재편찬해야 확보할 수 있다. 콜드/웜은 bench의 실험 조건이며 화면마다 선택하는 경로와 다르다.
 
 ## LangGraph와의 관계

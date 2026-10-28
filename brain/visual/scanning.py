@@ -990,16 +990,6 @@ class ScreenScanner:
             request.screen["selected_fields"] = dict(selected_fields)
         if memory is not None:
             request.screen["retrieved_procedure"] = memory.get("procedure", [])
-            request.screen["memory_fields"] = [
-                {
-                    **item,
-                    "value": " ".join(
-                        block.text
-                        for block in sorted(blocks, key=lambda b: (b.bbox[1], b.bbox[0]))
-                        if contains_control_text(item["bbox"], block.bbox)
-                    ),
-                }
-                for item in memory["fields"]
-            ]
+            request.screen["memory_fields"] = [dict(item) for item in memory["fields"]]
         request.screen["observation_route"] = "memory_retrieval" if memory or reused else "scanning"
         return request

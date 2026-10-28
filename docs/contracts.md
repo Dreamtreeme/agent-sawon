@@ -86,7 +86,8 @@ flowchart LR
 이전 경로를 자동 승계하지 않는다. 이 필드는 기존 화면 판단 응답에 포함되며 추가 호출은 없다.
 
 탐색이 확정한 경로는 `MethodActionGroup.screen_path`에도 보존한다. 인출에서는 기존 화면
-유사도와 진행 순서로 선택한 그룹의 경로·필드 연결을 복원하고 현재 OCR 값으로 매핑을 만든다.
+유사도와 진행 순서로 선택한 그룹의 경로·필드 연결·모델 확인값으로 매핑을 만든다.
+같은 노드·범위에서 입력 전달 이후 모델이 새로 확인한 값이 있으면 누적 메모를 우선한다.
 다른 그룹의 유사 화면 필드를 섞어 노드를 추정하지 않는다. 이 매핑도 `remember_screen`과
 기존 증거 기록기를 사용한다. 전달한 입력과 같은 노드의 현재 값이 다르면 모델 복구로 전환한다.
 모델 복구의 임시 대상 ID가 바뀌어도 원본 행동 그룹의 bbox를 기준으로 같은 행동을 연결한다.
@@ -94,8 +95,9 @@ flowchart LR
 `screen_plan_proposed.mapping`은 편찬의 의미 매핑 원본이다. `MethodCompletion`은 완료 화면의
 경로·유사도·크기와 현재 값으로 확인할 대상 및 조건 번호를 저장한다. `condition_indexes`가
 빈 대상은 입력값 증거이며 완료 조건을 새로 만들지 않는다. 완료 계획은 모든 그룹 전달 후
-현재 값이 일치할 때만 복원하고 기존 업무 완료 검증을 거친다. 값·관찰 순번·전달 이력은
-편찬하지 않는다. 구형 산출물에 없는 경로·완료 조건은 자동 생성하지 않는다.
+입력 키에 연결한 모델 확인값으로 복원하고 기존 업무 완료 검증을 거친다. 모델이 읽은 값은
+`field_values`에 보존하되 관찰 순번·전달 이력은 편찬하지 않는다. 구형 산출물에 없는
+경로·확인값·완료 조건은 자동 생성하지 않는다.
 
 `ProgressState.screen_nodes`는 화면 트리의 단일 상태 저장소이며 경로의 JSON 문자열로
 인덱싱한다. 노드는 path·업무 키별 fields·이름별 controls를 보관하고, 관찰값은 각 필드의
@@ -210,24 +212,32 @@ notebook에 한 번만 제공하며 scratchpad에 복사하지 않는다. 입력
 ## 인출된 증거와 저장 결과
 
 `MethodActionGroup.observed_fields`는 관찰한 필드의 의미·bbox·role을, `field_sources`는
-필드 이름 → 업무 입력 key를 저장합니다. 이전 입력값은 저장하지 않습니다. 생산자는
+필드 이름 → 업무 입력 key를 저장합니다. `field_values`는 필드 이름 → 모델 확인값을 보존합니다.
+업무 입력과 일치하는 값은 `{"source": "description"}`처럼 입력 키 참조로 저장하고,
+인출할 때 현재 record에 연결합니다. 다른 관찰값은 문자열로 보존합니다. `""`는 명시적 빈칸,
+키 생략은 미확인, `None`은 이 정보를 저장하지 않은 과거 산출물입니다. `MethodCompletion`도
+같은 값 계약을 사용합니다. 생산자는
 `ScreenMapping.local_payload`의 내부 `selected_fields`와 `method_from_match`이며,
 런타임 학습·편찬 모두 이 함수를 사용합니다. `compile_method_candidate`의 중복 판정에도
-이 필드를 포함해 서로 다른 관찰 정보를 지우지 않습니다. 옛 산출물은 빈 기본값으로 읽습니다.
+이 필드를 포함해 서로 다른 관찰 정보를 지우지 않습니다. `local_payload`는 생략된 값을
+빈 문자열 기본값으로 바꾸지 않습니다. 인출의 소비자는 `MemoryRetrieval._restore_mapping`과
+`MethodLibrary.bind_completion_with_context`입니다. 기존 누적 메모는 `RetrievalContext.screen_nodes`로
+읽으며 별도 상태 복사본을 만들지 않습니다. 과거 산출물의 확인값 누락은 기존 복구 경로로 보냅니다.
 
 `MemoryRetrieval.retrieve_screen_memory`은 같은 교육 digest·목표의 기억에서 기존 viewport·pHash
 조건을 적용해 가장 가까운 화면의 기하·입력 키 대응·절차를 반환합니다. 같은 거리의 그룹은
 같은 role과 공용 `same_control_region` 판정으로 합치며 bbox 완전일치를 요구하지 않습니다.
 이 읽기는 pending·used·verified를 갱신하지 않습니다. 화면이 비슷하다는 사실은 행동 선택이나
-완료 증거가 아닙니다. `match_pattern`이 기존 단계 문맥으로 행동을 결합하고, 현재 OCR에서
-일치한 값만 공통 증거 갱신 경로에 들어갑니다. 현재 프레임의 marker ID는 새로 배정합니다.
+완료 증거가 아닙니다. `match_pattern`이 기존 단계 문맥으로 행동을 결합한 뒤 저장된 모델
+확인값과 누적 메모를 공통 증거 갱신 경로에 전달합니다. OCR 원문은 이 값을 덮어쓰지 않습니다.
+현재 프레임의 marker ID는 새로 배정합니다.
 
 `retrieve_screen_memory`의 필드에는 현재 슬롯에 연결한 `source`가, `procedure`에는 학습한
-행동·선행 그룹·예상 결과가 들어갑니다. `group_input_sources`는 인출과 현재 값 증거 연결의
+행동·선행 그룹·예상 결과·입력 키를 연결한 모델 확인값이 들어갑니다. `group_input_sources`는 인출과 입력 키 연결의
 공용 변환입니다. 행동 후보 선택 전에 이 지식을 `remembered_fields`와 `retrieved_procedure`로
 모델에 전달합니다. 이 정보는 과거 지식이며 이번 실행의 완료 상태와 구분합니다.
 
-`MethodLibrary.bind_visible_value_evidence`는 현재 OCR에서 입력값이 일치한 경우에만 증거를
+경로 없는 과거 산출물의 `MethodLibrary.bind_visible_value_evidence`는 현재 OCR에서 입력값이 일치한 경우에만 증거를
 만듭니다. 이때 증거 대상도 행동 대상과 동일한 `screen.markers` / `selected_fields`에 등록합니다.
 현재 프레임의 같은 role·겹치는 입력 영역은 같은 ID를 사용하며, 다른 그룹의 새 대상에는 새 ID를
 배정합니다. 영역 판정은 장면의 기존 중복 기준(IoU >= 0.85)을 기억 인출·좌표 결합·장면 보충이

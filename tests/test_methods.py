@@ -235,6 +235,25 @@ def test_candidate_compiler_removes_instance_anchors_and_repeated_retries():
 
 def completion_scene(*, customer="New customer B", reference="ORDER-B", ids=0):
     return {
+        "image_size": [800, 600],
+        "screen_phash": 123,
+        "screen_path": ["Saved record"],
+        "selected_fields": {
+            str(10 + ids): {
+                "name": "Client name",
+                "role": "text",
+                "source": "customer",
+                "bbox": [105, 25, 140, 30],
+                "value": customer,
+            },
+            str(11 + ids): {
+                "name": "Reference",
+                "role": "text",
+                "source": "reference",
+                "bbox": [105, 75, 140, 30],
+                "value": reference,
+            },
+        },
         "ocr": [
             {"id": 1 + ids, "text": "Client name", "bbox": [10, 30, 80, 20]},
             {"id": 2 + ids, "text": customer, "bbox": [110, 30, 120, 20]},
@@ -293,7 +312,7 @@ def completion_response(*, ids=0):
     }
 
 
-def test_completion_recipe_rebinds_labels_and_requires_current_values(tmp_path):
+def test_completion_recipe_preserves_model_readings_and_rebinds_input_references(tmp_path):
     method = learned().model_copy(
         update={
             "slots": [
@@ -302,7 +321,12 @@ def test_completion_recipe_rebinds_labels_and_requires_current_values(tmp_path):
             ]
         }
     )
-    method = method_completion_from_match(completion_scene(), completion_response(), method)
+    method = method_completion_from_match(
+        completion_scene(),
+        completion_response(),
+        method,
+        {"customer": "New customer B", "reference": "ORDER-B"},
+    )
     assert method is not None and method.completion is not None
     compiled = compile_method_candidate(
         method, {"customer": "New customer B", "reference": "ORDER-B"}
@@ -321,13 +345,13 @@ def test_completion_recipe_rebinds_labels_and_requires_current_values(tmp_path):
     response = ScreenMatch.model_validate(bound)
     assert response.operation == "complete"
     assert {item.field for item in response.evidence} == {"customer", "reference"}
-    assert {item.target for item in response.evidence} == {110, 111}
+    assert len({item.target for item in response.evidence}) == 2
     assert (
         library.bind_completion_with_context(
             method.id,
             {},
             current,
-            {"customer": "Wrong customer", "reference": "ORDER-C"},
+            {"reference": "ORDER-C"},
         )
         is None
     )

@@ -586,15 +586,19 @@ def test_synthetic_missing_layout_uses_model_coordinates_at_executor(tmp_path, o
     assert brain.memory_retrieval.match_pattern(current) is None
 
 
-@pytest.mark.parametrize("mismatch", [False, True], ids=["normal-no-model", "input-exception"])
-def test_synthetic_retrieval_restores_layout_and_calls_model_only_on_input_exception(
-    tmp_path, mismatch
-):
+@pytest.mark.parametrize("corrupt_ocr", [False, True], ids=["readable-ocr", "corrupted-ocr"])
+def test_synthetic_retrieval_uses_model_memory_without_replacing_it_with_ocr(tmp_path, corrupt_ocr):
     # Synthetic OCR, capture and provider reply; real observation/decision/executor/memory code.
     brain, model, relay = setup(tmp_path)
     runtime = brain.memory_retrieval
     method = runtime.library.methods()[0]
-    first = method.action_groups[0].model_copy(update={"screen_path": ["Entry"], "trace_index": 0})
+    first = method.action_groups[0].model_copy(
+        update={
+            "screen_path": ["Entry"],
+            "trace_index": 0,
+            "field_values": {target.name: "" for target in method.action_groups[0].targets},
+        }
+    )
     button = MethodTarget(name="Next", role="button", bbox=(300, 140, 80, 30), point=(340, 155))
     second = first.model_copy(
         update={
@@ -604,6 +608,7 @@ def test_synthetic_retrieval_restores_layout_and_calls_model_only_on_input_excep
             "targets": [button],
             "observed_fields": first.targets,
             "field_sources": {action.target: action.slot for action in first.actions},
+            "field_values": {action.target: {"source": action.slot} for action in first.actions},
             "actions": [
                 MethodAction(target="Next", action="click", intent="navigate", point=button.point)
             ],
@@ -617,7 +622,10 @@ def test_synthetic_retrieval_restores_layout_and_calls_model_only_on_input_excep
         operation="complete",
         fields={
             target.name: dict(
-                role=target.role, bbox=list(target.bbox), source=action.slot, value="old"
+                role=target.role,
+                bbox=list(target.bbox),
+                source=action.slot,
+                value=brain.values[action.slot],
             )
             for target, action in zip(first.targets, first.actions, strict=True)
         },
@@ -625,7 +633,7 @@ def test_synthetic_retrieval_restores_layout_and_calls_model_only_on_input_excep
     )
     method = method.model_copy(update={"action_groups": [first, second]})
     method = method_completion_from_match(
-        final_screen, final_mapping.local_payload(final_screen), method
+        final_screen, final_mapping.local_payload(final_screen), method, brain.values
     )
     assert method.completion is not None
     atomic_write_json(runtime.library.path, MethodDocument(methods=[method]))
@@ -639,7 +647,7 @@ def test_synthetic_retrieval_restores_layout_and_calls_model_only_on_input_excep
             *[
                 OcrBlock(
                     id=200 + i,
-                    text="wrong" if mismatch and i == 0 else brain.values[action.slot],
+                    text="wrong" if corrupt_ocr and i == 0 else brain.values[action.slot],
                     bbox=(target.bbox[0] + 2, target.bbox[1] + 2, 140, 20),
                     confidence=1,
                 )
@@ -659,24 +667,32 @@ def test_synthetic_retrieval_restores_layout_and_calls_model_only_on_input_excep
     ]
     assert model.prompts == []
     assert runtime.state.history[-1]["origin"] == "reuse"
+    # A prior viewport's model fact survives when absent from the current frame.
+    hidden = {
+        "label": "Earlier field",
+        "role": "text",
+        "last_observation": {
+            "value": "Already checked",
+            "scope": "entry",
+            "observation_number": 0,
+            "observation_id": "earlier",
+        },
+    }
+    brain.screen_nodes['["Entry"]']["fields"]["offscreen"] = hidden
     assert brain._verify_node() == "review"
+    assert brain.screen_nodes['["Entry"]']["fields"]["offscreen"] == hidden
     exceptions = [
         e.payload
         for e in brain.log.read_all()
         if e.payload.get("check") == "memory_retrieval_exception"
     ]
-    if mismatch:
-        assert len(model.prompts) == 1
-        assert exceptions[-1]["reason"] == "delivered_value_not_observed"
-        assert '"memory_fields"' in model.prompts[0] and '"value": "wrong"' in model.prompts[0]
-        return
     assert model.prompts == [] and exceptions == []
     assert set(brain.verified) == {"customer", "reference"}
     assert (
         brain.screen_nodes['["Entry"]']["fields"]["reference"]["last_observation"]["value"]
         == "ORDER-B"
     )
-    # Deliver through the real executor, then bind the learned final proof from CURRENT OCR.
+    # Synthetic model-approved memory survives the corrupted reread through real graph nodes.
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     assert brain._act_node() == "observation"
@@ -695,6 +711,42 @@ def test_synthetic_retrieval_restores_layout_and_calls_model_only_on_input_excep
     assert brain._select_node() == "review"
     assert brain._review_node() == "finish"
     assert brain.result.status == "success" and model.prompts == []
+
+
+def test_synthetic_newer_model_memo_takes_precedence_over_compiled_reading(tmp_path):
+    # Synthetic memo delta after a model-assisted recovery; no OCR/provider/desktop call.
+    brain, model, relay = setup(tmp_path)
+    runtime = brain.memory_retrieval
+    method = runtime.library.methods()[0]
+    group = method.action_groups[0]
+    group = group.model_copy(
+        update={
+            "screen_path": ["Entry"],
+            "field_values": {action.target: {"source": action.slot} for action in group.actions},
+        }
+    )
+    runtime.library.upsert(method.model_copy(update={"action_groups": [group]}))
+    brain.screen_nodes['["Entry"]'] = {
+        "path": ["Entry"],
+        "fields": {
+            "customer": {
+                "last_observation": {
+                    "value": "Model correction",
+                    "scope": "entry",
+                    "observation_number": 9,
+                },
+                "delivery": {"observation_number": 8},
+            },
+        },
+        "controls": {},
+    }
+    _, _, current, _ = catalog(shift=20)
+    current["ocr"] = []
+    response = runtime.match_pattern(current)
+    assert response is not None and response.mapping is not None
+    readings = {f.source: f.value for f in response.mapping.fields.values()}
+    assert readings == {"customer": "Model correction", "reference": "ORDER-B"}
+    assert model.prompts == [] and relay.actions == []
 
 
 @pytest.mark.parametrize("fail_second", [False, True])
