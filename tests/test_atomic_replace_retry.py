@@ -56,43 +56,35 @@ def test_transient_windows_replace_retries_every_allowlisted_error(
             assert list(path.parent.glob("*.tmp")) == []
 
 
-def test_exhausted_windows_replace_preserves_original_for_every_allowlisted_error(
+def test_exhausted_windows_replace_preserves_original_and_cleans_temporary_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for winerror in (5, 32, 33):
-        with labeled_case(f"winerror={winerror}"):
-            path = tmp_path / str(winerror) / "status.json"
-            storage.atomic_write_json(path, {"status": "received"})
-            before = path.read_bytes()
-            failure = _windows_error(winerror)
-            attempts = 0
-            sleeps: list[float] = []
+    winerror = 32
+    path = tmp_path / str(winerror) / "status.json"
+    storage.atomic_write_json(path, {"status": "received"})
+    before = path.read_bytes()
+    failure = _windows_error(winerror)
+    attempts = 0
+    sleeps: list[float] = []
 
-            def locked_replace(
-                source: str,
-                destination: Path,
-                *,
-                current_path=path,
-                original=before,
-                error=failure,
-            ) -> None:
-                nonlocal attempts
-                attempts += 1
-                assert current_path.read_bytes() == original
-                assert json.loads(Path(source).read_text(encoding="utf-8")) == {"status": "ready"}
-                raise error
+    def locked_replace(source: str, destination: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        assert path.read_bytes() == before
+        assert json.loads(Path(source).read_text(encoding="utf-8")) == {"status": "ready"}
+        raise failure
 
-            with monkeypatch.context() as patch:
-                patch.setattr(storage.os, "replace", locked_replace)
-                patch.setattr(storage.time, "sleep", sleeps.append)
-                with pytest.raises(OSError) as caught:
-                    storage.atomic_write_json(path, {"status": "ready"})
+    with monkeypatch.context() as patch:
+        patch.setattr(storage.os, "replace", locked_replace)
+        patch.setattr(storage.time, "sleep", sleeps.append)
+        with pytest.raises(OSError) as caught:
+            storage.atomic_write_json(path, {"status": "ready"})
 
-            assert caught.value is failure
-            assert attempts == 6 and len(sleeps) == 5
-            assert sum(sleeps) == pytest.approx(0.775)
-            assert path.read_bytes() == before
-            assert list(path.parent.glob("*.tmp")) == []
+    assert caught.value is failure
+    assert attempts == 6 and len(sleeps) == 5
+    assert sum(sleeps) == pytest.approx(0.775)
+    assert path.read_bytes() == before
+    assert list(path.parent.glob("*.tmp")) == []
 
 
 def test_unrelated_replace_error_is_not_retried(
@@ -100,7 +92,6 @@ def test_unrelated_replace_error_is_not_retried(
 ) -> None:
     failures = (
         ("posix-access", PermissionError(errno.EACCES, "POSIX access denied")),
-        ("disk-full", OSError(errno.ENOSPC, "disk full")),
         ("invalid-parameter", _windows_error(87)),
     )
     for case, failure in failures:

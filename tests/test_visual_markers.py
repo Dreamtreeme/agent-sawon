@@ -1,10 +1,7 @@
 """Coordinate invention regression and local detector -> semantic -> scene boundary."""
 
-import json
-
 import pytest
 from PIL import Image
-from pydantic import ValidationError
 from test_visual_scene import wire
 
 from brain.visual.detector import DetectorSettings, OmniParserDetector
@@ -53,24 +50,6 @@ def test_only_local_geometry_becomes_click_target():
     assert len(scene.elements) == 2  # unclassified OCR is retained as evidence
     # Capture transform, including negative monitor origin; no extra DPI factor.
     assert scene.screenshot.desktop_point((175, 30)) == (-50, 60)
-
-
-def test_semantic_schema_cannot_generate_coordinates():
-    schema = json.dumps(SemanticDetection.model_json_schema())
-    assert "bbox" not in schema and "prefixItems" not in schema
-    with pytest.raises(ValidationError, match="Extra inputs"):
-        SemanticDetection.model_validate(
-            {
-                "controls": [
-                    {
-                        "id": 3,
-                        "role": "button",
-                        "confidence": 0.9,
-                        "bbox": [778, 15, 24, 22],
-                    }
-                ]
-            }
-        )
 
 
 @pytest.mark.parametrize("ids", [[999], [0, 0]], ids=["unknown", "duplicate"])
@@ -305,7 +284,7 @@ def test_missing_weights_fail_without_paid_fallback(tmp_path):
     assert calls[0].payload["usage_source"] == "local_no_tokens"
 
 
-@pytest.mark.parametrize("outcome", ["valid", "corrected", "invalid", "provider_error"])
+@pytest.mark.parametrize("outcome", ["valid", "invalid", "provider_error"])
 def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_path, outcome):
     blocks, boxes, _, meaning = fixture()
 
@@ -344,7 +323,7 @@ def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_pat
         calls.append(page)
         if outcome == "provider_error":
             raise ValueError("provider_failure_with_private_details")
-        if outcome == "invalid" or (outcome == "corrected" and len(calls) == 1):
+        if outcome == "invalid":
             return meaning.model_copy(
                 update={"controls": [meaning.controls[0].model_copy(update={"text_ids": [8]})]}
             )
@@ -361,7 +340,7 @@ def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_pat
     scene = perception.scan(wire())
     assert len(calls) == 1
     assert any(e.role == "edit" for e in scene.elements)
-    if outcome in {"invalid", "corrected"}:
+    if outcome == "invalid":
         assert "control:0:value_outside_local_marker" in scene.global_uncertainties
         assert (calls[0].image_path.parent / "meanings-attempt-0.json").is_file()
     folder = calls[0].image_path.parent

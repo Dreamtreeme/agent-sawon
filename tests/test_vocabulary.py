@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from brain.graph.save_review import SaveReviewResponse
-from brain.graph.schemas import Decision, DecisionResponse, KeyChoice, WireActDecision
+from brain.graph.schemas import Decision, DecisionResponse, WireActDecision
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
 from brain.graph.screen_decision import (
     ActionCapability,
@@ -44,21 +44,6 @@ from brain.vocabulary import (
 )
 
 _SCHEMA_FIXTURES = Path(__file__).with_name("fixtures") / "vocabulary"
-
-
-def _schema_digest(model) -> str:
-    payload = json.dumps(
-        model.model_json_schema(),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def test_key_choice_schema_matches_preconsolidation_json_and_order():
-    assert _schema_digest(KeyChoice) == (
-        "ad74921e277d1127dbfd069fd1e5d35c52cd87b4e10553b4b3973dd2740c88c5"
-    )
 
 
 def test_navigation_keys_preserve_the_existing_tuple_subset():

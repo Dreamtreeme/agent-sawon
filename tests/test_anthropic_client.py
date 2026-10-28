@@ -9,7 +9,7 @@ import pytest
 from PIL import Image
 from pydantic import BaseModel
 
-from brain.graph.screen_decision import ScreenMatch, ScreenPlan
+from brain.graph.screen_decision import ScreenMatch
 from brain.visual.scene import SemanticDetection
 from models.anthropic_client import AnthropicClient, anthropic_provider_schema
 from models.base import TokenUsage
@@ -70,7 +70,7 @@ def test_structured_vision_request_and_usage_share_one_measured_call(tmp_path):
     assert sdk.messages.create.call_count == len(log.read_all()) == 1
 
 
-@pytest.mark.parametrize("contract", [ScreenMatch, ScreenPlan, SemanticDetection])
+@pytest.mark.parametrize("contract", [ScreenMatch, SemanticDetection])
 def test_screen_schema_removes_anthropic_optional_grammar_branches(contract):
     schema = anthropic_provider_schema(contract)
     optional = []
@@ -97,7 +97,7 @@ def test_screen_schema_removes_anthropic_optional_grammar_branches(contract):
     inspect(schema)
     assert optional == []
     assert unions == []  # Local complexity check; actual provider acceptance is tested separately.
-    if contract in {ScreenMatch, ScreenPlan}:
+    if contract is ScreenMatch:
         assert schema["properties"]["steps"]["items"]["anyOf"] == [
             {"$ref": "#/$defs/NamedAction"},
             {"$ref": "#/$defs/NamedKeyAction"},

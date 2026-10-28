@@ -326,16 +326,6 @@ def test_broad_action_types_cannot_bypass_intent_or_source_contract():
                 assert_contract(DecisionPolicy(current), payload, False)
 
 
-def test_assert_contract_fails_for_a_contradictory_oracle_expectation():
-    policy = DecisionPolicy(ExecutionFacts("duplicate_query"))
-    valid = action("query_input", kind="set_text", source="hbl_no")
-    invalid = action("save", screen="editor")
-    with pytest.raises(AssertionError):
-        assert_contract(policy, valid, False)
-    with pytest.raises(AssertionError):
-        assert_contract(policy, invalid, True)
-
-
 def test_facts_are_canonical_immutable_and_cannot_contain_values_or_secret_names():
     facts = ExecutionFacts(
         "enter", field_names=("mbl_no", "hbl_no", "hbl_no"), duplicate_clear=True

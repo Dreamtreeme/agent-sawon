@@ -9,6 +9,7 @@ from test_pipeline_evaluate import report as checked_report
 import brain.run as runner
 from brain.graph import Brain
 from brain.settings import BrainSettings
+from pipeline.checks import can_enter, record_fingerprint
 from pipeline.handoff import validate_prepared_case
 from pipeline.schemas import Check
 from sawon_runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
@@ -32,13 +33,7 @@ def prepare(tmp_path, *, mutation=None):
     state.transition(CaseStatus.EXTRACTING, expected=CaseStatus.RECEIVED)
     if mutation != "not_ready":
         state.transition(CaseStatus.READY, expected=CaseStatus.EXTRACTING)
-    if mutation == "value":
-        record.fields.hbl_no.value = "UNVERIFIED-MUTATION"
-    elif mutation == "source":
-        record.fields.hbl_no.source.page = 9
-    elif mutation == "missing_hash":
-        report = report.model_copy(update={"record_sha256": None})
-    elif mutation == "blocking":
+    if mutation == "blocking":
         check = Check(code="field_disagreement", severity="blocking", message="Needs correction")
         report = report.model_copy(update={"checks": [check]})
         record.checks = [check.model_dump(mode="json")]
@@ -96,13 +91,15 @@ def execute(mode, case_dir, record, log, monkeypatch, *, options=()):
 
 
 def test_prepared_validator_rejects_each_invalid_handoff_without_mutation(tmp_path):
-    for mutation in ("value", "source", "missing_hash", "blocking", "not_ready"):
+    for mutation in ("blocking", "not_ready"):
         with labeled_case(mutation):
             case_dir, record, state, log = prepare(tmp_path / mutation, mutation=mutation)
             before_state, before_log = state.read(), log.path.read_bytes()
             with pytest.raises(ValueError) as raised:
                 validate_prepared_case(case_dir, record)
-            assert str(raised.value)
+            assert str(raised.value) == (
+                "Prepared extraction case must be ready and use its checked record"
+            )
             assert state.read() == before_state
             assert log.path.read_bytes() == before_log
             assert not (case_dir / "result.json").exists()
@@ -131,16 +128,36 @@ def test_prepared_cli_calls_validator_before_environment_or_model_access(tmp_pat
 def test_brain_rechecks_each_independent_prepared_handoff_gate(tmp_path, monkeypatch):
     # Direct Brain users bypass the CLI validator. Cover its three own branches:
     # state readiness, saved-record equality and can_enter(report).
-    for mutation in ("not_ready", "value", "blocking"):
+    for mutation, expected_error in (
+        ("not_ready", "Brain requires a new case; existing evidence is never overwritten"),
+        ("saved_record_mismatch", "Prepared case record does not match extraction output"),
+        ("blocking", "Prepared case record does not match extraction output"),
+    ):
         with labeled_case(mutation):
-            case_dir, record, state, log = prepare(tmp_path / mutation, mutation=mutation)
+            case_dir, record, state, log = prepare(
+                tmp_path / mutation,
+                mutation=None if mutation == "saved_record_mismatch" else mutation,
+            )
+            if mutation == "saved_record_mismatch":
+                record = record.model_copy(deep=True)
+                record.fields.hbl_no.value = "UNVERIFIED-MUTATION"
+                report = checked_report().model_copy(
+                    update={"record_sha256": record_fingerprint(record)}
+                )
+                atomic_write_json(case_dir / "checks.json", report)
+                # Keep can_enter valid so only saved-record equality rejects this input.
+                assert can_enter(record, report)
             before_state, before_log = state.read(), log.path.read_bytes()
+            before_record = (case_dir / "record.json").read_bytes()
+            before_report = (case_dir / "checks.json").read_bytes()
             call, relay, models = execute("engine", case_dir, record, log, monkeypatch)
             with pytest.raises(ValueError) as raised:
                 call()
-            assert str(raised.value)
+            assert str(raised.value) == expected_error
             assert state.read() == before_state
             assert relay.health_calls == relay.calls == 0 and relay.actions == []
             assert all(model.prompts == [] for model in models)
             assert log.path.read_bytes() == before_log
+            assert (case_dir / "record.json").read_bytes() == before_record
+            assert (case_dir / "checks.json").read_bytes() == before_report
             assert not (case_dir / "result.json").exists()

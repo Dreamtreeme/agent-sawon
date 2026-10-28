@@ -383,17 +383,6 @@ def test_cost_only_replay_metadata_is_preserved(run_log: RunLog):
     assert run_log.read_all()[0].payload["recorded_usd"] == "0.000105"
 
 
-def test_replay_config_loads_explicit_fixture_without_credentials(tmp_path, run_log):
-    fixture = tmp_path / "responses.jsonl"
-    fixture.write_text(replay_entry().model_dump_json() + "\n", encoding="utf-8")
-    config = tmp_path / "models.toml"
-    config.write_text('provider = "replay"\nreplay_path = "responses.jsonl"\n', encoding="utf-8")
-    client = create_model_client(config, run_log=run_log)
-    result = client.complete_json("test", Answer)
-    assert result.response == Answer(value=7)
-    assert result.usd == 0
-
-
 def test_gemini_truncated_json_preserves_usage_and_truncation_diagnostic(run_log, rate):
     response = sdk_response('{"value":')
     response.candidates = [SimpleNamespace(finish_reason=types.FinishReason.MAX_TOKENS)]

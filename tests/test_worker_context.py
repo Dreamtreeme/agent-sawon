@@ -56,27 +56,6 @@ def test_direct_and_screen_matching_receive_identical_execution_context(
     assert matched["execution"] == expected
 
 
-def test_pending_proposal_does_not_mutate_actual_facts_or_runtime_policy(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [])
-    brain.phase = "final_query"
-    brain.decision = Decision(
-        screen_kind="query",
-        operation="act",
-        intent="query_input",
-        subgoal="query",
-        reason="query",
-        action=Choice(type="set_text", ref="e1", source="hbl_no"),
-    )
-    brain.pending = {"decision": brain.decision}
-    actual = brain._execution_context()
-    proposed = brain._execution_context(anticipate=True)
-    assert actual["checkpoint"] == "query_input"
-    assert proposed["checkpoint"] == "search" and proposed["conditional"]
-    assert proposed["query_input"]["pending"] and not proposed["query_input"]["required"]
-    assert not brain.query_value_verified
-    assert brain._decision_policy().current_step == "query_input"
-
-
 def test_generic_task_context_has_no_legacy_query_input_gate(tmp_path, record):
     task_instruction = TaskInstruction(
         name="Arbitrary business task",

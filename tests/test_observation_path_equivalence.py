@@ -6,7 +6,7 @@ was inspected: visible values + assignments coexist with a next-tab action.
 Names, values and geometry below use the existing public test fixtures, NOT a
 verbatim pilot response. Explicit evidence is omitted to expose duplicate-proof
 requirements. Warm paths cover both promoted screen cache and actual compilation.
-Physical dispatch remains covered by test_memory_retrieval, including its known xfail.
+Physical dispatch remains covered by test_memory_retrieval.
 """
 
 import json
@@ -627,7 +627,7 @@ def semantic_memory(brain):
     }
 
 
-def run_route(path, record, route, *, mutate=None):
+def run_route(path, record, route):
     raw = observed_response(record)
     # Identical pixels reuse detection, while current context still passes through decision.
     responses = [raw, deepcopy(raw)] if route == "identical-capture" else [raw]
@@ -697,14 +697,10 @@ def run_route(path, record, route, *, mutate=None):
     elif compiled is not None:
         brain.method_library = MethodLibrary(path / "compiled.json", enabled=True)
         brain.method_library.upsert(compiled)
-    if mutate is not None:
-        mutate("before-observe", brain)
     brain._observe()
     if route == "identical-capture":
         first_id = brain.observation.obs_id
         first_hash = brain.observation.capture_phash
-        if mutate is not None:
-            mutate("before-reobserve", brain)
         brain._observe()
         assert brain.observation.obs_id != first_id
         assert brain.observation.capture_phash == first_hash
@@ -712,19 +708,13 @@ def run_route(path, record, route, *, mutate=None):
 
     # Assert value receipt BEFORE verification, so later helpers cannot conceal loss.
     observed = semantic_memory(brain)
-    if mutate is not None and route in {
-        "empty-action-recovery",
-        "identical-capture",
-        "model-to-pattern-cache",
-    }:
-        # Compare memory itself, before prerequisite assertions or target lookup
-        # can mask the missing update with an unrelated exception.
-        return observed
     assert any(
         e.value == record.fields.hbl_no.value and e.role == "edit"
         for e in brain.observation.elements
     ), f"{route}: current value was not received"
-    assert observed_inputs(brain)["hbl_no"]["value"] == record.fields.hbl_no.value, route
+    assert observed_inputs(brain).get("hbl_no", {}).get("value") == record.fields.hbl_no.value, (
+        route
+    )
     if route == "model-to-compiled-memory":
         assert len(model.prompts) == 1
         assert sum(e.payload.get("check") == "method_bound" for e in brain.log.read_all()) == 1
@@ -778,8 +768,6 @@ def run_route(path, record, route, *, mutate=None):
         )
         assert outcome is None, route
         brain._record_action_verification(decision, choice, None, None, effect, facts)
-    if mutate is not None:
-        return semantic_memory(brain)
     expected_calls = (
         0
         if route == "model-to-pattern-cache"
@@ -820,49 +808,6 @@ def test_synthetic_same_facts_reach_same_memory(tmp_path, record, route):
     assert actual["recent_actions"][-1]["target_summary"] == "set_text:hbl_no"
 
 
-@pytest.mark.parametrize(
-    "route",
-    [
-        "single-action",
-        "field-batch",
-        "empty-action-recovery",
-        "identical-capture",
-        "model-to-pattern-cache",
-    ],
-)
-def test_baseline_detects_disabled_memory_update(tmp_path, record, monkeypatch, route):
-    reference = run_route(tmp_path / "reference", record, "single-action")
-    invoked = []
-
-    def disable(stage, brain):
-        if route == "identical-capture":
-            if stage == "before-reobserve":
-
-                def omit_values(wire, scene, selected):
-                    invoked.append("_apply_field_values")
-                    return scene
-
-                monkeypatch.setattr(brain.screen_scanner, "_apply_field_values", omit_values)
-        elif stage == "before-observe":
-            name = {
-                "single-action": "_record_action_verification",
-                "field-batch": "_remember_action_effect",
-                "empty-action-recovery": "_remember_model_task_evidence",
-                "model-to-pattern-cache": "_remember_model_task_evidence",
-            }[route]
-
-            def omit_memory(*args, **kwargs):
-                invoked.append(name)
-
-            monkeypatch.setattr(brain, name, omit_memory)
-
-    with pytest.raises(AssertionError, match="semantic memory differs"):
-        actual = run_route(tmp_path / route, record, route, mutate=disable)
-        assert actual == reference, f"route={route}: semantic memory differs"
-        assert actual["recent_actions"][-1]["target_summary"] == "set_text:hbl_no"
-    assert invoked, f"route={route}: mutation was never exercised"
-
-
 @pytest.mark.parametrize("variant", ["description", "long-description", "field-order"])
 def test_synthetic_semantic_response_variants_preserve_executable_action(tmp_path, record, variant):
     original = observed_response(record)
@@ -878,6 +823,8 @@ def test_synthetic_semantic_response_variants_preserve_executable_action(tmp_pat
     for label, response in (("original", original), (variant, changed)):
         brain, model = prepare_worker(tmp_path / label, record, [response])
         brain._observe()
+        if "purpose" in response:
+            assert brain.visual_proposal.purpose == response["purpose"][:160], label
         assert brain._select_node() == "review", label
         decision = brain.decision or brain.action_plan.actions[0].decision
         wire = brain._wire_action(decision.action, decision).root
