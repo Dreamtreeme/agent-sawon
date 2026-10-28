@@ -483,6 +483,11 @@ class Brain:
                     "check": "screen_plan_proposed",
                     "obs_id": page.image_path.parent.name,
                     "response": result.response.model_dump(mode="json"),
+                    "mapping": (
+                        result.response.mapping.model_dump(mode="json", exclude_unset=True)
+                        if result.response.mapping is not None
+                        else None
+                    ),
                     "plan_error": result.plan_error,
                 },
             )

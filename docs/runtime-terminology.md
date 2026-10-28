@@ -1,6 +1,6 @@
 # 화면 처리 개념과 실행 순서
 
-기준일: 2026-10-23
+기준일: 2026-10-28
 
 Memory Retrieval은 **과거에 배운 업무 방법**을 가져온다. Context Recall은 **이번 실행의
 현재 상황**을 복원한다. 두 역할은 서로를 대체하지 않는다. 기억을 찾은 경우와 새로 탐색한
@@ -60,7 +60,12 @@ flowchart TD
   `procedure`를 반환한다. 행동 후보가 선택되지 않아도 이 정보는 모델에 전달된다.
   인출만으로 `pending`, `used`, `verified`를 갱신하지 않는다.
 - `group_input_sources`를 기억 인출과 현재 값 증거 연결이 함께 사용한다. 현재 OCR 값과 입력값의
-  비교는 기존 `bind_visible_value_evidence` 경로를 사용한다. 기억에 있는 절차는 실행 완료 이력이 아니다.
+  비교는 복원된 `ScreenMapping.local_payload`와 공용 값 비교를 사용한다. 경로가 없는 과거
+  기억만 `bind_visible_value_evidence`를 거친다. 기억에 있는 절차는 실행 완료 이력이 아니다.
+- 정상 인출은 저장된 `screen_path`·필드 의미·입력 키·행동으로 매핑을 복원하며 모델을 부르지
+  않는다. 다음 계획 미결합, 입력/저장 결과 불일치, 실행 검증 실패, 기억 누락이 모델 복구 사유다.
+  복구 요청에는 인출된 필드 연결과 현재 OCR 값을 함께 전달한다. 최종 완료 응답도 판단 로그의
+  매핑에서 편찬하며 현재 값 확인과 기존 완료 검증을 거친다.
 - 모델의 `ScreenMapping.needs_refinement`가 `ScreenPlan`/`ScreenMatch`를 지나
   `SemanticDetection`까지 전달된다. 기억에 필요한 보이는 컨트롤이 없으면 같은 캡처·OCR로
   OmniParser를 실행하고 다시 공통 문맥·패턴·판단 경로로 들어간다. 빈 행동 보완 호출로 바꾸지 않는다.

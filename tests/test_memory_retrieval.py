@@ -15,10 +15,18 @@ from test_methods import completion_response, completion_scene, learned
 from test_visual_scene import wire
 
 import brain.graph.screen_decision as screen_decision
-from brain.cache.methods import MethodDocument, MethodLibrary, method_from_match
+from brain.cache.methods import (
+    MethodAction,
+    MethodDocument,
+    MethodLibrary,
+    MethodTarget,
+    method_completion_from_match,
+    method_from_match,
+)
 from brain.graph.engine import Brain
 from brain.graph.memory_retrieval import open_memory_library
 from brain.graph.screen_decision import MethodBinding, ScreenMatch
+from brain.graph.screen_mapping import ScreenMapping
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from brain.visual.action_rebind import perceptual_hash
@@ -514,9 +522,7 @@ def test_synthetic_geometry_evidence_alone_does_not_update_model_owned_notebook(
 
 
 @pytest.mark.parametrize("observe_again", [False, True])
-def test_synthetic_compiled_memory_uses_current_model_coordinates_at_executor(
-    tmp_path, observe_again
-):
+def test_synthetic_missing_layout_uses_model_coordinates_at_executor(tmp_path, observe_again):
     brain, model, relay = setup(tmp_path)
     brain._observe()
     first_id = brain.observation.obs_id
@@ -537,6 +543,11 @@ def test_synthetic_compiled_memory_uses_current_model_coordinates_at_executor(
         [125, 120],
     ]
     assert len(model.prompts) == 1 + int(observe_again)
+    assert any(
+        event.payload.get("check") == "memory_retrieval_exception"
+        and event.payload.get("reason") == "missing_screen_memory"
+        for event in brain.log.read_all()
+    )
     assert sum(event.kind == "model_call" for event in brain.log.read_all()) == len(model.prompts)
     reuse = next(
         event
@@ -573,6 +584,117 @@ def test_synthetic_compiled_memory_uses_current_model_coordinates_at_executor(
     )
     assert brain.memory_retrieval.state.active_method_id is None
     assert brain.memory_retrieval.match_pattern(current) is None
+
+
+@pytest.mark.parametrize("mismatch", [False, True], ids=["normal-no-model", "input-exception"])
+def test_synthetic_retrieval_restores_layout_and_calls_model_only_on_input_exception(
+    tmp_path, mismatch
+):
+    # Synthetic OCR, capture and provider reply; real observation/decision/executor/memory code.
+    brain, model, relay = setup(tmp_path)
+    runtime = brain.memory_retrieval
+    method = runtime.library.methods()[0]
+    first = method.action_groups[0].model_copy(update={"screen_path": ["Entry"], "trace_index": 0})
+    button = MethodTarget(name="Next", role="button", bbox=(300, 140, 80, 30), point=(340, 155))
+    second = first.model_copy(
+        update={
+            "id": "next",
+            "trace_index": 1,
+            "predecessor_group_ids": [first.id],
+            "targets": [button],
+            "observed_fields": first.targets,
+            "field_sources": {action.target: action.slot for action in first.actions},
+            "actions": [
+                MethodAction(target="Next", action="click", intent="navigate", point=button.point)
+            ],
+        }
+    )
+    # Final proof is learned from a synthetic successful source, not asserted as current success.
+    final_screen = {"screen_phash": first.screen_phash, "image_size": [400, 200]}
+    final_mapping = ScreenMapping(
+        screen_kind="editor",
+        screen_path=["Entry"],
+        operation="complete",
+        fields={
+            target.name: dict(
+                role=target.role, bbox=list(target.bbox), source=action.slot, value="old"
+            )
+            for target, action in zip(first.targets, first.actions, strict=True)
+        },
+        completion_evidence=[dict(condition_index=0, target=first.targets[0].name)],
+    )
+    method = method.model_copy(update={"action_groups": [first, second]})
+    method = method_completion_from_match(
+        final_screen, final_mapping.local_payload(final_screen), method
+    )
+    assert method.completion is not None
+    atomic_write_json(runtime.library.path, MethodDocument(methods=[method]))
+    labels = brain.screen_scanner.ocr.read(None)
+
+    def read_current_values(page):
+        if not relay.entered:
+            return labels
+        return [
+            *labels,
+            *[
+                OcrBlock(
+                    id=200 + i,
+                    text="wrong" if mismatch and i == 0 else brain.values[action.slot],
+                    bbox=(target.bbox[0] + 2, target.bbox[1] + 2, 140, 20),
+                    confidence=1,
+                )
+                for i, (target, action) in enumerate(zip(first.targets, first.actions, strict=True))
+            ],
+        ]
+
+    brain.screen_scanner.ocr.read = read_current_values
+    brain._observe()
+    assert brain.current_screen_path == ["Entry"] and not brain.verified
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    assert brain._act_node() == "observation"
+    assert relay.entered == ["New customer B", "ORDER-B"]
+    assert [list(action.root.target.image_point) for action in relay.actions] == [
+        list(action.point) for action in first.actions
+    ]
+    assert model.prompts == []
+    assert runtime.state.history[-1]["origin"] == "reuse"
+    assert brain._verify_node() == "review"
+    exceptions = [
+        e.payload
+        for e in brain.log.read_all()
+        if e.payload.get("check") == "memory_retrieval_exception"
+    ]
+    if mismatch:
+        assert len(model.prompts) == 1
+        assert exceptions[-1]["reason"] == "delivered_value_not_observed"
+        assert '"memory_fields"' in model.prompts[0] and '"value": "wrong"' in model.prompts[0]
+        return
+    assert model.prompts == [] and exceptions == []
+    assert set(brain.verified) == {"customer", "reference"}
+    assert (
+        brain.screen_nodes['["Entry"]']["fields"]["reference"]["last_observation"]["value"]
+        == "ORDER-B"
+    )
+    # Deliver through the real executor, then bind the learned final proof from CURRENT OCR.
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    assert brain._act_node() == "observation"
+    assert len(relay.actions) == 3 and relay.actions[-1].root.type == "click"
+    assert brain._verify_node() == "review"
+    assert brain.visual_proposal.operation == "complete"
+    assert brain.visual_proposal.mapping.fields[first.targets[0].name].value == "New customer B"
+    assert model.prompts == []
+    final_plan = next(
+        e
+        for e in reversed(brain.log.read_all())
+        if e.payload.get("check") == "screen_plan_proposed"
+    )
+    assert final_plan.payload["mapping"]["screen_path"] == ["Entry"]
+    assert final_plan.payload["mapping"]["completion_evidence"][0]["condition_index"] == 0
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "finish"
+    assert brain.result.status == "success" and model.prompts == []
 
 
 @pytest.mark.parametrize("fail_second", [False, True])
@@ -1188,6 +1310,21 @@ def test_bound_edge_replaced_without_dispatch_unblocks_only_after_effect(tmp_pat
             "steps": [
                 s.model_copy(update={"point": [s.point[0] + 4, s.point[1]]}) for s in bound.steps
             ],
+        }
+    )
+    # Synthetic model projection reallocates every transient target, as a real fallback does.
+    replacements = {old: old + 100 for old in [step.target for step in fallback.steps]}
+    screen["selected_fields"] = {
+        str(replacements[int(ref)]): value
+        for ref, value in screen.get("selected_fields", {}).items()
+        if int(ref) in replacements
+    }
+    fallback = fallback.model_copy(
+        update={
+            "steps": [
+                step.model_copy(update={"target": replacements[step.target]})
+                for step in fallback.steps
+            ]
         }
     )
     runtime.remember(screen, fallback)

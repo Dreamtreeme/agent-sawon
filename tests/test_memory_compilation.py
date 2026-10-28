@@ -169,6 +169,7 @@ def test_synthetic_compilation_preserves_passive_field_mapping_but_not_old_value
     mapping = ScreenMapping.model_validate(
         {
             "screen_kind": "editor",
+            "screen_path": ["Shipment", "Details"],
             "fields": {
                 "Reference": {
                     "source": "hbl_no",
@@ -185,6 +186,7 @@ def test_synthetic_compilation_preserves_passive_field_mapping_but_not_old_value
     candidate = MemoryCandidate("c000", "a" * 64, "obs", 0, original, payload)
     method = compile_memory(source(), [candidate], draft(groups=("c000",)), method_id="passive")
     group = method.action_groups[0]
+    assert group.screen_path == ["Shipment", "Details"]
     assert group.field_sources == {"Reference": "hbl_no"}
     assert {f.name for f in group.observed_fields} == {"Reference", "Save"}
     assert "HBL-001" not in method.model_dump_json()
@@ -433,6 +435,53 @@ def create_successful_case(tmp_path):
     )
 
     return case, cache_path, visual, mapping, match, education_sha
+
+
+def test_synthetic_completion_survives_recorded_trace_compilation_without_old_values(tmp_path):
+    # Synthetic successful trace and semantic reply; no provider or desktop calls.
+    case, cache_path, _, mapping, match, _ = create_successful_case(tmp_path)
+    final = mapping.model_copy(
+        update={
+            "screen_path": ["Saved record"],
+            "operation": "complete",
+            "steps": [],
+            "fields": {
+                "Reference": mapping.fields["Reference"].model_copy(update={"value": "HBL-001"})
+            },
+        }
+    )
+    raw = final.model_dump()
+    raw["completion_evidence"] = [{"condition_index": 0, "target": "Reference"}]
+    final = ScreenMapping.model_validate(raw)
+    final_payload = final.local_payload(screen("Shipment editor"))
+    events = [json.loads(line) for line in (case / "run_log.jsonl").read_text().splitlines()]
+    events.insert(
+        2, {"payload": {"check": "screen_plan_proposed", "obs_id": "obs-1", "response": match}}
+    )
+    events.append(
+        {
+            "payload": {
+                "check": "screen_plan_proposed",
+                "obs_id": "obs-1",
+                "response": final_payload,
+                "mapping": final.model_dump(),
+            }
+        }
+    )
+    (case / "run_log.jsonl").write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
+    # Completion was never promoted as an action-cache entry; the plan log owns its mapping.
+    loaded_source, loaded = read_memory_candidates(case, cache_path)
+    compiled = compile_memory(
+        loaded_source, loaded, draft(groups=(loaded[0].candidate_id,)), method_id="terminal"
+    )
+    restored = MethodDocument.model_validate_json(
+        MethodDocument(methods=[compiled]).model_dump_json()
+    ).methods[0]
+    assert restored.completion.screen_path == ["Saved record"]
+    assert restored.completion.targets[0].target.bbox == (150, 280, 180, 40)
+    assert restored.completion.targets[0].slot == "hbl_no"
+    assert restored.completion.targets[0].condition_indexes == [0]
+    assert "HBL-001" not in restored.model_dump_json()
 
 
 def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):

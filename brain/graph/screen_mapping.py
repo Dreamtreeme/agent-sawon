@@ -314,6 +314,8 @@ def mapping_prompt(prompt: str, screen: dict) -> str:
         ],
     }
     if screen.get("memory_fields"):
+        state["screen"]["memory_fields"] = screen["memory_fields"]
+        state["screen"]["memory_screen_path"] = screen.get("screen_path", [])
         procedures = []
         for group in screen.get("retrieved_procedure", []):
             steps = []

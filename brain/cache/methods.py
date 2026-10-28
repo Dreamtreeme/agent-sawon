@@ -79,6 +79,7 @@ class MethodActionGroup(BaseModel):
     actions: list[MethodAction] = Field(min_length=1)
     expected_result: str = ""
     screen_kind: str = "unknown"
+    screen_path: list[str] = Field(default_factory=list)
     screen_phash: int | None = None
     image_size: tuple[int, int] | None = None
     # Screen memory includes passive fields, not just the next action's targets.
@@ -97,7 +98,7 @@ class MethodCompletionTarget(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     slot: str
     target: MethodTarget
-    condition_indexes: list[int] = Field(min_length=1)
+    condition_indexes: list[int] = Field(default_factory=list)
 
 
 class MethodCompletion(BaseModel):
@@ -107,6 +108,9 @@ class MethodCompletion(BaseModel):
     targets: list[MethodCompletionTarget] = Field(min_length=1)
     expected_result: str = ""
     screen_kind: str = "unknown"
+    screen_path: list[str] = Field(default_factory=list)
+    screen_phash: int | None = None
+    image_size: tuple[int, int] | None = None
 
 
 class LearnedMethod(BaseModel):
@@ -267,7 +271,7 @@ def compile_method_candidate(
         targets = []
         for item in completion.targets:
             anchors = [text for text in item.target.anchor_texts if not instance_text(text)]
-            if not anchors:
+            if not anchors and item.target.point is None:
                 completion = None
                 break
             targets.append(
@@ -507,6 +511,7 @@ def method_from_match(
         actions=actions,
         expected_result=response.get("expected_result", "")[:240],
         screen_kind=response.get("screen_kind", "unknown"),
+        screen_path=list(screen.get("screen_path", [])),
         screen_phash=screen.get("screen_phash"),
         image_size=screen.get("image_size"),
         observed_fields=observed_fields,
@@ -555,17 +560,27 @@ def method_completion_from_match(
     for index, item in enumerate(evidence, start=1):
         marker = markers.get(item["target"])
         control = controls.get(item["target"])
-        condition_indexes = conditions.get(item["target"])
-        if marker is None or control is None or not condition_indexes:
+        condition_indexes = conditions.get(item["target"], [])
+        if marker is None or control is None:
             return None
-        target = _method_target(
-            name=f"completion_{index}",
-            marker=marker,
-            control=control,
-            blocks=blocks,
-            # Literal values are instance data and can never locate later proof.
-            allow_literal_anchor=False,
-        )
+        selected = screen.get("selected_fields", {}).get(str(item["target"]))
+        if selected and screen.get("screen_path") and screen.get("screen_phash") is not None:
+            x, y, width, height = selected["bbox"]
+            target = MethodTarget(
+                name=selected["name"],
+                role=control["role"],
+                bbox=(x, y, width, height),
+                point=(x + width / 2, y + height / 2),
+            )
+        else:
+            target = _method_target(
+                name=f"completion_{index}",
+                marker=marker,
+                control=control,
+                blocks=blocks,
+                # Literal values are instance data and can never locate later proof.
+                allow_literal_anchor=False,
+            )
         if target is None:
             return None
         targets.append(
@@ -575,12 +590,17 @@ def method_completion_from_match(
                 condition_indexes=list(dict.fromkeys(condition_indexes)),
             )
         )
+    if not any(item.condition_indexes for item in targets):
+        return None
     completion = MethodCompletion(
         purpose=response.get("purpose", "")[:160],
         taught_step_id=response.get("taught_step_id"),
         targets=targets,
         expected_result=response.get("expected_result", "")[:240],
         screen_kind=response.get("screen_kind", "unknown"),
+        screen_path=list(screen.get("screen_path", [])),
+        screen_phash=screen.get("screen_phash"),
+        image_size=screen.get("image_size"),
     )
     return method.model_copy(update={"slots": slots, "completion": completion})
 
@@ -683,7 +703,7 @@ def _register_bound_target(screen: dict, target: MethodTarget, marker: dict) -> 
 
 
 def screen_similarity_distance(
-    group: MethodActionGroup, screen: dict, max_phash_distance: int
+    group: MethodActionGroup | MethodCompletion, screen: dict, max_phash_distance: int
 ) -> int | None:
     """Use the same viewport/pHash contract before OCR and when binding actions."""
     current_hash = screen.get("screen_phash")
@@ -698,7 +718,7 @@ def screen_similarity_distance(
 
 
 def _coordinate_bindings(
-    group: MethodActionGroup,
+    group: MethodActionGroup | MethodCompletion,
     screen: dict,
     max_phash_distance: int,
     *,
@@ -990,11 +1010,22 @@ class MethodLibrary:
         controls: dict[int, dict] = {}
         evidence = []
         completion_evidence = []
+        coordinate_targets = [item.target for item in method.completion.targets]
+        coordinates = _coordinate_bindings(
+            method.completion,
+            screen,
+            self.max_phash_distance,
+            targets=coordinate_targets,
+        )
         for item in method.completion.targets:
             source = sources.get(item.slot)
             if source is None or source not in values:
                 return None
-            bound = _bind_target(item.target, screen)
+            bound = (
+                coordinates.get(item.target.name)
+                if coordinates is not None
+                else _bind_target(item.target, screen)
+            )
             if bound is None:
                 return None
             marker, label_ids = bound
@@ -1004,6 +1035,7 @@ class MethodLibrary:
                 visible.append(" ".join(visible))
             if not any(field_matches(source, text, values) for text in visible):
                 return None
+            _register_bound_target(screen, item.target, marker)
             controls[marker["id"]] = ControlMeaning(
                 id=marker["id"],
                 role=item.target.role,

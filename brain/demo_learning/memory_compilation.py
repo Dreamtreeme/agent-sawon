@@ -15,7 +15,13 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from sawon_interfaces import ShipmentRecord
 
-from brain.cache.methods import LearnedMethod, MethodDocument, MethodSlot, method_from_match
+from brain.cache.methods import (
+    LearnedMethod,
+    MethodDocument,
+    MethodSlot,
+    method_completion_from_match,
+    method_from_match,
+)
 from brain.cache.pattern_matching import ScreenPatternDocument
 from brain.demo_learning.methods import read_screen
 from brain.graph.screen_mapping import ScreenMapping
@@ -303,7 +309,7 @@ def read_memory_candidates(
             else "trace:" + hashlib.sha256(_canonical(response).encode()).hexdigest()
         )
         screen = read_screen(case_dir, obs_id)
-        mapping = responses[key].get("mapping") if keys else None
+        mapping = plan.get("mapping") or (responses[key].get("mapping") if keys else None)
         if mapping is not None:
             # Only geometry is recovered here; delivered steps below are authoritative.
             # Historical provider actions may use an older model-facing scroll contract.
@@ -332,6 +338,18 @@ def read_memory_candidates(
     ]
     if not candidates:
         raise ValueError("successful_run_has_no_joined_visual_cache_actions")
+    completion = None
+    for plan in reversed(plans):
+        if plan.get("plan_error") or plan["response"].get("operation") != "complete":
+            continue
+        final_screen = read_screen(case_dir, plan["obs_id"])
+        final_response = plan["response"]
+        keys = by_response.get(_canonical(final_response))
+        final_mapping = plan.get("mapping") or (responses[keys[0]].get("mapping") if keys else None)
+        if final_mapping is not None:
+            final_response = ScreenMapping.model_validate(final_mapping).local_payload(final_screen)
+        completion = {"screen": final_screen, "response": final_response}
+        break
     return {
         "source_case": str(case_dir.resolve()),
         "nonexecuted_plans": nonexecuted,
@@ -340,6 +358,7 @@ def read_memory_candidates(
         # copy is normalized JSON and may have a different byte hash.
         "task_sha256": _task_contract_sha256(case_dir),
         "values": _case_values(case_dir),
+        "completion": completion,
     }, candidates
 
 
@@ -511,7 +530,7 @@ def compile_memory(
         refs.append(f"{source['source_case']}/visual/{candidate.obs_id}:{candidate.cache_key}")
     if source_receipt is not None:
         refs.append(source_receipt)
-    return LearnedMethod(
+    method = LearnedMethod(
         id=method_id,
         purpose=assembly.purpose,
         task_objective=source["task"]["objective"],
@@ -521,6 +540,25 @@ def compile_memory(
         action_groups=groups,
         source_transitions=refs,
     )
+    if completion := source.get("completion"):
+        method = (
+            method_completion_from_match(completion["screen"], completion["response"], method)
+            or method
+        )
+        if method.completion is not None:
+            method = method.model_copy(
+                update={
+                    "completion": method.completion.model_copy(
+                        update={
+                            "purpose": _redact(method.completion.purpose, source["values"]),
+                            "expected_result": _redact(
+                                method.completion.expected_result, source["values"]
+                            ),
+                        }
+                    )
+                }
+            )
+    return method
 
 
 def assemble_memory(

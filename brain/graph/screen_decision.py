@@ -20,6 +20,7 @@ from brain.input_binding import (
     resolve_input_key,
 )
 from brain.observe.evidence import input_surface
+from brain.observe.values import field_matches
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInstruction
 from brain.visual.marker_contract import (
@@ -1537,6 +1538,13 @@ def match_screen_pattern(
         ):
             # Legacy/action-only methods still need current result evidence.
             # A method carrying a rebound save review uses the common executor.
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "memory_retrieval_exception",
+                    "reason": "save_result_not_bound",
+                },
+            )
             method_proposal = None
     cache_hit = services.cache.lookup(prepared.state) if method_proposal is None else None
     return method_proposal, cache_hit
@@ -1621,6 +1629,14 @@ def select_screen_response(
             },
         )
     else:
+        if screen.get("observation_route") == "memory_retrieval":
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "memory_retrieval_exception",
+                    "reason": "no_unique_next_plan",
+                },
+            )
         response = _call_screen_decision(
             services,
             (
@@ -1636,7 +1652,32 @@ def select_screen_response(
         )
         write_decision_artifact(services, "markers", response)
         response = local_response(response, screen)
-    if response.mapping is None and (method_proposal is not None or cache_hit is not None):
+    exception = None
+    if method_proposal is not None or cache_hit is not None:
+        if response.mapping is None:
+            exception = "missing_screen_memory"
+        else:
+            node = request.screen_nodes.get(
+                json.dumps(response.mapping.screen_path, ensure_ascii=False), {}
+            )
+            for field in response.mapping.fields.values():
+                delivery = node.get("fields", {}).get(field.source, {}).get("delivery")
+                if (
+                    delivery
+                    and "value" in field.model_fields_set
+                    and field.source in request.values
+                    and not field_matches(field.source, field.value, request.values)
+                ):
+                    exception = "delivered_value_not_observed"
+                    break
+    if exception is not None:
+        services.log.append(
+            "verify",
+            payload={
+                "check": "memory_retrieval_exception",
+                "reason": exception,
+            },
+        )
         response = _call_screen_decision(
             services,
             "grounded_screen_plan",

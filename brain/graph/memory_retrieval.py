@@ -21,8 +21,11 @@ from brain.cache.methods import (
     screen_similarity_distance,
 )
 from brain.task_instruction import TaskInstruction
-from brain.visual.scene import same_control_region
+from brain.visual.scene import contains_control_text, same_control_region
+from brain.vocabulary import SCROLL_DIRECTION_KEYS
 from sawon_runtime.storage import RunLog, atomic_write_json
+
+from .screen_mapping import ScreenMapping
 
 if TYPE_CHECKING:
     from .screen_decision import ScreenMatch
@@ -404,6 +407,22 @@ class MemoryRetrieval:
                     ],
                 }
             )
+            if method.completion.screen_path:
+                sources = {
+                    slot.name: mapping.get(slot.name, slot.source_key) for slot in method.slots
+                }
+                fields = {
+                    item.target.name: dict(
+                        role=item.target.role,
+                        bbox=list(item.target.bbox),
+                        source=sources[item.slot],
+                    )
+                    for item in method.completion.targets
+                    if item.target.bbox is not None
+                }
+                response = self._restore_mapping(
+                    screen, response, method.completion.screen_path, fields
+                )
             self.state.purpose = response.purpose
             self.state.bindings[method.id] = mapping
             self.log.append(
@@ -423,23 +442,18 @@ class MemoryRetrieval:
         if len(candidates) != 1:
             return None
         method, mapping, bound, pruned_group_ids = candidates[0]
-        proof_controls, proof_evidence = self.library.bind_visible_value_evidence(
-            method.id,
-            mapping,
-            screen,
-            dict(self.task_context.inputs),
-        )
+        group = next(group for group in method.action_groups if group.id == bound.group_id)
         response_data = dict(bound.response)
-        if proof_evidence:
-            controls = {
-                item["id"]: item for item in [*response_data.get("controls", []), *proof_controls]
-            }
-            response_data.update(
-                {
-                    "controls": list(controls.values()),
-                    "evidence": proof_evidence,
-                }
+        if not group.screen_path:
+            proof_controls, proof_evidence = self.library.bind_visible_value_evidence(
+                method.id, mapping, screen, dict(self.task_context.inputs)
             )
+            if proof_evidence:
+                controls = {
+                    item["id"]: item
+                    for item in [*response_data.get("controls", []), *proof_controls]
+                }
+                response_data.update(controls=list(controls.values()), evidence=proof_evidence)
         response = ScreenMatch.model_validate(
             {
                 **response_data,
@@ -452,6 +466,18 @@ class MemoryRetrieval:
                 ],
             }
         )
+        if group.screen_path:
+            field_sources = group_input_sources(method, group, mapping)
+            fields = {
+                target.name: {
+                    "role": target.role,
+                    "bbox": list(target.bbox),
+                    "source": field_sources.get(target.name),
+                }
+                for target in [*group.observed_fields, *group.targets]
+                if target.bbox is not None
+            }
+            response = self._restore_mapping(screen, response, group.screen_path, fields)
         self.state.purpose = response.purpose
         self.state.bindings[method.id] = mapping
         self.state.pending = {
@@ -477,6 +503,51 @@ class MemoryRetrieval:
             },
         )
         return response
+
+    def _restore_mapping(self, screen, response, screen_path, fields):
+        """Restore learned meaning; only literal readings come from this capture."""
+        from .screen_decision import ScreenMatch
+
+        for entry in fields.values():
+            entry["value"] = " ".join(
+                block["text"]
+                for block in sorted(
+                    screen.get("ocr", []), key=lambda b: (b["bbox"][1], b["bbox"][0])
+                )
+                if contains_control_text(entry["bbox"], block["bbox"])
+            )
+        names = {int(ref): item["name"] for ref, item in screen.get("selected_fields", {}).items()}
+        steps = []
+        directions = {key: direction for direction, key in SCROLL_DIRECTION_KEYS.items()}
+        for step in response.steps:
+            data = step.model_dump(exclude_none=True)
+            data["target"] = names[step.target]
+            if step.action == "key" and step.keys in directions:
+                data.update(action="scroll", direction=directions[data.pop("keys")])
+            steps.append(data)
+        mapping = ScreenMapping(
+            **response.model_dump(
+                include=set(ScreenMapping.model_fields)
+                - {"steps", "evidence", "completion_evidence", "message_targets", "grid", "row"}
+            ),
+            screen_path=screen_path,
+            fields=fields,
+            steps=steps,
+            message_targets=[names[target] for target in response.message_targets],
+            completion_evidence=[
+                dict(condition_index=item.condition_index, target=names[item.target])
+                for item in response.completion_evidence
+            ],
+        )
+        restored = ScreenMatch.model_validate(
+            mapping.local_payload(screen, self.task_context.inputs)
+        )
+        screen["memory_fields"] = [
+            dict(name=name, **field.model_dump()) for name, field in mapping.fields.items()
+        ]
+        return restored.model_copy(
+            update={"mapping": mapping, "method_bindings": response.method_bindings}
+        )
 
     def reject_pending(self, *, reason: str) -> dict | None:
         """Reject the method edge that failed before it reached the relay.
@@ -527,10 +598,16 @@ class MemoryRetrieval:
         replaced_edge = None
         if bound_pending is not None and bound_pending.get("response") is not None:
             bound_response = bound_pending["response"]
+            group = next(
+                item
+                for item in bound_pending["method"].action_groups
+                if item.id == bound_pending["group_id"]
+            )
+            regions = {target.name: target.bbox for target in group.targets}
 
             # Only the same concrete actions on this frame replace a bound edge.
             # Semantic labels, explanations and transient marker IDs may differ.
-            def same_action(actual, expected):
+            def same_action(index, actual, expected):
                 if (actual.action, actual.source, actual.keys) != (
                     expected.action,
                     expected.source,
@@ -539,7 +616,9 @@ class MemoryRetrieval:
                     return False
                 if actual.point == expected.point and actual.point is not None:
                     return True
-                region = screen.get("selected_fields", {}).get(str(expected.target), {}).get("bbox")
+                # Model fallback replaces frame-local IDs. The pending group still owns
+                # the original target region, independent of that replacement.
+                region = regions[group.actions[index].target]
                 if region is not None and actual.point is not None:
                     x, y, width, height = region
                     return x <= actual.point[0] <= x + width and y <= actual.point[1] <= y + height
@@ -553,8 +632,10 @@ class MemoryRetrieval:
                 response.steps
                 and len(response.steps) == len(bound_response.steps)
                 and all(
-                    same_action(actual, expected)
-                    for actual, expected in zip(response.steps, bound_response.steps, strict=True)
+                    same_action(index, actual, expected)
+                    for index, (actual, expected) in enumerate(
+                        zip(response.steps, bound_response.steps, strict=True)
+                    )
                 )
             ):
                 previous = bound_pending["method"]
