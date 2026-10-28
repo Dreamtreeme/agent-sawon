@@ -997,6 +997,7 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
     assert model.prompts == []
 
 
+# Cleanup audit C7: retain taught branch selection and pruned group order.
 def test_taught_method_selects_the_only_branch_that_binds_current_screen(tmp_path):
     brain, model, _ = setup(tmp_path)
     method = brain.memory_retrieval.library.methods()[0]
@@ -1276,6 +1277,7 @@ def test_method_history_does_not_own_education_completion(tmp_path):
     assert len(memory["recent_executions"]) == 2
 
 
+# Cleanup audit C7: retain predecessor order and exclusion of consumed groups.
 def test_generic_success_trace_becomes_model_free_execution_graph(tmp_path):
     brain, model, _ = setup(tmp_path)
     atomic_write_json(brain.memory_retrieval.library.path, MethodDocument())
@@ -1334,6 +1336,7 @@ def test_next_observation_error_does_not_discard_delivered_method(tmp_path):
 
 
 @pytest.mark.parametrize("verified", [False, True], ids=["no-effect", "observed-effect"])
+# Cleanup audit C7: retain conditional predecessor handling before effect commit.
 def test_bound_edge_replaced_without_dispatch_unblocks_only_after_effect(tmp_path, verified):
     brain, _, _ = setup(tmp_path)
     runtime = brain.memory_retrieval

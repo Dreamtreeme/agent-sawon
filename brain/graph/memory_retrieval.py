@@ -387,13 +387,9 @@ class MemoryRetrieval:
                         for predecessor in group.predecessor_group_ids
                     )
                 ]
-            elif taught_replay:
-                groups = remaining
             else:
                 groups = remaining
             for group_index, group in enumerate(groups):
-                if (method.id, group.id) in self.state.used:
-                    continue
                 bound = self.library.bind_with_context(
                     method.id, mapping, screen, self._binding_values(), group_id=group.id
                 )

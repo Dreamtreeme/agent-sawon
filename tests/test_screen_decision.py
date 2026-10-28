@@ -1718,6 +1718,7 @@ def test_model_may_complete_from_current_evidence_before_the_last_taught_step(tm
     assert brain.visual_proposal.taught_step_id == "open-detail"
 
 
+# Cleanup audit C4: preserve real refs and batch compilation without intermediate marker strings.
 def test_login_and_record_arrays_compile_to_existing_batches(tmp_path, record):
     from test_brain import element
 
@@ -1844,6 +1845,7 @@ def test_login_and_record_arrays_compile_to_existing_batches(tmp_path, record):
     "intents",
     [("navigate", "navigate"), ("select_option", "navigate")],
 )
+# Cleanup audit C4: preserve action order and current-frame targets.
 def test_same_screen_navigation_clicks_compile_to_one_action_plan(intents):
     from test_brain import element
 
@@ -2104,6 +2106,7 @@ def test_synthetic_mappingless_cache_requires_current_model_observation(tmp_path
     )
 
 
+# Cleanup audit C6: retain necessary preparation of a changed recovery response.
 def test_empty_action_recovery_preserves_education_and_current_observed_values(tmp_path, record):
     initial = named_response(steps=[])
     initial["fields"]["Reference"]["value"] = record.fields.hbl_no.value
@@ -2840,6 +2843,7 @@ def test_education_retrieval_replans_before_any_provisional_action(tmp_path, rec
     assert calls[0].payload["context"]["decision_id"] == calls[1].payload["context"]["decision_id"]
 
 
+# Cleanup audit C2: preserve expanded education in the recovery request.
 def test_synthetic_education_expansion_survives_empty_action_recovery(tmp_path, record):
     # Synthetic D-1 replay using the existing fake, not a recorded pilot response.
     taught = TaskInstruction.model_validate_json(
@@ -2882,6 +2886,7 @@ def test_synthetic_education_expansion_survives_empty_action_recovery(tmp_path, 
     assert not any(event.kind == "act" for event in brain.log.read_all())
 
 
+# Cleanup audit C2: preserve the same context on fallback.
 def test_synthetic_fallback_education_survives_empty_action_recovery(tmp_path, record):
     # Synthetic input using the existing fake: supply an invalid cached proposal
     # at the method boundary, but run selection, validation and recovery unchanged.
@@ -3076,6 +3081,7 @@ def test_inline_target_reaches_wire_with_exact_fill_point_without_recovery(
     assert len(model.prompts) == 1  # No target-semantics supplement or coordinate-repair call.
 
 
+# Cleanup audit C3: keep actual-frame mapping while removing the empty-screen conversion.
 def test_semantic_model_mapping_becomes_observation_and_coordinate_method(tmp_path, record):
     from brain.cache.methods import MethodLibrary, method_from_match
     from brain.graph.screen_mapping import ScreenMapping
@@ -3223,6 +3229,7 @@ def test_review_evidence_uses_only_declared_field_sources(operation):
     )
 
 
+# Cleanup audit C1/C5: preserve evidence derived from explicit field readings.
 def test_semantic_mapping_field_reading_supplies_evidence_without_value_target_guessing():
     from brain.graph.screen_mapping import ScreenMapping
 
@@ -3248,6 +3255,7 @@ def test_semantic_mapping_field_reading_supplies_evidence_without_value_target_g
     assert response.repair_fields == []
 
 
+# Cleanup audit C1: review obsolete response evidence contract; retain source/value behavior.
 def test_semantic_mapping_omits_unassigned_descriptive_evidence():
     from brain.graph.screen_mapping import ScreenMapping
 
@@ -3460,6 +3468,7 @@ def test_named_mixed_plan_failure_records_only_delivered_prefix(tmp_path, record
     assert any(e.payload.get("reason") == "relay_action_failed" for e in brain.log.read_all())
 
 
+# Cleanup audit C2: preserve final review and education context when removing prompt round trip.
 def test_mapping_preserves_review_and_retrieval_purpose_and_ignores_unused_grid():
     from brain.graph.screen_mapping import ScreenMapping, mapping_prompt
 
