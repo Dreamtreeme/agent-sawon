@@ -362,9 +362,9 @@ def test_synthetic_116_screen_tree_keeps_delivered_inputs_across_scrolls(tmp_pat
             {"target": "Reference", "action": "fill", "intent": "fill", "point": [175, 30]},
             {
                 "target": "Reference",
-                "action": "key",
+                "action": "scroll",
                 "intent": "navigate",
-                "keys": "pagedown",
+                "direction": "down",
                 "point": [300, 130],
             },
         ],

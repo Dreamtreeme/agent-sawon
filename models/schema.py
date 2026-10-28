@@ -59,6 +59,11 @@ class NullableWireCodec:
                 for part in spec["$ref"].removeprefix("#/").split("/"):
                     resolved = resolved[part.replace("~1", "/").replace("~0", "~")]
                 return visit(item, resolved)
+            if isinstance(item, dict) and "discriminator" in spec:
+                discriminator = spec["discriminator"]
+                reference = discriminator["mapping"].get(item.get(discriminator["propertyName"]))
+                if reference is not None:
+                    return visit(item, {"$ref": reference})
             if WIRE_NULL in spec:
                 if encode and item is None:
                     return deepcopy(spec[WIRE_NULL])

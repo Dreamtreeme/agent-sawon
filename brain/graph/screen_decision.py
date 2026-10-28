@@ -148,7 +148,6 @@ class ScreenPlan(MethodChoice):
         "properties/save_result": "",
         "$defs/NamedAction/properties/source": "",
         "$defs/NamedScreenField/properties/source": "",
-        "$defs/NamedAction/properties/keys": "",
     }
 
     model_config = ConfigDict(extra="forbid")

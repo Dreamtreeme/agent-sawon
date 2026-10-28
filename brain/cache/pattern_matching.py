@@ -79,7 +79,7 @@ def screen_pattern_key(state: dict[str, Any]) -> str:
     encoded = json.dumps(
         contract, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
-    return hashlib.sha256(b"screen-field-source-v1\0" + encoded).hexdigest()
+    return hashlib.sha256(b"screen-explicit-scroll-v2\0" + encoded).hexdigest()
 
 
 class ScreenPatternCache:

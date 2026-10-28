@@ -151,9 +151,9 @@ def test_synthetic_capture_feedback_precedes_model_and_preserves_alternative(
         steps=[
             {
                 "target": "Reference",
-                "action": "key",
+                "action": "scroll",
                 "intent": "navigate",
-                "keys": "pagedown",
+                "direction": "down",
                 "point": [175, 30],
             }
         ],

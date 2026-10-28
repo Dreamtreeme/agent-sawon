@@ -324,9 +324,20 @@ after obs ID와 독립적으로 확인한 사실을 보존한다. 별도 사실�
 원래 클릭의 실패 이력만으로 차단하지 않는다.
 
 `PendingAction.source_screen_path`는 행동 당시 노드 경로이며 실패 이력의 출처로만 사용한다.
-`NamedAction.keys` 및 실제 매핑 프롬프트는 `key+pagedown/pageup`이 지정한 point에서 휠을
-아래/위로 이동시킨다는 실행 의미를 명시한다. click은 클릭만 하며 사전 포커스 클릭을 요구하지
-않는다. 화면 밖 필드는 동일 캡처의 탐지 보완으로 노출되지 않는다.
+모델 응답의 steps는 action으로 구분되는 세 형식이다. `NamedAction`은 fill/click/double_click과
+대상·point·선택적 입력 source를, `NamedKeyAction`은 key와 실제 키보드 keys를,
+`NamedScrollAction`은 scroll과 direction(up/down)을 표현한다. 클릭에는 keys/direction이 없고,
+스크롤에는 keys/source가 없다. 키보드 목록은 공용 키 목록에서 pageup/pagedown을 제외한다.
+스크롤 target은 현재 보이는 필드의 문맥 이름이며 point는 스크롤할 화면 영역이다. target의
+bbox 안을 클릭한다는 의미가 아니다. 별도의 포커스 클릭을 자동 삽입하지 않는다.
+
+`ScreenMapping.local_payload`만 새 scroll을 기존 실행기의 key/pageup 또는 key/pagedown으로
+변환한다. 기존 편찬물·공개 relay 계약은 유지하며 relay에는 scroll과 wheel_delta가 전달된다.
+모델에 회상시키는 retrieved_procedure도 새 scroll 표현으로 투영하되 저장된 원본은 수정하지 않는다.
+화면 캐시 키는 새 응답 계약으로 구분하므로 이전 형식의 응답을 그대로 읽지 않는다.
+과거 실행을 편찬할 때 매핑에서는 필드 기하만 읽고, 행동은 실제 전달 이력에서 얻은 steps를 사용한다.
+Anthropic nullable codec은 action discriminator로 응답 형식을 찾아 해당 source의 null만 복원한다.
+화면 밖 필드는 동일 캡처의 탐지 보완으로 노출되지 않는다.
 
 ## 화면 전용 공개 관찰
 

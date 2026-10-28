@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from brain.observe.values import field_matches
 from brain.visual.marker_contract import text_index
 from brain.visual.scene import contains
-from brain.vocabulary import ControlRole, KeyInput, MatchActionIntent
+from brain.vocabulary import (
+    SCROLL_DIRECTION_KEYS,
+    ControlRole,
+    KeyboardInput,
+    MatchActionIntent,
+    ScrollDirection,
+)
 
 
 class ScreenField(BaseModel):
@@ -29,20 +35,34 @@ class ScreenField(BaseModel):
     enabled: bool = True
 
 
-class NamedAction(BaseModel):
+class NamedTarget(BaseModel):
     model_config = ConfigDict(extra="forbid")
     target: str = Field(description="Exact semantic field name from fields")
-    action: Literal["fill", "click", "double_click", "key"]
     intent: MatchActionIntent
-    source: str | None = None
-    keys: KeyInput | None = Field(
-        default=None,
-        description="For action=key: pagedown/pageup wheel-scroll down/up at point; "
-        "other keys are keyboard input. A click never scrolls automatically.",
-    )
     point: list[float] = Field(
         min_length=2, max_length=2, description="Your chosen original image click/input point"
     )
+
+
+class NamedAction(NamedTarget):
+    action: Literal["fill", "click", "double_click"]
+    source: str | None = None
+
+
+class NamedKeyAction(NamedTarget):
+    action: Literal["key"]
+    keys: KeyboardInput
+
+
+class NamedScrollAction(NamedTarget):
+    target: str = Field(description="Visible field naming the scroll context, not a click target")
+    point: list[float] = Field(
+        min_length=2,
+        max_length=2,
+        description="Original image point in the scrollable region; no preliminary click",
+    )
+    action: Literal["scroll"]
+    direction: ScrollDirection
 
 
 class NamedEvidence(BaseModel):
@@ -89,7 +109,9 @@ class ScreenMapping(BaseModel):
         default_factory=list,
         description="Evaluate the focused/delivered taught steps against CURRENT visible results",
     )
-    steps: list[NamedAction] = Field(default_factory=list)
+    steps: list[
+        Annotated[NamedAction | NamedKeyAction | NamedScrollAction, Field(discriminator="action")]
+    ] = Field(default_factory=list)
     evidence: list[NamedEvidence] = Field(default_factory=list)
     completion_evidence: list[NamedCompletionEvidence] = Field(default_factory=list)
     operation: Literal["act", "duplicate_clear", "duplicate_found", "complete", "stop"] = "act"
@@ -185,15 +207,17 @@ class ScreenMapping(BaseModel):
         # The provider explanation is unrestricted; the local method label is a summary.
         # Keep the complete explanation in the saved semantic mapping.
         result["purpose"] = self.purpose[:160]
-        result["steps"] = [
-            dict(
-                s.model_dump(),
-                target=ids[field_name(s.target)],
-                source=s.source
-                or (self.fields[field_name(s.target)].source if s.action == "fill" else None),
-            )
-            for s in self.steps
-        ]
+        result["steps"] = []
+        for step in self.steps:
+            name = field_name(step.target)
+            action = step.model_dump()
+            action["target"] = ids[name]
+            if isinstance(step, NamedScrollAction):
+                action["action"] = "key"
+                action["keys"] = SCROLL_DIRECTION_KEYS[action.pop("direction")]
+            elif step.action == "fill":
+                action["source"] = step.source or self.fields[name].source
+            result["steps"].append(action)
         # Fields own input bindings and readings, exactly as in screen memory.
         # The optional evidence list cannot invent or override a field's source.
         result["evidence"] = [
@@ -290,7 +314,21 @@ def mapping_prompt(prompt: str, screen: dict) -> str:
         ],
     }
     if screen.get("memory_fields"):
-        state["screen"]["retrieved_procedure"] = screen.get("retrieved_procedure", [])
+        procedures = []
+        for group in screen.get("retrieved_procedure", []):
+            steps = []
+            for stored in group["steps"]:
+                step = {key: value for key, value in stored.items() if value is not None}
+                if step["action"] == "key":
+                    step.pop("source", None)
+                    for direction, key in SCROLL_DIRECTION_KEYS.items():
+                        if step["keys"] == key:
+                            step.update(action="scroll", direction=direction)
+                            del step["keys"]
+                            break
+                steps.append(step)
+            procedures.append({**group, "steps": steps})
+        state["screen"]["retrieved_procedure"] = procedures
     return CONTEXT_MAPPING_RULES + json.dumps(state, ensure_ascii=False)
 
 
@@ -343,10 +381,12 @@ fill into steps. purpose explains those same steps; it is not a separate executa
 Preserve the taught route and completion conditions. Requested instruction IDs retrieve details.
 Batch ordered work grounded in this screen, including inputs followed by a submit/search command.
 Do not guess targets or results revealed only after a screen change; observe them in the next turn.
-If inputs are offscreen, use action=key with keys=pagedown (wheel down) or pageup
-(wheel up), choosing a point inside the current image's scrollable region. The wheel point
+If inputs are offscreen, use action=scroll with direction=down or up,
+choosing a point inside the current image's scrollable region. The wheel point
 does not need to be inside the named field's bbox; the target names the current context.
-No preliminary focus click is required for this wheel action. click only clicks; writing
+Scroll has no keys or source. Keyboard action=key uses keys, never direction or pageup/pagedown.
+Click and double_click have no keys or direction. No preliminary focus click is required.
+click only clicks; writing
 "scroll" in purpose does not turn a click into scrolling. Do not request local refinement
 for an offscreen field: the same capture cannot reveal content outside the viewport.
 execution.last_action_observation describes structural movement after the delivered action:

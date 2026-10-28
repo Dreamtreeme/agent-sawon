@@ -14,7 +14,12 @@ def test_visual_match_cache_promotes_only_a_successful_run(tmp_path):
     ).hexdigest()
     legacy = ScreenPatternCache(tmp_path / "previous.json", enabled=True)
     legacy.stage(old_key, {"assignments": {"Reference": "hbl_no"}})
-    assert legacy.finish(success=True) == 1
+    previous_scroll_key = hashlib.sha256(
+        b"screen-field-source-v1\0"
+        + json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    legacy.stage(previous_scroll_key, {"mapping": {"steps": [{"action": "key", "keys": "pageup"}]}})
+    assert legacy.finish(success=True) == 2
     before = legacy.path.read_bytes()
     assert legacy.lookup(state) is None
     assert legacy.path.read_bytes() == before

@@ -1,5 +1,6 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
+ScreenMatch/ScreenPlan separate pointer, keyboard and scroll actions (2026-10-28).
 ScreenMatch/ScreenPlan embed source in fields, removing assignments (2026-10-27).
 
 ScreenPlan/ScreenMatch fixtures add screen_path for node-scoped memory (2026-10-24).
@@ -129,8 +130,8 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
             TargetedMatchAction,
             "010d16ae1c205f2e97b7661173dd1ff9f35ba34aa17a3d6b0a4165447c6f755c",
         ),
-        (ScreenPlan, "d7623825298369863b57e3ca6e14211da406e38a03c28b66a7f781e42c4a0c4c"),
-        (ScreenMatch, "d7623825298369863b57e3ca6e14211da406e38a03c28b66a7f781e42c4a0c4c"),
+        (ScreenPlan, "2c6785ab78ffaeba0907d82815b31a4bdf4b7d28d150fa7b26a0fbe3d41368fd"),
+        (ScreenMatch, "2c6785ab78ffaeba0907d82815b31a4bdf4b7d28d150fa7b26a0fbe3d41368fd"),
         (Decision, "0dd9a48fb753c30ea6f54d65c1272bfc631435abedc33d3864e138bf412f5bf0"),
         (
             WireActDecision,

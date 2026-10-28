@@ -274,6 +274,66 @@ def test_synthetic_fill_then_wheel_crosses_point_binding_or_reports_undispatched
     assert not [e for e in brain.log.read_all() if e.kind == "act"]
 
 
+@pytest.mark.parametrize("direction,delta", [("up", 600), ("down", -600)])
+def test_synthetic_explicit_scroll_reaches_wire_without_preliminary_click(
+    tmp_path, record, direction, delta
+):
+    # Synthetic 120: fake model, real observation/decision/coordinate/wire conversion.
+    data = named_response(
+        steps=[
+            {
+                "action": "scroll",
+                "direction": direction,
+                "target": "Reference",
+                "intent": "navigate",
+                "point": [300, 150],
+            }
+        ]
+    )
+    brain, model, *_ = setup_brain(tmp_path, record, [data])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+    brain._observe()
+    assert len(brain.visual_proposal.steps) == 1
+    assert brain._select_node() == "review"
+    action = brain._wire_action(
+        brain.decision.action,
+        brain.decision,
+        fresh_observation=brain.observation.wire,
+        log_renewal=False,
+    ).root
+    assert action.type == "scroll" and action.wheel_delta == delta
+    assert action.target.image_point == (300, 150)  # Outside the field, inside the viewport.
+    assert brain.action_plan is None
+    assert len(model.prompts) == 1
+
+
+@pytest.mark.parametrize(
+    "action,extra",
+    [
+        ("click", {"keys": "pageup"}),
+        ("click", {"direction": "up"}),
+        ("scroll", {"direction": "up", "keys": "pageup"}),
+        ("key", {"keys": "pageup"}),
+    ],
+)
+def test_synthetic_click_scroll_mix_is_not_a_model_action(action, extra):
+    from pydantic import ValidationError
+
+    data = named_response(
+        steps=[
+            {
+                "action": action,
+                "target": "Reference",
+                "intent": "navigate",
+                "point": [300, 150],
+                **extra,
+            }
+        ]
+    )
+    with pytest.raises(ValidationError):
+        ScreenMatch.model_validate(data)
+
+
 def test_method_grounding_failure_retries_visual_cache_or_model_once(
     tmp_path, record, task_instruction, monkeypatch
 ):
@@ -1323,6 +1383,7 @@ def test_nonwriting_input_goal_preserves_literal_action_without_replanning(
         keys="tab" if action == "key" else None,
         point=[175, 30],
     )
+    task_response["steps"][0].pop("source" if action == "key" else "keys")
     task_response["evidence"] = [{"field": "hbl_no", "target": "Reference"}]
     brain, model, *_ = setup_brain(
         tmp_path, record, [task_response], task_instruction=task_instruction
@@ -3499,10 +3560,23 @@ def test_mapping_preserves_review_and_retrieval_purpose_and_ignores_unused_grid(
         "post_action_review": {"delivered_sources": ["hbl_no"]},
         "taught_procedure_progress": {"retrieved_step_ids": ["details"]},
     }
-    prompt = mapping_prompt("old numeric instructions" + json.dumps(state), {})
+    stored = {
+        "action": "key",
+        "keys": "pageup",
+        "target": "Reference",
+        "source": None,
+        "intent": "navigate",
+        "point": [300, 150],
+    }
+    screen = {"memory_fields": ["Reference"], "retrieved_procedure": [{"steps": [stored]}]}
+    prompt = mapping_prompt("old numeric instructions" + json.dumps(state), screen)
     payload = json.loads(prompt[len(CONTEXT_MAPPING_RULES) :])
     assert "already delivered" in payload["review_instruction"]
     assert "not another retrieval" in payload["education_instruction"]
+    recalled = payload["screen"]["retrieved_procedure"][0]["steps"][0]
+    assert recalled["action"] == "scroll" and recalled["direction"] == "up"
+    assert "keys" not in recalled and "source" not in recalled
+    assert stored["action"] == "key" and stored["keys"] == "pageup"
     mapping = ScreenMapping.model_validate(named_response(grid="nonexistent grid", row="absent"))
     assert mapping.local_payload({})["grid"] is None
     assert len(mapping.local_payload({})["steps"]) == 1

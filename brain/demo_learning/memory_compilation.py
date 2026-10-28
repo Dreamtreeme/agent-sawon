@@ -305,7 +305,11 @@ def read_memory_candidates(
         screen = read_screen(case_dir, obs_id)
         mapping = responses[key].get("mapping") if keys else None
         if mapping is not None:
-            normalized = ScreenMapping.model_validate(mapping).local_payload(screen)
+            # Only geometry is recovered here; delivered steps below are authoritative.
+            # Historical provider actions may use an older model-facing scroll contract.
+            normalized = ScreenMapping.model_validate({**mapping, "steps": []}).local_payload(
+                screen
+            )
             # Normalize geometry without restoring skipped actions from the provider plan.
             response = {**normalized, "operation": response.get("operation", "act")}
         response = {**response, "steps": retained}

@@ -97,6 +97,12 @@ def test_screen_schema_removes_anthropic_optional_grammar_branches(contract):
     inspect(schema)
     assert optional == []
     assert unions == []  # Local complexity check; actual provider acceptance is tested separately.
+    if contract in {ScreenMatch, ScreenPlan}:
+        assert schema["properties"]["steps"]["items"]["anyOf"] == [
+            {"$ref": "#/$defs/NamedAction"},
+            {"$ref": "#/$defs/NamedKeyAction"},
+            {"$ref": "#/$defs/NamedScrollAction"},
+        ]
 
 
 def test_long_prompt_tier_changes_all_haiku_rates(tmp_path):
@@ -160,16 +166,28 @@ def test_screen_wire_restores_inline_target_nulls_without_losing_zero_or_source(
                 "action": "fill",
                 "intent": "fill",
                 "source": "hbl_no",
-                "keys": None,
                 "point": [0, 0],
             },
             {
                 "target": "Reference",
                 "action": "key",
                 "intent": "navigate",
-                "source": None,
                 "keys": "tab",
                 "point": [5, 5],
+            },
+            {
+                "target": "Reference",
+                "action": "click",
+                "intent": "navigate",
+                "source": None,
+                "point": [5, 5],
+            },
+            {
+                "target": "Reference",
+                "action": "scroll",
+                "intent": "navigate",
+                "direction": "up",
+                "point": [150, 150],
             },
         ],
     }
@@ -180,7 +198,8 @@ def test_screen_wire_restores_inline_target_nulls_without_losing_zero_or_source(
     assert encoded["steps"][0]["target"] == encoded["grid"] == "Reference"
     assert encoded["steps"][0]["point"] == [0, 0]
     assert encoded["steps"][1]["point"] == [5, 5]
-    assert encoded["steps"][1]["source"] == ""
+    assert encoded["steps"][2]["source"] == ""
+    assert encoded["steps"][3]["direction"] == "up"
     sdk.messages.create.return_value.content[0].text = json.dumps(encoded)
     result = client.complete_json("current screen", ScreenMatch)
     assert result.response == ScreenMatch.model_validate(original)
@@ -188,12 +207,15 @@ def test_screen_wire_restores_inline_target_nulls_without_losing_zero_or_source(
     assert ScreenMatch.model_json_schema() == original_schema
     payload = log.read_all()[-1].payload
     assert payload["wire_schema_codec"] == "nullable-sentinels-v1"
+    assert payload["wire_schema_union_count"] == 1
     assert len(payload["wire_schema_sha256"]) == 64
     sent = sdk.messages.create.call_args.kwargs["output_config"]["format"]["schema"]
     assert payload["wire_schema_utf8_bytes"] == len(
         json.dumps(sent, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
     )
-    assert sent["$defs"]["NamedAction"]["properties"]["keys"]["enum"][-1] == ""
+    assert "keys" not in sent["$defs"]["NamedAction"]["properties"]
+    assert "pageup" not in sent["$defs"]["NamedKeyAction"]["properties"]["keys"]["enum"]
+    assert "keys" not in sent["$defs"]["NamedScrollAction"]["properties"]
     assert "x-anthropic-null" not in json.dumps(sent)
     # Invalid nonempty payloads still fail the original domain validation with usage retained.
     encoded["steps"][1]["keys"] = "not-a-key"

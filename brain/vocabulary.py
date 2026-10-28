@@ -17,6 +17,14 @@ KEY_INPUT_VALUES = (
 )
 KeyInput = Literal[*KEY_INPUT_VALUES]
 
+# The executor retains page keys for historical wheel commands. New model plans
+# express wheel movement as scroll + direction, never as a keyboard key.
+KEYBOARD_INPUT_VALUES = tuple(key for key in KEY_INPUT_VALUES if key not in {"pageup", "pagedown"})
+KeyboardInput = Literal[*KEYBOARD_INPUT_VALUES]
+SCROLL_DIRECTION_VALUES = ("up", "down")
+ScrollDirection = Literal[*SCROLL_DIRECTION_VALUES]
+SCROLL_DIRECTION_KEYS: dict[ScrollDirection, KeyInput] = {"up": "pageup", "down": "pagedown"}
+
 # Enter submits or confirms; it is not a navigation or tab-selection key.
 NAVIGATION_KEY_INPUTS = tuple(key for key in KEY_INPUT_VALUES if key != "enter")
 
