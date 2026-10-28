@@ -173,4 +173,5 @@ def test_screen_matching_schema_is_converted_without_changing_local_contract(tmp
     assert "steps" in schema["required"] and "steps" not in local_schema["required"]
     assert ScreenMatch.model_json_schema() == local_schema
     assert ScreenMatch.model_validate(minimal) == expected
-    assert expected.steps == [] and expected.grid is None and expected.controls[0].enabled
+    assert expected.steps == [] and expected.grid is None and expected.controls == []
+    assert expected.mapping.fields["Reference"].enabled

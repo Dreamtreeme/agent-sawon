@@ -7,6 +7,7 @@ from test_brain import record as record
 from test_screen_decision import matching_contract, setup_brain
 
 from brain.graph import screen_decision as decision
+from brain.graph.screen_mapping import ScreenMapping
 from brain.visual.scene import SemanticDetection
 
 
@@ -28,7 +29,7 @@ def test_synthetic_composition_preserves_mapping_and_uses_new_plan(
         uncertainties=["synthetic context"],
         needs_refinement=True,
     )
-    plan = decision.ScreenPlan.model_validate(
+    mapping = ScreenMapping.model_validate(
         {
             "fields": {"Next": {"role": "button", "bbox": [0, 0, 40, 40]}},
             "steps": [
@@ -42,6 +43,15 @@ def test_synthetic_composition_preserves_mapping_and_uses_new_plan(
             "needs_refinement": False,
             "evidence": [{"field": "hbl_no", "target": "Next"}],
         }
+    )
+    # Synthetic post-frame-conversion response: the fake stands in for traced_call.
+    plan = decision.ScreenPlan(
+        procedure_step="task-action",
+        steps=[decision.MatchAction(target=1, action="click", intent="navigate", point=[10, 10])],
+        purpose="new plan",
+        expected_result="next screen",
+        observed_step_results=mapping.observed_step_results,
+        mapping=mapping,
     )
     if full_interpretation:
         # decide_screen.traced_call also returns a full ScreenMatch to ScreenPlan callers.

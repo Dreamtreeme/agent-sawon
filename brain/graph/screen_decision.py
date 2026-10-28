@@ -169,11 +169,12 @@ class ScreenPlan(MethodChoice):
     def semantic_mapping(cls, value):
         if isinstance(value, dict) and "fields" in value:
             mapping = ScreenMapping.model_validate(value)
-            payload = mapping.local_payload({})
-            if "controls" not in cls.model_fields:
-                payload.pop("controls", None)
-                payload.pop("screen_kind", None)
-            return {**payload, "mapping": mapping}
+            # Parse model semantics now; allocate execution refs once the frame is available.
+            payload = {"procedure_step": mapping.procedure_step, "mapping": mapping}
+            if "screen_kind" in cls.model_fields:
+                payload["screen_kind"] = mapping.screen_kind
+                payload["controls"] = []
+            return payload
         return value
 
     procedure_step: str

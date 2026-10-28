@@ -2039,12 +2039,12 @@ def test_post_action_review_preserves_next_action_in_same_response(tmp_path, rec
 
     assert len(model.prompts) == 1
     assert result.response.operation == "act"
-    expected = ScreenMatch.model_validate(reviewed).steps[0]
+    expected = reviewed["steps"][0]
     actual = result.response.steps[0]
     assert (actual.action, actual.source, actual.point) == (
-        expected.action,
-        expected.source,
-        expected.point,
+        expected["action"],
+        expected["source"],
+        expected["point"],
     )
     assert result.response.needs_refinement is False
 
@@ -3077,11 +3077,21 @@ def test_inline_target_reaches_wire_with_exact_fill_point_without_recovery(
 
 
 # Cleanup audit C3: keep actual-frame mapping while removing the empty-screen conversion.
-def test_semantic_model_mapping_becomes_observation_and_coordinate_method(tmp_path, record):
+def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
+    tmp_path, record, monkeypatch
+):
     from brain.cache.methods import MethodLibrary, method_from_match
     from brain.graph.screen_mapping import ScreenMapping
     from brain.visual.action_rebind import perceptual_hash
 
+    converted_frames = []
+    original_payload = ScreenMapping.local_payload
+
+    def convert(mapping, screen, inputs=None):
+        converted_frames.append(screen)
+        return original_payload(mapping, screen, inputs)
+
+    monkeypatch.setattr(ScreenMapping, "local_payload", convert)
     raw = {
         "screen_kind": "query",
         "fields": {
@@ -3097,6 +3107,7 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(tmp_pa
     brain, model, _, _, _, _ = setup_brain(tmp_path, record, [raw])
     brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
     brain._observe()
+    assert len(converted_frames) == 1 and converted_frames[0]["markers"]
     target = next(e for e in brain.observation.elements if e.role == "edit")
     assert target.name == "Reference" and target.bbox == (100, 15, 150, 30)
     assert brain._select_node() == "review"
@@ -3626,10 +3637,10 @@ def test_unresolved_annotations_preserve_actions_without_inventing_proof():
         "message_targets",
         "completion_evidence",
     }
-    assert len(ScreenMatch.model_validate(data).steps) == 1
+    assert ScreenMatch.model_validate(data).mapping is not None
     data["steps"][0]["target"] = "unresolvable executable target"
     with pytest.raises(KeyError, match="unresolvable executable target"):
-        ScreenMatch.model_validate(data)
+        ScreenMatch.model_validate(data).mapping.local_payload({})
 
 
 @pytest.mark.parametrize("mode", ["enforce", "observe_only"])
