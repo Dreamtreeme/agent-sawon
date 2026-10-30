@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,7 +22,7 @@ from brain.cache.methods import (
     method_from_match,
     screen_similarity_distance,
 )
-from brain.task_instruction import TaskInstruction
+from brain.task_instruction import ObservedStepResult, TaskInstruction
 from brain.visual.scene import same_control_region
 from brain.vocabulary import SCROLL_DIRECTION_KEYS
 from sawon_runtime.storage import RunLog, atomic_write_json
@@ -42,6 +42,7 @@ class RetrievalContext:
     observation_id: str | None
     screen_nodes: Mapping[str, dict] = field(default_factory=dict)
     evidence_scope: str = "entry"
+    completed_taught_steps: Set[str] = field(default_factory=frozenset)
 
 
 @dataclass
@@ -193,6 +194,30 @@ class MemoryRetrieval:
             },
         }
 
+    def _satisfied_groups(
+        self, method: LearnedMethod, observations: Sequence[ObservedStepResult] = ()
+    ) -> set[str]:
+        """Combine delivered edges with outcomes observed in this run, without fake deliveries."""
+        known_steps = {step.id for step in self.task_context.task.procedure}
+        completed = set(self.task_context.completed_taught_steps) & known_steps
+        completed.update(
+            result.step_id
+            for result in observations
+            if result.completed and result.step_id in known_steps
+        )
+        replaced = {
+            item["replaced_edge"][1]
+            for item in self.state.history
+            if item.get("replaced_edge") and item["replaced_edge"][0] == method.id
+        }
+        return {
+            group.id
+            for group in method.action_groups
+            if (method.id, group.id) in self.state.used
+            or group.id in replaced
+            or group.taught_step_id in completed
+        }
+
     def _redact_credentials(self, text: str) -> str:
         result = text
         for source, value in sorted(
@@ -226,10 +251,11 @@ class MemoryRetrieval:
                 continue
             if objective is not None and not self._matches_current_task(method):
                 continue
+            satisfied = self._satisfied_groups(method) if task is not None else set()
             remaining = [
                 group
                 for group in self._ordered_groups(method)
-                if (method.id, group.id) not in self.state.used
+                if group.id not in satisfied and (method.id, group.id) not in self.state.used
             ][:2]
             relevant_slots = {
                 action.slot for group in remaining for action in group.actions if action.slot
@@ -369,36 +395,28 @@ class MemoryRetrieval:
                 if not self._matches_current_task(method):
                     continue
                 mapping = {slot.name: slot.source_key for slot in method.slots}
+            satisfied = self._satisfied_groups(method)
             remaining = [
-                group
-                for group in self._ordered_groups(method)
-                if (method.id, group.id) not in self.state.used
+                group for group in self._ordered_groups(method) if group.id not in satisfied
             ]
-            # The current screen chooses a taught branch. Earlier versions tried
-            # only the first unused group, so an already advanced screen could
-            # never reuse a later successful action and fell back to the model.
-            if trace_replay:
-                groups = [
-                    group
-                    for group in remaining
-                    if all(
-                        (method.id, predecessor) in self.state.used
-                        or (method.id, predecessor) == pending_predecessor
-                        for predecessor in group.predecessor_group_ids
-                    )
-                ]
-            else:
-                groups = remaining
-            for group_index, group in enumerate(groups):
+            # Candidate observations can satisfy predecessor outcomes only when
+            # this candidate subsequently binds the current screen uniquely.
+            for group in remaining:
+                observed = self._satisfied_groups(method, group.observed_step_results)
+                if trace_replay and not all(
+                    predecessor in observed or (method.id, predecessor) == pending_predecessor
+                    for predecessor in group.predecessor_group_ids
+                ):
+                    continue
                 bound = self.library.bind_with_context(
                     method.id, mapping, screen, self._binding_values(), group_id=group.id
                 )
                 if bound is not None:
-                    pruned_group_ids = (
-                        [item.id for item in groups[:group_index]] if taught_replay else []
-                    )
-                    candidates.append((method, mapping, bound, pruned_group_ids))
-            if not remaining and method.completion is not None:
+                    candidates.append((method, mapping, bound))
+            if method.completion is not None:
+                observed = self._satisfied_groups(method, method.completion.observed_step_results)
+                if any(group.id not in observed for group in remaining):
+                    continue
                 completion = self.library.bind_completion_with_context(
                     method.id, mapping, screen, self.task_context.inputs
                 )
@@ -455,7 +473,7 @@ class MemoryRetrieval:
             return response
         if len(candidates) != 1:
             return None
-        method, mapping, bound, pruned_group_ids = candidates[0]
+        method, mapping, bound = candidates[0]
         group = next(group for group in method.action_groups if group.id == bound.group_id)
         response_data = dict(bound.response)
         if not group.screen_path:
@@ -500,7 +518,6 @@ class MemoryRetrieval:
             "method": method,
             "group_id": bound.group_id,
             "origin": "reuse",
-            "pruned_group_ids": pruned_group_ids,
             "response": response,
         }
         self.log.append(
@@ -793,8 +810,6 @@ class MemoryRetrieval:
             "observation_id": self.task_context.observation_id,
         }
         if status == "delivered":
-            for pruned_group_id in pending.get("pruned_group_ids", []):
-                self.state.used.add((method.id, pruned_group_id))
             self.state.used.add((method.id, group_id))
             self.state.active_method_id = None
             if pending["origin"] != "reuse":
@@ -809,7 +824,6 @@ class MemoryRetrieval:
                 "method": method,
                 "group_id": group_id,
                 "origin": pending["origin"],
-                "pruned_group_ids": pending.get("pruned_group_ids", []),
                 "history_index": len(self.state.history) - 1,
                 "replaced_edge": pending.get("replaced_edge"),
             }
@@ -839,7 +853,9 @@ class MemoryRetrieval:
             return
         if success:
             if delivered.get("replaced_edge") is not None:
-                self.state.used.add(delivered["replaced_edge"])
+                self.state.history[delivered["history_index"]]["replaced_edge"] = delivered[
+                    "replaced_edge"
+                ]
                 self.log.append(
                     "verify",
                     payload={
@@ -887,8 +903,6 @@ class MemoryRetrieval:
         # instead of selecting the same no-op forever.
         if delivered["origin"] != "reuse":
             self.state.used.discard((method.id, group_id))
-            for pruned_group_id in delivered["pruned_group_ids"]:
-                self.state.used.discard((method.id, pruned_group_id))
         if history_index < len(self.state.history):
             self.state.history[history_index]["status"] = "unproductive"
         if delivered["origin"] != "reuse":

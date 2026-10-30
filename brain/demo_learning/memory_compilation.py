@@ -17,6 +17,7 @@ from sawon_interfaces import ShipmentRecord
 
 from brain.cache.methods import (
     LearnedMethod,
+    MethodActionGroup,
     MethodDocument,
     MethodSlot,
     method_completion_from_match,
@@ -339,8 +340,23 @@ def read_memory_candidates(
     if not candidates:
         raise ValueError("successful_run_has_no_joined_visual_cache_actions")
     completion = None
-    for plan in reversed(plans):
+    final_stop = next(
+        (
+            (seq, event["payload"])
+            for seq, event in reversed(list(enumerate(events)))
+            if event.get("kind") == "stop" and event.get("payload", {}).get("status") == "success"
+        ),
+        None,
+    )
+    final_plans = (
+        [plan for plan in plans if plan["seq"] < final_stop[0]] if final_stop is not None else plans
+    )
+    for plan in reversed(final_plans):
         if plan.get("plan_error") or plan["response"].get("operation") != "complete":
+            continue
+        if final_stop is not None and (
+            plan is not final_plans[-1] or plan["obs_id"] != final_stop[1].get("last_obs_id")
+        ):
             continue
         final_screen = read_screen(case_dir, plan["obs_id"])
         final_response = plan["response"]
@@ -349,6 +365,10 @@ def read_memory_candidates(
         if final_mapping is not None:
             final_response = ScreenMapping.model_validate(final_mapping).local_payload(final_screen)
         completion = {"screen": final_screen, "response": final_response}
+        if final_stop is not None and final_stop[0] > plan["seq"]:
+            review = events[final_stop[0] - 1].get("payload", {})
+            if review.get("check") == "post_save_model_evidence_complete" and review.get("ok"):
+                completion["verified_fields"] = review.get("fields", [])
         break
     return {
         "source_case": str(case_dir.resolve()),
@@ -449,6 +469,55 @@ def _required_sources(candidates: list[MemoryCandidate]) -> set[str]:
     }
 
 
+def _rebase_entry_observation(
+    group: MethodActionGroup, entry: MethodActionGroup
+) -> MethodActionGroup:
+    """Keep selected actions, but recall the observation before the removed span."""
+    action_names = {action.target for action in group.actions}
+    targets = {target.name: target for target in group.targets if target.name in action_names}
+    renamed = {}
+    for target in entry.targets:
+        if target.name not in entry.message_targets:
+            continue
+        existing = targets.get(target.name)
+        if existing is not None and existing.bbox != target.bbox:
+            renamed[target.name] = f"entry:{entry.id}:{target.name}"
+            target = target.model_copy(update={"name": renamed[target.name]})
+        elif existing is not None:
+            # A message can share a target with an action, but cannot move that action.
+            target = existing.model_copy(update={"anchor_texts": target.anchor_texts})
+        targets[target.name] = target
+    updates = {
+        key: getattr(entry, key)
+        for key in (
+            "screen_kind",
+            "screen_path",
+            "screen_phash",
+            "image_size",
+            "observed_step_results",
+            "save_result",
+            "repair_fields",
+        )
+    }
+    updates.update(
+        targets=list(targets.values()),
+        observed_fields=[
+            target.model_copy(update={"name": renamed.get(target.name, target.name)})
+            for target in entry.observed_fields
+        ],
+        field_sources={renamed.get(key, key): value for key, value in entry.field_sources.items()},
+        field_values=(
+            {renamed.get(key, key): value for key, value in entry.field_values.items()}
+            if entry.field_values is not None
+            else None
+        ),
+        message_targets=[renamed.get(name, name) for name in entry.message_targets],
+    )
+    updated = group.model_copy(update={**updates, "id": "pending"})
+    encoded = json.dumps(updated.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
+    return updated.model_copy(update={"id": hashlib.sha256(encoded.encode()).hexdigest()[:16]})
+
+
 def compile_memory(
     source: dict,
     candidates: list[MemoryCandidate],
@@ -489,10 +558,15 @@ def compile_memory(
     groups = []
     previous_id = None
     refs = []
+    ordered = sorted(candidates, key=lambda candidate: candidate.trace_index)
+    positions = {candidate.candidate_id: index for index, candidate in enumerate(ordered)}
+    entry_index = 0
     for selection, candidate in zip(assembly.groups, selected, strict=True):
+        entry = ordered[entry_index]
+        entry_index = positions[candidate.candidate_id] + 1
         if candidate.screen.get("screen_phash") is None:
             raise ValueError("warm_method_candidate_requires_reference_screenshot")
-        visible = {str(block["text"]) for block in candidate.screen.get("ocr", [])}
+        visible = {str(block["text"]) for block in entry.screen.get("ocr", [])}
         context_anchors = [
             anchor
             for anchor in selection.context_anchors
@@ -519,7 +593,25 @@ def compile_memory(
             raise ValueError(
                 "warm_method_candidate_could_not_be_compiled:" + candidate.candidate_id
             )
-        group = fragment.action_groups[0].model_copy(
+        group = fragment.action_groups[0]
+        if entry is not candidate:
+            # The model removed a contiguous span. Its first before-screen becomes
+            # this action's entry; each frame's IDs are resolved in its own fragment.
+            entry_fragment = method_from_match(
+                entry.screen,
+                entry.response,
+                method_id=method_id,
+                purpose=assembly.purpose,
+                slots=slots,
+                values=source["values"],
+            )
+            if entry_fragment is None:
+                raise ValueError(
+                    "warm_method_candidate_could_not_be_compiled:" + entry.candidate_id
+                )
+            group = _rebase_entry_observation(group, entry_fragment.action_groups[0])
+            refs.append(f"{source['source_case']}/visual/{entry.obs_id}:{entry.cache_key}")
+        group = group.model_copy(
             update={
                 "trace_index": candidate.trace_index,
                 "predecessor_group_ids": [] if previous_id is None else [previous_id],
@@ -529,7 +621,7 @@ def compile_memory(
                             "observed_result": _redact(result.observed_result, source["values"])
                         }
                     )
-                    for result in fragment.action_groups[0].observed_step_results
+                    for result in group.observed_step_results
                 ],
             }
         )
@@ -551,7 +643,11 @@ def compile_memory(
     if completion := source.get("completion"):
         method = (
             method_completion_from_match(
-                completion["screen"], completion["response"], method, source["values"]
+                completion["screen"],
+                completion["response"],
+                method,
+                source["values"],
+                verified_fields=completion.get("verified_fields", ()),
             )
             or method
         )

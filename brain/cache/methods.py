@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from itertools import product
 from math import log
@@ -592,7 +592,12 @@ def method_from_match(
 
 
 def method_completion_from_match(
-    screen: dict, response: dict, method: LearnedMethod, values: Mapping[str, str] | None = None
+    screen: dict,
+    response: dict,
+    method: LearnedMethod,
+    values: Mapping[str, str] | None = None,
+    *,
+    verified_fields: Collection[str] = (),
 ) -> LearnedMethod | None:
     """Compile model-approved final proof into current-value-bound method evidence."""
 
@@ -600,7 +605,10 @@ def method_completion_from_match(
         return None
     evidence = response.get("evidence", [])
     completion_evidence = response.get("completion_evidence", [])
-    if not evidence or not completion_evidence:
+    # The compiler may supply the fields from the actual final accumulated review.
+    # This admits its last observation, not a reusable success flag for the next run.
+    accumulated_review = bool(values) and set(values) <= set(verified_fields)
+    if not evidence or (not completion_evidence and not accumulated_review):
         return None
     markers = {item["id"]: item for item in screen.get("markers", [])}
     blocks = {item["id"]: item for item in screen.get("ocr", [])}
@@ -648,7 +656,7 @@ def method_completion_from_match(
                 condition_indexes=list(dict.fromkeys(condition_indexes)),
             )
         )
-    if not any(item.condition_indexes for item in targets):
+    if not accumulated_review and not any(item.condition_indexes for item in targets):
         return None
     completion = MethodCompletion(
         purpose=response.get("purpose", "")[:160],

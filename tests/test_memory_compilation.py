@@ -304,6 +304,78 @@ def test_memory_compiler_keeps_only_visible_non_instance_context_anchors():
     assert method.action_groups[0].context_anchors == ["Shipment"]
 
 
+def test_synthetic_pruned_click_rebases_entry_memory_without_rebinding_action_ids(tmp_path):
+    # Synthetic 135-shaped trace: remove row selection, retain the following double click.
+    # Detector ID 91 belongs to different controls across the two source frames.
+    before = {
+        **screen("Query results"),
+        "screen_phash": 0,
+        "screen_path": ["Shipment", "Query"],
+        "selected_fields": {
+            "17": {"name": "Select row", "role": "row", "bbox": [160, 170, 60, 40]},
+            "91": {
+                "name": "Selection",
+                "role": "text",
+                "bbox": [500, 500, 30, 20],
+                "value": "unselected",
+            },
+            # The entry message and retained action have the same model name,
+            # but the entry message must not overwrite the action's geometry.
+            "29": {"name": "Row", "role": "text", "bbox": [10, 80, 300, 30], "value": "Saved"},
+        },
+    }
+    before["ocr"].append({"id": 2, "text": "Saved", "bbox": [10, 80, 100, 20]})
+    after = {
+        **screen("Query results"),
+        "screen_phash": 1023,
+        "screen_path": ["Shipment", "Query"],
+        "selected_fields": {
+            "91": {"name": "Row", "role": "row", "bbox": [160, 170, 60, 40]},
+            "92": {
+                "name": "Selection",
+                "role": "text",
+                "bbox": [500, 500, 30, 20],
+                "value": "selected",
+            },
+        },
+    }
+    select = response(target=17, intent="navigate", point=(200, 187), taught="open-detail")
+    select["controls"].append({"id": 29, "role": "text", "text_ids": [2], "confidence": 1})
+    select.update(save_result="ready_for_query", message_targets=[29])
+    select["observed_step_results"] = [
+        {"step_id": "query", "observed_result": "The row is visible", "completed": True}
+    ]
+    open_detail = response(target=91, intent="navigate", point=(190, 187), taught="open-detail")
+    open_detail["steps"][0]["action"] = "double_click"
+    open_detail["observed_step_results"] = [
+        {"step_id": "select-row", "observed_result": "The row is selected", "completed": True}
+    ]
+    inputs = [
+        candidates()[0],
+        MemoryCandidate("c001", "b" * 64, "before-click", 1, before, select),
+        MemoryCandidate("c002", "c" * 64, "after-click", 2, after, open_detail),
+    ]
+    method = compile_memory(source(), inputs, draft(groups=("c000", "c002")), method_id="pruned")
+    group = method.action_groups[-1]
+    assert group.screen_phash == before["screen_phash"]
+    assert group.message_targets and group.message_targets != ["Row"]
+    assert group.field_values == {"Selection": "unselected", group.message_targets[0]: "Saved"}
+    assert group.save_result == "ready_for_query"
+    assert [item.step_id for item in group.observed_step_results] == ["query"]
+    assert group.actions[0].action == "double_click"
+    assert group.actions[0].point == (190, 187)
+    assert group.targets[0].bbox == (160, 170, 60, 40)
+    assert group.predecessor_group_ids == [method.action_groups[0].id]
+    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
+    library.upsert(method)
+    current = {**before, "markers": [], "selected_fields": {}}
+    rebound = library.bind(method.id, {}, current, source()["values"], group_id=group.id)
+    assert rebound is not None
+    assert rebound["steps"][0]["action"] == "double_click"
+    assert rebound["steps"][0]["point"] == [190.0, 187.0]
+    assert rebound["save_result"] == "ready_for_query"
+
+
 @pytest.mark.parametrize("unknown_candidate", [False, True], ids=["accepted", "bad-target-id"])
 def test_anchor_overflow_records_warning_without_relaxing_candidate_ids(
     tmp_path, caplog, unknown_candidate
@@ -503,6 +575,76 @@ def test_synthetic_completion_survives_recorded_trace_compilation_without_old_va
     assert restored.completion.targets[0].condition_indexes == [0]
     assert restored.completion.field_values == {"Reference": {"source": "hbl_no"}}
     assert "HBL-001" not in restored.model_dump_json()
+
+
+def test_synthetic_accumulated_completion_uses_only_final_verified_observation(tmp_path):
+    # Synthetic 135-shaped trace using existing fakes, not a live ERP recording.
+    case, cache_path, _, mapping, match, _ = create_successful_case(tmp_path)
+    final = mapping.model_copy(
+        update={
+            "screen_path": ["Saved record"],
+            "operation": "complete",
+            "steps": [],
+            "fields": {
+                "Reference": mapping.fields["Reference"].model_copy(update={"value": "HBL-001"})
+            },
+        }
+    )
+    original = [json.loads(line) for line in (case / "run_log.jsonl").read_text().splitlines()]
+    original.insert(
+        2, {"payload": {"check": "screen_plan_proposed", "obs_id": "obs-1", "response": match}}
+    )
+    final_plan = {
+        "payload": {
+            "check": "screen_plan_proposed",
+            "obs_id": "obs-1",
+            "response": final.local_payload(screen("Shipment editor")),
+            "mapping": final.model_dump(),
+        }
+    }
+    for label, last_obs_id, verified_fields, accepted in (
+        ("accepted-final-observation", "obs-1", ["hbl_no"], True),
+        ("different-final-observation", "different", ["hbl_no"], False),
+        ("incomplete-review", "obs-1", [], False),
+        ("later-action-on-same-frame", "obs-1", ["hbl_no"], False),
+    ):
+        events = [
+            *original,
+            final_plan,
+            {
+                "kind": "verify",
+                "payload": {
+                    "check": "post_save_model_evidence_complete",
+                    "ok": True,
+                    "fields": verified_fields,
+                },
+            },
+            {"kind": "stop", "payload": {"status": "success", "last_obs_id": last_obs_id}},
+            {"kind": "verify", "payload": {"check": "method_candidate_promotion"}},
+        ]
+        if label == "later-action-on-same-frame":
+            events.insert(
+                len(original) + 1,
+                {
+                    "payload": {
+                        "check": "screen_plan_proposed",
+                        "obs_id": "obs-1",
+                        "response": match,
+                    }
+                },
+            )
+        (case / "run_log.jsonl").write_text(
+            "\n".join(json.dumps(event) for event in events), encoding="utf-8"
+        )
+        loaded_source, loaded = read_memory_candidates(case, cache_path)
+        method = compile_memory(
+            loaded_source, loaded, draft(groups=(loaded[0].candidate_id,)), method_id="final"
+        )
+        assert (method.completion is not None) == accepted, label
+        if accepted:
+            assert method.completion.targets[0].condition_indexes == [], label
+            assert method.completion.field_values == {"Reference": {"source": "hbl_no"}}, label
+            assert "HBL-001" not in method.model_dump_json(), label
 
 
 def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):

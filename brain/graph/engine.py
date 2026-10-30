@@ -344,6 +344,7 @@ class Brain:
                 str(self.observation.obs_id) if self.observation else None,
                 self.screen_nodes,
                 "saved_detail" if self.model_saved_detail_review else "entry",
+                self.completed_taught_steps,
             ),
             self._worker_state["methods"],
             self.method_library,
