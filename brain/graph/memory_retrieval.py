@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence, Set
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from brain.cache.methods import (
     LearnedMethod,
+    MethodActionGroup,
     MethodCompletion,
     MethodDocument,
     MethodLibrary,
@@ -22,7 +23,7 @@ from brain.cache.methods import (
     method_from_match,
     screen_similarity_distance,
 )
-from brain.task_instruction import ObservedStepResult, TaskInstruction
+from brain.task_instruction import TaskInstruction
 from brain.visual.scene import same_control_region
 from brain.vocabulary import SCROLL_DIRECTION_KEYS
 from sawon_runtime.storage import RunLog, atomic_write_json
@@ -42,7 +43,6 @@ class RetrievalContext:
     observation_id: str | None
     screen_nodes: Mapping[str, dict] = field(default_factory=dict)
     evidence_scope: str = "entry"
-    completed_taught_steps: Set[str] = field(default_factory=frozenset)
 
 
 @dataclass
@@ -110,21 +110,20 @@ class MemoryRetrieval:
         digest = self.task_context.task_sha256
         return digest is not None and method.task_contract_sha256 == digest
 
-    def _ordered_groups(self, method: LearnedMethod) -> list:
-        """Order a reusable method by the taught procedure and successful trace.
+    def _ordered_groups(self, method: LearnedMethod) -> list[MethodActionGroup]:
+        """Preserve compiled order; organize uncompiled learning records by education."""
 
-        A screen discovered late can belong at the beginning of the business
-        procedure (login is the common example).  File insertion order therefore
-        cannot be the execution contract.
-        """
-
+        # A compiled trace already owns the route, including repeated visits to
+        # the same taught step. Education ordering must not reorganize it.
+        if self._has_trace_graph(method):
+            return sorted(method.action_groups, key=lambda group: group.trace_index)
+        if method.artifact_kind == "warm_compiled":
+            return list(method.action_groups)
         task = self.task_context.task
         procedure_order = (
             {step.id: index for index, step in enumerate(task.procedure)} if task else {}
         )
         if not procedure_order:
-            if self._has_trace_graph(method):
-                return sorted(method.action_groups, key=lambda group: group.trace_index)
             return list(method.action_groups)
         delivered_order = {
             item["group_id"]: index
@@ -194,29 +193,71 @@ class MemoryRetrieval:
             },
         }
 
-    def _satisfied_groups(
-        self, method: LearnedMethod, observations: Sequence[ObservedStepResult] = ()
-    ) -> set[str]:
-        """Combine delivered edges with outcomes observed in this run, without fake deliveries."""
-        known_steps = {step.id for step in self.task_context.task.procedure}
-        completed = set(self.task_context.completed_taught_steps) & known_steps
-        completed.update(
-            result.step_id
-            for result in observations
-            if result.completed and result.step_id in known_steps
-        )
-        replaced = {
+    def _remaining_groups(self, method: LearnedMethod) -> list[MethodActionGroup]:
+        """Read route progress from deliveries and explicit recovery in this run."""
+        passed = {group_id for method_id, group_id in self.state.used if method_id == method.id}
+        passed.update(
             item["replaced_edge"][1]
             for item in self.state.history
             if item.get("replaced_edge") and item["replaced_edge"][0] == method.id
+        )
+        passed.update(
+            group_id
+            for item in self.state.history
+            if item.get("method_id") == method.id
+            for group_id in item.get("resumed_group_ids", [])
+        )
+        # The next observation is prepared before effect review commits a
+        # replacement. Existing review still decides whether it can execute.
+        pending = self.state.unverified
+        if pending and pending.get("replaced_edge") and pending["replaced_edge"][0] == method.id:
+            passed.add(pending["replaced_edge"][1])
+        return [group for group in self._ordered_groups(method) if group.id not in passed]
+
+    def _matching_route(
+        self, screen: dict
+    ) -> tuple[int, LearnedMethod, MethodActionGroup | MethodCompletion] | None:
+        """Match only the next entry of the selected route, or select a route once."""
+        matches = []
+        for method in self.library.methods():
+            if method.id in self.state.blocked_method_ids or not self._matches_current_task(method):
+                continue
+            if self.state.active_method_id not in {None, method.id}:
+                continue
+            remaining = self._remaining_groups(method)
+            entry = remaining[0] if remaining else method.completion
+            if entry is None:
+                continue
+            distance = screen_similarity_distance(entry, screen, self.library.max_phash_distance)
+            if distance is not None:
+                matches.append((distance, method, entry))
+        if not matches:
+            return None
+        nearest = min(distance for distance, _, _ in matches)
+        matches = [match for match in matches if match[0] == nearest]
+        return matches[0] if len(matches) == 1 else None
+
+    def _resume_from_model(self, method: LearnedMethod, response: ScreenMatch) -> None:
+        """An accepted recovery observation may finish a prefix of the current route."""
+        completed = {
+            result.step_id for result in response.observed_step_results if result.completed
         }
-        return {
-            group.id
-            for group in method.action_groups
-            if (method.id, group.id) in self.state.used
-            or group.id in replaced
-            or group.taught_step_id in completed
+        resumed = []
+        for group in self._remaining_groups(method):
+            if group.taught_step_id not in completed:
+                break
+            resumed.append(group.id)
+        if not resumed:
+            return
+        event = {
+            "method_id": method.id,
+            "status": "resumed",
+            "resumed_group_ids": resumed,
+            "completed_step_ids": sorted(completed),
+            "observation_id": self.task_context.observation_id,
         }
+        self.state.history.append(event)
+        self.log.append("verify", payload={"check": "method_route_resumed", **event})
 
     def _redact_credentials(self, text: str) -> str:
         result = text
@@ -247,16 +288,16 @@ class MemoryRetrieval:
         objective = None if task is None else task.objective
         methods = []
         for method in self.library.methods():
-            if method.id in self.state.blocked_method_ids:
+            if self.state.active_method_id not in {None, method.id}:
+                continue
+            if (
+                method.id in self.state.blocked_method_ids
+                and method.id != self.state.active_method_id
+            ):
                 continue
             if objective is not None and not self._matches_current_task(method):
                 continue
-            satisfied = self._satisfied_groups(method) if task is not None else set()
-            remaining = [
-                group
-                for group in self._ordered_groups(method)
-                if group.id not in satisfied and (method.id, group.id) not in self.state.used
-            ][:2]
+            remaining = self._remaining_groups(method)[:2]
             relevant_slots = {
                 action.slot for group in remaining for action in group.actions if action.slot
             }
@@ -297,42 +338,58 @@ class MemoryRetrieval:
         """Retrieve matching work knowledge without selecting actions or advancing this run."""
         if not self.enabled:
             return None
-        matches = []
-        for method in self.library.methods():
-            if method.id in self.state.blocked_method_ids or not self._matches_current_task(method):
-                continue
-            for group in method.action_groups:
-                distance = screen_similarity_distance(
-                    group, screen, self.library.max_phash_distance
-                )
-                if distance is not None:
-                    matches.append((distance, method, group))
-        if not matches:
+        match = self._matching_route(screen)
+        if match is None:
             return None
-        nearest = min(distance for distance, _, _ in matches)
-        fields = []
-        groups = []
-        procedure = []
-        for distance, method, group in matches:
-            if distance != nearest:
-                continue
-            groups.append({"method_id": method.id, "group_id": group.id})
-            bindings = self.state.bindings.get(method.id, {})
+        distance, method, group = match
+        bindings = self.state.bindings.get(method.id, {})
+        if isinstance(group, MethodCompletion):
+            sources = {slot.name: bindings.get(slot.name, slot.source_key) for slot in method.slots}
+            field_sources = {item.target.name: sources[item.slot] for item in group.targets}
+            targets = [item.target for item in group.targets]
+            group_id, predecessors, steps = None, [], []
+        else:
             field_sources = group_input_sources(method, group, bindings)
-            procedure.append(
+            targets = [*group.observed_fields, *group.targets]
+            group_id, predecessors = group.id, group.predecessor_group_ids
+            steps = [
+                {
+                    **action.model_dump(mode="json", exclude={"slot"}),
+                    "source": field_sources.get(action.target),
+                }
+                for action in group.actions
+            ]
+        fields = []
+        for target in targets:
+            if target.bbox is None:
+                continue
+            if any(
+                item["role"] == target.role and same_control_region(item["bbox"], target.bbox)
+                for item in fields
+            ):
+                continue
+            fields.append(
+                {
+                    "name": target.name,
+                    "role": target.role,
+                    "bbox": list(target.bbox),
+                    "source": field_sources.get(target.name),
+                }
+            )
+        if not fields:
+            return None
+        return {
+            "distance": distance,
+            "groups": [{"method_id": method.id, "group_id": group_id}],
+            "fields": fields,
+            "procedure": [
                 {
                     "method_id": method.id,
-                    "group_id": group.id,
+                    "group_id": group_id,
                     "purpose": group.purpose,
                     "taught_step_id": group.taught_step_id,
-                    "predecessor_group_ids": group.predecessor_group_ids,
-                    "steps": [
-                        {
-                            **action.model_dump(mode="json", exclude={"slot"}),
-                            "source": field_sources.get(action.target),
-                        }
-                        for action in group.actions
-                    ],
+                    "predecessor_group_ids": predecessors,
+                    "steps": steps,
                     "expected_result": group.expected_result,
                     "field_values": bind_remembered_values(
                         group.field_values,
@@ -343,87 +400,35 @@ class MemoryRetrieval:
                         self._binding_values(),
                     ),
                 }
-            )
-            for target in [*group.observed_fields, *group.targets]:
-                if target.bbox is None:
-                    continue
-                # Equal frames can have several action groups; combine their observed fields.
-                if any(
-                    item["role"] == target.role and same_control_region(item["bbox"], target.bbox)
-                    for item in fields
-                ):
-                    continue
-                fields.append(
-                    {
-                        "name": target.name,
-                        "role": target.role,
-                        "bbox": list(target.bbox),
-                        "source": field_sources.get(target.name),
-                    },
-                )
-        if not fields:
-            return None
-        return {
-            "distance": nearest,
-            "groups": groups,
-            "fields": fields,
-            "procedure": procedure,
+            ],
         }
 
     def match_pattern(self, screen: dict) -> ScreenMatch | None:
         from .screen_decision import ScreenMatch
 
         self.state.pending = None
-        pending_predecessor = (
-            self.state.unverified.get("replaced_edge") if self.state.unverified else None
-        )
         task = self.task_context.task
         if not self.enabled or task is None:
             return None
-        candidates = []
-        completion_candidates = []
-        for method in self.library.methods():
-            if method.id in self.state.blocked_method_ids:
-                continue
-            taught_replay = bool(task.procedure) and self._matches_current_task(method)
-            trace_replay = self._has_trace_graph(method) and self._matches_current_task(method)
-            auto_replay = taught_replay or trace_replay
-            if method.id != self.state.active_method_id and not auto_replay:
-                continue
-            mapping = self.state.bindings.get(method.id)
-            if mapping is None:
-                if not self._matches_current_task(method):
-                    continue
-                mapping = {slot.name: slot.source_key for slot in method.slots}
-            satisfied = self._satisfied_groups(method)
-            remaining = [
-                group for group in self._ordered_groups(method) if group.id not in satisfied
-            ]
-            # Candidate observations can satisfy predecessor outcomes only when
-            # this candidate subsequently binds the current screen uniquely.
-            for group in remaining:
-                observed = self._satisfied_groups(method, group.observed_step_results)
-                if trace_replay and not all(
-                    predecessor in observed or (method.id, predecessor) == pending_predecessor
-                    for predecessor in group.predecessor_group_ids
-                ):
-                    continue
-                bound = self.library.bind_with_context(
-                    method.id, mapping, screen, self._binding_values(), group_id=group.id
-                )
-                if bound is not None:
-                    candidates.append((method, mapping, bound))
-            if method.completion is not None:
-                observed = self._satisfied_groups(method, method.completion.observed_step_results)
-                if any(group.id not in observed for group in remaining):
-                    continue
-                completion = self.library.bind_completion_with_context(
-                    method.id, mapping, screen, self.task_context.inputs
-                )
-                if completion is not None:
-                    completion_candidates.append((method, mapping, completion))
-        if not candidates and len(completion_candidates) == 1:
-            method, mapping, completion = completion_candidates[0]
+        match = self._matching_route(screen)
+        if match is None:
+            return None
+        _, method, group = match
+        if (
+            method.id != self.state.active_method_id
+            and not task.procedure
+            and not self._has_trace_graph(method)
+        ):
+            return None
+        mapping = self.state.bindings.get(method.id) or {
+            slot.name: slot.source_key for slot in method.slots
+        }
+        if isinstance(group, MethodCompletion):
+            completion = self.library.bind_completion_with_context(
+                method.id, mapping, screen, self.task_context.inputs
+            )
+            if completion is None:
+                return None
             response = ScreenMatch.model_validate(
                 {
                     **completion,
@@ -471,10 +476,11 @@ class MemoryRetrieval:
                 },
             )
             return response
-        if len(candidates) != 1:
+        bound = self.library.bind_with_context(
+            method.id, mapping, screen, self._binding_values(), group_id=group.id
+        )
+        if bound is None:
             return None
-        method, mapping, bound = candidates[0]
-        group = next(group for group in method.action_groups if group.id == bound.group_id)
         response_data = dict(bound.response)
         if not group.screen_path:
             proof_controls, proof_evidence = self.library.bind_visible_value_evidence(
@@ -514,6 +520,7 @@ class MemoryRetrieval:
             )
         self.state.purpose = response.purpose
         self.state.bindings[method.id] = mapping
+        self.state.active_method_id = method.id
         self.state.pending = {
             "method": method,
             "group_id": bound.group_id,
@@ -601,9 +608,8 @@ class MemoryRetrieval:
 
         A grounding or contract failure belongs to the newly proposed edge, not
         to the previously delivered edge that is still awaiting effect review.
-        Suspend the whole method for this run so a descendant cannot jump over
-        the rejected edge; screen matching then falls through to visual cache or
-        the model on the same observation.
+        Suspend replay until the model supplies a recovery response. Keep the
+        route position so a matching descendant cannot jump over the rejected edge.
         """
 
         pending, self.state.pending = self.state.pending, None
@@ -633,8 +639,45 @@ class MemoryRetrieval:
         atomic_write_json(self.case_dir / "method-progress.json", self.context())
         return event
 
-    def remember(self, screen: dict, response: ScreenMatch) -> None:
-        bound_pending = self.state.pending
+    def _replacement_group(
+        self,
+        method: LearnedMethod,
+        mapping: dict[str, str],
+        screen: dict,
+        response: ScreenMatch,
+    ) -> str | None:
+        """Connect concrete recovery actions to the next edge, even after rejection."""
+        remaining = self._remaining_groups(method)
+        if not remaining or not response.steps:
+            return None
+        group = remaining[0]
+        if (
+            len(response.steps) != len(group.actions)
+            or screen_similarity_distance(group, screen, self.library.max_phash_distance) is None
+        ):
+            return None
+        targets = {target.name: target for target in group.targets}
+        sources = {slot.name: mapping.get(slot.name, slot.source_key) for slot in method.slots}
+        for actual, expected in zip(response.steps, group.actions, strict=True):
+            if (actual.action, actual.source, actual.keys) != (
+                expected.action,
+                sources.get(expected.slot),
+                expected.keys,
+            ):
+                return None
+            target = targets[expected.target]
+            if actual.point is not None and tuple(actual.point) == (expected.point or target.point):
+                continue
+            # Recovery may allocate different marker IDs. Compare the actual
+            # control region, never a historical frame-local ID or explanation.
+            if target.bbox is None or actual.point is None:
+                return None
+            x, y, width, height = target.bbox
+            if not (x <= actual.point[0] <= x + width and y <= actual.point[1] <= y + height):
+                return None
+        return group.id
+
+    def remember(self, screen: dict, response: ScreenMatch, *, allow_recovery: bool = True) -> None:
         self.state.pending = None
         if not self.enabled:
             return
@@ -646,54 +689,31 @@ class MemoryRetrieval:
             result["observed_result"] = self._redact_credentials(result["observed_result"])
         self.state.purpose = self._redact_credentials(response.purpose[:160])
         known = {method.id: method for method in self.library.methods()}
-        previous = known.get(response.method_id)
+        previous = known.get(response.method_id or self.state.active_method_id)
+        if previous is None and self.task_context.task is not None:
+            matches = [method for method in known.values() if self._matches_current_task(method)]
+            previous = matches[0] if len(matches) == 1 else None
         replaced_edge = None
-        if bound_pending is not None and bound_pending.get("response") is not None:
-            bound_response = bound_pending["response"]
-            group = next(
-                item
-                for item in bound_pending["method"].action_groups
-                if item.id == bound_pending["group_id"]
-            )
-            regions = {target.name: target.bbox for target in group.targets}
-
-            # Only the same concrete actions on this frame replace a bound edge.
-            # Semantic labels, explanations and transient marker IDs may differ.
-            def same_action(index, actual, expected):
-                if (actual.action, actual.source, actual.keys) != (
-                    expected.action,
-                    expected.source,
-                    expected.keys,
-                ):
-                    return False
-                if actual.point == expected.point and actual.point is not None:
-                    return True
-                # Model fallback replaces frame-local IDs. The pending group still owns
-                # the original target region, independent of that replacement.
-                region = regions[group.actions[index].target]
-                if region is not None and actual.point is not None:
-                    x, y, width, height = region
-                    return x <= actual.point[0] <= x + width and y <= actual.point[1] <= y + height
-                return (
-                    actual.point is None
-                    and expected.point is None
-                    and actual.target == expected.target
-                )
-
-            if (
-                response.steps
-                and len(response.steps) == len(bound_response.steps)
-                and all(
-                    same_action(index, actual, expected)
-                    for index, (actual, expected) in enumerate(
-                        zip(response.steps, bound_response.steps, strict=True)
-                    )
-                )
-            ):
-                previous = bound_pending["method"]
-                replaced_edge = (previous.id, bound_pending["group_id"])
         if previous is not None and task is not None and not self._matches_current_task(previous):
             previous = None
+        mapping = {item.slot: item.source for item in response.method_bindings}
+        if previous is not None:
+            mapping = (
+                mapping
+                or self.state.bindings.get(previous.id)
+                or {slot.name: slot.source_key for slot in previous.slots}
+            )
+            if any(source not in self._binding_values() for source in mapping.values()):
+                self.state.blocked_method_ids.add(previous.id)
+                return
+            self.state.bindings[previous.id] = mapping
+            self.state.active_method_id = previous.id
+            if allow_recovery:
+                self._resume_from_model(previous, response)
+                self.state.blocked_method_ids.discard(previous.id)
+            replacement = self._replacement_group(previous, mapping, screen, response)
+            if replacement is not None:
+                replaced_edge = (previous.id, replacement)
         if response.operation == "complete":
             available = dict(known)
             available.update(
@@ -713,18 +733,6 @@ class MemoryRetrieval:
             if learned is not None and learned.completion is not None:
                 self.state.staged_completions[learned.id] = learned.completion
             return
-        self.state.active_method_id = None
-        mapping = {item.slot: item.source for item in response.method_bindings}
-        if previous is not None:
-            mapping = (
-                mapping
-                or self.state.bindings.get(previous.id)
-                or {slot.name: slot.source_key for slot in previous.slots}
-            )
-            if any(source not in self._binding_values() for source in mapping.values()):
-                return
-            self.state.bindings[previous.id] = mapping
-            self.state.active_method_id = previous.id
         if not response.steps:
             return
         purpose = self.state.purpose or response.expected_result
@@ -811,7 +819,7 @@ class MemoryRetrieval:
         }
         if status == "delivered":
             self.state.used.add((method.id, group_id))
-            self.state.active_method_id = None
+            self.state.active_method_id = method.id
             if pending["origin"] != "reuse":
                 transitions = (
                     [event["observation_id"]] if event["observation_id"] is not None else []

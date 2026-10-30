@@ -67,13 +67,13 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    CAP[현재 캡처] --> SIM{화면 유사도}
+    CAP[현재 캡처] --> SIM{편찬 경로의 다음 진입 화면과 유사도}
     SIM -->|일치| MEM[Memory Retrieval: 업무 지식 인출]
     SIM -->|미일치| SCAN[Scanning: OCR·OmniParser]
     MEM --> VALUES[모델 확인값·입력 키 연결 인출]
     VALUES --> RECALL[Context Recall: 이번 실행 상태 복원]
     SCAN --> RECALL
-    RECALL --> MATCH[Pattern Matching: 현재 화면·진행에 결합]
+    RECALL --> MATCH[Pattern Matching: 같은 경로의 다음 그룹 결합]
     MATCH -->|기억과 현재 상태 일치| RESTORE[저장된 경로·필드·행동 복원]
     MATCH -->|계획 없음·값/결과 불일치| DECIDE[모델 탐색·예외 복구]
     DECIDE -->|needs_refinement| SCAN
@@ -85,6 +85,12 @@ flowchart TD
 메모리의 필드가 부족해 모델이 `ScreenMapping.needs_refinement=true`를 반환하면 탐색으로
 돌아갑니다. 캡처와 OCR을 다시 수행하지 않습니다. 동일 캡처도 공통 문맥·판단 경로를 거칩니다.
 모델이 새 계획을 내는 경우와 기억 계획을 쓰는 경우는 같은 검증·실행 경로를 거칩니다.
+
+기억 인출과 패턴 매칭은 `MemoryRetrieval._matching_route`를 공유합니다. 메서드가 선택되면
+그 메서드의 trace 순서를 유지하고 남은 첫 그룹만 결합하며, 모두 진행한 뒤 완료 기억을 사용합니다.
+진행은 원본 전달·검토된 대체와 현재 모델 복구 응답이 확인한 연속 선두 그룹의 재개 이력으로
+계산합니다. 과거 기억의 완료 결과로 후보가 자신의 실행 자격을 만들거나 전체 그룹을 다시
+경쟁시키지 않습니다. 재개한 그룹은 실제 전달 집계에 넣지 않습니다.
 
 실행 중 유사 캡처의 카탈로그는 탐지 기하를 재사용합니다. 정상 기억 인출은 저장된
 `screen_path`(부모 창 → 활성 탭)와 필드 연결·모델 확인값을 복원합니다. 현재 입력 키 참조를

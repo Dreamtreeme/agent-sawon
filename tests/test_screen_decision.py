@@ -1427,7 +1427,9 @@ def test_nonwriting_input_goal_preserves_literal_action_without_replanning(
     assert event.payload["intent"] == "navigate"
 
 
-def test_promoted_exact_visual_match_reuse_precedes_model_call(tmp_path, record, task_instruction):
+def test_promoted_exact_visual_match_reuse_precedes_model_call(
+    tmp_path, record, task_instruction, monkeypatch
+):
     cache_path = tmp_path / "visual-match.json"
 
     first, first_model, *_ = setup_brain(
@@ -1444,6 +1446,16 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(tmp_path, record,
         tmp_path / "second", record, [], task_instruction=task_instruction
     )
     second.visual_match_cache = ScreenPatternCache(cache_path, enabled=True)
+    second.method_library.enabled = True
+    recovery_permissions = []
+    runtime_type = type(second.memory_retrieval)
+    remember = runtime_type.remember
+
+    def remember_cached(runtime, screen, response, **kwargs):
+        recovery_permissions.append(kwargs.get("allow_recovery", True))
+        return remember(runtime, screen, response, **kwargs)
+
+    monkeypatch.setattr(runtime_type, "remember", remember_cached)
     second._observe()
     assert second_model.prompts == []
     assert second._select_node() == "review"
@@ -1454,6 +1466,7 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(tmp_path, record,
         if event.kind == "cache_hit" and event.payload.get("check") == "visual_match_cache"
     ]
     assert len(hits) == 1
+    assert recovery_permissions == [False], "cached model facts must not authorize route recovery"
 
 
 @pytest.mark.parametrize("has_review", [False, True], ids=["action-only", "current-save-review"])

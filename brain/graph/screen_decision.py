@@ -261,7 +261,9 @@ class MemoryRetriever(Protocol):
 
     def match_pattern(self, screen: dict) -> ScreenMatch | None: ...
 
-    def remember(self, screen: dict, response: ScreenMatch) -> None: ...
+    def remember(
+        self, screen: dict, response: ScreenMatch, *, allow_recovery: bool = True
+    ) -> None: ...
 
     def reject_pending(self, *, reason: str) -> dict | None: ...
 
@@ -1979,7 +1981,7 @@ def decide_screen(
             },
         )
         if services.memory_retrieval.enabled and response != method_proposal:
-            services.memory_retrieval.remember(screen, response)
+            services.memory_retrieval.remember(screen, response, allow_recovery=cache_hit is None)
         return ScreenDecisionResult(
             response=response,
             visual_match_candidate=visual_match_candidate,

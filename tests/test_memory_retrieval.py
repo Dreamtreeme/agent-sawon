@@ -579,6 +579,7 @@ def test_synthetic_missing_layout_uses_model_coordinates_at_executor(tmp_path, o
     assert brain.memory_retrieval.state.used
     # A rejected new source mapping must not reactivate the previous valid one.
     _, _, current, response = catalog(shift=20)
+    previous_bindings = deepcopy(brain.memory_retrieval.state.bindings)
     brain.memory_retrieval.remember(
         current,
         response.model_copy(
@@ -588,8 +589,16 @@ def test_synthetic_missing_layout_uses_model_coordinates_at_executor(tmp_path, o
             }
         ),
     )
-    assert brain.memory_retrieval.state.active_method_id is None
+    assert brain.memory_retrieval.state.active_method_id == "business-entry"
+    assert brain.memory_retrieval.state.pending is None
+    assert brain.memory_retrieval.state.bindings == previous_bindings
+    assert "business-entry" in brain.memory_retrieval.state.blocked_method_ids
     assert brain.memory_retrieval.match_pattern(current) is None
+    brain.memory_retrieval.remember(
+        current, response.model_copy(update={"method_id": "business-entry"})
+    )
+    assert brain.memory_retrieval.state.pending is not None
+    assert "business-entry" not in brain.memory_retrieval.state.blocked_method_ids
 
 
 def test_synthetic_compiled_dialog_observation_starts_saved_review_without_model_call(tmp_path):
@@ -1004,6 +1013,7 @@ def test_successful_candidate_installs_versioned_live_library(tmp_path, business
 
 def test_login_structure_replays_credentials_by_source_without_storing_values(tmp_path):
     brain, model, _ = setup(tmp_path)
+    business_group = brain.memory_retrieval.library.methods()[0].action_groups[0]
     brain.credentials = {
         "credential.username": "private-user-47",
         "credential.password": "private-password-83",
@@ -1085,9 +1095,7 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
     assert "credential.username" in candidate_text
     assert "credential.password" in candidate_text
 
-    # Older live libraries appended newly learned login screens after the
-    # business groups.  Runtime order follows the taught procedure, so those
-    # libraries self-heal without another model call.
+    # The compiler supplies login before business entry; execution retains that route.
     installed_methods = brain.memory_retrieval.library.methods()
     installed = next(
         method
@@ -1102,19 +1110,14 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
         group
         for group in installed.action_groups
         if any(action.slot == "credential.username" for action in group.actions)
-    ).model_copy(update={"taught_step_id": "login"})
-    old_business_group = next(
-        group
-        for method in installed_methods
-        if method.id != installed.id
-        for group in method.action_groups
+    ).model_copy(update={"taught_step_id": "login", "trace_index": 0, "predecessor_group_ids": []})
+    business_group = business_group.model_copy(
+        update={"trace_index": 1, "predecessor_group_ids": [login_group.id]}
     )
     atomic_write_json(
         brain.memory_retrieval.library.path,
         MethodDocument(
-            methods=[
-                installed.model_copy(update={"action_groups": [old_business_group, login_group]})
-            ]
+            methods=[installed.model_copy(update={"action_groups": [login_group, business_group]})]
         ),
     )
     brain.memory_retrieval.state.used.clear()
@@ -1129,8 +1132,8 @@ def test_login_structure_replays_credentials_by_source_without_storing_values(tm
     assert model.prompts == []
 
 
-# A matching branch does not turn an unexecuted branch into a delivery.
-def test_taught_method_selects_the_only_branch_that_binds_current_screen(tmp_path):
+# Older compiled artifacts without trace indexes retain their declared route order.
+def test_compiled_method_without_trace_indexes_does_not_skip_to_a_matching_later_group(tmp_path):
     brain, model, _ = setup(tmp_path)
     method = brain.memory_retrieval.library.methods()[0]
     first = method.action_groups[0].model_copy(
@@ -1166,13 +1169,18 @@ def test_taught_method_selects_the_only_branch_that_binds_current_screen(tmp_pat
     brain.memory_retrieval.state.pending = None
     brain.memory_retrieval.state.used.clear()
 
+    assert brain.memory_retrieval.match_pattern(deepcopy(account_screen)) is None
+    assert not brain.memory_retrieval.state.used
+    replay = brain.memory_retrieval.match_pattern(catalog(shift=20)[2])
+    assert replay is not None and brain.memory_retrieval.state.pending["group_id"] == first.id
+    brain.memory_retrieval.delivered(complete=True)
+    brain.memory_retrieval.verify_delivery(success=True)
     replay = brain.memory_retrieval.match_pattern(account_screen)
-
     assert replay is not None
     assert brain.memory_retrieval.state.pending["group_id"] == second.id
     brain.memory_retrieval.delivered(complete=True)
     brain.memory_retrieval.verify_delivery(success=True)
-    assert (method.id, first.id) not in brain.memory_retrieval.state.used
+    assert (method.id, first.id) in brain.memory_retrieval.state.used
     assert (method.id, second.id) in brain.memory_retrieval.state.used
     assert model.prompts == []
 
@@ -1549,6 +1557,175 @@ def test_same_frame_and_sources_do_not_make_another_control_the_same_edge(tmp_pa
     assert not runtime.state.used
 
 
+def synthetic_ordered_route(tmp_path):
+    # Synthetic 136-shaped input/save images; fake capture/model, real memory binding.
+    brain, model, _ = setup(tmp_path)
+    brain.task_instruction = brain.task_instruction.model_copy(
+        update={
+            "procedure": [
+                TaughtProcedureStep(id="save-record", instruction="Save", completion="Saved"),
+                TaughtProcedureStep(
+                    id="enter-record-fields", instruction="Fill", completion="All fields entered"
+                ),
+            ]
+        }
+    )
+    runtime = brain.memory_retrieval
+    method = runtime.library.methods()[0]
+    first = method.action_groups[0].model_copy(
+        update={"id": "input", "trace_index": 0, "taught_step_id": "enter-record-fields"}
+    )
+    button = MethodTarget(name="Save", role="button", bbox=(300, 140, 80, 30), point=(340, 155))
+    second = first.model_copy(
+        update={
+            "id": "save",
+            "trace_index": 1,
+            "taught_step_id": "save-record",
+            "predecessor_group_ids": [first.id],
+            "screen_phash": first.screen_phash ^ 63,
+            "targets": [button],
+            "actions": [
+                MethodAction(target="Save", action="click", intent="save", point=button.point)
+            ],
+            "observed_step_results": [
+                ObservedStepResult(
+                    step_id="enter-record-fields", completed=True, observed_result="Fields filled"
+                )
+            ],
+        }
+    )
+    # Both file order and education order differ from the model's compiled trace order.
+    method = method.model_copy(update={"action_groups": [second, first]})
+    final_screen = {
+        "image_size": [400, 200],
+        "screen_phash": first.screen_phash ^ (1023 << 10),
+        "ocr": [],
+    }
+    final = ScreenMapping(
+        screen_kind="editor",
+        screen_path=["Saved detail"],
+        operation="complete",
+        fields={
+            target.name: dict(
+                role="text",
+                bbox=list(target.bbox),
+                source=action.slot,
+                value=brain.values[action.slot],
+            )
+            for target, action in zip(first.targets, first.actions, strict=True)
+        },
+        completion_evidence=[dict(condition_index=0, target=first.targets[0].name)],
+    )
+    method = method_completion_from_match(
+        final_screen, final.local_payload(final_screen), method, brain.values
+    )
+    assert method is not None and method.completion is not None
+    atomic_write_json(runtime.library.path, MethodDocument(methods=[method]))
+    _, _, current, _ = catalog(shift=20)
+    return brain, model, runtime, method, first, second, current, final_screen
+
+
+def test_synthetic_compiled_route_owns_input_save_and_completion_without_candidate_competition(
+    tmp_path,
+):
+    brain, model, runtime, method, first, second, current, final_screen = synthetic_ordered_route(
+        tmp_path
+    )
+    assert not brain.completed_taught_steps
+    response = runtime.match_pattern(deepcopy(current))
+    assert response is not None, "historical saved-state claims must not compete with next fill"
+    assert runtime.state.pending["group_id"] == first.id
+    assert [(step.action, step.source) for step in response.steps] == [
+        ("fill", "customer"),
+        ("fill", "reference"),
+    ]
+    runtime.delivered(complete=True)
+    runtime.verify_delivery(success=True)
+
+    # A closer entry frame from another route cannot replace the already selected route.
+    runtime.library.upsert(
+        method.model_copy(
+            update={
+                "id": "another-business-route",
+                "action_groups": [first.model_copy(update={"id": "other-input"})],
+                "completion": None,
+            }
+        )
+    )
+    # A broad education outcome is not permission to skip the compiled save action.
+    brain.completed_taught_steps.update({"enter-record-fields", "save-record"})
+    runtime = brain.memory_retrieval
+    memory = runtime.retrieve_screen_memory(deepcopy(current))
+    assert memory is not None
+    assert memory["groups"] == [{"method_id": method.id, "group_id": second.id}]
+    assert memory["procedure"][0]["steps"][0]["action"] == "click"
+    assert memory["distance"] == 6
+    response = runtime.match_pattern(deepcopy(current))
+    assert response is not None and runtime.state.pending["group_id"] == second.id
+    assert [(step.action, step.point) for step in response.steps] == [("click", [340, 155])]
+    runtime.delivered(complete=True)
+    runtime.verify_delivery(success=True)
+
+    response = runtime.match_pattern(final_screen)
+    assert response is not None and response.operation == "complete"
+    assert runtime.state.used == {(method.id, first.id), (method.id, second.id)}
+    assert model.prompts == []
+
+
+def test_synthetic_next_route_mismatch_does_not_jump_to_a_later_similar_save(tmp_path):
+    _, _, runtime, _, _, second, current, _ = synthetic_ordered_route(tmp_path)
+    current["screen_phash"] = second.screen_phash ^ (63 << 6)
+    assert runtime.retrieve_screen_memory(deepcopy(current)) is None
+    assert runtime.match_pattern(current) is None
+    assert not runtime.state.used and runtime.state.pending is None
+
+
+def test_synthetic_rejected_plan_reconnects_after_model_delivers_the_same_next_actions(tmp_path):
+    _, _, runtime, method, first, second, current, _ = synthetic_ordered_route(tmp_path)
+    bound = runtime.match_pattern(deepcopy(current))
+    assert bound is not None
+    runtime.reject_pending(reason="synthetic_preparation_rejection")
+    assert runtime.state.pending is None and method.id in runtime.state.blocked_method_ids
+    # Synthetic fresh model response: same concrete actions, no claimed educational completion.
+    recovery = bound.model_copy(update={"method_id": None, "observed_step_results": []})
+    runtime.remember(current, recovery)
+    assert runtime.state.pending["replaced_edge"] == (method.id, first.id)
+    replacement = runtime.state.pending["group_id"]
+    runtime.delivered(complete=True)
+    runtime.verify_delivery(success=True)
+
+    assert runtime.state.used == {(method.id, replacement)}
+    assert (method.id, first.id) not in runtime.state.used
+    assert runtime.state.history[-1]["replaced_edge"] == (method.id, first.id)
+    response = runtime.match_pattern(deepcopy(current))
+    assert response is not None and runtime.state.pending["group_id"] == second.id
+
+
+def test_synthetic_cached_outcomes_cannot_resume_a_route_or_clear_its_rejection(tmp_path):
+    _, _, runtime, method, first, _, current, _ = synthetic_ordered_route(tmp_path)
+    cached = ScreenMatch(
+        screen_kind="editor",
+        procedure_step="task-action",
+        method_id=method.id,
+        controls=[],
+        observed_step_results=[
+            ObservedStepResult(
+                step_id="enter-record-fields", completed=True, observed_result="Past input complete"
+            )
+        ],
+        steps=[],
+    )
+    runtime.remember(current, cached, allow_recovery=False)
+    assert runtime.match_pattern(deepcopy(current)) is not None
+    assert runtime.state.pending["group_id"] == first.id
+    assert not runtime.state.used
+    runtime.reject_pending(reason="synthetic_preparation_rejection")
+    runtime.remember(current, cached, allow_recovery=False)
+    assert method.id in runtime.state.blocked_method_ids
+    assert runtime.match_pattern(deepcopy(current)) is None
+    assert not any(item.get("resumed_group_ids") for item in runtime.state.history)
+
+
 def synthetic_recovery_graph(tmp_path, *, outcome="open-detail", ambiguous=False):
     # Synthetic 135-shaped trace: one original click, a multi-action recovery, then detail.
     brain, model, _ = setup(tmp_path)
@@ -1603,11 +1780,9 @@ def synthetic_recovery_graph(tmp_path, *, outcome="open-detail", ambiguous=False
     return brain, model, runtime, method, query, detail, current, recovery
 
 
-def test_synthetic_alternative_recovery_reenters_from_bound_observation_without_fake_delivery(
-    tmp_path,
-):
+def test_synthetic_current_model_observation_resumes_recovery_without_fake_delivery(tmp_path):
     brain, model, runtime, method, query, detail, current, recovery = synthetic_recovery_graph(
-        tmp_path
+        tmp_path, ambiguous=True
     )
     _, _, recovery_screen, _ = catalog(shift=20)
     # No original pending plan: the query frame failed similarity in the real 135 path.
@@ -1619,6 +1794,22 @@ def test_synthetic_alternative_recovery_reenters_from_bound_observation_without_
     runtime.verify_delivery(success=True)
     assert brain.completed_taught_steps == set()
 
+    assert runtime.match_pattern(deepcopy(current)) is None, "stored outcomes are not current proof"
+    runtime.remember(
+        current,
+        ScreenMatch(
+            screen_kind="editor",
+            procedure_step="task-action",
+            method_id=method.id,
+            controls=[],
+            observed_step_results=[
+                ObservedStepResult(
+                    step_id="open-detail", completed=True, observed_result="Current detail is open"
+                )
+            ],
+            steps=[],
+        ),
+    )
     response = runtime.match_pattern(current)
 
     assert response is not None
@@ -1629,36 +1820,37 @@ def test_synthetic_alternative_recovery_reenters_from_bound_observation_without_
     assert model.prompts == []
 
 
-@pytest.mark.parametrize(
-    ("outcome", "ambiguous"),
-    [(None, False), ("not-a-taught-step", False), ("open-detail", True)],
-    ids=["missing-outcome", "foreign-outcome", "ambiguous-same-screen"],
-)
-def test_synthetic_recovery_needs_explicit_task_outcome_and_unique_next_plan(
-    tmp_path, outcome, ambiguous
-):
-    _, _, runtime, _, _, _, current, _ = synthetic_recovery_graph(
-        tmp_path, outcome=outcome, ambiguous=ambiguous
-    )
-    assert runtime.match_pattern(current) is None
-    assert runtime.state.used == set()
-
-
-def test_synthetic_recovery_uses_current_accumulated_outcome_without_replaying_original(tmp_path):
-    brain, _, _, method, query, detail, current, _ = synthetic_recovery_graph(
-        tmp_path, outcome=None
-    )
+def test_synthetic_stored_and_global_outcomes_cannot_replace_a_current_recovery_response(tmp_path):
+    brain, _, _, method, _, _, current, _ = synthetic_recovery_graph(tmp_path)
     brain.completed_taught_steps.add("open-detail")
     runtime = brain.memory_retrieval
+    for label, observations in (
+        ("no current model response", None),
+        ("response without an outcome", []),
+        (
+            "response about an unknown education step",
+            [ObservedStepResult(step_id="foreign-step", completed=True, observed_result="Done")],
+        ),
+    ):
+        if observations is not None:
+            runtime.remember(
+                current,
+                ScreenMatch(
+                    screen_kind="editor",
+                    procedure_step="task-action",
+                    method_id=method.id,
+                    controls=[],
+                    observed_step_results=observations,
+                    steps=[],
+                ),
+            )
+        assert runtime.match_pattern(deepcopy(current)) is None, label
+        assert runtime.state.used == set(), label
 
-    response = runtime.match_pattern(current)
 
-    assert response is not None
-    assert runtime.state.pending["group_id"] == detail.id
-    assert (method.id, query.id) not in runtime.state.used
-
-
-def test_synthetic_completion_uses_observed_outcomes_without_inventing_group_deliveries(tmp_path):
+def test_synthetic_completion_uses_current_recovery_outcomes_without_inventing_group_deliveries(
+    tmp_path,
+):
     brain, _, runtime, _, query, detail, _, _ = synthetic_recovery_graph(tmp_path, outcome=None)
     method = runtime.library.methods()[0]
     final_screen = {
@@ -1689,11 +1881,24 @@ def test_synthetic_completion_uses_observed_outcomes_without_inventing_group_del
     )
     assert method is not None and method.completion is not None
     atomic_write_json(runtime.library.path, MethodDocument(methods=[method]))
-    # Final screen alone cannot supply the missing earlier task outcome.
+    # Matching the compiled final frame cannot itself complete unexecuted steps.
     assert runtime.match_pattern(dict(final_screen)) is None
-    brain.completed_taught_steps.add("open-detail")
+    runtime.remember(
+        final_screen,
+        ScreenMatch(
+            screen_kind="editor",
+            procedure_step="task-action",
+            method_id=method.id,
+            controls=[],
+            observed_step_results=[
+                ObservedStepResult(step_id=step, completed=True, observed_result="Current proof")
+                for step in ("open-detail", "review-detail")
+            ],
+            steps=[],
+        ),
+    )
 
-    response = brain.memory_retrieval.match_pattern(dict(final_screen))
+    response = runtime.match_pattern(dict(final_screen))
 
     assert response is not None and response.operation == "complete"
     assert runtime.state.used.isdisjoint({(method.id, query.id), (method.id, detail.id)})
