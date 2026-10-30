@@ -15,6 +15,7 @@ import portalocker
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from brain.observe.values import field_matches, normalize
+from brain.task_instruction import ObservedStepResult
 from brain.visual.action_rebind import hash_distance
 from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import (
@@ -73,6 +74,7 @@ class MethodActionGroup(BaseModel):
     id: str
     purpose: str = ""
     taught_step_id: str | None = None
+    observed_step_results: list[ObservedStepResult] = Field(default_factory=list)
     trace_index: int | None = Field(default=None, ge=0)
     predecessor_group_ids: list[str] = Field(default_factory=list)
     context_anchors: list[str] = Field(default_factory=list)
@@ -108,6 +110,7 @@ class MethodCompletion(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     purpose: str = ""
     taught_step_id: str | None = None
+    observed_step_results: list[ObservedStepResult] = Field(default_factory=list)
     targets: list[MethodCompletionTarget] = Field(min_length=1)
     expected_result: str = ""
     screen_kind: str = "unknown"
@@ -249,6 +252,12 @@ def compile_method_candidate(
                 update={
                     "purpose": redact(group.purpose),
                     "expected_result": redact(group.expected_result),
+                    "observed_step_results": [
+                        result.model_copy(
+                            update={"observed_result": redact(result.observed_result)}
+                        )
+                        for result in group.observed_step_results
+                    ],
                     "targets": [
                         target.model_copy(
                             update={"anchor_texts": [redact(text) for text in target.anchor_texts]}
@@ -293,6 +302,10 @@ def compile_method_candidate(
                     ],
                     "field_sources": compiled.field_sources,
                     "field_values": compiled.field_values,
+                    "observed_step_results": [
+                        (result.step_id, result.completed)
+                        for result in compiled.observed_step_results
+                    ],
                 },
                 sort_keys=True,
                 ensure_ascii=False,
@@ -322,6 +335,12 @@ def compile_method_candidate(
                     "targets": targets,
                     "purpose": redact(completion.purpose),
                     "expected_result": redact(completion.expected_result),
+                    "observed_step_results": [
+                        result.model_copy(
+                            update={"observed_result": redact(result.observed_result)}
+                        )
+                        for result in completion.observed_step_results
+                    ],
                 }
             )
     return method.model_copy(
@@ -543,6 +562,7 @@ def method_from_match(
         id="pending",
         purpose=response.get("purpose", "")[:160],
         taught_step_id=response.get("taught_step_id"),
+        observed_step_results=response.get("observed_step_results", []),
         context_anchors=list(context_anchors),
         targets=list(targets.values()),
         actions=actions,
@@ -633,6 +653,7 @@ def method_completion_from_match(
     completion = MethodCompletion(
         purpose=response.get("purpose", "")[:160],
         taught_step_id=response.get("taught_step_id"),
+        observed_step_results=response.get("observed_step_results", []),
         targets=targets,
         expected_result=response.get("expected_result", "")[:240],
         screen_kind=response.get("screen_kind", "unknown"),
@@ -973,6 +994,9 @@ class MethodLibrary:
                         "purpose": group.purpose or method.purpose,
                         "taught_step_id": group.taught_step_id,
                         "steps": steps,
+                        "observed_step_results": [
+                            result.model_dump(mode="json") for result in group.observed_step_results
+                        ],
                         "operation": "act",
                         "expected_result": group.expected_result,
                         **_bind_save_review(
@@ -1100,6 +1124,9 @@ class MethodLibrary:
             "purpose": completion.purpose or method.purpose,
             "taught_step_id": completion.taught_step_id,
             "steps": [],
+            "observed_step_results": [
+                result.model_dump(mode="json") for result in completion.observed_step_results
+            ],
             "operation": "complete",
             "evidence": evidence,
             "completion_evidence": completion_evidence,

@@ -8,6 +8,7 @@ from test_screen_decision import fixture, named_response, setup_brain
 from test_visual_scene import wire
 
 from brain.graph.schemas import Choice, Decision
+from brain.graph.screen_decision import ScreenMatch
 from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
 from brain.task_instruction import TaskInstruction
 from brain.visual.markers import build_markers, ground_meanings
@@ -298,7 +299,9 @@ def test_opening_saved_detail_scopes_request_without_erasing_entry_on_failed_nav
     assert not request.verified_fields
     assert not request.policy.facts.verified_field_names
     assert set(request.execution_contract["remaining_inputs"]) == set(brain.values)
-    brain._begin_saved_detail_review("query")
+    brain._begin_saved_detail_review(
+        ScreenMatch(screen_kind="query", procedure_step="task-action", controls=[])
+    )
     assert not brain.model_saved_detail_review
     assert brain.verified == entry
     assert not brain.post_save_verified

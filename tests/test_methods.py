@@ -10,6 +10,7 @@ from brain.cache.methods import (
     method_from_match,
 )
 from brain.graph.screen_decision import ScreenMatch
+from brain.task_instruction import ObservedStepResult
 
 
 def scene(*, offset=0, old_value="Old customer", ids=0):
@@ -233,6 +234,60 @@ def test_candidate_compiler_removes_instance_anchors_and_repeated_retries():
     assert compiled.action_groups == [group]
 
 
+def test_synthetic_observed_step_results_survive_compile_and_bind_without_inventing_history(
+    tmp_path,
+):
+    # Synthetic successful source: the same action can follow distinct observed outcomes.
+    method = learned()
+    group = method.action_groups[0]
+    assert not group.observed_step_results, "old artifacts have no fabricated observed completion"
+    observed = ObservedStepResult(
+        step_id="open-detail", observed_result="Detail for CASE-001 opened", completed=True
+    )
+    still_pending = observed.model_copy(update={"completed": False})
+    first = group.model_copy(update={"observed_step_results": [still_pending]})
+    next_group = group.model_copy(update={"id": "opened", "observed_step_results": [observed]})
+    reworded = next_group.model_copy(
+        update={
+            "id": "same-completion",
+            "observed_step_results": [
+                observed.model_copy(update={"observed_result": "Detail ready"})
+            ],
+        }
+    )
+    compiled = compile_method_candidate(
+        method.model_copy(update={"action_groups": [first, next_group, reworded]}),
+        {"reference": "CASE-001"},
+    )
+    assert len(compiled.action_groups) == 2, (
+        "retain distinct completion states, but ignore description-only differences"
+    )
+    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
+    library.upsert(compiled)
+    for index, completed in enumerate((False, True)):
+        current = {"screen_phash": 123, "image_size": [800, 600], "ocr": [], "markers": []}
+        bound = library.bind(
+            method.id,
+            {},
+            current,
+            {"party": "New customer"},
+            group_id=compiled.action_groups[index].id,
+        )
+        assert bound is not None
+        assert bound["observed_step_results"] == [
+            {
+                "step_id": "open-detail",
+                "observed_result": "Detail for {reference} opened",
+                "completed": completed,
+            }
+        ], index
+        assert ScreenMatch.model_validate(bound).observed_step_results[0].completed is completed
+    assert "CASE-001" not in library.path.read_text(encoding="utf-8")
+    old = method.model_dump(mode="json")
+    old["action_groups"][0].pop("observed_step_results")
+    assert LearnedMethod.model_validate(old).action_groups[0].observed_step_results == []
+
+
 def completion_scene(*, customer="New customer B", reference="ORDER-B", ids=0):
     return {
         "image_size": [800, 600],
@@ -321,9 +376,17 @@ def test_completion_recipe_preserves_model_readings_and_rebinds_input_references
             ]
         }
     )
+    source_response = completion_response()
+    source_response["observed_step_results"] = [
+        {
+            "step_id": "verify-record",
+            "observed_result": "New customer B and ORDER-B match the saved detail",
+            "completed": True,
+        }
+    ]
     method = method_completion_from_match(
         completion_scene(),
-        completion_response(),
+        source_response,
         method,
         {"customer": "New customer B", "reference": "ORDER-B"},
     )
@@ -344,6 +407,13 @@ def test_completion_recipe_preserves_model_readings_and_rebinds_input_references
     assert bound is not None
     response = ScreenMatch.model_validate(bound)
     assert response.operation == "complete"
+    assert [item.model_dump() for item in response.observed_step_results] == [
+        {
+            "step_id": "verify-record",
+            "observed_result": "{customer} and {reference} match the saved detail",
+            "completed": True,
+        }
+    ]
     assert {item.field for item in response.evidence} == {"customer", "reference"}
     assert len({item.target for item in response.evidence}) == 2
     assert (

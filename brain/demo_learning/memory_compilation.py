@@ -523,6 +523,14 @@ def compile_memory(
             update={
                 "trace_index": candidate.trace_index,
                 "predecessor_group_ids": [] if previous_id is None else [previous_id],
+                "observed_step_results": [
+                    result.model_copy(
+                        update={
+                            "observed_result": _redact(result.observed_result, source["values"])
+                        }
+                    )
+                    for result in fragment.action_groups[0].observed_step_results
+                ],
             }
         )
         groups.append(group)
@@ -556,6 +564,16 @@ def compile_memory(
                             "expected_result": _redact(
                                 method.completion.expected_result, source["values"]
                             ),
+                            "observed_step_results": [
+                                result.model_copy(
+                                    update={
+                                        "observed_result": _redact(
+                                            result.observed_result, source["values"]
+                                        )
+                                    }
+                                )
+                                for result in method.completion.observed_step_results
+                            ],
                         }
                     )
                 }

@@ -622,6 +622,11 @@ class MemoryRetrieval:
         if not self.enabled:
             return
         task = self.task_context.task
+        sanitized = response.model_dump(mode="json")
+        for key in ("purpose", "expected_result"):
+            sanitized[key] = self._redact_credentials(sanitized[key])
+        for result in sanitized["observed_step_results"]:
+            result["observed_result"] = self._redact_credentials(result["observed_result"])
         self.state.purpose = self._redact_credentials(response.purpose[:160])
         known = {method.id: method for method in self.library.methods()}
         previous = known.get(response.method_id)
@@ -686,7 +691,7 @@ class MemoryRetrieval:
             if previous is None:
                 return
             learned = method_completion_from_match(
-                screen, response.model_dump(mode="json"), previous, self._binding_values()
+                screen, sanitized, previous, self._binding_values()
             )
             if learned is not None and learned.completion is not None:
                 self.state.staged_completions[learned.id] = learned.completion
@@ -727,9 +732,6 @@ class MemoryRetrieval:
                 for source in dict.fromkeys(step.source for step in response.steps if step.source)
                 if source not in covered
             )
-        sanitized = response.model_dump(mode="json")
-        sanitized["purpose"] = self._redact_credentials(sanitized["purpose"])
-        sanitized["expected_result"] = self._redact_credentials(sanitized["expected_result"])
         method = method_from_match(
             screen,
             sanitized,

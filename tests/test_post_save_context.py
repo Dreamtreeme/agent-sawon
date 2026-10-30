@@ -9,6 +9,7 @@ from test_brain import record as record
 from test_screen_decision import named_response, setup_brain
 
 from brain.graph.schemas import Choice, Decision
+from brain.graph.screen_decision import ScreenMatch
 from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
 from brain.task_instruction import TaskInstruction
 
@@ -95,12 +96,20 @@ def test_synthetic_query_outcome_is_remembered_before_next_action(tmp_path, reco
 
 
 def test_synthetic_detail_response_commits_evidence_then_executes_without_recall(tmp_path, record):
-    # Synthetic fake: one response observes the delivered transition and plans onward.
+    # Synthetic 132-shaped fake: a dialog label does not contradict an observed
+    # completed detail-opening step. One response both observes and plans onward.
     # It tests runtime order/call count, not whether a real model chooses correctly.
     response = named_response(
-        screen_kind="editor",
+        screen_kind="dialog",
         taught_step_id="verify-requeried-record",
         procedure_step="task-action",
+        observed_step_results=[
+            {
+                "step_id": "requery-saved-record",
+                "observed_result": "The saved record detail is open.",
+                "completed": True,
+            }
+        ],
         fields={
             "Reference": {
                 "source": "hbl_no",
@@ -163,12 +172,77 @@ def test_synthetic_093_reentry_consumes_pending_without_erasing_review(tmp_path,
     brain.saved_detail_transition_pending = True
     brain.saved_detail_transition_step = "requery-saved-record"
     brain.post_save_verified = {"hbl_no", "shipper"}
-    brain._begin_saved_detail_review("query")
-    assert brain.saved_detail_transition_pending, "a query frame does not prove opening"
-    brain._begin_saved_detail_review("editor")
+    response = ScreenMatch(
+        screen_kind="editor", controls=[], procedure_step="task-action", steps=[]
+    )
+    brain._begin_saved_detail_review(response)
+    assert brain.saved_detail_transition_pending, "screen kind alone does not prove opening"
+    response = ScreenMatch(
+        screen_kind="dialog",
+        controls=[],
+        procedure_step="task-action",
+        steps=[],
+        observed_step_results=[
+            {
+                "step_id": "requery-saved-record",
+                "observed_result": "Saved detail reopened.",
+                "completed": True,
+            }
+        ],
+    )
+    brain._begin_saved_detail_review(response)
     assert not brain.saved_detail_transition_pending
     assert brain.saved_detail_transition_step is None
     assert brain.post_save_verified == {"hbl_no", "shipper"}
+
+
+def test_synthetic_field_read_counts_once_per_entry_and_saved_detail_scope(tmp_path, record):
+    # Synthetic replies reuse the same value; reopening saved detail is a different
+    # business observation, while rereading it in that scope is not fresh progress.
+    field = {
+        "source": "hbl_no",
+        "role": "edit",
+        "bbox": [100, 15, 150, 30],
+        "value": record.fields.hbl_no.value,
+    }
+    reading = named_response(
+        screen_kind="dialog", fields={"Reference": field}, steps=[], operation="stop"
+    )
+    opened = named_response(
+        screen_kind="editor",
+        fields={},
+        steps=[],
+        operation="stop",
+        observed_step_results=[
+            {
+                "step_id": "requery-saved-record",
+                "observed_result": "Saved detail open; contents will be read next.",
+                "completed": True,
+            }
+        ],
+    )
+    brain, model, *_ = setup_brain(
+        tmp_path,
+        record,
+        [reading, reading, opened, reading, reading],
+        task_instruction=taught_task(),
+    )
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    brain._observe()
+    entry_revision = brain.business_revision
+    brain._observe()
+    assert brain.business_revision == entry_revision, "entry reread must not reset failure history"
+    brain.save_issued = True
+    brain.saved_detail_transition_pending = True
+    brain.saved_detail_transition_step = "requery-saved-record"
+    brain._observe()
+    detail_revision = brain.business_revision
+    brain._observe()
+    assert brain.post_save_verified == {"hbl_no"}
+    assert brain.business_revision == detail_revision + 1, "saved reading is new evidence"
+    brain._observe()
+    assert brain.business_revision == detail_revision + 1, "detail reread is not new evidence"
+    assert len(model.prompts) == 5
 
 
 def test_synthetic_completed_step_selection_does_not_rewind_education_focus(tmp_path, record):

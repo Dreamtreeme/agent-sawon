@@ -12,7 +12,12 @@ from test_screen_decision import named_response, setup_brain
 from test_visual_scene import wire
 
 from brain.graph.schemas import Choice, Decision
-from brain.graph.transitions import ActionTransition, ExpectedEffect, ObservedEffect
+from brain.graph.transitions import (
+    ActionTransition,
+    ExpectedEffect,
+    ObservedEffect,
+    exploration_failure_key,
+)
 from brain.observe.progress import compare_navigation, navigation_state, navigation_target
 from brain.visual.frame_change import compare_frames
 from brain.visual.scene import SceneObservation
@@ -201,7 +206,12 @@ def test_synthetic_capture_feedback_precedes_model_and_preserves_alternative(
         ),
     }
     # Old code would terminate before allowing the newly proposed wheel action.
-    brain.failures["task:explore:click:label"] = brain.settings.max_subgoal_failures
+    failure_key = "task:explore:" + exploration_failure_key(
+        brain.pending["source_navigation_state"],
+        brain.pending["exploration_goal_key"],
+        brain.pending["exploration_action_key"],
+    )
+    brain.failures[failure_key] = brain.settings.max_subgoal_failures
 
     def screenshot(observation, path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -236,6 +246,6 @@ def test_synthetic_capture_feedback_precedes_model_and_preserves_alternative(
     comparisons = [e for e in events if e.payload.get("check") == "screen_structure_comparison"]
     calls = [e for e in events if e.kind == "model_call"]
     assert len(comparisons) == 1 and comparisons[0].seq < calls[0].seq
-    assert brain.failures["task:explore:click:label"] == brain.settings.max_subgoal_failures + (
+    assert brain.failures[failure_key] == brain.settings.max_subgoal_failures + (
         next_action == "same"
     )

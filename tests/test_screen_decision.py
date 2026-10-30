@@ -1078,7 +1078,9 @@ def test_post_save_result_transition_starts_detail_review_and_advances_taught_st
     # A modal (or a model-labelled dialog) and its next action cannot erase the
     # query-to-detail episode. Its original taught step must also survive.
     brain.pending = None
-    brain._begin_saved_detail_review("dialog")
+    brain._begin_saved_detail_review(
+        ScreenMatch(screen_kind="dialog", procedure_step="task-action", controls=[])
+    )
     assert brain.saved_detail_transition_pending
     brain.observation = SceneObservation(wire=wire(), screen_kind="dialog", elements=[result])
     decision = decision.model_copy(update={"screen_kind": "dialog", "intent": "navigate"})
@@ -1094,6 +1096,21 @@ def test_post_save_result_transition_starts_detail_review_and_advances_taught_st
     brain.observation = SceneObservation(wire=wire(), screen_kind="editor", elements=[])
     brain._record_action_verification(
         decision, decision.action, None, True, ObservedEffect.CHANGED, []
+    )
+    assert brain.saved_detail_transition_pending  # Geometry alone cannot complete education.
+    brain._remember_model_task_evidence(
+        ScreenMatch(
+            screen_kind="editor",
+            procedure_step="task-action",
+            controls=[],
+            observed_step_results=[
+                {
+                    "step_id": "requery-saved-record",
+                    "observed_result": "The saved record detail is open",
+                    "completed": True,
+                }
+            ],
+        )
     )
     assert not brain.saved_detail_transition_pending
     assert brain.saved_detail_transition_step is None
@@ -3547,6 +3564,14 @@ def test_detail_observation_commits_review_before_current_evidence(
         action=Choice(type="double_click", ref="old-frame"),
     )
     brain.saved_detail_transition_pending = True
+    brain.saved_detail_transition_step = "requery-saved-record"
+    task_response["observed_step_results"] = [
+        {
+            "step_id": "requery-saved-record",
+            "observed_result": "Saved detail is visible",
+            "completed": True,
+        }
+    ]
     brain.pending = {
         "before_observation": wire(),
         "decision": decision,
@@ -3572,7 +3597,7 @@ def test_detail_observation_commits_review_before_current_evidence(
     assert checks.index("model_saved_detail_review_started") < checks.index(
         "model_task_evidence_recorded"
     )
-    brain._begin_saved_detail_review("editor")
+    brain._begin_saved_detail_review(brain.visual_proposal)
     assert "hbl_no" in brain.post_save_verified  # Later verification cannot clear it again.
     if rejected_next_plan:
         assert brain.visual_match_candidate is None

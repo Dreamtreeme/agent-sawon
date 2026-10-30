@@ -16,6 +16,7 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | 그래프 라우팅 | `brain/graph/workflow.py` | LangGraph | `lifecycle.route`를 다음 책임 노드 또는 `finish`로 연결 |
 | `ExecutionRequest`/`ExecutionResult` | `brain/graph/execution.py` | `engine.py`, relay adapter | 준비된 행동 전달과 relay가 확인한 결과. 업무 성공을 판정하지 않음 |
 | 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `screen_decision`, `memory_retrieval` | 의미 이름·bbox·입력 key·행동 point의 모델 경계 |
+| 교육 단계 관찰 결과 | `brain/task_instruction.py`의 `ObservedStepResult` | `screen_mapping`, `screen_decision`, `cache/methods`, engine | 교육 ID·관찰 설명·완료 판단을 화면 응답과 편찬 기억에서 같은 형식으로 전달 |
 | 선택 결과의 요청 문맥 | `brain/graph/screen_decision.py`의 `ScreenSelection.prepared` | `decide_screen` → `ground_screen_response` | 같은 판단에서 확장한 교육 상세를 빈 행동 보완에 전달. 거절 후 재계획은 기존 prepared 사용. 턴 간 영구 상태가 아님 |
 | 기억 편찬 응답 | `brain/demo_learning/memory_compilation.py`의 `MemoryAssembly` / `MemoryGroupSelection` | 모델 클라이언트, `compile_memory` | 후보 ID로 성공 행동을 선택. context_anchors는 타입 검증 후 첫 8개를 보존하고 초과분 경고 기록 |
 | 인출된 화면·행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup`, `MethodCompletion` | `method_from_match`, `compile_memory`, `MemoryRetrieval`, `screen_decision` | 화면 경로·행동 좌표·관찰 필드 기하·입력 키, 저장 결과 메시지 및 완료 조건을 보존하고 현재 화면에 결합 |
@@ -57,16 +58,20 @@ flowchart LR
 
 ### 입력 메모와 계획 결합
 
-`ScreenMapping.observed_step_results`는 교육 단계 ID, 현재 관찰 결과, 완료 여부를 담는다.
-모델은 현재 화면과 이미 전달한 행동을 교육 완료 조건에 대조해 답한다.
+`ScreenMapping.observed_step_results`는 `ObservedStepResult`로 교육 단계 ID, 관찰 결과, 완료
+여부를 담는다. 모델은 현재 관찰과 같은 검토 범위에서 누적한 확인값을 사용자 교육의 완료
+조건에 대조한다. 숨겨진 필드도 확인 이력을 유지하며, 현재 가시성·행동 좌표는 현재 이미지로 판단한다.
 `ScreenPlan`/`ScreenMatch`가 같은 목록을 전달하고
 `_remember_model_task_evidence()`가 관찰 경로와 별도 선택 경로 모두에서 실행 전에
 완료된 항목을 기존 `completed_taught_steps`에 누적한다. 등록된 교육 ID만 반영하며 중복은 무시한다.
 다음 요청의 `taught_procedure_progress.completed_step_ids`에 노출한다. 관찰 설명 원문은
 해당 응답 기록에 보존하며 완료 ID와 별도의 진행 상태 복사본을 만들지 않는다. 행동 선택·전달만으로
 완료를 추론하거나 전체 업무 성공으로 바꾸지 않는다. 기존 응답은 빈 목록으로 읽는다.
-화면 캐시는 전체 판단 문맥이 일치할 때 응답을 재사용하며, 편찬 메서드에는 이 실행의
-완료 목록을 새로 저장하지 않는다. 모델 없는 메서드가 임의로 교육 완료를 만들어내지 않는다.
+화면 캐시는 전체 판단 문맥이 일치할 때 응답을 재사용한다. `MethodActionGroup`과
+`MethodCompletion`은 해당 화면 응답의 `observed_step_results`를 편찬·현재 화면 결합까지
+보존하고 같은 메모 갱신 경로에 전달한다. 실행 전체의 `completed_taught_steps` 집합을 다른
+실행으로 복사하지 않는다. 목록이 없는 구형 기억은 빈 목록으로 읽으며 완료를 만들어내지 않는다.
+관찰 설명의 업무 값과 비밀값은 기존 편찬·저장 경계에서 정제한다.
 
 | 상태 | 의미 |
 |---|---|
@@ -78,6 +83,9 @@ flowchart LR
 `state_property`와 `progress_property`는 WorkerState의 값을 읽고 쓰는 접근자이며 별도 상태
 복사본이 아니다. 확인된 필드가 후속 화면에서 보이지 않는 것만으로 전체 메모를 지우지 않는다.
 현재 관찰값 불일치와 증거 대체는 갱신 사유다. 메모에 기록된 입력 확인과 ERP 저장 완료는 구분한다.
+모델 기반 확인의 진전 표시는 필드 키와 `entry`/`saved_detail` 범위를 함께 사용한다. 저장 후
+같은 필드를 처음 확인한 것, 상세 검토 범위 진입, 교육 단계의 첫 완료는 새 진전이며 기존
+실패 횟수를 초기화한다. 같은 범위에서 같은 확인을 반복한 것은 새 진전이 아니다.
 
 ### 화면 노드 선택과 관찰 기억
 
@@ -184,15 +192,19 @@ intent·입력 source와 출발 screen_kind,
 notebook에 한 번만 제공하며 scratchpad에 복사하지 않는다. 입력 키는 inputs 자체에서 읽는다.
 
 저장 후 상세 화면의 첫 관찰에서는 `scan()`이 해석과 다음 계획을 함께 생성한 뒤
-`_begin_saved_detail_review()`가 검토 범위와 교육 완료를 확정한다. 모델은 요청의 메모를 직전
-상태로 읽고 현재 `screen_kind`, `fields.value`, `fields.source`에서 확인한 결과를
-전제로 같은 응답의 `steps`를 선택한다. 코드는 검토 범위 → 현재 증거를 먼저 반영하고 그
+`_remember_model_task_evidence()`가 필드 기록 전에 `_begin_saved_detail_review(response)`를
+호출한다. 대기 중인 상세 열기 교육 단계에 대해 모델이 `observed_step_results.completed=true`를
+반환하면 검토 범위를 시작한다. `screen_kind`의 `editor`/`dialog` 분류는 이 전환의 조건이 아니다.
+모델은 요청의 메모를 직전 상태로 읽고 현재 관찰과 누적 확인을 합쳐 같은 응답의 `steps`를
+선택한다. 코드는 검토 범위 → 교육 단계 완료 → 현재 필드 증거를 먼저 반영하고 그
 응답의 계획을 Decision/Review/Execution으로 전달한다. 메모 반영 자체로 계획을 버리거나
 모델을 다시 호출하지 않는다. 잘못된 다음 행동의 검증 오류는 지우지 않으며, 그 경우에도
 이미 읽은 화면 증거는 보존한다. 이 계약은 모델의 선택 정확성을 보증하지 않는다.
 상세 재진입은 pending 전환을 소비하지만 누적 검토 증거를 초기화하지 않는다. 교육 단계의
 선택만으로 관찰된 완료를 되돌리거나 완료 단계로 교육 초점을 덮어쓰지 않는다. 앞 단계로 가는
 행동을 거절하는 규칙은 아니며 미완료 교육 단계의 재선택은 유지한다.
+현재 관찰에 결합된 완료·중단 응답이나 충족된 저장 후 증거는 직전 행동의 반복 검사보다 먼저
+Review로 전달한다. 이는 최종 성공을 강제하는 처리가 아니며 기존 업무 완료 검증을 거친다.
 
 `ScreenMatch.from_plan`은 새 계획의 값을 기존 화면 해석보다 우선한다. 전체 ScreenMatch가
 반환되면 controls·화면 종류도 새 응답을 사용한다. 직렬화에서 제외되는 mapping은 명시적으로

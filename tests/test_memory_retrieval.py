@@ -20,6 +20,7 @@ from brain.cache.methods import (
     MethodDocument,
     MethodLibrary,
     MethodTarget,
+    compile_method_candidate,
     method_completion_from_match,
     method_from_match,
 )
@@ -28,7 +29,7 @@ from brain.graph.memory_retrieval import open_memory_library
 from brain.graph.screen_decision import MethodBinding, ScreenMatch
 from brain.graph.screen_mapping import ScreenMapping
 from brain.settings import BrainSettings
-from brain.task_instruction import TaskInputRecord, TaskInstruction
+from brain.task_instruction import TaskInputRecord, TaskInstruction, TaughtProcedureStep
 from brain.visual.action_rebind import perceptual_hash
 from brain.visual.markers import Marker, build_markers, ground_meanings
 from brain.visual.scene import ControlMeaning, bind_scene
@@ -584,6 +585,93 @@ def test_synthetic_missing_layout_uses_model_coordinates_at_executor(tmp_path, o
     )
     assert brain.memory_retrieval.state.active_method_id is None
     assert brain.memory_retrieval.match_pattern(current) is None
+
+
+def test_synthetic_compiled_dialog_observation_starts_saved_review_without_model_call(tmp_path):
+    # Synthetic successful source and fake desktop; real compile/bind/graph/memo/execution paths.
+    brain, model, relay = setup(tmp_path)
+    brain.task_instruction = brain.task_instruction.model_copy(
+        update={
+            "procedure": [
+                TaughtProcedureStep(
+                    id="open-detail",
+                    instruction="Open the saved record",
+                    completion="Detail opened",
+                ),
+                TaughtProcedureStep(
+                    id="verify-detail",
+                    instruction="Review the saved values across tabs",
+                    completion="All saved values match",
+                ),
+            ]
+        }
+    )
+    atomic_write_json(brain.settings.task_path, brain.task_instruction)
+    brain.task_instruction_sha256 = hashlib.sha256(
+        brain.settings.task_path.read_bytes()
+    ).hexdigest()
+    runtime = brain.memory_retrieval
+    original = runtime.library.methods()[0]
+    source_screen = {"screen_phash": synthetic_screen_phash(), "image_size": [400, 200]}
+    source_values = {**brain.values, "customer": "Previous customer A"}
+    mapping = ScreenMapping(
+        screen_kind="dialog",
+        screen_path=["Saved detail"],
+        taught_step_id="verify-detail",
+        observed_step_results=[
+            {
+                "step_id": "open-detail",
+                "observed_result": "Saved detail for Previous customer A opened",
+                "completed": True,
+            }
+        ],
+        fields={
+            "Customer": {
+                "role": "text",
+                "bbox": [100, 40, 150, 30],
+                "source": "customer",
+                "value": source_values["customer"],
+            },
+            "More": {"role": "tabitem", "bbox": [300, 140, 80, 30]},
+        },
+        steps=[{"target": "More", "action": "click", "intent": "select_tab", "point": [340, 155]}],
+    )
+    method = method_from_match(
+        source_screen,
+        mapping.local_payload(source_screen, source_values),
+        method_id=original.id,
+        purpose="Review saved values",
+        slots=original.slots,
+        task_objective=brain.task_instruction.objective,
+        task_contract_sha256=brain.task_instruction_sha256,
+        values=source_values,
+    )
+    assert method is not None
+    method = compile_method_candidate(method, source_values).model_copy(
+        update={"artifact_kind": "warm_compiled"}
+    )
+    atomic_write_json(runtime.library.path, MethodDocument(methods=[method]))
+    brain.save_issued = brain.saved_detail_transition_pending = True
+    brain.saved_detail_transition_step = brain.active_taught_step = "open-detail"
+
+    brain._observe()
+
+    assert brain.observation.screen_kind == "dialog"
+    assert brain.model_saved_detail_review and not brain.saved_detail_transition_pending
+    assert brain.post_save_verified == {"customer"}
+    remembered = brain.screen_nodes['["Saved detail"]']["fields"]["customer"]["last_observation"]
+    assert remembered["value"] == brain.values["customer"] == "New customer B"
+    assert remembered["scope"] == "saved_detail"
+    assert brain.completed_taught_steps == {"open-detail"}
+    assert brain.active_taught_step == "verify-detail"
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    assert brain._act_node() == "observation"
+    assert [action.root.target.image_point for action in relay.actions] == [(340, 155)]
+    assert model.prompts == []
+    events = brain.log.read_all()
+    assert any(event.payload.get("check") == "method_bound" for event in events)
+    assert not any(event.payload.get("check") == "memory_retrieval_exception" for event in events)
 
 
 @pytest.mark.parametrize("corrupt_ocr", [False, True], ids=["readable-ocr", "corrupted-ocr"])

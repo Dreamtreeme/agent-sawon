@@ -1,5 +1,6 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
+ScreenMatch/ScreenPlan describe cumulative same-scope taught evidence (2026-10-31).
 ScreenMatch/ScreenPlan remove the unused provider evidence list (2026-10-29).
 ScreenMatch/ScreenPlan separate pointer, keyboard and scroll actions (2026-10-28).
 ScreenMatch/ScreenPlan embed source in fields, removing assignments (2026-10-27).
@@ -116,8 +117,8 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
             TargetedMatchAction,
             "010d16ae1c205f2e97b7661173dd1ff9f35ba34aa17a3d6b0a4165447c6f755c",
         ),
-        (ScreenPlan, "6296c01d8b919d0887c040411133751bce1be7929779eb32cb331dae40c243c2"),
-        (ScreenMatch, "6296c01d8b919d0887c040411133751bce1be7929779eb32cb331dae40c243c2"),
+        (ScreenPlan, "187617ecdca5cb502ba39aedd6fa78bc614db4d319c01cf00af586591d856ce0"),
+        (ScreenMatch, "187617ecdca5cb502ba39aedd6fa78bc614db4d319c01cf00af586591d856ce0"),
         (Decision, "0dd9a48fb753c30ea6f54d65c1272bfc631435abedc33d3864e138bf412f5bf0"),
         (
             WireActDecision,

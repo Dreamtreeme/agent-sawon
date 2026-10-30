@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from brain.observe.values import field_matches
+from brain.task_instruction import ObservedStepResult
 from brain.visual.marker_contract import text_index
 from brain.visual.scene import contains
 from brain.vocabulary import (
@@ -71,15 +72,6 @@ class NamedCompletionEvidence(BaseModel):
     target: str
 
 
-class ObservedStepResult(BaseModel):
-    """Current visual outcome of a taught step, independent of the next action."""
-
-    model_config = ConfigDict(extra="forbid")
-    step_id: str
-    observed_result: str
-    completed: bool
-
-
 class ScreenMapping(BaseModel):
     model_config = ConfigDict(extra="forbid")
     screen_kind: Literal["login", "menu", "query", "editor", "partner", "dialog", "unknown"] = (
@@ -101,7 +93,10 @@ class ScreenMapping(BaseModel):
     )
     observed_step_results: list[ObservedStepResult] = Field(
         default_factory=list,
-        description="Evaluate the focused/delivered taught steps against CURRENT visible results",
+        description=(
+            "Evaluate focused/delivered taught steps using current observations and accumulated "
+            "verified evidence in the same review scope"
+        ),
     )
     steps: list[
         Annotated[NamedAction | NamedKeyAction | NamedScrollAction, Field(discriminator="action")]
@@ -329,7 +324,8 @@ this view; other nodes are historical context, not visible fields. Return all cu
 readable business fields with their source keys, including fields not used by the next action.
 Prior geometry is a hint, never a current observation. Reground fields on the current image.
 An empty screen_path means unidentified and must not select the previous node implicitly.
-Remembered fields are candidates, not proof of the current node or current values.
+Verified readings in this run's current evidence scope remain valid when fields move offscreen.
+Use the current image to identify the node and action geometry, not to erase those readings.
 screen_tree.children organizes visited screens and their children. Root fields have no identified
 screen and must not be assigned to a known node. All tree entries are history, not current
 visibility or action coordinates. Get visible targets from this image; navigate to hidden targets.
@@ -342,7 +338,7 @@ Retrieved procedures describe learned actions, not actions already completed in 
 Combine them with this run's inputs, notebook and visible evidence to choose the next action.
 If a required visible control is missing from the candidates, return needs_refinement=true
 and steps=[] to request local scanning on this capture. Do not use this for offscreen controls.
-An image match does not mean earlier input values are still present or the task is complete.
+A stored procedure or image match alone does not verify this run's values or task completion.
 Name fields by visible meaning; qualify duplicate names by section. Never use detector numbers.
 Return fields as named entries (name, source, role, bbox, value). source is the exact business
 input key or null for a non-business control. Never put literal input data in source.
@@ -380,7 +376,9 @@ Interpret it together with current values and choose the remaining work in this 
 notebook.failed_transitions is historical action/result context with its original screen and goal,
 not a blanket prohibition in this view. Avoid repeating an ineffective action in the same situation.
 Complete only from the user's required saved/requeried evidence.
-Use current evidence and prior verified inputs; absence on this screen does not erase memory.
+Combine current observations with prior verified inputs in the same evidence scope. Do not
+revisit hidden fields only to reconfirm them; new conflicting readings or a new review scope
+require verification. Scrolling alone does not start a new review scope.
 The notebook and focused taught step describe progress BEFORE this screenshot is interpreted.
 last_delivered_actions were successfully executed, not actions to execute again.
 In this ONE response, use screen_kind, fields.value and fields.source to report what is
@@ -389,12 +387,13 @@ steps from that observed outcome plus prior memory. The runtime commits these ob
 executing these same steps; do not wait for another turn just to acknowledge a completed action.
 Use taught_step_id for the work your next steps perform, not the already delivered action.
 Before choosing steps, return observed_step_results for the focused step and any delivered step
-whose result is now visible. In observed_result, describe the CURRENT result relevant to that
-step's completion condition, including non-input status text. Set completed from that comparison,
-not from delivery alone. A result already visible need not be produced again just to acknowledge it.
+whose result is now established. In observed_result, combine same-scope verified memory with new
+readings and non-input status relevant to the taught completion condition. Set completed from
+that evidence, not delivery alone; all confirmed fields need not be visible at once.
 Then choose steps for the remaining work using these results and prior memory in this same response.
-If saved_result_open_pending is true and the screenshot is the opened detail editor, the requery
-step has succeeded: review the saved values here; do not close and repeat the same query.
+If saved_result_open_pending is true, judge from the delivered requery action and this screenshot
+whether the saved detail opened. If so, mark that taught step completed in observed_step_results
+and review the saved values here. screen_kind describes appearance, not requery success.
 For saved_detail_candidate, verified_inputs is empty for the new review, not a claim that
 the record is blank. Entry evidence remains historical; inspect current saved values without typing.
 If it remains a query screen, opening has not succeeded; choose a suitable next action.

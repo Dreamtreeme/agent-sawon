@@ -141,6 +141,11 @@ class ExplorationAttempt(BaseModel):
     outcome: Literal["no_change", "cycle"]
 
 
+def exploration_failure_key(state_key: str, goal_key: str, action_key: str) -> str:
+    """Use the ledger's screen, goal and action identity for retry accounting too."""
+    return json.dumps([state_key, goal_key, action_key], ensure_ascii=False, separators=(",", ":"))
+
+
 def exploration_action_key(
     action_type: str,
     *,

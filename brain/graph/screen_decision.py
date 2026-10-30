@@ -22,7 +22,7 @@ from brain.input_binding import (
 from brain.observe.evidence import input_surface
 from brain.observe.values import field_matches
 from brain.settings import BrainSettings
-from brain.task_instruction import TaskInstruction
+from brain.task_instruction import ObservedStepResult, TaskInstruction
 from brain.visual.marker_contract import (
     allowed_marker_actions,
     local_response,
@@ -47,7 +47,7 @@ from .execution import GuardStop, PendingAction
 from .model_call import ResponseT, ScreenModelCall
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision, FieldName
-from .screen_mapping import ObservedStepResult, ScreenMapping, ScreenMappingWire, mapping_prompt
+from .screen_mapping import ScreenMapping, ScreenMappingWire, mapping_prompt
 from .visual_turn import adapt_proposal
 
 

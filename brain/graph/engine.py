@@ -122,6 +122,7 @@ from .transitions import (
     TransitionFact,
     expected_effect,
     exploration_action_key,
+    exploration_failure_key,
 )
 from .visual_points import VisualPointError
 from .workflow import build_worker_graph
@@ -543,6 +544,7 @@ class Brain:
         if completed is None or taught_step_id in self.completed_taught_steps:
             return
         self.completed_taught_steps.add(taught_step_id)
+        self._record_progress("taught_step:" + taught_step_id)
         current = order.get(self.active_taught_step or "", -1)
         if completed >= current and completed + 1 < len(task.procedure):
             self.active_taught_step = task.procedure[completed + 1].id
@@ -1256,8 +1258,6 @@ class Brain:
             self.visual_proposal_obs_id = observation.obs_id
         self.observation = observation
         self.review = None
-        if isinstance(observation, SceneObservation):
-            self._begin_saved_detail_review(observation.screen_kind)
         self.observation_number += 1
         # One response observes the pending action's outcome and plans from it.
         # Commit its review scope and current values before compiling/delivering
@@ -1948,7 +1948,8 @@ class Brain:
             self.post_save_query_identity_verified = True
         if self.model_saved_detail_review:
             self.post_save_verified.add(field)
-        self._record_progress("field:" + field)
+        scope = "saved_detail" if self.model_saved_detail_review else "entry"
+        self._record_progress(f"field:{scope}:{field}")
 
     def _input_surfaces(self, source: str | None) -> set[str]:
         if self.task_instruction is not None and source in self.values:
@@ -1991,6 +1992,7 @@ class Brain:
         """
         if self.task_instruction is None or not self.settings.visual_model_only_review:
             return
+        self._begin_saved_detail_review(response)
         for result in response.observed_step_results:
             if result.completed:
                 self._complete_taught_procedure_step(result.step_id)
@@ -2077,7 +2079,9 @@ class Brain:
                 action_key,
             ) and not self.click_refinement.applies(self.observation, decision)
             if exploration_blocked:
-                self._last_exploration_failure_key = action_key
+                self._last_exploration_failure_key = exploration_failure_key(
+                    navigation_state(self.observation), self._exploration_goal_key(), action_key
+                )
         try:
             validate_action_guard(
                 ActionGuardRequest(
@@ -2692,7 +2696,9 @@ class Brain:
             outcome=outcome,
         )
         self.exploration.record(attempt)
-        self._last_exploration_failure_key = attempt.action_key
+        self._last_exploration_failure_key = exploration_failure_key(
+            attempt.state_key, attempt.goal_key, attempt.action_key
+        )
 
     def _verify_selected_option(
         self,
@@ -2745,7 +2751,15 @@ class Brain:
         ):
             self.execution_authorized = True
             return "execution", plan_relation
-        self._last_exploration_failure_key = pending.get("exploration_action_key")
+        self._last_exploration_failure_key = (
+            exploration_failure_key(
+                pending["source_navigation_state"],
+                pending["exploration_goal_key"],
+                pending["exploration_action_key"],
+            )
+            if "exploration_action_key" in pending
+            else None
+        )
         return self._fail("semantic_target_repeated"), plan_relation
 
     def _verify_text_input(
@@ -2880,7 +2894,6 @@ class Brain:
             ),
             new_facts,
         )
-        self._begin_saved_detail_review(self.observation.screen_kind)
 
     def _remember_action_effect(
         self,
@@ -2905,17 +2918,19 @@ class Brain:
         for fact in new_facts:
             self.rolling_context.mark_milestone(f"검증 완료: {fact}")
 
-    def _begin_saved_detail_review(self, screen_kind: str) -> None:
+    def _begin_saved_detail_review(self, response) -> None:
         """Consume an observed transition; initialize its review ledger only once."""
         if not (
             self.phase == "task"
             and self.save_issued
             and self.settings.visual_model_only_review
             and self.saved_detail_transition_pending
-            and screen_kind == "editor"
+            and any(
+                result.step_id == self.saved_detail_transition_step and result.completed
+                for result in response.observed_step_results
+            )
         ):
             return
-        taught_step = self.saved_detail_transition_step
         self.saved_detail_transition_pending = False
         self.saved_detail_transition_step = None
         if self.model_saved_detail_review:
@@ -2925,7 +2940,7 @@ class Brain:
         self.post_save_query_identity_verified = True
         self.model_saved_detail_review = True
         self.post_save_verified.clear()
-        self._complete_taught_procedure_step(taught_step)
+        self._record_progress("scope:saved_detail")
         self.log.append(
             "verify",
             payload={
@@ -3082,6 +3097,23 @@ class Brain:
                 new_facts.append("query_submitted")
             elif decision.intent == "save":
                 new_facts.append("save_issued")
+            if (
+                self.phase == "task"
+                and self.settings.visual_model_only_review
+                and (
+                    self._post_save_model_evidence_complete()
+                    or (
+                        self._current_plan_ready(observation)
+                        and self.visual_proposal.operation in {"complete", "stop"}
+                    )
+                )
+            ):
+                # Observation has already committed the current result. Let Review
+                # handle it before retry counters for the previous action can stop it.
+                method_effect_verified = changed
+                if method_effect_verified:
+                    self._stage_visual_match_candidate(pending)
+                return "review"
             outcome, navigation_change = self._verify_navigation(
                 pending, observation, decision, observed_state, changed
             )

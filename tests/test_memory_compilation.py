@@ -132,7 +132,16 @@ def test_memory_compiler_preserves_purpose_points_and_trace_order(tmp_path):
 
     raw = draft().model_dump()
     raw["purpose"] = "목적" * 150  # Synthetic 300-character explanation, not a token/byte limit.
-    method = compile_memory(source(), candidates(), raw, method_id="warm-shipment")
+    source_candidates = candidates()
+    # Synthetic model observation must survive offline compilation, without source instance values.
+    source_candidates[0].response["observed_step_results"] = [
+        {
+            "step_id": "open-detail",
+            "observed_result": "HBL-001 detail opened",
+            "completed": True,
+        }
+    ]
+    method = compile_memory(source(), source_candidates, raw, method_id="warm-shipment")
     assert [slot.source_key for slot in method.slots] == ["hbl_no"]
     assert [group.trace_index for group in method.action_groups] == [0, 1]
     assert method.action_groups[1].predecessor_group_ids == [method.action_groups[0].id]
@@ -154,6 +163,14 @@ def test_memory_compiler_preserves_purpose_points_and_trace_order(tmp_path):
     assert bound is not None
     assert bound["steps"][0]["point"] == [200.0, 300.0]
     assert bound["steps"][0]["source"] == "hbl_no"
+    assert bound["observed_step_results"] == [
+        {
+            "step_id": "open-detail",
+            "observed_result": "{hbl_no} detail opened",
+            "completed": True,
+        }
+    ]
+    assert "HBL-001" not in path.read_text(encoding="utf-8")
 
     raw["purpose"] += "끝"
     with pytest.raises(ValidationError) as caught:

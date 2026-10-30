@@ -5,6 +5,15 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class ObservedStepResult(BaseModel):
+    """Taught outcome from this run's accumulated evidence and current observation."""
+
+    model_config = ConfigDict(extra="forbid")
+    step_id: str
+    observed_result: str
+    completed: bool
+
+
 class TaughtProcedureAction(BaseModel):
     """A user's semantic UI instruction without transient geometry."""
 
