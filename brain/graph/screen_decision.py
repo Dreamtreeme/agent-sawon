@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
+from functools import cached_property
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Protocol
 from uuid import uuid4
@@ -320,9 +321,13 @@ class ScreenDecisionResult:
 
 @dataclass(frozen=True)
 class DecisionPromptContext:
-    state: dict
+    state_factory: Callable[[], dict]
     capability: ActionCapability
     active_fields: frozenset[str]
+
+    @cached_property
+    def state(self) -> dict:
+        return self.state_factory()
 
 
 @dataclass(frozen=True)
@@ -1297,27 +1302,35 @@ def prepare_screen_plan(
 def build_decision_prompt(
     request: ScreenDecisionRequest, services: ScreenDecisionServices
 ) -> DecisionPromptContext:
-    """Assemble the bounded model context without selecting or mutating a plan."""
+    """Prepare execution eligibility; assemble model context only when it is consumed."""
 
-    state = recall_context(request)
-    contract = state["execution"]
+    contract = request.execution_contract
     active_fields = set(request.values)
     capability = task_action_contract(
         request.phase, request.task_instruction, contract, active_fields
     )
-    state["capability"] = capability.model_dump()
-    if contract["conditional"]:
-        state["proposal_after_verification"] = {
-            "condition": contract["condition"],
-            "checkpoint": contract["checkpoint"],
-        }
-    if "save_review" in contract:
-        state["save_review"] = contract["save_review"]
+    # Pattern binding can mutate these two sources. Preserve their original
+    # snapshot timing so later recovery prompts and cache keys stay unchanged.
+    screen = model_screen(request.screen)
     methods = services.memory_retrieval
-    if methods.enabled:
-        state["method_memory"] = methods.prompt_context()
+    method_memory = methods.prompt_context() if methods.enabled else None
+
+    def assemble_state():
+        state = recall_context(request, projected_screen=screen)
+        state["capability"] = capability.model_dump()
+        if contract["conditional"]:
+            state["proposal_after_verification"] = {
+                "condition": contract["condition"],
+                "checkpoint": contract["checkpoint"],
+            }
+        if "save_review" in contract:
+            state["save_review"] = contract["save_review"]
+        if method_memory is not None:
+            state["method_memory"] = method_memory
+        return state
+
     return DecisionPromptContext(
-        state=state, capability=capability, active_fields=frozenset(active_fields)
+        state_factory=assemble_state, capability=capability, active_fields=frozenset(active_fields)
     )
 
 
@@ -1532,7 +1545,7 @@ def select_screen_response(
                 ),
             },
         )
-        prepared = replace(prepared, state=expanded)
+        prepared = replace(prepared, state_factory=lambda: expanded)
         response = _call_screen_decision(
             services,
             "education_retrieval",
@@ -1863,7 +1876,6 @@ def decide_screen(
             },
         )
         prepared = build_decision_prompt(request, services)
-        state = prepared.state
         capability = prepared.capability
         selection = select_screen_response(request, services, prepared)
         response = selection.response
@@ -1905,7 +1917,6 @@ def decide_screen(
                 proposal=None,
             )
             prepared = build_decision_prompt(fallback_request, services)
-            state = prepared.state
             selection = select_screen_response(
                 fallback_request, services, prepared, allow_method=False
             )
@@ -1940,25 +1951,27 @@ def decide_screen(
                     **observation_claim,
                 },
             )
-        services.log.append(
-            "verify",
-            payload={
-                "check": "match_context_size",
-                "frame": str(request.page.image_path) if request.page else None,
-                "sections_utf8_bytes": {
-                    key: len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
-                    for key, value in prepared.state.items()
+        state = vars(prepared).get("state")
+        if state is not None:
+            services.log.append(
+                "verify",
+                payload={
+                    "check": "match_context_size",
+                    "frame": str(request.page.image_path) if request.page else None,
+                    "sections_utf8_bytes": {
+                        key: len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+                        for key, value in state.items()
+                    },
+                    "selection_source": "method"
+                    if method_proposal is not None
+                    else "visual_cache"
+                    if cache_hit is not None
+                    else "model",
                 },
-                "selection_source": "method"
-                if method_proposal is not None
-                else "visual_cache"
-                if cache_hit is not None
-                else "model",
-            },
-        )
+            )
         visual_match_candidate = (
             (
-                cache_hit[0] if cache_hit is not None else screen_pattern_key(state),
+                cache_hit[0] if cache_hit is not None else screen_pattern_key(prepared.state),
                 {
                     **response.model_dump(mode="json"),
                     **(

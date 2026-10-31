@@ -25,9 +25,13 @@ Luna, Gemini, Jev와 replay 어댑터는 비교·재생 코드일 수 있으며 
 ## 실행 경로
 
 화면 캡처 직후 유사도를 확인한다. 일치하면 Memory Retrieval, 미일치하면 Scanning으로
-분기한 뒤 Context Recall → Pattern Matching → 화면 판단 경로로 연결한다. 기억 경로는
+분기한 뒤 현재 실행 계약을 확보하고 Pattern Matching → 화면 판단 경로로 연결한다. 기억 경로는
 필드 기하·입력 키 대응·절차와 모델이 확인한 값을 인출한다. Context Recall은 이번 실행의
 상태를 읽기만 하며 모델 판단·검증·복구는 `screen_decision.py`가 담당한다.
+정상 메서드 결합에서는 모델용 notebook·화면 트리·교육 문맥을 조립하지 않는다.
+화면 캐시 조회나 모델 판단·복구가 필요할 때 Context Recall 문맥을 한 번 생성해 재사용한다.
+결합이 바꾸는 화면 투영과 메서드 문맥은 기존 시점에 확보해 복구 요청과 캐시 키를 유지한다.
+이미 검증·정리한 응답은 재사용하고 보완으로 응답 내용이 바뀌었을 때만 다시 검증한다.
 같은 창·크기의 pHash 유사 캡처는 로컬 탐지 기하를 재사용하되 OCR은 현재 프레임에서 다시
 실행하고 문맥·패턴·판단 순서를 거친다. 카탈로그 유사도도 `methods.max_phash_distance`를
 사용하며 SHA256 완전일치는 사용하지 않는다. 성공 기록 정제는 Memory Compilation이다.

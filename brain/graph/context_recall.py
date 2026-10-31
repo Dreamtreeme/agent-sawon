@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from .screen_decision import ScreenDecisionRequest
 
 
-def recall_context(request: ScreenDecisionRequest) -> dict:
+def recall_context(request: ScreenDecisionRequest, *, projected_screen: dict | None = None) -> dict:
     """Restore current history, evidence and unfinished work without changing state."""
     contract = request.execution_contract
     required = request.required_verification
@@ -94,7 +94,7 @@ def recall_context(request: ScreenDecisionRequest) -> dict:
         )
     state = {
         "notebook": notebook,
-        "screen": model_screen(request.screen),
+        "screen": model_screen(request.screen) if projected_screen is None else projected_screen,
         "execution": contract,
     }
     if request.post_action_review:

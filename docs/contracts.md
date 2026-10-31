@@ -20,7 +20,7 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | 선택 결과의 요청 문맥 | `brain/graph/screen_decision.py`의 `ScreenSelection.prepared` | `decide_screen` → `ground_screen_response` | 같은 판단에서 확장한 교육 상세를 빈 행동 보완에 전달. 거절 후 재계획은 기존 prepared 사용. 턴 간 영구 상태가 아님 |
 | 기억 편찬 응답 | `brain/demo_learning/memory_compilation.py`의 `MemoryAssembly` / `MemoryGroupSelection` | 모델 클라이언트, `compile_memory` | 후보 ID로 성공 행동을 선택. context_anchors는 타입 검증 후 첫 8개를 보존하고 초과분 경고 기록 |
 | 인출된 화면·행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup`, `MethodCompletion` | `method_from_match`, `compile_memory`, `MemoryRetrieval`, `screen_decision` | 화면 경로·행동 좌표·관찰 필드 기하·입력 키, 저장 결과 메시지 및 완료 조건을 보존하고 현재 화면에 결합 |
-| 실행 문맥 회상 | `brain/graph/context_recall.py`의 `recall_context` | `screen_decision.build_decision_prompt` | 이번 실행의 이력·누적 증거·남은 입력·진행 상태를 읽음. 선택·모델 호출·상태 변경 없음 |
+| 실행 문맥 회상 | `brain/graph/context_recall.py`의 `recall_context` | `DecisionPromptContext.state` | 캐시·모델이 필요할 때 이번 실행의 이력·누적 증거·남은 입력·진행 상태를 한 번 조립. 선택·모델 호출·상태 변경 없음 |
 | 화면 트리 기억 | `brain/graph/screen_memory.py`, `ProgressState.screen_nodes` | engine, context_recall, notebook | 방문한 경로별 필드·컨트롤 발견과 입력 전달 이력을 누적. 모델용 트리는 같은 상태에서 파생하며 과거 좌표를 포함하지 않음 |
 | 재탐색 요청 | `ScreenMapping.needs_refinement` → `ScreenPlan`/`ScreenMatch` → `SemanticDetection` | `ScreenScanner._resolve` | 필요한 보이는 컨트롤이 없으면 동일 캡처·OCR로 탐색 재진입. provider 스키마에도 존재 |
 | pHash 유사 캡처의 화면 해석 | `SemanticRequest` / `_SceneCatalog` | `Brain._detect_visual` → `screen_decision` | 로컬 탐지 기하는 재사용하고 OCR은 현재 프레임에서 다시 실행. 현재 문맥·판단은 공통 순서로 수행 |
@@ -34,6 +34,11 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 core가 bench 구현에서 직접 import할 수 있는 것은 `sawon_interfaces`뿐입니다. 화면 캡처, 입력,
 창 관리는 relay HTTP 경계 뒤에 둡니다. `WorkerState`에는 SDK client, relay, 열린 파일 같은
 서비스 객체를 넣지 않습니다.
+
+`DecisionPromptContext`는 한 판단 안의 임시 객체다. 실행 capability는 즉시 준비하고,
+모델용 문맥은 처음 읽을 때 생성한다. 메서드 결합이 수정할 수 있는 화면 투영·메서드 문맥은
+결합 전에 확보한다. 교육 확장 응답은 확장한 문맥을 후속 보완에 전달한다. 생성하지 않은
+문맥을 진단 때문에 만들지 않으며 그 판단에는 `match_context_size` 이벤트가 없다.
 
 ## 상태 수명
 

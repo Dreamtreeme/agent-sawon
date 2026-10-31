@@ -54,7 +54,12 @@ def task_instruction():
 def decision_work_counts(monkeypatch):
     """Count real preparation calls without replacing their behavior."""
     counts = {}
-    for name in ("prepare_screen_plan", "retain_action_targets", "sanitize_unused_controls"):
+    for name in (
+        "prepare_screen_plan",
+        "retain_action_targets",
+        "sanitize_unused_controls",
+        "recall_context",
+    ):
         original = getattr(matching, name)
         counts[name] = 0
 
@@ -469,6 +474,7 @@ def test_synthetic_unchanged_plan_is_not_prepared_or_grounded_twice(
         "prepare_screen_plan": 2 if source == "replanned" else 1,
         "retain_action_targets": 1,
         "sanitize_unused_controls": 1,
+        "recall_context": 0 if source == "method" else 1,
     }
     assert len(model.prompts) == {"method": 0, "model": 1, "replanned": 2}[source]
     if source == "replanned":
@@ -476,6 +482,54 @@ def test_synthetic_unchanged_plan_is_not_prepared_or_grounded_twice(
             event.payload.get("check") == "combined_action_corrected"
             for event in brain.log.read_all()
         )
+    assert any(
+        event.payload.get("check") == "match_context_size" for event in brain.log.read_all()
+    ) is (source != "method")
+
+
+def test_synthetic_deferred_context_preserves_prebinding_prompt_and_cache_key(
+    tmp_path, record, monkeypatch
+):
+    # Synthetic method boundary mutates the same fields as real pattern binding;
+    # an action-only memory then requires the normal model observation path.
+    brain, model, *_ = setup_brain(tmp_path, record, [named_response()])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+    request, services = matching_contract(brain)
+    methods = services.memory_retrieval
+    methods.enabled = True
+    methods.state.purpose = "Before binding"
+    eager_state = build_decision_prompt(request, services).state
+    expected_key = screen_pattern_key(eager_state)
+    expected_prompts = []
+    contexts = []
+    recall = matching.recall_context
+
+    def select(screen):
+        methods.state.purpose = "Newly bound group"
+        methods.state.active_method_id = "synthetic-method"
+        methods.state.bindings["synthetic-method"] = {"reference": "hbl_no"}
+        screen["markers"].append(
+            {"id": 99, "source": "omniparser", "bbox": [100, 15, 150, 30], "text_ids": []}
+        )
+        expected_prompts.append(matching.mapping_prompt(eager_state, screen))
+        return ScreenMatch(screen_kind="query", procedure_step="task-action", controls=[], steps=[])
+
+    def capture_context(*args, **kwargs):
+        context = recall(*args, **kwargs)
+        contexts.append(context)
+        return context
+
+    monkeypatch.setattr(methods, "match_pattern", select)
+    monkeypatch.setattr(matching, "recall_context", capture_context)
+    result = decide_screen(request, services)
+
+    assert model.prompts == expected_prompts
+    assert len(contexts) == 1
+    assert json.dumps(contexts[0], ensure_ascii=False) == json.dumps(
+        eager_state, ensure_ascii=False
+    )  # Unsorted whole JSON also checks field order.
+    assert result.visual_match_candidate[0] == expected_key
+    assert result.response.steps[0].source == "hbl_no"
 
 
 def test_synthetic_newly_grounded_target_still_runs_action_validation(tmp_path, record):
@@ -2249,6 +2303,7 @@ def test_empty_action_recovery_preserves_education_and_current_observed_values(
         "prepare_screen_plan": 2,
         "retain_action_targets": 2,
         "sanitize_unused_controls": 2,
+        "recall_context": 1,
     }
 
 

@@ -30,10 +30,12 @@ flowchart TD
     SIM -->|일치| MEM[Memory Retrieval: 업무 지식 인출]
     SIM -->|미일치| SCAN[Scanning: OCR·OmniParser]
     MEM --> READINGS[모델 확인값·입력 키 연결 인출]
-    READINGS --> CTX[Context Recall: 이번 실행 상태]
-    SCAN --> CTX
-    CTX --> PAT[Pattern Matching: 현재 상황에 결합]
-    PAT --> DEC[화면 판단: 기억·캐시 또는 모델]
+    READINGS --> STATE[현재 실행 계약·문맥 원천 확보]
+    SCAN --> STATE
+    STATE --> PAT[Pattern Matching: 현재 상황에 메서드 결합]
+    PAT -->|결합 성공| BIND
+    PAT -->|미결합·예외| CTX[Context Recall: 모델용 현재 문맥 조립]
+    CTX --> DEC[화면 판단: 캐시 또는 모델]
     DEC -->|needs_refinement| SCAN
     DEC --> BIND[장면 결합·증거 연결·메모 갱신]
     BIND --> REVIEW[검토·실행 계획 확정]
@@ -42,9 +44,11 @@ flowchart TD
 ```
 
 `ScreenScanner.scan` → `_resolve` → `Brain._detect_visual` → `decide_screen` 순서다.
-`decide_screen`은 `build_decision_prompt`에서 `recall_context`를 호출한 다음
-`select_screen_response` → `match_screen_pattern`으로 기존 계획을 찾는다. 사용할 계획이
-없으면 모델 판단을 요청한다. 두 경로 모두 `ground_meanings` → `bind_scene` →
+`decide_screen`은 `build_decision_prompt`에서 실행 계약과 문맥 원천을 확보한 다음
+`select_screen_response` → `match_screen_pattern`으로 기존 계획을 찾는다. 메서드를 사용할 수
+없거나 복구가 필요하면 `DecisionPromptContext.state`가 `recall_context`를 한 번 호출하고
+캐시·모델이 그 문맥을 사용한다. 화면 투영·메서드 문맥은 결합 전 시점으로 유지한다.
+두 경로 모두 `ground_meanings` → `bind_scene` →
 `_remember_model_task_evidence`로 이어진다.
 
 새 `ScreenScanner.scan()`은 캡처가 같아도 OCR을 수행한다. 유사한 화면의 기억이나 catalog가

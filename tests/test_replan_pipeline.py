@@ -46,7 +46,7 @@ def test_synthetic_replan_keeps_corrected_target_and_rejects_invalid_correction(
     )
     request = SimpleNamespace(screen={}, page=None)
     prepared = decision.DecisionPromptContext(
-        state={"memo": "preserved"},
+        state_factory=lambda: {"memo": "preserved"},
         capability=decision.ActionCapability(goal="synthetic", completion="synthetic"),
         active_fields=frozenset({"hbl_no"}),
     )

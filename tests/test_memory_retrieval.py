@@ -107,13 +107,13 @@ def test_synthetic_similarity_routes_before_ocr_and_shared_context(tmp_path, sim
     original_pattern = screen_decision.match_screen_pattern
     original_generate = model._generate
 
-    def context(request):
+    def context(request, *, projected_screen=None):
         order.append("context_recall")
         assert request.screen["observation_route"] == (
             "memory_retrieval" if similar else "scanning"
         )
         before = deepcopy(request)
-        restored = original_context(request)
+        restored = original_context(request, projected_screen=projected_screen)
         assert request == before  # Context Recall reads state; it does not choose or execute.
         assert restored["notebook"]["remaining_inputs"] == ["customer", "reference"]
         if similar:
@@ -143,8 +143,8 @@ def test_synthetic_similarity_routes_before_ocr_and_shared_context(tmp_path, sim
         "similarity",
         "current_values",
         *([] if similar else ["scanning"]),
-        "context_recall",
         "pattern_matching",
+        "context_recall",  # This fixture needs model recovery after pattern selection.
         "decision",
     ]
     assert '"remembered_fields"' not in model.prompts[0]  # Unscoped geometry is not a node.

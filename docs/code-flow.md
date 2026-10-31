@@ -71,11 +71,14 @@ flowchart TD
     SIM -->|일치| MEM[Memory Retrieval: 업무 지식 인출]
     SIM -->|미일치| SCAN[Scanning: OCR·OmniParser]
     MEM --> VALUES[모델 확인값·입력 키 연결 인출]
-    VALUES --> RECALL[Context Recall: 이번 실행 상태 복원]
-    SCAN --> RECALL
-    RECALL --> MATCH[Pattern Matching: 같은 경로의 다음 그룹 결합]
+    VALUES --> STATE[현재 상태·실행 계약과 문맥 원천 확보]
+    SCAN --> STATE
+    STATE --> MATCH[Pattern Matching: 같은 경로의 다음 그룹 결합]
     MATCH -->|기억과 현재 상태 일치| RESTORE[저장된 경로·필드·행동 복원]
-    MATCH -->|계획 없음·값/결과 불일치| DECIDE[모델 탐색·예외 복구]
+    MATCH -->|계획 없음·값/결과 불일치| RECALL[Context Recall: 모델용 문맥 조립]
+    RECALL --> CACHE{화면 캐시}
+    CACHE -->|적중| RESTORE
+    CACHE -->|미적중·예외| DECIDE[모델 탐색·예외 복구]
     DECIDE -->|needs_refinement| SCAN
     DECIDE --> EXEC[장면·메모 갱신 후 공통 검토·실행]
     RESTORE --> EXEC
@@ -85,6 +88,9 @@ flowchart TD
 메모리의 필드가 부족해 모델이 `ScreenMapping.needs_refinement=true`를 반환하면 탐색으로
 돌아갑니다. 캡처와 OCR을 다시 수행하지 않습니다. 동일 캡처도 공통 문맥·판단 경로를 거칩니다.
 모델이 새 계획을 내는 경우와 기억 계획을 쓰는 경우는 같은 검증·실행 경로를 거칩니다.
+정상 메서드 경로는 모델용 전체 문맥을 조립하지 않습니다. 화면 투영과 메서드 문맥은 결합
+이전 시점에 확보하고, 캐시 조회·모델·복구가 필요하면 notebook·화면 트리·교육 문맥을 조립합니다.
+한 요청의 저장 증거 snapshot과 변경되지 않은 계획의 검증·대상 정리 결과를 재사용합니다.
 
 기억 인출과 패턴 매칭은 `MemoryRetrieval._matching_route`를 공유합니다. 메서드가 선택되면
 그 메서드의 trace 순서를 유지하고 남은 첫 그룹만 결합하며, 모두 진행한 뒤 완료 기억을 사용합니다.
