@@ -300,9 +300,8 @@ def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_pat
             return blocks
 
     class Detector:
-        def read(self, page, *, ocr_boxes=()):
+        def read(self, page):
             assert page.image_path.name == "capture.png"
-            assert ocr_boxes == tuple(block.bbox for block in blocks)
             return boxes
 
     calls = []
@@ -457,12 +456,12 @@ def test_perception_refines_only_after_basic_detection_reports_failure(
     monkeypatch.setattr("brain.visual.scanning.perf_counter", lambda: clock[0])
 
     class Detector(OmniParserDetector):
-        def read(self, page, *, ocr_boxes=()):
+        def read(self, page):
             calls.append("full")
             clock[0] += 2
             return boxes
 
-        def refine(self, page, regions, *, ocr_boxes=()):
+        def refine(self, page, regions):
             assert 1 <= len(regions) <= self.settings.refinement_max_regions
             calls.append("refine")
             clock[0] += 10
@@ -510,11 +509,11 @@ def test_failed_refinement_returns_navigation_semantics_to_decision_graph(tmp_pa
     calls = []
 
     class Detector(OmniParserDetector):
-        def read(self, page, *, ocr_boxes=()):
+        def read(self, page):
             calls.append("full")
             return boxes
 
-        def refine(self, page, regions, *, ocr_boxes=()):
+        def refine(self, page, regions):
             calls.append("refine")
             return []
 
@@ -598,7 +597,7 @@ def test_synthetic_phash_catalog_reuse_boundary(
             return [blocks[0].model_copy(update={"text": text})]
 
     class Detector:
-        def read(self, page, *, ocr_boxes=()):
+        def read(self, page):
             detector_reads.append(page)
             return boxes
 
@@ -657,7 +656,7 @@ def test_same_screen_rematch_uses_fresh_ocr_and_reused_geometry(tmp_path):
             return blocks
 
     class Detector:
-        def read(self, page, *, ocr_boxes=()):
+        def read(self, page):
             calls["detector"] += 1
             return boxes
 
@@ -684,7 +683,6 @@ def test_same_screen_rematch_uses_fresh_ocr_and_reused_geometry(tmp_path):
     assert perception.scan(wire()).elements[0].role == "edit"
     current = wire()
     assert perception.scan(current).elements[0].role == "combobox"
-    assert requests[1].interpretation is None
     before_rematch = calls.copy()
     corrected = perception.rematch(current)
     assert calls == before_rematch  # Rematching must not capture or run local models.

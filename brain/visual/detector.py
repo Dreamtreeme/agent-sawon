@@ -35,9 +35,7 @@ class DetectorSettings(BaseModel):
 
 
 class ControlDetector(Protocol):
-    def read(
-        self, page: RenderedPage, *, ocr_boxes: tuple[tuple[int, int, int, int], ...] = ()
-    ) -> list[Marker]: ...
+    def read(self, page: RenderedPage) -> list[Marker]: ...
 
 
 class MarkerBatch(BaseModel):
@@ -55,31 +53,26 @@ class OmniParserDetector(MeasuredModelClient):
         self._worker = None
         self.last_metrics = {}
 
-    def read(
-        self, page: RenderedPage, *, ocr_boxes: tuple[tuple[int, int, int, int], ...] = ()
-    ) -> list[Marker]:
-        return self._read(page, [], ocr_boxes)
+    def read(self, page: RenderedPage) -> list[Marker]:
+        return self._read(page, [])
 
     def refine(
         self,
         page: RenderedPage,
         regions: list[tuple[int, int, int, int]],
-        *,
-        ocr_boxes: tuple[tuple[int, int, int, int], ...] = (),
     ) -> list[Marker]:
         if not self.settings.refinement_enabled or not regions:
             return []
         if len(regions) > self.settings.refinement_max_regions:
             raise ValueError("refinement_region_limit")
-        return self._read(page, regions, ocr_boxes)
+        return self._read(page, regions)
 
-    def _read(self, page: RenderedPage, regions: list, ocr_boxes: tuple) -> list[Marker]:
+    def _read(self, page: RenderedPage, regions: list) -> list[Marker]:
         return self.complete_json(
             json.dumps(
                 {
                     "settings": self.settings.model_dump(mode="json"),
                     "regions": regions,
-                    "ocr_boxes": ocr_boxes,
                 }
             ),
             MarkerBatch,
@@ -116,7 +109,6 @@ class OmniParserDetector(MeasuredModelClient):
                 "image_size": self.settings.image_size,
                 "max_dimension": self.settings.max_dimension,
                 "regions": json.loads(prompt)["regions"],
-                "ocr_boxes": json.loads(prompt)["ocr_boxes"],
                 "refinement_scale": self.settings.refinement_scale,
             },
             timeout=self.settings.timeout_seconds,

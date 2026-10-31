@@ -94,11 +94,12 @@ def test_learned_method_reuses_saved_coordinate_with_new_source_without_another_
         "ocr": [],
         "markers": [],
     }
-    bound = MethodLibrary(path, enabled=True).bind(
+    bound = MethodLibrary(path, enabled=True).bind_with_context(
         method.id, {"reference": "new_key"}, current, {"new_key": "NEW-REFERENCE-B"}
     )
-    assert bound["steps"][0]["point"] == [165.0, 50.5]
-    assert bound["steps"][0]["source"] == "new_key"
+    assert bound is not None
+    assert bound.response["steps"][0]["point"] == [165.0, 50.5]
+    assert bound.response["steps"][0]["source"] == "new_key"
     assert method.source_transitions == [
         "recorded-case/run_log.jsonl:5",
         str((log.case_dir / "method-draft.json").resolve()),

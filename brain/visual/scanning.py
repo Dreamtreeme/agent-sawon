@@ -97,7 +97,6 @@ class SemanticRequest:
     screen: dict
     page: RenderedPage
     correction: dict | None = None
-    interpretation: SemanticDetection | None = None
 
     def prompt(self) -> str:
         prompt = SCANNING_RULES + json.dumps(self.screen, ensure_ascii=False)
@@ -286,7 +285,7 @@ class ScreenScanner:
             if reused_boxes is not None
             else []
             if memory is not None
-            else self.detector.read(page, ocr_boxes=tuple(block.bbox for block in blocks))
+            else self.detector.read(page)
         )
         geometry_source = (
             "memory_retrieval"
@@ -443,7 +442,7 @@ class ScreenScanner:
                         block.model_copy(update={"text": block.text.replace(secret, "[REDACTED]")})
                         for block in blocks
                     ]
-            boxes = self.detector.read(page, ocr_boxes=tuple(block.bbox for block in blocks))
+            boxes = self.detector.read(page)
             markers = build_markers(
                 blocks, boxes, shot.width, shot.height, settings=self.merge_settings
             )
@@ -611,9 +610,7 @@ class ScreenScanner:
                     raise VisualGroundingError("visual_required_control_missing")
                 refinement_attempted = True
                 refined_at = perf_counter()
-                refined = self.detector.refine(
-                    page, regions, ocr_boxes=tuple(block.bbox for block in blocks)
-                )
+                refined = self.detector.refine(page, regions)
                 elapsed = (perf_counter() - refined_at) * 1000
                 detector_ms += elapsed
                 atomic_write_json(

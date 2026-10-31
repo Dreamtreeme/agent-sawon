@@ -574,7 +574,6 @@ class Brain:
             response = self._decide_visual_screen(
                 screen,
                 request.page,
-                interpretation=request.interpretation,
                 defer_plan_errors=True,
             )
             self.visual_proposal = response

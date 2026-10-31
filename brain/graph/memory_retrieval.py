@@ -525,7 +525,6 @@ class MemoryRetrieval:
             "method": method,
             "group_id": bound.group_id,
             "origin": "reuse",
-            "response": response,
         }
         self.log.append(
             "cache_hit",

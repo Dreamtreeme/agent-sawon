@@ -84,14 +84,16 @@ def test_saved_coordinate_method_uses_new_source_without_ocr_rebinding(tmp_path)
     assert "Old customer" not in library.path.read_text(encoding="utf-8")
     assert restored.catalog("Prepare a delivery")[0]["id"] == "find-party"
     assert restored.catalog("Unrelated task") == []
-    assert restored.bind("find-party", {}, current, {"unrelated": "value"}) is None
+    assert restored.bind_with_context("find-party", {}, current, {"unrelated": "value"}) is None
     # The configured distance is inclusive; viewport mismatch must not rescale coordinates.
     for label, update, expected in [
         ("distance-six", {"screen_phash": 123 ^ 63}, True),
         ("distance-seven", {"screen_phash": 123 ^ 127}, False),
         ("resized", {"image_size": [1600, 900]}, False),
     ]:
-        result = restored.bind("find-party", {}, {**current, **update}, {"party": "Next"})
+        result = restored.bind_with_context(
+            "find-party", {}, {**current, **update}, {"party": "Next"}
+        )
         assert (result is not None) is expected, label
 
 
@@ -206,10 +208,12 @@ def test_saved_coordinates_ignore_competing_table_labels(tmp_path):
     assert "Source value A" not in library.path.read_text(encoding="utf-8")
     # Competing labels and detector IDs are irrelevant after screenshot matching.
     current = {"image_size": [1200, 800], "screen_phash": 123, "ocr": [], "markers": []}
-    bound = library.bind("entry", {}, current, {"destination": "B", "mass": "2", "count": "3"})
+    bound = library.bind_with_context(
+        "entry", {}, current, {"destination": "B", "mass": "2", "count": "3"}
+    )
     assert bound is not None
-    assert [step["source"] for step in bound["steps"]] == ["destination", "mass", "count"]
-    assert [step["point"] for step in bound["steps"]] == [
+    assert [step["source"] for step in bound.response["steps"]] == ["destination", "mass", "count"]
+    assert [step["point"] for step in bound.response["steps"]] == [
         [309.5, 501.5],
         [847.5, 176],
         [208.5, 624.5],
@@ -266,7 +270,7 @@ def test_synthetic_observed_step_results_survive_compile_and_bind_without_invent
     library.upsert(compiled)
     for index, completed in enumerate((False, True)):
         current = {"screen_phash": 123, "image_size": [800, 600], "ocr": [], "markers": []}
-        bound = library.bind(
+        bound = library.bind_with_context(
             method.id,
             {},
             current,
@@ -274,14 +278,17 @@ def test_synthetic_observed_step_results_survive_compile_and_bind_without_invent
             group_id=compiled.action_groups[index].id,
         )
         assert bound is not None
-        assert bound["observed_step_results"] == [
+        assert bound.response["observed_step_results"] == [
             {
                 "step_id": "open-detail",
                 "observed_result": "Detail for {reference} opened",
                 "completed": completed,
             }
         ], index
-        assert ScreenMatch.model_validate(bound).observed_step_results[0].completed is completed
+        assert (
+            ScreenMatch.model_validate(bound.response).observed_step_results[0].completed
+            is completed
+        )
     assert "CASE-001" not in library.path.read_text(encoding="utf-8")
     old = method.model_dump(mode="json")
     old["action_groups"][0].pop("observed_step_results")
@@ -445,6 +452,6 @@ def test_coordinate_method_keeps_each_action_point_and_ignores_numbered_catalog(
     assert method is not None
     library = MethodLibrary(tmp_path / "methods.json", enabled=True)
     library.upsert(method)
-    replay = library.bind("points", {}, screen, {})
+    replay = library.bind_with_context("points", {}, screen, {})
     assert replay is not None
-    assert [step["point"] for step in replay["steps"]] == [[20, 30], [21, 31]]
+    assert [step["point"] for step in replay.response["steps"]] == [[20, 30], [21, 31]]

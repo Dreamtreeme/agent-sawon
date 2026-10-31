@@ -153,7 +153,7 @@ def test_memory_compiler_preserves_purpose_points_and_trace_order(tmp_path):
     current = screen("Shipment editor")
     current["ocr"] = []
     current["screen_kind"] = "editor"
-    bound = MethodLibrary(path, enabled=True).bind(
+    bound = MethodLibrary(path, enabled=True).bind_with_context(
         "warm-shipment",
         {},
         current,
@@ -161,9 +161,9 @@ def test_memory_compiler_preserves_purpose_points_and_trace_order(tmp_path):
         group_id=method.action_groups[0].id,
     )
     assert bound is not None
-    assert bound["steps"][0]["point"] == [200.0, 300.0]
-    assert bound["steps"][0]["source"] == "hbl_no"
-    assert bound["observed_step_results"] == [
+    assert bound.response["steps"][0]["point"] == [200.0, 300.0]
+    assert bound.response["steps"][0]["source"] == "hbl_no"
+    assert bound.response["observed_step_results"] == [
         {
             "step_id": "open-detail",
             "observed_result": "{hbl_no} detail opened",
@@ -264,9 +264,11 @@ def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_naviga
             {"id": 102, "text": "OK", "bbox": [100, 80, 60, 20]},
         ],
     }
-    rebound = library.bind(method.id, {}, current, {"hbl_no": "HBL-002"}, group_id=group.id)
+    rebound = library.bind_with_context(
+        method.id, {}, current, {"hbl_no": "HBL-002"}, group_id=group.id
+    )
     assert rebound is not None
-    plan = ScreenMatch.model_validate(rebound)
+    plan = ScreenMatch.model_validate(rebound.response)
     assert plan.message_targets and plan.message_targets != [10]
     assert plan.steps[0].point == [135, 90]
     boxes = {item["id"]: item["bbox"] for item in current["markers"]}
@@ -290,9 +292,11 @@ def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_naviga
     # The same geometry must not turn an error or unreadable message into a saved result.
     for label, text in [("different-result", "Save rejected"), ("missing-message", "")]:
         changed = {**current, "ocr": [{**current["ocr"][0], "text": text}, current["ocr"][1]]}
-        fallback = library.bind(method.id, {}, changed, {"hbl_no": "HBL-002"}, group_id=group.id)
+        fallback = library.bind_with_context(
+            method.id, {}, changed, {"hbl_no": "HBL-002"}, group_id=group.id
+        )
         assert fallback is not None, label
-        assert ScreenMatch.model_validate(fallback).save_result is None, label
+        assert ScreenMatch.model_validate(fallback.response).save_result is None, label
 
 
 def test_memory_compiler_keeps_only_visible_non_instance_context_anchors():
@@ -369,11 +373,13 @@ def test_synthetic_pruned_click_rebases_entry_memory_without_rebinding_action_id
     library = MethodLibrary(tmp_path / "methods.json", enabled=True)
     library.upsert(method)
     current = {**before, "markers": [], "selected_fields": {}}
-    rebound = library.bind(method.id, {}, current, source()["values"], group_id=group.id)
+    rebound = library.bind_with_context(
+        method.id, {}, current, source()["values"], group_id=group.id
+    )
     assert rebound is not None
-    assert rebound["steps"][0]["action"] == "double_click"
-    assert rebound["steps"][0]["point"] == [190.0, 187.0]
-    assert rebound["save_result"] == "ready_for_query"
+    assert rebound.response["steps"][0]["action"] == "double_click"
+    assert rebound.response["steps"][0]["point"] == [190.0, 187.0]
+    assert rebound.response["save_result"] == "ready_for_query"
 
 
 @pytest.mark.parametrize("unknown_candidate", [False, True], ids=["accepted", "bad-target-id"])
@@ -720,12 +726,12 @@ def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):
         "screen_phash": loaded[0].screen["screen_phash"],
     }
     library = open_memory_library(path, tmp_path / "warm", enabled=True, compiled_only=True)
-    bound = library.bind(
+    bound = library.bind_with_context(
         "named-warm", {}, current, {"hbl_no": "HBL-002"}, group_id=compiled.action_groups[0].id
     )
     assert bound is not None
-    assert bound["steps"][0]["point"] == [200, 300]
-    assert bound["steps"][0]["source"] == "hbl_no"
+    assert bound.response["steps"][0]["point"] == [200, 300]
+    assert bound.response["steps"][0]["source"] == "hbl_no"
     assert compiled.action_groups[0].targets[0].anchor_texts == []
 
 

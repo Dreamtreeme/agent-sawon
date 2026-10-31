@@ -20,3 +20,18 @@
 1단계 검증: 전체 746 passed, 기존 3 xfailed / 65.69초, Ruff check/format 및
 diff check 통과. 이전 함수를 메모리에 복원하면 중복 검출 3건이 실패하고, 변경 응답의
 검증을 무력화하면 비활성 대상 테스트가 실패했다. 실제 모델·ERP 호출은 아직 하지 않았다.
+
+## 2. 무효 전달 삭제
+
+- worker가 소비하지 않는 `ocr_boxes`의 생성·인자·JSON 전달을 제거했다. OCR 실행과
+  marker 병합은 유지한다.
+- 항상 None인 `SemanticRequest.interpretation`과 engine 전달, 읽는 곳이 없는
+  `pending["response"]`, 항상 False인 `allow_literal_anchor` 인자·분기, 함수 입구에서
+  이미 확인한 pHash None 조건을 삭제했다.
+- 제품에서 호출하지 않는 `MethodLibrary.bind()` 래퍼를 삭제하고 테스트 13개 호출을
+  실제 제품 진입점인 `bind_with_context()`로 옮겼다. 같은 response의 행동·입력 키·좌표·
+  증거를 계속 확인한다. 무효 전달만 고정하던 단언 2개를 제거했고 테스트 함수는 삭제하지 않았다.
+- `needs_image`와 과거 산출물의 앵커 결합 경로는 이번에 변경하지 않았다.
+
+2단계 검증: 전체 746 passed, 기존 3 xfailed / 49.10초, Ruff check/format 및
+diff check 통과. 제품 코드 30줄 순감소. 삭제한 이름의 제품·테스트 잔여 참조는 없다.

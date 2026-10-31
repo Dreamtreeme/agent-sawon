@@ -395,11 +395,8 @@ def _method_target(
     marker: dict,
     control: dict,
     blocks: dict[int, dict],
-    allow_literal_anchor: bool,
 ) -> MethodTarget | None:
     anchor_ids = control.get("label_ids", [])
-    if not anchor_ids and allow_literal_anchor and control["role"] not in {"edit", "combobox"}:
-        anchor_ids = control.get("text_ids", []) or marker.get("text_ids", [])
     anchors = [blocks[i] for i in anchor_ids if i in blocks and blocks[i]["text"].strip()]
     if not anchors:
         return None
@@ -469,7 +466,7 @@ def method_from_match(
     for step in steps:
         control = controls.get(step["target"])
         if control is None:
-            if step.get("point") is None or screen.get("screen_phash") is None:
+            if step.get("point") is None:
                 return None
             control = {"role": "edit" if step["action"] == "fill" else "button"}
         source = step.get("source")
@@ -644,8 +641,6 @@ def method_completion_from_match(
                 marker=marker,
                 control=control,
                 blocks=blocks,
-                # Literal values are instance data and can never locate later proof.
-                allow_literal_anchor=False,
             )
         if target is None:
             return None
@@ -923,18 +918,6 @@ class MethodLibrary:
             existing[method.id] = method
             atomic_write_json(self.path, MethodDocument(methods=list(existing.values())))
         return method
-
-    def bind(
-        self,
-        method_id: str,
-        slot_map: dict[str, str],
-        screen: dict,
-        values: dict[str, str],
-        *,
-        group_id: str | None = None,
-    ) -> dict | None:
-        bound = self.bind_with_context(method_id, slot_map, screen, values, group_id=group_id)
-        return None if bound is None else bound.response
 
     def bind_with_context(
         self,

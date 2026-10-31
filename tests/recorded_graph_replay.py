@@ -225,7 +225,7 @@ class RecordedDetector:
     def __init__(self, tape):
         self.tape = tape
 
-    def read(self, page, *, ocr_boxes=()):
+    def read(self, page):
         source = self.tape.source / "visual" / page.image_path.parent.name / "local-detections.json"
         self.tape.require(
             source.is_file(), f"missing detector output for {page.image_path.parent.name}"

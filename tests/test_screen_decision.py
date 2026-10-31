@@ -164,7 +164,7 @@ def setup_brain(tmp_path, record, responses, *, task_instruction=None):
     class Detector:
         calls = 0
 
-        def read(self, page, *, ocr_boxes=()):
+        def read(self, page):
             self.calls += 1
             return boxes
 
@@ -3264,17 +3264,22 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
         "ocr": [],
         "markers": [],
     }
-    bound = library.bind("semantic", {"hbl_no": "next_number"}, fresh, {"next_number": "NEW-2"})
+    bound = library.bind_with_context(
+        "semantic", {"hbl_no": "next_number"}, fresh, {"next_number": "NEW-2"}
+    )
     assert bound is not None
-    assert bound["steps"][0]["point"] == [125, 28]
-    assert bound["steps"][0]["source"] == "next_number"
+    assert bound.response["steps"][0]["point"] == [125, 28]
+    assert bound.response["steps"][0]["source"] == "next_number"
     assert len(model.prompts) == 1
     # A different frame or viewport must yield back to model selection.
     for change in (
         {"screen_phash": screen["screen_phash"] ^ ((1 << 64) - 1)},
         {"image_size": [800, 400]},
     ):
-        assert library.bind("semantic", {}, {**fresh, **change}, {"hbl_no": "NEXT"}) is None
+        assert (
+            library.bind_with_context("semantic", {}, {**fresh, **change}, {"hbl_no": "NEXT"})
+            is None
+        )
     assert screen["screen_phash"] == perceptual_hash(
         next((tmp_path / "visual").glob("*/capture.png"))
     )
