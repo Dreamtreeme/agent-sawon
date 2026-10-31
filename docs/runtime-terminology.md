@@ -1,6 +1,6 @@
 # 화면 처리 개념과 실행 순서
 
-기준일: 2026-10-28
+기준일: 2026-10-31
 
 Memory Retrieval은 **과거에 배운 업무 방법**을 가져온다. Context Recall은 **이번 실행의
 현재 상황**을 복원한다. 두 역할은 서로를 대체하지 않는다. 기억을 찾은 경우와 새로 탐색한
@@ -11,16 +11,16 @@ Memory Retrieval은 **과거에 배운 업무 방법**을 가져온다. Context 
 | 단계 | 질문 | 입력 → 출력 | 코드 |
 |---|---|---|---|
 | 화면 유사도 | 이 화면을 경험했는가? | 현재 캡처·업무 식별 → 가까운 기억 또는 미일치 | `ScreenScanner.scan`, `screen_similarity_distance` |
-| Memory Retrieval | 이 업무를 어떻게 처리했는가? | 일치한 기억 → 필드 이름·bbox·입력 key·모델 확인값·학습한 절차 | `MemoryRetrieval.retrieve_screen_memory` |
+| Memory Retrieval | 이 업무를 어떻게 처리했는가? | 일치한 기억 → 필드 이름·bbox·입력 key·행동 좌표·학습한 절차 | `MemoryRetrieval.retrieve_screen_memory`, `_restore_structure` |
 | Scanning | 현재 무엇이 보이는가? | 캡처 → OCR 텍스트·OmniParser 후보 영역 | `ScreenScanner._build_catalog` |
 | Context Recall | 이번 실행은 어디까지 왔는가? | 현재 상태 → 메모·이력·완료/미완료 입력·진행 중 행동·교육 위치 | `context_recall.recall_context` |
 | Pattern Matching | 배운 방법을 지금 적용할 수 있는가? | 현재 화면·진행 상태 → 결합된 메서드 또는 화면 캐시 | `screen_decision.match_screen_pattern` |
 | 화면 판단 | 다음에 무엇을 할 것인가? | 위 결과 → 실행 계획 또는 탐색 요청 | `screen_decision.decide_screen`, `select_screen_response` |
-| Memory Compilation | 성공 경험에서 무엇을 재사용할 것인가? | 성공 실행 기록 → 절차·필드 대응·좌표·모델 확인값을 담은 기억 | `compile_memory` |
+| Memory Compilation | 성공 경험에서 무엇을 재사용할 것인가? | 성공 실행 기록 → 절차·필드 대응·좌표·검토 대상을 담은 기억 | `compile_memory` |
 
 Context Recall에는 모델 호출·행동 선택·상태 변경이 없다. 모델 호출과 응답 검증·복구는
-`screen_decision.py`가 소유한다. 업무 입력과 일치한 모델 확인값은 입력 키 참조로 편찬해
-현재 record의 값을 연결한다. 과거 업무의 입력 문자열을 그대로 복사하지 않는다.
+`screen_decision.py`가 소유한다. 편찬물은 입력 키와 실행 방법을 보관하고, 실제 입력 문자열은
+이번 실행의 `request.values`에서 가져온다. 과거에 확인한 값은 현재 화면의 관찰값이 아니다.
 
 ## 화면 처리 그래프
 
@@ -29,15 +29,18 @@ flowchart TD
     CAP[현재 캡처] --> SIM{화면 유사도}
     SIM -->|일치| MEM[Memory Retrieval: 업무 지식 인출]
     SIM -->|미일치| SCAN[Scanning: OCR·OmniParser]
-    MEM --> READINGS[모델 확인값·입력 키 연결 인출]
-    READINGS --> STATE[현재 실행 계약·문맥 원천 확보]
+    MEM --> STRUCTURE[필드 구조·입력 키·행동 인출]
+    STRUCTURE --> STATE[현재 실행 계약·문맥 원천 확보]
     SCAN --> STATE
-    STATE --> PAT[Pattern Matching: 현재 상황에 메서드 결합]
-    PAT -->|결합 성공| BIND
-    PAT -->|미결합·예외| CTX[Context Recall: 모델용 현재 문맥 조립]
-    CTX --> DEC[화면 판단: 캐시 또는 모델]
+    STATE --> NEED{현재 값 검토 대기}
+    NEED -->|없음| PAT[Pattern Matching: 현재 상황에 메서드 결합]
+    NEED -->|있음| CTX[Context Recall: 모델용 현재 문맥 조립]
+    PAT -->|행동 결합 성공| BIND
+    PAT -->|현재 필드 미확인·최종 완료 후보| CTX
+    PAT -->|미결합·예외| CTX
+    CTX --> DEC[현재 검토는 모델·그 외는 캐시 또는 모델]
     DEC -->|needs_refinement| SCAN
-    DEC --> BIND[장면 결합·증거 연결·메모 갱신]
+    DEC --> BIND[장면 결합·현재 관찰이 있는 항목만 증거 갱신]
     BIND --> REVIEW[검토·실행 계획 확정]
     REVIEW --> ACT[실행]
     ACT --> CAP
@@ -45,9 +48,12 @@ flowchart TD
 
 `ScreenScanner.scan` → `_resolve` → `Brain._detect_visual` → `decide_screen` 순서다.
 `decide_screen`은 `build_decision_prompt`에서 실행 계약과 문맥 원천을 확보한 다음
-`select_screen_response` → `match_screen_pattern`으로 기존 계획을 찾는다. 메서드를 사용할 수
-없거나 복구가 필요하면 `DecisionPromptContext.state`가 `recall_context`를 한 번 호출하고
-캐시·모델이 그 문맥을 사용한다. 화면 투영·메서드 문맥은 결합 전 시점으로 유지한다.
+`select_screen_response`에서 현재 값 검토가 필요한지 확인하고, 필요하지 않으면
+`match_screen_pattern`으로 기존 계획을 찾는다. 결합된 필드에도 미확인 전달이 있는지 확인한다.
+검토 대기, 최종 완료 후보, 미결합이나 복구에서는
+`DecisionPromptContext.state`가 `recall_context`를 한 번 호출한다. 현재 값·완료 검토는 기존
+`ScreenMatch` 모델 호출 하나로 관찰과 다음 행동을 함께 얻는다. 그 외에는 캐시·모델이 문맥을
+사용한다. 화면 투영·메서드 문맥은 결합 전 시점으로 유지한다.
 두 경로 모두 `ground_meanings` → `bind_scene` →
 `_remember_model_task_evidence`로 이어진다.
 
@@ -66,13 +72,17 @@ flowchart TD
 - `retrieve_screen_memory`는 이름·bbox·role뿐 아니라 현재 슬롯에 연결한 `source`와
   `procedure`를 반환한다. 행동 후보가 선택되지 않아도 이 정보는 모델에 전달된다.
   인출만으로 `pending`, `used`, `verified`를 갱신하지 않는다.
-- `group_input_sources`를 기억 인출과 입력 키 연결이 함께 사용한다. 모델이 확인한 값과
-  누적 메모를 복원한 `ScreenMapping.local_payload`는 기존 공용 값 비교를 사용한다. 경로가 없는 과거
-  기억만 `bind_visible_value_evidence`를 거친다. 기억에 있는 절차는 실행 완료 이력이 아니다.
-- 정상 인출은 저장된 `screen_path`·필드 의미·입력 키·행동으로 매핑을 복원하며 모델을 부르지
-  않는다. 다음 계획 미결합, 입력/저장 결과 불일치, 실행 검증 실패, 기억 누락이 모델 복구 사유다.
-  복구 요청에는 인출된 필드 연결·모델 확인값·누적 메모와 현재 OCR을 구분해 전달한다.
-  최종 완료 응답도 판단 로그의 매핑에서 편찬하며 기존 완료 검증을 거친다.
+- `group_input_sources`를 기억 인출과 입력 키 연결이 함께 사용한다. `_restore_structure`가
+  만든 필드에는 `value`가 없으며 과거 `observed_step_results`도 현재 응답으로 복원하지 않는다.
+  화면 캐시도 같은 방식으로 과거 값을 제거하고 `act` 행동 계획만 재사용한다. 현재 실행에서 확인한 메모는
+  `screen_tree`의 이력으로 보존하고, 새 관찰 ID·순번이나 verified를 만들어내는 데 쓰지 않는다.
+- 검토 대기가 없는 초기 입력·로그인·화면 이동은 저장된 구조와 행동을 결합해 모델 없이 실행할 수
+  있다. 입력 문자열은 현재 업무 값에서 가져온다. 입력 후 확인 대기, 저장 후 상세 진입, 최종 완료
+  후보 등 현재 값 검토가 필요하면 기존 화면 모델을 호출한다. 그 응답의 관찰과 다음 행동을 함께
+  적용하며 기억 갱신만을 위한 별도 호출은 만들지 않는다. 미결합·실행 검증 실패도 모델 복구 사유다.
+  이전 노드의 미확인 입력만으로 현재 이동을 막지 않으며, 해당 입력이 현재 인출 필드에 있을 때 검토한다.
+- 최종 완료 기억은 검토 대상과 조건을 연결하는 후보이다. 실제 성공은 현재 실행의 저장·재조회
+  상태와 모델이 확인한 누적 증거로 판정하며 과거 성공·관찰값을 복원하지 않는다.
 - 경로 진행은 원본 전달·검토된 같은 행동의 대체·현재 모델 복구 응답으로 확인한 연속 선두
   그룹의 재개 이력으로 결정한다. 과거 기억의 완료 결과나 전역 교육 완료 집합은 실행 자격이 아니다.
   `resumed_group_ids`는 `method_route_resumed`에 기록하고 `used`에 가짜 전달을 추가하지 않는다.
@@ -81,9 +91,10 @@ flowchart TD
   OmniParser를 실행하고 다시 공통 문맥·패턴·판단 경로로 들어간다. 빈 행동 보완 호출로 바꾸지 않는다.
 - 화면 밖 컨트롤은 탐색 요청 신호로 대신 처리하지 않고 기존 이동·스크롤 행동으로 찾는다.
   재탐지 이후에는 기존 보완 탐지의 종료 조건을 사용한다.
-- 예전 기억은 빈 관찰 필드 기본값과 `field_values=None`으로 읽는다. 값 누락을 OCR로 채우지 않는다.
-  저장되지 않은 모델 확인값·추가 필드·입력 대응은 성공 기록을
-  재편찬해야 확보할 수 있다. 콜드/웜은 bench의 실험 조건이며 화면마다 선택하는 경로와 다르다.
+- 새 편찬물은 `field_values`를 저장하지 않는다. 구형 산출물의 해당 키는 로더에서 버리며 파일
+  자체를 수정하지 않는다. 구조 매핑의 누락된 값을 OCR이나 입력 요구값으로 채우지 않는다.
+  누락된 필드 구조·입력 대응은 재편찬 또는 현재 모델 판단으로 확보한다. 콜드/웜은 bench의
+  실험 조건이며 화면마다 선택하는 경로와 다르다.
 
 ## LangGraph와의 관계
 

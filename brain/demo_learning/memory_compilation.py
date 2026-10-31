@@ -506,11 +506,6 @@ def _rebase_entry_observation(
             for target in entry.observed_fields
         ],
         field_sources={renamed.get(key, key): value for key, value in entry.field_sources.items()},
-        field_values=(
-            {renamed.get(key, key): value for key, value in entry.field_values.items()}
-            if entry.field_values is not None
-            else None
-        ),
         message_targets=[renamed.get(name, name) for name in entry.message_targets],
     )
     updated = group.model_copy(update={**updates, "id": "pending"})

@@ -461,6 +461,8 @@ def test_synthetic_unchanged_plan_is_not_prepared_or_grounded_twice(
     brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
     request, services = matching_contract(brain)
     if source == "method":
+        # A remembered input supplies its structure/source, never a current reading.
+        del data["fields"]["Reference"]["value"]
         mapped = ScreenMatch.model_validate(data).mapping
         proposal = ScreenMatch.model_validate(mapped.local_payload(request.screen, request.values))
         request = replace(request, proposal=proposal.model_copy(update={"mapping": mapped}))
@@ -1571,8 +1573,14 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(
 ):
     cache_path = tmp_path / "visual-match.json"
 
+    old_reading = named_response()
+    old_reading["fields"]["Reference"]["value"] = record.fields.hbl_no.value
+    old_reading["repair_fields"] = ["Reference"]
+    old_reading["observed_step_results"] = [
+        {"step_id": "previous-read", "observed_result": "Previously visible", "completed": True}
+    ]
     first, first_model, *_ = setup_brain(
-        tmp_path / "first", record, [named_response()], task_instruction=task_instruction
+        tmp_path / "first", record, [old_reading], task_instruction=task_instruction
     )
     first.visual_match_cache = ScreenPatternCache(cache_path, enabled=True)
     first._observe()
@@ -1597,6 +1605,11 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(
     monkeypatch.setattr(runtime_type, "remember", remember_cached)
     second._observe()
     assert second_model.prompts == []
+    assert "value" not in second.visual_proposal.mapping.fields["Reference"].model_fields_set
+    assert second.visual_proposal.observed_step_results == []
+    assert second.visual_proposal.mapping.repair_fields == []
+    assert second.visual_proposal.evidence == []
+    assert second.verified == {}
     assert second._select_node() == "review"
     assert second_model.prompts == []
     hits = [
@@ -1609,12 +1622,13 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(
 
 
 @pytest.mark.parametrize("has_review", [False, True], ids=["action-only", "current-save-review"])
-def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
+def test_save_result_reuses_bound_review_or_requests_current_model_review(
     tmp_path, record, task_instruction, has_review
 ):
     from brain.graph.screen_mapping import ScreenMapping
 
-    brain, model, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
+    replies = [] if has_review else [named_response(fields={}, steps=[], operation="stop")]
+    brain, model, *_ = setup_brain(tmp_path, record, replies, task_instruction=task_instruction)
     request, services = matching_contract(brain)
     request = replace(request, phase="save_result")
     brain.memory_retrieval.enabled = True
@@ -1663,10 +1677,10 @@ def test_save_result_reuses_bound_review_or_falls_back_to_current_review_cache(
         assert selected.cache_hit is None
         assert not selected.used_image
     else:
-        assert selected.response.operation == cached.operation
-        assert selected.cache_hit is not None
+        assert selected.response.mapping.operation == "stop"
+        assert selected.cache_hit is None
     assert bound == [request.screen]
-    assert model.prompts == []
+    assert len(model.prompts) == (0 if has_review else 1)
 
 
 def test_similar_capture_reruns_ocr_but_reuses_detector_geometry(tmp_path, record):
@@ -2235,7 +2249,7 @@ def test_synthetic_mappingless_method_requires_current_model_observation(tmp_pat
     assert result.response.mapping.fields["Reference"].source == "hbl_no"
     assert len(model.prompts) == 1
     assert any(
-        e.payload.get("context", {}).get("purpose") == "grounded_screen_plan"
+        e.payload.get("context", {}).get("purpose") == "input_review"
         for e in brain.log.read_all()
         if e.kind == "model_call"
     )
@@ -2264,10 +2278,197 @@ def test_synthetic_mappingless_cache_requires_current_model_observation(tmp_path
 
     assert result.response.mapping.fields["Reference"].source == "hbl_no"
     assert len(model.prompts) == 1
-    assert any(
+    assert not any(
         event.kind == "cache_hit" and event.payload.get("check") == "visual_match_cache"
         for event in brain.log.read_all()
     )
+
+
+@pytest.mark.parametrize(
+    "review",
+    [
+        "batch",
+        "delivered-input",
+        "pending-memory",
+        "saved-detail",
+        "method-complete",
+        "cache-complete",
+        "cache-duplicate-clear",
+        "cache-duplicate-found",
+        "cache-stop",
+    ],
+)
+def test_synthetic_structure_retrieval_reads_current_values_once_before_continuing(
+    tmp_path, record, review
+):
+    # Synthetic stored method/cache and fake model; selection and prompt assembly are real.
+    from brain.graph.screen_mapping import ScreenMapping
+
+    current = named_response(
+        fields={
+            "Reference": {
+                "source": "hbl_no",
+                "role": "edit",
+                "bbox": [100, 15, 150, 30],
+                "value": record.fields.hbl_no.value,
+            },
+            "Continue": {"role": "button", "bbox": [250, 15, 80, 30]},
+        },
+        steps=[{"target": "Continue", "action": "click", "intent": "navigate", "point": [280, 30]}],
+    )
+    brain, model, *_ = setup_brain(tmp_path, record, [current])
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    request, services = matching_contract(brain)
+    request.screen["observation_route"] = "memory_retrieval"
+    mapping = ScreenMapping.model_validate(
+        {
+            **current,
+            "fields": {
+                name: {k: v for k, v in item.items() if k != "value"}
+                for name, item in current["fields"].items()
+            },
+        }
+    )
+    method = ScreenMatch.model_validate(mapping.local_payload(request.screen, request.values))
+    method = method.model_copy(update={"mapping": mapping})
+    if review == "batch":
+        request = replace(request, post_action_review=True)
+    elif review == "delivered-input":
+        request = replace(
+            request,
+            required_verification=(
+                {
+                    "source": "hbl_no",
+                    "screen": "query",
+                    "descriptor": {"role": "edit", "name": "Reference", "label": "Reference"},
+                    "input_region": [100, 15, 150, 30],
+                },
+            ),
+        )
+    elif review == "pending-memory":
+        request.screen["memory_fields"] = [
+            {"name": name, **item.model_dump(exclude_unset=True)}
+            for name, item in mapping.fields.items()
+        ]
+        request = replace(
+            request,
+            screen_nodes={
+                "[]": {
+                    "path": [],
+                    "controls": {},
+                    "fields": {
+                        "hbl_no": {
+                            "label": "Reference",
+                            "role": "edit",
+                            "bbox": [100, 15, 150, 30],
+                            "delivery": {
+                                "value": record.fields.hbl_no.value,
+                                "scope": "entry",
+                                "observation_number": 2,
+                            },
+                        }
+                    },
+                }
+            },
+        )
+    elif review == "saved-detail":
+        request = replace(
+            request,
+            workflow_flags={
+                **request.workflow_flags,
+                "save_issued": True,
+                "saved_result_open_pending": True,
+            },
+        )
+    elif review == "method-complete":
+        method = method.model_copy(update={"operation": "complete", "steps": []})
+    request = replace(request, grounded_interpretation=method.interpretation())
+    services.memory_retrieval.match_pattern = lambda _screen: (
+        None if review.startswith("cache-") else method
+    )
+    services = replace(
+        services, cache=ScreenPatternCache(tmp_path / "review-cache.json", enabled=True)
+    )
+    prepared = build_decision_prompt(request, services)
+    stale = ScreenMatch.model_validate(current)
+    stale.mapping.fields["Reference"] = stale.mapping.fields["Reference"].model_copy(
+        update={"value": "PAST-RUN"}
+    )
+    if review.startswith("cache-"):
+        stale = stale.model_copy(
+            update={"operation": review.removeprefix("cache-").replace("-", "_"), "steps": []}
+        )
+    services.cache.stage(
+        screen_pattern_key(prepared.state),
+        {**stale.model_dump(mode="json"), "mapping": stale.mapping.model_dump(mode="json")},
+    )
+    assert services.cache.finish(success=True) == 1
+
+    result = decide_screen(request, services)
+
+    assert len(model.prompts) == 1
+    assert result.response.mapping.fields["Reference"].value == record.fields.hbl_no.value
+    assert [(step.action, step.point) for step in result.response.steps] == [("click", [280, 30])]
+    assert [item.field for item in result.response.evidence] == ["hbl_no"]
+    assert not any(e.payload.get("check") == "visual_match_cache" for e in brain.log.read_all())
+    assert [
+        e.payload["reason"]
+        for e in brain.log.read_all()
+        if e.payload.get("check") == "memory_retrieval_exception"
+    ] == ["current_values_not_observed"]
+
+
+def test_synthetic_unseen_pending_input_does_not_interrupt_structural_navigation(tmp_path, record):
+    # Synthetic prior-screen delivery; only the current navigation target is visible.
+    from brain.graph.screen_memory import pending_screen_inputs
+
+    brain, model, *_ = setup_brain(tmp_path, record, [])
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
+    request, services = matching_contract(brain)
+    nodes = {
+        '["Previous"]': {
+            "path": ["Previous"],
+            "controls": {},
+            "fields": {
+                "hbl_no": {
+                    "label": "Reference",
+                    "role": "edit",
+                    "bbox": [100, 15, 150, 30],
+                    "delivery": {
+                        "value": record.fields.hbl_no.value,
+                        "scope": "entry",
+                        "observation_number": 2,
+                    },
+                }
+            },
+        }
+    }
+    original = json.dumps(nodes, ensure_ascii=False)
+    mapped = ScreenMatch.model_validate(
+        named_response(
+            screen_path=["Current"],
+            fields={"Continue": {"role": "button", "bbox": [250, 15, 80, 30]}},
+            steps=[
+                {"target": "Continue", "action": "click", "intent": "navigate", "point": [280, 30]}
+            ],
+        )
+    ).mapping
+    request.screen["memory_fields"] = [
+        {"name": name, **item.model_dump(exclude_unset=True)}
+        for name, item in mapped.fields.items()
+    ]
+    bound = ScreenMatch.model_validate(mapped.local_payload(request.screen, request.values))
+    request = replace(request, screen_nodes=nodes)
+    services.memory_retrieval.match_pattern = lambda _screen: bound.model_copy(
+        update={"mapping": mapped}
+    )
+
+    result = decide_screen(request, services)
+
+    assert model.prompts == []
+    assert [(step.action, step.point) for step in result.response.steps] == [("click", [280, 30])]
+    assert pending_screen_inputs(nodes, "entry") == {"hbl_no"}
+    assert json.dumps(nodes, ensure_ascii=False) == original
 
 
 # Cleanup audit C6: retain necessary preparation of a changed recovery response.

@@ -113,46 +113,6 @@ def test_library_rejects_same_method_id_from_another_task_contract(tmp_path):
     assert library.methods() == [first]
 
 
-@pytest.mark.parametrize("remembered_box", [None, [101, 24, 199, 31]], ids=["new", "jitter"])
-def test_saved_fill_coordinates_bind_current_values_as_visible_evidence(tmp_path, remembered_box):
-    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
-    library.upsert(learned())
-    current = scene(old_value="New supplier", ids=100)
-    target_id = 112
-    if remembered_box is not None:
-        current["markers"][0]["bbox"] = remembered_box
-        current["selected_fields"] = {
-            "110": {"name": "Customer", "role": "edit", "bbox": remembered_box}
-        }
-        target_id = 110
-
-    controls, evidence = library.bind_visible_value_evidence(
-        "find-party",
-        {"requested_party": "supplier"},
-        current,
-        {"supplier": "New supplier"},
-    )
-
-    assert evidence == [{"field": "supplier", "target": target_id}]
-    assert controls[0]["id"] == target_id
-    assert 102 in controls[0]["text_ids"]
-    assert current["selected_fields"][str(target_id)]["bbox"] == (
-        remembered_box or [100, 25, 200, 30]
-    )
-    assert target_id in {marker["id"] for marker in current["markers"]}
-    # Rebinding evidence on this frame keeps its registered control ID.
-    assert library.bind_visible_value_evidence(
-        "find-party", {"requested_party": "supplier"}, current, {"supplier": "New supplier"}
-    ) == (controls, evidence)
-    assert len(current["markers"]) == len({marker["id"] for marker in current["markers"]})
-    assert library.bind_visible_value_evidence(
-        "find-party",
-        {"requested_party": "supplier"},
-        current,
-        {"supplier": "Different supplier"},
-    ) == ([], [])
-
-
 def test_trace_graph_rejects_unknown_predecessor():
     payload = learned().model_dump(mode="json")
     payload["action_groups"][0]["trace_index"] = 0
@@ -238,7 +198,7 @@ def test_candidate_compiler_removes_instance_anchors_and_repeated_retries():
     assert compiled.action_groups == [group]
 
 
-def test_synthetic_observed_step_results_survive_compile_and_bind_without_inventing_history(
+def test_synthetic_observed_step_results_remain_compile_history_not_current_evidence(
     tmp_path,
 ):
     # Synthetic successful source: the same action can follow distinct observed outcomes.
@@ -278,17 +238,17 @@ def test_synthetic_observed_step_results_survive_compile_and_bind_without_invent
             group_id=compiled.action_groups[index].id,
         )
         assert bound is not None
-        assert bound.response["observed_step_results"] == [
+        assert [
+            result.model_dump() for result in compiled.action_groups[index].observed_step_results
+        ] == [
             {
                 "step_id": "open-detail",
                 "observed_result": "Detail for {reference} opened",
                 "completed": completed,
             }
         ], index
-        assert (
-            ScreenMatch.model_validate(bound.response).observed_step_results[0].completed
-            is completed
-        )
+        assert "observed_step_results" not in bound.response
+        assert ScreenMatch.model_validate(bound.response).observed_step_results == []
     assert "CASE-001" not in library.path.read_text(encoding="utf-8")
     old = method.model_dump(mode="json")
     old["action_groups"][0].pop("observed_step_results")
@@ -374,7 +334,7 @@ def completion_response(*, ids=0):
     }
 
 
-def test_completion_recipe_preserves_model_readings_and_rebinds_input_references(tmp_path):
+def test_completion_recipe_binds_review_structure_without_copying_prior_readings(tmp_path):
     method = learned().model_copy(
         update={
             "slots": [
@@ -401,8 +361,19 @@ def test_completion_recipe_preserves_model_readings_and_rebinds_input_references
     compiled = compile_method_candidate(
         method, {"customer": "New customer B", "reference": "ORDER-B"}
     )
+    # Synthetic old artifact: loading drops both literal and input-relative readings.
+    legacy = compiled.model_dump(mode="json")
+    legacy["action_groups"][0]["field_values"] = {"Customer": "Old customer"}
+    legacy["completion"]["field_values"] = {
+        "Customer": {"source": "customer"},
+        "Reference": "ORDER-B",
+    }
+    restored = LearnedMethod.model_validate(legacy)
+    assert restored.model_dump() == compiled.model_dump()
+    assert "field_values" not in restored.model_dump_json()
+    assert "field_values" in legacy["completion"]  # Loading does not mutate its input.
     library = MethodLibrary(tmp_path / "methods.json", enabled=True)
-    library.upsert(compiled)
+    library.upsert(restored)
 
     current = completion_scene(customer="Later customer", reference="ORDER-C", ids=100)
     bound = library.bind_completion_with_context(
@@ -414,15 +385,29 @@ def test_completion_recipe_preserves_model_readings_and_rebinds_input_references
     assert bound is not None
     response = ScreenMatch.model_validate(bound)
     assert response.operation == "complete"
-    assert [item.model_dump() for item in response.observed_step_results] == [
+    assert [item.model_dump() for item in restored.completion.observed_step_results] == [
         {
             "step_id": "verify-record",
             "observed_result": "{customer} and {reference} match the saved detail",
             "completed": True,
         }
     ]
-    assert {item.field for item in response.evidence} == {"customer", "reference"}
-    assert len({item.target for item in response.evidence}) == 2
+    assert "observed_step_results" not in bound
+    assert "evidence" not in bound
+    assert response.observed_step_results == [] and response.evidence == []
+    assert len({item.id for item in response.controls}) == 2
+    assert {item.condition_index for item in response.completion_evidence} == {0}
+    # These bindings are review locations, not proof that the new input is on screen.
+    changed_input = library.bind_completion_with_context(
+        method.id,
+        {"customer": "next_customer", "reference": "next_reference"},
+        current,
+        {"next_customer": "Not yet observed", "next_reference": "ORDER-D"},
+    )
+    assert changed_input is not None
+    assert changed_input["controls"] == bound["controls"]
+    assert changed_input["completion_evidence"] == bound["completion_evidence"]
+    assert "evidence" not in changed_input
     assert (
         library.bind_completion_with_context(
             method.id,
@@ -434,6 +419,7 @@ def test_completion_recipe_preserves_model_readings_and_rebinds_input_references
     )
     stored = library.path.read_text(encoding="utf-8")
     assert "New customer B" not in stored
+    assert "field_values" not in stored
     assert "ORDER-B" not in stored
 
 

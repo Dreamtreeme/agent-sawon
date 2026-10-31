@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +15,6 @@ from brain.cache.methods import (
     MethodDocument,
     MethodLibrary,
     MethodSlot,
-    bind_remembered_values,
     compile_method_candidate,
     group_input_sources,
     method_completion_from_match,
@@ -41,8 +39,6 @@ class RetrievalContext:
     inputs: Mapping[str, str]
     credentials: Mapping[str, str | None]
     observation_id: str | None
-    screen_nodes: Mapping[str, dict] = field(default_factory=dict)
-    evidence_scope: str = "entry"
 
 
 @dataclass
@@ -391,14 +387,6 @@ class MemoryRetrieval:
                     "predecessor_group_ids": predecessors,
                     "steps": steps,
                     "expected_result": group.expected_result,
-                    "field_values": bind_remembered_values(
-                        group.field_values,
-                        {
-                            slot.source_key: bindings.get(slot.name, slot.source_key)
-                            for slot in method.slots
-                        },
-                        self._binding_values(),
-                    ),
                 }
             ],
         }
@@ -451,14 +439,11 @@ class MemoryRetrieval:
                     for item in method.completion.targets
                     if item.target.bbox is not None
                 }
-                response = self._restore_mapping(
+                response = self._restore_structure(
                     screen,
                     response,
                     method.completion.screen_path,
                     fields,
-                    method.completion.field_values,
-                    method,
-                    mapping,
                 )
             self.state.purpose = response.purpose
             self.state.bindings[method.id] = mapping
@@ -482,16 +467,6 @@ class MemoryRetrieval:
         if bound is None:
             return None
         response_data = dict(bound.response)
-        if not group.screen_path:
-            proof_controls, proof_evidence = self.library.bind_visible_value_evidence(
-                method.id, mapping, screen, dict(self.task_context.inputs)
-            )
-            if proof_evidence:
-                controls = {
-                    item["id"]: item
-                    for item in [*response_data.get("controls", []), *proof_controls]
-                }
-                response_data.update(controls=list(controls.values()), evidence=proof_evidence)
         response = ScreenMatch.model_validate(
             {
                 **response_data,
@@ -515,9 +490,7 @@ class MemoryRetrieval:
                 for target in [*group.observed_fields, *group.targets]
                 if target.bbox is not None
             }
-            response = self._restore_mapping(
-                screen, response, group.screen_path, fields, group.field_values, method, mapping
-            )
+            response = self._restore_structure(screen, response, group.screen_path, fields)
         self.state.purpose = response.purpose
         self.state.bindings[method.id] = mapping
         self.state.active_method_id = method.id
@@ -543,31 +516,10 @@ class MemoryRetrieval:
         )
         return response
 
-    def _restore_mapping(self, screen, response, screen_path, fields, values, method, bindings):
-        """Recall model-owned readings and this run's newer memo; OCR cannot replace either."""
+    def _restore_structure(self, screen, response, screen_path, fields):
+        """Recall field bindings and actions without claiming values on the current frame."""
         from .screen_decision import ScreenMatch
 
-        if values is None:
-            return response  # Missing historical model readings use the existing recovery path.
-        readings = bind_remembered_values(
-            values,
-            {slot.source_key: bindings.get(slot.name, slot.source_key) for slot in method.slots},
-            self._binding_values(),
-        )
-        node = self.task_context.screen_nodes.get(json.dumps(screen_path, ensure_ascii=False), {})
-        for name, entry in fields.items():
-            if name in readings:
-                entry["value"] = readings[name]
-            memo = node.get("fields", {}).get(entry.get("source"), {})
-            observed, delivery = memo.get("last_observation"), memo.get("delivery")
-            if (
-                observed
-                and observed["scope"] == self.task_context.evidence_scope
-                and (
-                    not delivery or observed["observation_number"] > delivery["observation_number"]
-                )
-            ):
-                entry["value"] = observed["value"]
         names = {int(ref): item["name"] for ref, item in screen.get("selected_fields", {}).items()}
         steps = []
         directions = {key: direction for direction, key in SCROLL_DIRECTION_KEYS.items()}

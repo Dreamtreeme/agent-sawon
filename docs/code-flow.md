@@ -1,6 +1,6 @@
 # 현재 코드 실행 흐름
 
-기준일: 2026-10-28. 모델·비용·제거된 동작은 [현행 런타임 기준](current-runtime.md),
+기준일: 2026-10-31. 모델·비용·제거된 동작은 [현행 런타임 기준](current-runtime.md),
 상태와 저장소 경계는 [계약 지도](contracts.md)를 함께 따릅니다.
 
 ## 서류에서 화면 작업까지
@@ -42,7 +42,7 @@ flowchart TD
 
 - **Observation**: relay 캡처 직후 화면 유사도를 확인합니다. 일치한 기억에서 필드 기하를
   인출하거나 OmniParser로 탐색합니다. GPU OCR은 현재 문자열을 관찰 자료로 제공하며,
-  기억 인출의 확인값은 보존한 모델 해석과 누적 메모를 사용합니다. 직전 행동이 있으면
+  기억 인출은 필드 구조·입력 키·행동만 재사용하고 과거 확인값을 현재 값으로 발행하지 않습니다. 직전 행동이 있으면
   새 관찰에서 전달 효과를 확인합니다. 구조·위치 변화는 `compare_navigation` →
   `compare_frames`의 ORB 비교로, 값과 업무 결과는 기존 증거 검토로 확인합니다.
   이 비교는 캡처 저장 직후 수행해 모델 판단 전에 결과를 전달하고, 이후 검토에서 재사용합니다.
@@ -70,17 +70,23 @@ flowchart TD
     CAP[현재 캡처] --> SIM{편찬 경로의 다음 진입 화면과 유사도}
     SIM -->|일치| MEM[Memory Retrieval: 업무 지식 인출]
     SIM -->|미일치| SCAN[Scanning: OCR·OmniParser]
-    MEM --> VALUES[모델 확인값·입력 키 연결 인출]
-    VALUES --> STATE[현재 상태·실행 계약과 문맥 원천 확보]
+    MEM --> STRUCTURE[필드 구조·입력 키·행동 인출]
+    STRUCTURE --> STATE[현재 상태·실행 계약과 문맥 원천 확보]
     SCAN --> STATE
-    STATE --> MATCH[Pattern Matching: 같은 경로의 다음 그룹 결합]
-    MATCH -->|기억과 현재 상태 일치| RESTORE[저장된 경로·필드·행동 복원]
-    MATCH -->|계획 없음·값/결과 불일치| RECALL[Context Recall: 모델용 문맥 조립]
+    STATE --> NEED{현재 값 검토 대기}
+    NEED -->|없음| MATCH[Pattern Matching: 같은 경로의 다음 그룹 결합]
+    NEED -->|있음| CURRENT[현재 관찰·누적 메모로 검토 문맥 조립]
+    MATCH -->|행동 결합 성공| RESTORE[저장된 경로·필드·행동 복원]
+    MATCH -->|최종 완료 후보| CURRENT
+    MATCH -->|계획 없음·예외| RECALL[Context Recall: 모델용 문맥 조립]
     RECALL --> CACHE{화면 캐시}
-    CACHE -->|적중| RESTORE
+    CACHE -->|행동 적중·과거 값 제거| RESTORE
+    CACHE -->|최종 완료 후보| CURRENT
     CACHE -->|미적중·예외| DECIDE[모델 탐색·예외 복구]
+    CURRENT --> DECIDE
     DECIDE -->|needs_refinement| SCAN
-    DECIDE --> EXEC[장면·메모 갱신 후 공통 검토·실행]
+    DECIDE --> MEMO[현재 응답의 관찰·교육 완료를 메모에 반영]
+    MEMO --> EXEC[공통 검토·실행]
     RESTORE --> EXEC
     EXEC --> CAP
 ```
@@ -88,7 +94,7 @@ flowchart TD
 메모리의 필드가 부족해 모델이 `ScreenMapping.needs_refinement=true`를 반환하면 탐색으로
 돌아갑니다. 캡처와 OCR을 다시 수행하지 않습니다. 동일 캡처도 공통 문맥·판단 경로를 거칩니다.
 모델이 새 계획을 내는 경우와 기억 계획을 쓰는 경우는 같은 검증·실행 경로를 거칩니다.
-정상 메서드 경로는 모델용 전체 문맥을 조립하지 않습니다. 화면 투영과 메서드 문맥은 결합
+검토 대기가 없는 메서드 행동 경로는 모델용 전체 문맥을 조립하지 않습니다. 화면 투영과 메서드 문맥은 결합
 이전 시점에 확보하고, 캐시 조회·모델·복구가 필요하면 notebook·화면 트리·교육 문맥을 조립합니다.
 한 요청의 저장 증거 snapshot과 변경되지 않은 계획의 검증·대상 정리 결과를 재사용합니다.
 
@@ -98,14 +104,20 @@ flowchart TD
 계산합니다. 과거 기억의 완료 결과로 후보가 자신의 실행 자격을 만들거나 전체 그룹을 다시
 경쟁시키지 않습니다. 재개한 그룹은 실제 전달 집계에 넣지 않습니다.
 
-실행 중 유사 캡처의 카탈로그는 탐지 기하를 재사용합니다. 정상 기억 인출은 저장된
-`screen_path`(부모 창 → 활성 탭)와 필드 연결·모델 확인값을 복원합니다. 현재 입력 키 참조를
-연결하고 같은 노드의 더 최신 메모를 반영합니다. OCR 원문으로 메모를 재작성하지 않습니다.
-탐색·예외 복구에서는 모델이 경로와 필드를 선택합니다. 인출 결과에 매핑이 없다는 이유로
-매번 재판단하지 않도록 편찬에 경로와 최종 완료 매핑을 보존합니다. 구형 기록의 누락은 예외입니다.
+실행 중 유사 캡처의 카탈로그는 탐지 기하를 재사용합니다. `MemoryRetrieval._restore_structure`는
+저장된 `screen_path`(부모 창 → 활성 탭), 필드 이름·role·bbox·입력 source와 행동을 복원합니다.
+필드의 `value`와 과거 `observed_step_results`는 복원하지 않습니다. 실제 fill 문자열은 실행
+경계에서 현재 `request.values`를 사용합니다. 검토 대기가 없는 초기 입력·로그인·이동은 모델 없이
+실행할 수 있고, 값 확인 대기·상세 진입·최종 완료 후보에서는 기존 `ScreenMatch` 호출로 현재
+관찰과 다음 행동을 함께 받습니다. 최종 완료 기억은 대상과 조건을 제시하며 성공을 대신 증명하지 않습니다.
+다른 화면의 미확인 입력은 메모에 보존하고, 현재 인출한 필드에 다시 나타나면 검토합니다.
+화면 캐시는 `act` 행동 계획만 재사용하며 중복 조회·완료·중단 판정은 현재 모델로 확인합니다.
+새 편찬물에는 `field_values`가 없고 구형 산출물의 해당 키는 로더에서 버립니다.
 현재 매핑은 이전 필드 목록을 교체하며, 다른 탭이나 스크롤 이전 좌표를 현재 요소로 보충하지
-않습니다. 노드별 `screen_nodes`에는 모델 해석 또는 선택한 기억의 해석을 갱신하고 보이지 않는 필드는 마지막 관찰로
-보존합니다. 관찰값은 각 노드 필드의 `last_observation`에만 저장하며 전역 복사본은 없습니다.
+않습니다. 노드별 `screen_nodes`에는 모델의 현재 관찰과 구조상 발견을 병합하고 보이지 않는 필드는
+마지막 관찰로 보존합니다. 구조 인출만으로 `last_observation`·verified나 교육 완료를 갱신하지
+않습니다. 현재 실행의 누적 관찰은 이력으로 유지하며 새 프레임에서 읽었다고 다시 기록하지 않습니다.
+관찰값은 각 노드 필드의 `last_observation`에만 저장하며 전역 복사본은 없습니다.
 `current_screen_path`와 노드 기억은 수첩에 저장되고 다음 요청에는 이전 위치 및 과거 사실로
 전달됩니다. `screen_memory`가 경로별 발견을 누적하고 `context_recall`은 같은 저장소를
 `screen_tree`(루트 children → 화면 → children → 자식)로 투영합니다. 경로 없는 관찰은
@@ -113,7 +125,8 @@ flowchart TD
 않고 마지막 관찰값과 실제 입력 전달 기록을 전달합니다.
 relay가 확인한 입력은 실행 직후 기록해 다음 배치로 넘어가도 사라지지 않으며, 후속 관찰로
 관찰값을 갱신합니다. 확인 대기는 입력·관찰 순번과 증거 범위에서 계산하고, 실제 일치 여부는
-기존 verified 갱신에 사용합니다. 별도 모델 호출·상태 기계·스크롤 좌표 지도는 추가하지 않습니다.
+기존 verified 갱신에 사용합니다. 값 검토는 기존 화면 판단 호출 안에서 수행하며 기억 갱신 전용
+호출·상태 기계·스크롤 좌표 지도는 추가하지 않습니다.
 
 로컬 의미 탐지는 후보 분류 과정에서 실행 중 marker ID를 사용하지만, task-level
 `ScreenMapping`은 detector 번호를 업무 key로 쓰지 않습니다. 화면의 보이는 의미 이름과 bbox,
@@ -140,6 +153,9 @@ brain/run.py
 
 brain/graph/state.py          WorkerState
 brain/graph/screen_mapping.py 화면 의미 JSON 계약
+brain/graph/memory_retrieval.py 구조 인출·입력 키와 행동 결합
+brain/graph/screen_memory.py  현재 실행의 관찰·전달 이력
+brain/graph/context_recall.py 누적 메모를 모델 문맥으로 투영
 brain/graph/execution.py      ExecutionRequest / ExecutionResult
 brain/visual/scanning.py    OCR·탐지·로컬 의미 관찰
 brain/demo_learning/          성공 trace와 기억 편찬

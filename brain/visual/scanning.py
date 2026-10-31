@@ -841,7 +841,8 @@ class ScreenScanner:
         for element in scene.elements:
             field = selected.get(element.ref.removeprefix(prefix))
             if field is not None:
-                value = field.get("value", element.value)
+                # A remembered field identifies where to act, not what is visible now.
+                value = field.get("value")
                 for secret in self.secrets:
                     if secret and value:
                         value = value.replace(secret, "[REDACTED]")
@@ -879,7 +880,7 @@ class ScreenScanner:
         catalog.selected_fields = {
             str(control.id): {
                 "name": control.visual_description,
-                **fields[control.visual_description].model_dump(),
+                **fields[control.visual_description].model_dump(exclude_unset=True),
             }
             for control in meanings.controls
         }

@@ -465,26 +465,7 @@ def test_synthetic_phash_memory_jitter_reaches_notebook_without_duplicate_contro
 def test_synthetic_geometry_evidence_alone_does_not_update_model_owned_notebook(tmp_path):
     # Synthetic current OCR, using the real binder, scene projection and memo update.
     brain, model, relay = setup(tmp_path)
-    original = brain.memory_retrieval.library.methods()[0]
-    group = original.action_groups[0]
-    library = MethodLibrary(tmp_path / "evidence-methods.json", enabled=True)
-    library.upsert(
-        original.model_copy(
-            update={
-                "action_groups": [
-                    group.model_copy(
-                        update={
-                            "id": f"input-{index}",
-                            "targets": [next(t for t in group.targets if t.name == action.target)],
-                            "actions": [action],
-                        }
-                    )
-                    for index, action in enumerate(group.actions)
-                ]
-            }
-        )
-    )
-    blocks, _, screen, _ = catalog(shift=20)
+    blocks, _, screen, plan = catalog(shift=20)
     blocks.extend(
         [
             OcrBlock(id=180, text=brain.values["customer"], bbox=(105, 45, 130, 15), confidence=1),
@@ -497,14 +478,11 @@ def test_synthetic_geometry_evidence_alone_does_not_update_model_owned_notebook(
         ]
     )
     screen["ocr"] = [block.model_dump(mode="json") for block in blocks]
-    controls, evidence = library.bind_visible_value_evidence(original.id, {}, screen, brain.values)
-    assert {item["field"] for item in evidence} == {"customer", "reference"}
-    assert len({item["target"] for item in evidence}) == 2
     response = ScreenMatch(
         screen_kind="editor",
         procedure_step="task-action",
-        controls=controls,
-        evidence=evidence,
+        controls=plan.controls,
+        evidence=[dict(field=step.source, target=step.target) for step in plan.steps],
         steps=[],
     )
     meanings = brain._groundable_interpretation(response, screen)
@@ -601,7 +579,7 @@ def test_synthetic_missing_layout_uses_model_coordinates_at_executor(tmp_path, o
     assert "business-entry" not in brain.memory_retrieval.state.blocked_method_ids
 
 
-def test_synthetic_compiled_dialog_observation_starts_saved_review_without_model_call(tmp_path):
+def test_synthetic_saved_review_requires_current_model_values_after_structure_retrieval(tmp_path):
     # Synthetic successful source and fake desktop; real compile/bind/graph/memo/execution paths.
     brain, model, relay = setup(tmp_path)
     brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
@@ -700,6 +678,12 @@ def test_synthetic_compiled_dialog_observation_starts_saved_review_without_model
     brain.save_issued = brain.saved_detail_transition_pending = True
     brain.saved_detail_transition_step = brain.active_taught_step = "open-detail"
 
+    # Fake current replies use this run's data, never the successful source's values.
+    current_mapping = mapping.model_dump(exclude_unset=True)
+    current_mapping["fields"]["Customer"]["value"] = brain.values["customer"]
+    current_mapping["observed_step_results"][0]["observed_result"] = "Current detail opened"
+    model.decisions = iter([current_mapping, final_mapping.model_dump(exclude_unset=True)])
+
     brain._observe()
 
     assert brain.observation.screen_kind == "dialog"
@@ -714,21 +698,21 @@ def test_synthetic_compiled_dialog_observation_starts_saved_review_without_model
     assert brain._review_node() == "execution"
     assert brain._act_node() == "observation"
     assert [action.root.target.image_point for action in relay.actions] == [(340, 155)]
-    assert model.prompts == []
+    assert len(model.prompts) == 1
     assert brain._verify_node() == "review"
     assert brain.visual_proposal.operation == "complete"
     assert brain.visual_proposal.completion_evidence == []
     assert brain.post_save_verified == {"customer", "reference"}
     assert brain.completed_taught_steps == {"open-detail", "verify-detail"}
     assert brain._select_node() == "finish"
-    assert brain.result.status == "success" and model.prompts == []
+    assert brain.result.status == "success" and len(model.prompts) == 2
     events = brain.log.read_all()
-    assert any(event.payload.get("check") == "method_bound" for event in events)
-    assert not any(event.payload.get("check") == "memory_retrieval_exception" for event in events)
+    assert any(event.payload.get("check") == "screen_similarity" for event in events)
+    assert any(event.payload.get("reason") == "current_values_not_observed" for event in events)
 
 
 @pytest.mark.parametrize("corrupt_ocr", [False, True], ids=["readable-ocr", "corrupted-ocr"])
-def test_synthetic_retrieval_uses_model_memory_without_replacing_it_with_ocr(tmp_path, corrupt_ocr):
+def test_synthetic_retrieval_inputs_new_values_then_model_confirms_not_ocr(tmp_path, corrupt_ocr):
     # Synthetic OCR, capture and provider reply; real observation/decision/executor/memory code.
     brain, model, relay = setup(tmp_path)
     runtime = brain.memory_retrieval
@@ -737,7 +721,6 @@ def test_synthetic_retrieval_uses_model_memory_without_replacing_it_with_ocr(tmp
         update={
             "screen_path": ["Entry"],
             "trace_index": 0,
-            "field_values": {target.name: "" for target in method.action_groups[0].targets},
         }
     )
     button = MethodTarget(name="Next", role="button", bbox=(300, 140, 80, 30), point=(340, 155))
@@ -749,7 +732,6 @@ def test_synthetic_retrieval_uses_model_memory_without_replacing_it_with_ocr(tmp
             "targets": [button],
             "observed_fields": first.targets,
             "field_sources": {action.target: action.slot for action in first.actions},
-            "field_values": {action.target: {"source": action.slot} for action in first.actions},
             "actions": [
                 MethodAction(target="Next", action="click", intent="navigate", point=button.point)
             ],
@@ -778,6 +760,14 @@ def test_synthetic_retrieval_uses_model_memory_without_replacing_it_with_ocr(tmp
     )
     assert method.completion is not None
     atomic_write_json(runtime.library.path, MethodDocument(methods=[method]))
+    current_review = final_mapping.model_dump(exclude_unset=True)
+    current_review.update(
+        operation="act",
+        completion_evidence=[],
+        steps=[{"target": "Next", "action": "click", "intent": "navigate", "point": [340, 155]}],
+    )
+    current_review["fields"]["Next"] = dict(role="button", bbox=[300, 140, 80, 30])
+    model.decisions = iter([current_review, final_mapping.model_dump(exclude_unset=True)])
     labels = brain.screen_scanner.ocr.read(None)
 
     def read_current_values(page):
@@ -827,7 +817,8 @@ def test_synthetic_retrieval_uses_model_memory_without_replacing_it_with_ocr(tmp
         for e in brain.log.read_all()
         if e.payload.get("check") == "memory_retrieval_exception"
     ]
-    assert model.prompts == [] and exceptions == []
+    assert len(model.prompts) == 1
+    assert any(item["reason"] == "current_values_not_observed" for item in exceptions)
     assert set(brain.verified) == {"customer", "reference"}
     assert (
         brain.screen_nodes['["Entry"]']["fields"]["reference"]["last_observation"]["value"]
@@ -841,7 +832,7 @@ def test_synthetic_retrieval_uses_model_memory_without_replacing_it_with_ocr(tmp
     assert brain._verify_node() == "review"
     assert brain.visual_proposal.operation == "complete"
     assert brain.visual_proposal.mapping.fields[first.targets[0].name].value == "New customer B"
-    assert model.prompts == []
+    assert len(model.prompts) == 2
     final_plan = next(
         e
         for e in reversed(brain.log.read_all())
@@ -851,32 +842,30 @@ def test_synthetic_retrieval_uses_model_memory_without_replacing_it_with_ocr(tmp
     assert final_plan.payload["mapping"]["completion_evidence"][0]["condition_index"] == 0
     assert brain._select_node() == "review"
     assert brain._review_node() == "finish"
-    assert brain.result.status == "success" and model.prompts == []
+    assert brain.result.status == "success" and len(model.prompts) == 2
 
 
-def test_synthetic_newer_model_memo_takes_precedence_over_compiled_reading(tmp_path):
-    # Synthetic memo delta after a model-assisted recovery; no OCR/provider/desktop call.
+def test_synthetic_reentered_node_does_not_reobserve_old_memo_or_skip_current_input(tmp_path):
+    # Synthetic 138 reentry: old model observation is newer than the old input delivery.
     brain, model, relay = setup(tmp_path)
     runtime = brain.memory_retrieval
     method = runtime.library.methods()[0]
     group = method.action_groups[0]
-    group = group.model_copy(
-        update={
-            "screen_path": ["Entry"],
-            "field_values": {action.target: {"source": action.slot} for action in group.actions},
-        }
-    )
+    group = group.model_copy(update={"screen_path": ["Entry"]})
     runtime.library.upsert(method.model_copy(update={"action_groups": [group]}))
     brain.screen_nodes['["Entry"]'] = {
         "path": ["Entry"],
         "fields": {
             "customer": {
                 "last_observation": {
-                    "value": "Model correction",
+                    "value": brain.values["customer"],
                     "scope": "entry",
                     "observation_number": 9,
+                    "observation_id": "previous-visit",
                 },
-                "delivery": {"observation_number": 8},
+                "label": "Customer",
+                "role": "edit",
+                "delivery": {"observation_number": 8, "scope": "entry", "value": "Old input"},
             },
         },
         "controls": {},
@@ -885,9 +874,49 @@ def test_synthetic_newer_model_memo_takes_precedence_over_compiled_reading(tmp_p
     current["ocr"] = []
     response = runtime.match_pattern(current)
     assert response is not None and response.mapping is not None
-    readings = {f.source: f.value for f in response.mapping.fields.values()}
-    assert readings == {"customer": "Model correction", "reference": "ORDER-B"}
+    assert {f.source for f in response.mapping.fields.values()} == {"customer", "reference"}
+    assert all("value" not in f.model_fields_set for f in response.mapping.fields.values())
+    assert all("value" not in f for f in current["memory_fields"])
+    assert response.evidence == [] and response.observed_step_results == []
     assert model.prompts == [] and relay.actions == []
+    previous = deepcopy(brain.screen_nodes['["Entry"]']["fields"]["customer"]["last_observation"])
+    # Even matching OCR cannot fill in the missing model reading during geometry binding.
+    blocks = brain.screen_scanner.ocr.read(None)
+    blocks.append(
+        OcrBlock(id=180, text=brain.values["customer"], bbox=(105, 45, 130, 15), confidence=1)
+    )
+    brain._observe()
+    # Exercise the scanner's current OCR binding too: a text id is not a model value.
+    scanner = brain.screen_scanner
+    reading = next(b.id for b in scanner._catalog.blocks if b.text == brain.values["customer"])
+    mapping = brain.visual_proposal.mapping
+    meanings = brain.visual_proposal.interpretation()
+    meanings = meanings.model_copy(
+        update={
+            "controls": [
+                control.model_copy(
+                    update={
+                        "text_ids": [reading]
+                        if mapping.fields[control.visual_description].source == "customer"
+                        else []
+                    }
+                )
+                for control in meanings.controls
+            ]
+        }
+    )
+    brain.observation = scanner.bind_mapping(brain.observation.wire, meanings, mapping.fields)
+    assert all("value" not in field for field in scanner._catalog.selected_fields.values())
+    assert brain.screen_nodes['["Entry"]']["fields"]["customer"]["last_observation"] == previous
+    assert not brain.verified
+    assert all(
+        element.value is None for element in brain.observation.elements if element.role == "edit"
+    )
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    assert brain._act_node() == "observation"
+    assert relay.entered == ["New customer B", "ORDER-B"]
+    assert model.prompts == []
 
 
 @pytest.mark.parametrize("fail_second", [False, True])
@@ -952,7 +981,7 @@ def test_final_model_proof_is_promoted_only_after_business_success(tmp_path, bus
     assert response is not None
     assert response.operation == "complete"
     assert response.steps == []
-    assert {item.field for item in response.evidence} == {"customer", "reference"}
+    assert response.evidence == []  # A completion candidate is not current-frame proof.
     assert brain.memory_retrieval.state.history == []
     events = brain.log.read_all()
     assert any(
@@ -1814,7 +1843,7 @@ def test_synthetic_current_model_observation_resumes_recovery_without_fake_deliv
 
     assert response is not None
     assert runtime.state.pending["group_id"] == detail.id
-    assert response.observed_step_results[0].step_id == "open-detail"
+    assert response.observed_step_results == []
     assert runtime.state.used == {(method.id, recovery_id)}
     assert (method.id, query.id) not in runtime.state.used
     assert model.prompts == []

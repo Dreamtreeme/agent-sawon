@@ -1,6 +1,6 @@
 # 상태와 저장소 계약 지도
 
-기준일: 2026-10-28
+기준일: 2026-10-31
 
 이 문서는 런타임 상태와 계층 간 인터페이스의 기준 위치를 한 곳에 모읍니다. 설명과 구현이
 다르면 해당 계약을 소유한 코드와 이 문서를 같은 변경에서 맞춥니다.
@@ -16,10 +16,10 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | 그래프 라우팅 | `brain/graph/workflow.py` | LangGraph | `lifecycle.route`를 다음 책임 노드 또는 `finish`로 연결 |
 | `ExecutionRequest`/`ExecutionResult` | `brain/graph/execution.py` | `engine.py`, relay adapter | 준비된 행동 전달과 relay가 확인한 결과. 업무 성공을 판정하지 않음 |
 | 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `screen_decision`, `memory_retrieval` | 의미 이름·bbox·입력 key·행동 point의 모델 경계 |
-| 교육 단계 관찰 결과 | `brain/task_instruction.py`의 `ObservedStepResult` | `screen_mapping`, `screen_decision`, `cache/methods`, engine | 교육 ID·관찰 설명·완료 판단을 화면 응답과 편찬 기억에서 같은 형식으로 전달 |
+| 교육 단계 관찰 결과 | `brain/task_instruction.py`의 `ObservedStepResult` | `screen_mapping`, `screen_decision`, `cache/methods`, engine | 현재 모델 응답의 교육 완료를 실행 상태에 반영. 편찬물의 과거 결과는 현재 응답으로 복원하지 않음 |
 | 선택 결과의 요청 문맥 | `brain/graph/screen_decision.py`의 `ScreenSelection.prepared` | `decide_screen` → `ground_screen_response` | 같은 판단에서 확장한 교육 상세를 빈 행동 보완에 전달. 거절 후 재계획은 기존 prepared 사용. 턴 간 영구 상태가 아님 |
 | 기억 편찬 응답 | `brain/demo_learning/memory_compilation.py`의 `MemoryAssembly` / `MemoryGroupSelection` | 모델 클라이언트, `compile_memory` | 후보 ID로 성공 행동을 선택. context_anchors는 타입 검증 후 첫 8개를 보존하고 초과분 경고 기록 |
-| 인출된 화면·행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup`, `MethodCompletion` | `method_from_match`, `compile_memory`, `MemoryRetrieval`, `screen_decision` | 화면 경로·행동 좌표·관찰 필드 기하·입력 키, 저장 결과 메시지 및 완료 조건을 보존하고 현재 화면에 결합 |
+| 인출된 화면·행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup`, `MethodCompletion` | `method_from_match`, `compile_memory`, `MemoryRetrieval._restore_structure`, `screen_decision` | 화면 경로·행동 좌표·필드 기하·입력 키, 저장 결과 메시지 및 검토 조건을 결합. 과거 필드 값은 저장·복원하지 않음 |
 | 실행 문맥 회상 | `brain/graph/context_recall.py`의 `recall_context` | `DecisionPromptContext.state` | 캐시·모델이 필요할 때 이번 실행의 이력·누적 증거·남은 입력·진행 상태를 한 번 조립. 선택·모델 호출·상태 변경 없음 |
 | 화면 트리 기억 | `brain/graph/screen_memory.py`, `ProgressState.screen_nodes` | engine, context_recall, notebook | 방문한 경로별 필드·컨트롤 발견과 입력 전달 이력을 누적. 모델용 트리는 같은 상태에서 파생하며 과거 좌표를 포함하지 않음 |
 | 재탐색 요청 | `ScreenMapping.needs_refinement` → `ScreenPlan`/`ScreenMatch` → `SemanticDetection` | `ScreenScanner._resolve` | 필요한 보이는 컨트롤이 없으면 동일 캡처·OCR로 탐색 재진입. provider 스키마에도 존재 |
@@ -73,10 +73,12 @@ flowchart LR
 다음 요청의 `taught_procedure_progress.completed_step_ids`에 노출한다. 관찰 설명 원문은
 해당 응답 기록에 보존하며 완료 ID와 별도의 진행 상태 복사본을 만들지 않는다. 행동 선택·전달만으로
 완료를 추론하거나 전체 업무 성공으로 바꾸지 않는다. 기존 응답은 빈 목록으로 읽는다.
-화면 캐시는 전체 판단 문맥이 일치할 때 응답을 재사용한다. `MethodActionGroup`과
-`MethodCompletion`은 해당 화면 응답의 `observed_step_results`를 편찬·현재 화면 결합까지
-보존하고 같은 메모 갱신 경로에 전달한다. 실행 전체의 `completed_taught_steps` 집합을 다른
-실행으로 복사하지 않는다. 목록이 없는 구형 기억은 빈 목록으로 읽으며 완료를 만들어내지 않는다.
+화면 캐시는 전체 판단 문맥이 일치할 때 행동 구조를 재사용하며 과거 관찰값과 완료 판단은
+현재 응답에서 제거한다. `MethodActionGroup`과 `MethodCompletion`의 `observed_step_results`는
+편찬 기록에 남지만 `MethodLibrary.bind_with_context`·`bind_completion_with_context`는 이를
+결합 응답에 싣지 않으며 `MemoryRetrieval.match_pattern`의 현재 응답에서는 빈 목록으로 읽는다.
+실행 전체의 `completed_taught_steps` 집합이나 개별 과거 완료 결과를 다른 관찰로 복사하지 않는다.
+교육 완료 갱신과 경로 재개는 현재 수용한 모델 응답을 근거로 한다.
 관찰 설명의 업무 값과 비밀값은 기존 편찬·저장 경계에서 정제한다.
 
 | 상태 | 의미 |
@@ -104,10 +106,11 @@ flowchart LR
 trace가 없는 편찬물은 저장된 그룹 순서를 유지한다. 교육 단계 순서로 재정렬하지 않는다.
 처음에는 같은 교육 digest·목표인 메서드들의 다음 진입 화면을 비교하고, 선택 후에는
 `active_method_id`의 남은 첫 그룹만 화면에 결합한다. 경로가 끝난 경우에만 완료 기억을 고른다.
-선택한 그룹의 화면 경로·필드 연결·모델 확인값으로 매핑을 만든다.
-같은 노드·범위에서 입력 전달 이후 모델이 새로 확인한 값이 있으면 누적 메모를 우선한다.
-다른 그룹의 유사 화면 필드를 섞어 노드를 추정하지 않는다. 이 매핑도 `remember_screen`과
-기존 증거 기록기를 사용한다. 전달한 입력과 같은 노드의 현재 값이 다르면 모델 복구로 전환한다.
+선택한 그룹의 화면 경로·필드 연결·행동으로 값 없는 구조 매핑을 만든다. 이번 실행의 누적
+메모는 현재 상황으로 별도 전달하며 그 값을 인출한 매핑에 다시 넣지 않는다.
+다른 그룹의 유사 화면 필드를 섞어 노드를 추정하지 않는다. 구조 매핑도 `remember_screen`을
+거쳐 발견한 필드와 컨트롤을 보존하지만 `last_observation`·verified·교육 완료를 발행하지 않는다.
+입력 후 확인 대기 등 현재 값이 필요한 상태에서는 기존 모델 판단으로 관찰과 다음 행동을 얻는다.
 모델 복구의 임시 대상 ID가 바뀌어도 원본 행동 그룹의 bbox를 기준으로 같은 행동을 연결한다.
 `RetrievalState.used`에는 실제로 전달한 그룹만 넣는다. 검토를 통과한 같은 행동의 대체는
 실행 이력의 `replaced_edge`로 연결한다. 다른 행동으로 복구했을 때는 현재 수용된 모델 응답의
@@ -121,22 +124,21 @@ trace가 없는 편찬물은 저장된 그룹 순서를 유지한다. 교육 단
 행동을 고정된 다음 그룹과 비교하여, 실제 전달·효과 검토 후 `replaced_edge`로 연결한다.
 
 편찬에서 연속된 후보를 제거하면 첫 제거 후보의 행동 전 관찰이 다음 유지 행동의 진입
-관찰이 된다. 유지 행동의 좌표·대상 기하는 원본 프레임에서 해석하고, 화면 경로·해시·관찰값·
-관찰 완료 결과·저장 메시지는 진입 관찰에서 가져온다. 서로 다른 프레임의 마커 ID를 합치지
+관찰이 된다. 유지 행동의 좌표·대상 기하는 원본 프레임에서 해석하고, 화면 경로·해시·필드 구조·
+관찰 완료 기록·저장 메시지는 진입 관찰에서 가져온다. 서로 다른 프레임의 마커 ID를 합치지
 않는다. 메시지와 행동의 이름이 겹치지만 위치가 다르면 메시지 이름만 내부적으로 구분한다.
 
 `screen_plan_proposed.mapping`은 편찬의 의미 매핑 원본이다. `MethodCompletion`은 완료 화면의
 경로·유사도·크기와 현재 값으로 확인할 대상 및 조건 번호를 저장한다. `condition_indexes`가
-빈 대상은 입력값 증거이며 완료 조건을 새로 만들지 않는다. 완료 계획은 위 진행 규칙으로
-편찬 경로가 소진된 뒤 입력 키에 연결한 모델 확인값으로 복원하고
-기존 업무 완료 검증을 거친다. 모델이 읽은 값은
-`field_values`에 보존하되 관찰 순번·전달 이력은 편찬하지 않는다. 구형 산출물에 없는
-경로·확인값·완료 조건은 자동 생성하지 않는다.
+빈 대상은 입력값 검토 대상이며 완료 조건을 새로 만들지 않는다. 편찬 경로가 소진되면 이
+기하·입력 키·조건을 최종 검토 후보로 결합하고 현재 모델 검토와 기존 업무 완료 검증을 거친다.
+새 산출물에는 `field_values`가 없으며 구형 산출물의 해당 키는 로더에서 제거한다. 관찰 순번과
+전달 이력도 편찬하지 않는다. 구형 산출물에 없는 경로·완료 조건을 자동 생성하지 않는다.
 저장 후 누적 검토로 실제 성공한 실행은 마지막 성공 `stop.last_obs_id`와 직전
 `post_save_model_evidence_complete` 기록을 마지막 계획에 연결한다. 편찬 입력의 임시
 `completion.verified_fields`가 모든 업무 입력을 포함하면 조건 번호 없는 마지막 관찰도
 보존한다. 이 확인 집합은 `MethodCompletion`에 저장하지 않는다. 인출은 마지막 화면의
-관찰값만 복원하며 전체 성공은 현재 실행의 저장·재조회 상태와 누적 증거로 다시 판정한다.
+검토 대상만 복원하며 전체 성공은 현재 실행의 저장·재조회 상태와 모델이 확인한 누적 증거로 판정한다.
 이 확인 기록이 없는 일반 완료 편찬은 기존 완료 조건 주석을 계속 요구한다.
 
 `ProgressState.screen_nodes`는 화면 트리의 단일 상태 저장소이며 경로의 JSON 문자열로
@@ -199,7 +201,8 @@ relay가 입력 전달을 확인하면 `_accept_dispatched_action()`이 해당 �
 조회 오류를 유지한다. 정확한 대상과 좌표를 가진 행동에 새로운 거절 조건을 추가하지 않는다.
 모델의 `needs_refinement` 및 내부 응답의 `needs_image`는 실행 가능한 대상이 함께 있다는
 이유로 취소하지 않는다. 기존 재탐지·이미지 보완 경로가 처리하며 재시도 한도는 유지한다.
-실행용 OCR 투영은 이 읽은 값을 덮어쓰지 않는다. 값 생략은 미확인, 명시적 빈 문자열은 빈칸이다.
+실행용 OCR 투영은 이 읽은 값을 덮어쓰지 않으며 구조 매핑의 누락된 값을 채우지도 않는다.
+값 생략은 미확인, 현재 모델 응답의 명시적 빈 문자열은 빈칸이다.
 캐시에 매핑을 저장할 때도 생략 여부를 보존한다. 화면 캐시 키의 `screen-field-source-v1`
 계약 접두부로 과거 assignments 응답과 분리한다. 과거 캐시 파일은 삭제·변환하지 않는다.
 현재 매핑이 없는 인출 메서드/화면 캐시는 기존 화면 판단 호출로 현재 이미지·문맥을 해석한다.
@@ -259,43 +262,57 @@ Review로 전달한다. 이는 최종 성공을 강제하는 처리가 아니며
 서비스에 전체 `Brain`을 넘기거나 같은 상태를 별도 객체에 반복 복사해 새 계약처럼 만들지
 않습니다. 이미 존재하는 공용 계약을 확장할 수 있는지 먼저 확인합니다.
 
-## 인출된 증거와 저장 결과
+## 인출된 구조와 현재 증거·저장 결과
 
-`MethodActionGroup.observed_fields`는 관찰한 필드의 의미·bbox·role을, `field_sources`는
-필드 이름 → 업무 입력 key를 저장합니다. `field_values`는 필드 이름 → 모델 확인값을 보존합니다.
-업무 입력과 일치하는 값은 `{"source": "description"}`처럼 입력 키 참조로 저장하고,
-인출할 때 현재 record에 연결합니다. 다른 관찰값은 문자열로 보존합니다. `""`는 명시적 빈칸,
-키 생략은 미확인, `None`은 이 정보를 저장하지 않은 과거 산출물입니다. `MethodCompletion`도
-같은 값 계약을 사용합니다. 생산자는
-`ScreenMapping.local_payload`의 내부 `selected_fields`와 `method_from_match`이며,
-런타임 학습·편찬 모두 이 함수를 사용합니다. `compile_method_candidate`의 중복 판정에도
-이 필드를 포함해 서로 다른 관찰 정보를 지우지 않습니다. `local_payload`는 생략된 값을
-빈 문자열 기본값으로 바꾸지 않습니다. 인출의 소비자는 `MemoryRetrieval._restore_mapping`과
-`MethodLibrary.bind_completion_with_context`입니다. 기존 누적 메모는 `RetrievalContext.screen_nodes`로
-읽으며 별도 상태 복사본을 만들지 않습니다. 과거 산출물의 확인값 누락은 기존 복구 경로로 보냅니다.
+`MethodActionGroup.observed_fields`는 필드의 의미·bbox·role을, `field_sources`는 필드 이름 →
+업무 입력 key를 저장합니다. `MethodCompletion`도 검토 대상의 기하·입력 키·조건을 저장합니다.
+두 모델에서 `field_values`는 제거했습니다. 구형 산출물은 `_discard_legacy_field_values`를 통해
+해당 키를 버리고 나머지 구조를 읽으며 원본 파일은 변경하지 않습니다. 런타임 학습과 편찬 CLI가
+공유하는 `method_from_match`·`method_completion_from_match`도 관찰값을 산출물에 넣지 않습니다.
+
+| 자료 | 생산자·소유자 | 소비자 | 허용되는 사용 |
+|---|---|---|---|
+| 필드 이름·role·bbox·source와 행동 point | `method_from_match`, `compile_memory` → `MethodActionGroup` | `retrieve_screen_memory`, `_restore_structure`, 실행 계획 | 다음 입력 위치와 행동 재사용 |
+| 현재 업무 입력 문자열 | `Brain.values` → `ScreenDecisionRequest.values` | 입력 출처 연결, `ActionWiringRequest.values` | fill에 전달할 문자열. 관찰값으로 사용하지 않음 |
+| 현재 실행의 누적 관찰·전달 | `remember_screen`, `remember_input_delivery` → `ProgressState.screen_nodes` | `context_recall`, notebook | 이력 보존과 현재 모델 판단의 문맥 |
+| 현재 모델이 읽은 값·교육 완료 | `ScreenMapping.fields.value`, `observed_step_results` | `_remember_model_task_evidence`, `remember_screen` | 새 관찰·verified·현재 교육 완료 갱신 |
+| 완료 검토 대상과 조건 | `method_completion_from_match` → `MethodCompletion` | `bind_completion_with_context`, `screen_decision` | 현재 검토 후보 구성. 과거 성공의 재발행은 하지 않음 |
+
+`MemoryRetrieval._restore_structure`는 `ScreenMapping.fields`에 `value`를 넣지 않습니다.
+`ScreenField.value`의 Python 기본값은 빈 문자열이지만 `model_fields_set`에는 값이 없고,
+`local_payload`와 `bind_mapping`은 `exclude_unset=True`로 이 차이를 보존합니다. 인출한
+`ScreenMatch.evidence`와 `observed_step_results`도 비웁니다. `RetrievalContext`는 누적 메모를
+읽어 값을 복원하지 않습니다. 현재 실행의 메모는 `ScreenDecisionRequest.screen_nodes`를 통해
+모델 문맥으로 전달하며 관찰 번호·ID를 갱신한 새 증거로 재발행하지 않습니다.
 
 `MemoryRetrieval.retrieve_screen_memory`는 위 경로 선택 규칙과 기존 viewport·pHash 조건으로
 다음 그룹 하나의 기하·입력 키 대응·절차를 반환합니다. 경로가 소진되면 완료 기억을 반환합니다.
 최초 메서드 선택의 최소 거리가 동률이면 기억을 선택하지 않습니다. 서로 다른 그룹의 관찰은
 합치지 않으며, 선택한 그룹 내부의 중복 기하는 같은 role과 공용 `same_control_region`으로 합칩니다.
 이 읽기는 pending·used·verified를 갱신하지 않습니다. 화면이 비슷하다는 사실은 행동 선택이나
-완료 증거가 아닙니다. `match_pattern`도 같은 다음 그룹을 결합한 뒤 저장된 모델
-확인값과 누적 메모를 공통 증거 갱신 경로에 전달합니다. OCR 원문은 이 값을 덮어쓰지 않습니다.
+완료 증거가 아닙니다. `match_pattern`도 같은 다음 그룹을 결합한 뒤 구조 매핑을 공통 실행
+경로에 전달합니다. 입력값은 현재 업무 값으로 공급하며 과거 값과 OCR로 현재 입력 증거를 만들지 않습니다.
 현재 프레임의 marker ID는 새로 배정합니다.
 
 `retrieve_screen_memory`의 필드에는 현재 슬롯에 연결한 `source`가, `procedure`에는 학습한
-행동·선행 그룹·예상 결과·입력 키를 연결한 모델 확인값이 들어갑니다. `group_input_sources`는 인출과 입력 키 연결의
+행동·선행 그룹·예상 결과가 들어갑니다. `group_input_sources`는 인출과 입력 키 연결의
 공용 변환입니다. 행동 후보 선택 전에 이 지식을 `remembered_fields`와 `retrieved_procedure`로
 모델에 전달합니다. 이 정보는 과거 지식이며 이번 실행의 완료 상태와 구분합니다.
 
-경로 없는 과거 산출물의 `MethodLibrary.bind_visible_value_evidence`는 현재 OCR에서 입력값이 일치한 경우에만 증거를
-만듭니다. 이때 증거 대상도 행동 대상과 동일한 `screen.markers` / `selected_fields`에 등록합니다.
-현재 프레임의 같은 role·겹치는 입력 영역은 같은 ID를 사용하며, 다른 그룹의 새 대상에는 새 ID를
-배정합니다. 영역 판정은 장면의 기존 중복 기준(IoU >= 0.85)을 기억 인출·좌표 결합·장면 보충이
-공유합니다. bbox의 1–2픽셀 차이로 같은 칸을 두 번 만들지 않으며, 저장된 클릭 point는 바꾸지
-않습니다. 이 ID는 현재 장면 결합용이며 메서드의 영구 업무 key가 아닙니다.
-이후 `ground_meanings` → `bind_scene` → `_remember_model_task_evidence`의 기존 경로가 메모를
-갱신합니다. 전달 성공만으로 입력이나 저장 완료를 메모에 추가하지 않습니다.
+OCR 일치로 인출된 증거를 만들던 `MethodLibrary.bind_visible_value_evidence`는 제거했습니다.
+현재 프레임의 같은 role·겹치는 입력 영역은 공용 `same_control_region`으로 연결하고 저장된
+클릭 point는 유지합니다. 이 ID는 현재 장면 결합용이며 메서드의 영구 업무 key가 아닙니다.
+`ScreenScanner._apply_field_values`는 구조 매핑에 값이 없으면 현재 요소 값도 미확인으로 둡니다.
+
+`select_screen_response`는 입력 후 확인 대기·현재 인출 화면에 있는 미확인 전달·저장 후 상세 진입·최종 완료 후보에서
+메서드나 화면 캐시의 과거 관찰을 사용하지 않고 기존 `ScreenMatch` 호출로 현재 관찰과 다음
+행동을 함께 얻습니다. 검토 대기가 없는 초기 fill·로그인·이동은 구조만 결합하여 모델 없이
+실행할 수 있습니다. 화면 캐시가 매핑을 재사용할 때도 과거 value·교육 완료·저장 결과·완료
+주석과 수정 대상 목록을 제거합니다. 캐시는 `operation="act"`인 행동 계획만 재사용하며,
+중복 조회 결과·완료·중단 판정은 현재 모델이 맡습니다. 다른 화면의 미확인 입력만 남은 경우에는
+현재 이동 행동을 막지 않고 해당 메모를 보존합니다. 값 검토 상태에서는 캐시를 건너뜁니다.
+같은 실행에서 모델이 앞서 확인한
+필드는 화면 밖으로 나가도 메모에 남으며 현재 검토에서 활용합니다. 별도 기억 확인 모델은 만들지 않습니다.
 
 `MethodActionGroup`의 `save_result`, `message_targets`, `repair_fields`는 모델 판단의 저장 결과를
 보존합니다. `message_targets`에는 `targets`의 이름을 저장하고, 해당 대상의 bbox와
@@ -311,7 +328,7 @@ Review로 전달한다. 이는 최종 성공을 강제하는 처리가 아니며
 참조로 결합합니다. 임시 Pydantic 모델을 거치지 않으며, 최종 실행 스키마의 검증은 유지합니다.
 
 새 필드가 없는 이전 메서드는 기본값 `None` / 빈 목록으로 읽습니다. 메시지가 없거나 현재
-내용이 다르면 저장 결과를 재사용하지 않고 기존 화면 캐시·모델 판단 경로로 넘깁니다.
+내용이 다르면 저장 결과를 재사용하지 않고 `save_result` 단계의 현재 모델 검토로 넘깁니다.
 이전 산출물에 없던 메시지는 자동 복원하지 않으므로 새 저장 결과 재사용에는 재편찬이 필요합니다.
 이 저장 결과 전달은 공개 인터페이스와 행동 응답의 필드·제약을 바꾸지 않습니다.
 편찬 응답 타입의 이름 변경은 [화면 처리 용어](runtime-terminology.md)에 별도로 기록합니다.

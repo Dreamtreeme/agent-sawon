@@ -14,7 +14,7 @@ from typing import Any, Literal
 import portalocker
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from brain.observe.values import field_matches, normalize
+from brain.observe.values import normalize
 from brain.task_instruction import ObservedStepResult
 from brain.visual.action_rebind import hash_distance
 from brain.visual.markers import marker_role_allowed
@@ -27,7 +27,7 @@ from brain.visual.scene import (
 )
 from sawon_runtime.storage import atomic_write_json
 
-# Completion evidence still binds visible values through label-to-control geometry.
+# Historical completion targets can bind through label-to-control geometry.
 # A large score means the matching label belongs to a different part of the form.
 MAX_RELATIVE_GEOMETRY_SCORE = 2.0
 
@@ -69,6 +69,13 @@ class MethodAction(BaseModel):
     point: tuple[float, float] | None = None
 
 
+def _discard_legacy_field_values(value: Any) -> Any:
+    """Older artifacts carried source-run readings; only their structure is reusable."""
+    if isinstance(value, dict) and "field_values" in value:
+        return {key: item for key, item in value.items() if key != "field_values"}
+    return value
+
+
 class MethodActionGroup(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: str
@@ -88,15 +95,14 @@ class MethodActionGroup(BaseModel):
     # Screen memory includes passive fields, not just the next action's targets.
     observed_fields: list[MethodTarget] = Field(default_factory=list)
     field_sources: dict[str, str] = Field(default_factory=dict)
-    # Model readings: omitted keys are unknown; strings include explicit blanks;
-    # {"source": input_key} refers to the matching value in the new run's record.
-    field_values: dict[str, str | dict[str, str]] | None = None
     save_result: (
         Literal["rejected", "confirmation_required", "ready_for_query", "unknown"] | None
     ) = None
     # Names in targets, never the detector IDs from the source run.
     message_targets: list[str] = Field(default_factory=list)
     repair_fields: list[str] = Field(default_factory=list)
+
+    _discard_source_readings = model_validator(mode="before")(_discard_legacy_field_values)
 
 
 class MethodCompletionTarget(BaseModel):
@@ -117,7 +123,8 @@ class MethodCompletion(BaseModel):
     screen_path: list[str] = Field(default_factory=list)
     screen_phash: int | None = None
     image_size: tuple[int, int] | None = None
-    field_values: dict[str, str | dict[str, str]] | None = None
+
+    _discard_source_readings = model_validator(mode="before")(_discard_legacy_field_values)
 
 
 class LearnedMethod(BaseModel):
@@ -169,38 +176,6 @@ def group_input_sources(
             if action.action == "fill" and action.slot is not None
         },
     }
-
-
-def remembered_field_values(screen: dict, values: Mapping[str, str]) -> dict | None:
-    """Preserve model readings, never reconstruct them from OCR or planned inputs."""
-    fields = screen.get("selected_fields")
-    if fields is None:
-        return None
-    return {
-        field["name"]: (
-            {"source": field["source"]}
-            if field.get("source") in values
-            and field_matches(field["source"], field["value"], values)
-            else field["value"]
-        )
-        for field in fields.values()
-        if "value" in field
-    }
-
-
-def bind_remembered_values(
-    field_values: dict | None, sources: Mapping[str, str], values: Mapping[str, str]
-) -> dict[str, str]:
-    """Resolve remembered input references while preserving literal model observations."""
-    result = {}
-    for name, value in (field_values or {}).items():
-        if isinstance(value, dict):
-            source = sources.get(value["source"], value["source"])
-            if source in values:
-                result[name] = values[source]
-        else:
-            result[name] = value
-    return result
 
 
 class MethodDocument(BaseModel):
@@ -301,7 +276,6 @@ def compile_method_candidate(
                         target.model_dump(mode="json") for target in compiled.observed_fields
                     ],
                     "field_sources": compiled.field_sources,
-                    "field_values": compiled.field_values,
                     "observed_step_results": [
                         (result.step_id, result.completed)
                         for result in compiled.observed_step_results
@@ -570,7 +544,6 @@ def method_from_match(
         image_size=screen.get("image_size"),
         observed_fields=observed_fields,
         field_sources=field_sources,
-        field_values=remembered_field_values(screen, values or {}),
         save_result=response.get("save_result") if has_save_review else None,
         message_targets=message_targets if has_save_review else [],
         repair_fields=list(response.get("repair_fields", [])) if has_save_review else [],
@@ -596,7 +569,7 @@ def method_completion_from_match(
     *,
     verified_fields: Collection[str] = (),
 ) -> LearnedMethod | None:
-    """Compile model-approved final proof into current-value-bound method evidence."""
+    """Compile the geometry and source bindings used by the model's final review."""
 
     if response.get("operation") != "complete" or response.get("steps"):
         return None
@@ -663,7 +636,6 @@ def method_completion_from_match(
         screen_path=list(screen.get("screen_path", [])),
         screen_phash=screen.get("screen_phash"),
         image_size=screen.get("image_size"),
-        field_values=remembered_field_values(screen, values or {}),
     )
     return method.model_copy(update={"slots": slots, "completion": completion})
 
@@ -985,9 +957,6 @@ class MethodLibrary:
                         "purpose": group.purpose or method.purpose,
                         "taught_step_id": group.taught_step_id,
                         "steps": steps,
-                        "observed_step_results": [
-                            result.model_dump(mode="json") for result in group.observed_step_results
-                        ],
                         "operation": "act",
                         "expected_result": group.expected_result,
                         **_bind_save_review(
@@ -1008,45 +977,6 @@ class MethodLibrary:
                 )
         return None
 
-    def bind_visible_value_evidence(
-        self,
-        method_id: str,
-        slot_map: dict[str, str],
-        screen: dict,
-        values: dict[str, str],
-    ) -> tuple[list[dict], list[dict]]:
-        """Match current OCR values at remembered input and passive-field locations."""
-
-        method = next((item for item in self.methods() if item.id == method_id), None)
-        if method is None:
-            return [], []
-        blocks = {block["id"]: block for block in screen.get("ocr", [])}
-        controls: dict[int, dict] = {}
-        evidence: dict[str, dict] = {}
-        for group in method.action_groups:
-            targets = {target.name: target for target in [*group.observed_fields, *group.targets]}
-            bound = _coordinate_bindings(
-                group, screen, self.max_phash_distance, targets=list(targets.values())
-            )
-            if bound is None:
-                continue
-            field_sources = group_input_sources(method, group, slot_map)
-            for name, source in field_sources.items():
-                target = targets.get(name)
-                if source is None or source not in values or target is None or source in evidence:
-                    continue
-                marker, label_ids = bound[target.name]
-                text_ids = _marker_text_ids(marker, screen, target.role)
-                visible = [blocks[text_id]["text"] for text_id in text_ids if text_id in blocks]
-                if visible:
-                    visible.append(" ".join(visible))
-                if not any(field_matches(source, text, values) for text in visible):
-                    continue
-                _register_bound_target(screen, target, marker)
-                controls[marker["id"]] = _bound_control(target, marker, label_ids, screen)
-                evidence[source] = {"field": source, "target": marker["id"]}
-        return list(controls.values()), list(evidence.values())
-
     def bind_completion_with_context(
         self,
         method_id: str,
@@ -1054,21 +984,13 @@ class MethodLibrary:
         screen: dict,
         values: dict[str, str],
     ) -> dict | None:
-        """Bind learned final proof and verify every current visible business value."""
+        """Bind final-review targets and conditions; current values require a fresh review."""
 
         method = next((item for item in self.methods() if item.id == method_id), None)
         if method is None or method.completion is None:
             return None
         sources = {slot.name: slot_map.get(slot.name, slot.source_key) for slot in method.slots}
-        if method.completion.field_values is None:
-            return None
-        readings = bind_remembered_values(
-            method.completion.field_values,
-            {slot.source_key: sources[slot.name] for slot in method.slots},
-            values,
-        )
         controls: dict[int, dict] = {}
-        evidence = []
         completion_evidence = []
         coordinate_targets = [item.target for item in method.completion.targets]
         coordinates = _coordinate_bindings(
@@ -1090,10 +1012,6 @@ class MethodLibrary:
                 return None
             marker, label_ids = bound
             text_ids = _marker_text_ids(marker, screen, item.target.role)
-            if item.target.name not in readings or not field_matches(
-                source, readings[item.target.name], values
-            ):
-                return None
             _register_bound_target(screen, item.target, marker)
             controls[marker["id"]] = ControlMeaning(
                 id=marker["id"],
@@ -1102,7 +1020,6 @@ class MethodLibrary:
                 text_ids=text_ids,
                 confidence=1,
             ).model_dump(mode="json")
-            evidence.append({"field": source, "target": marker["id"]})
             completion_evidence.extend(
                 {"condition_index": condition_index, "target": marker["id"]}
                 for condition_index in item.condition_indexes
@@ -1115,11 +1032,7 @@ class MethodLibrary:
             "purpose": completion.purpose or method.purpose,
             "taught_step_id": completion.taught_step_id,
             "steps": [],
-            "observed_step_results": [
-                result.model_dump(mode="json") for result in completion.observed_step_results
-            ],
             "operation": "complete",
-            "evidence": evidence,
             "completion_evidence": completion_evidence,
             "expected_result": completion.expected_result,
         }

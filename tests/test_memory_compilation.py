@@ -163,13 +163,15 @@ def test_memory_compiler_preserves_purpose_points_and_trace_order(tmp_path):
     assert bound is not None
     assert bound.response["steps"][0]["point"] == [200.0, 300.0]
     assert bound.response["steps"][0]["source"] == "hbl_no"
-    assert bound.response["observed_step_results"] == [
+    assert [item.model_dump() for item in restored.action_groups[0].observed_step_results] == [
         {
             "step_id": "open-detail",
             "observed_result": "{hbl_no} detail opened",
             "completed": True,
         }
     ]
+    assert "observed_step_results" not in bound.response
+    assert ScreenMatch.model_validate(bound.response).observed_step_results == []
     assert "HBL-001" not in path.read_text(encoding="utf-8")
 
     raw["purpose"] += "끝"
@@ -180,7 +182,7 @@ def test_memory_compiler_preserves_purpose_points_and_trace_order(tmp_path):
     ]
 
 
-def test_synthetic_compilation_preserves_model_readings_as_input_references(tmp_path):
+def test_synthetic_compilation_preserves_field_structure_without_source_run_readings(tmp_path):
     # Synthetic successful save screen: the reference is observed, never filled in this batch.
     original = screen("Shipment editor")
     mapping = ScreenMapping.model_validate(
@@ -207,22 +209,19 @@ def test_synthetic_compilation_preserves_model_readings_as_input_references(tmp_
     assert group.screen_path == ["Shipment", "Details"]
     assert group.field_sources == {"Reference": "hbl_no"}
     assert {f.name for f in group.observed_fields} == {"Reference", "Save", "Blank"}
-    assert group.field_values == {"Reference": {"source": "hbl_no"}, "Blank": ""}
-    assert "Save" not in group.field_values  # An omitted reading must not become an empty one.
+    assert {field.name: field.bbox for field in group.observed_fields} == {
+        "Reference": (100, 40, 200, 30),
+        "Save": (600, 500, 100, 40),
+        "Blank": (300, 40, 80, 30),
+    }
+    assert "field_values" not in group.model_dump()
     assert "HBL-001" not in method.model_dump_json()
     library = MethodLibrary(tmp_path / "passive-memory.json", enabled=True)
     library.upsert(method)
-    fresh = screen("Shipment editor")
-    fresh["ocr"] = [{"id": 91, "text": "HBL-002", "bbox": [110, 45, 100, 20]}]
-    controls, evidence = library.bind_visible_value_evidence(
-        "passive", {}, fresh, {"hbl_no": "HBL-002"}
-    )
-    assert evidence and evidence[0]["field"] == "hbl_no"
-    assert controls[0]["text_ids"] == [91]
-    assert library.bind_visible_value_evidence("passive", {}, fresh, {"hbl_no": "HBL-001"}) == (
-        [],
-        [],
-    )
+    restored = library.methods()[0].action_groups[0]
+    assert restored.observed_fields == group.observed_fields
+    assert restored.field_sources == {"Reference": "hbl_no"}
+    assert "field_values" not in library.path.read_text(encoding="utf-8")
 
 
 def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_navigation(tmp_path):
@@ -363,7 +362,13 @@ def test_synthetic_pruned_click_rebases_entry_memory_without_rebinding_action_id
     group = method.action_groups[-1]
     assert group.screen_phash == before["screen_phash"]
     assert group.message_targets and group.message_targets != ["Row"]
-    assert group.field_values == {"Selection": "unselected", group.message_targets[0]: "Saved"}
+    assert {field.name: field.bbox for field in group.observed_fields} == {
+        "Select row": (160, 170, 60, 40),
+        "Selection": (500, 500, 30, 20),
+        group.message_targets[0]: (10, 80, 300, 30),
+    }
+    assert "field_values" not in group.model_dump()
+    assert "unselected" not in group.model_dump_json()
     assert group.save_result == "ready_for_query"
     assert [item.step_id for item in group.observed_step_results] == ["query"]
     assert group.actions[0].action == "double_click"
@@ -579,7 +584,7 @@ def test_synthetic_completion_survives_recorded_trace_compilation_without_old_va
     assert restored.completion.targets[0].target.bbox == (150, 280, 180, 40)
     assert restored.completion.targets[0].slot == "hbl_no"
     assert restored.completion.targets[0].condition_indexes == [0]
-    assert restored.completion.field_values == {"Reference": {"source": "hbl_no"}}
+    assert "field_values" not in restored.completion.model_dump()
     assert "HBL-001" not in restored.model_dump_json()
 
 
@@ -649,7 +654,9 @@ def test_synthetic_accumulated_completion_uses_only_final_verified_observation(t
         assert (method.completion is not None) == accepted, label
         if accepted:
             assert method.completion.targets[0].condition_indexes == [], label
-            assert method.completion.field_values == {"Reference": {"source": "hbl_no"}}, label
+            assert method.completion.targets[0].slot == "hbl_no", label
+            assert method.completion.targets[0].target.bbox == (150, 280, 180, 40), label
+            assert "field_values" not in method.completion.model_dump(), label
             assert "HBL-001" not in method.model_dump_json(), label
 
 

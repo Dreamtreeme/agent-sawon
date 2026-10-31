@@ -21,7 +21,6 @@ from brain.input_binding import (
     resolve_input_key,
 )
 from brain.observe.evidence import input_surface
-from brain.observe.values import field_matches
 from brain.settings import BrainSettings
 from brain.task_instruction import ObservedStepResult, TaskInstruction
 from brain.visual.marker_contract import (
@@ -49,6 +48,7 @@ from .model_call import ResponseT, ScreenModelCall
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision, FieldName
 from .screen_mapping import ScreenMapping, ScreenMappingWire, mapping_prompt
+from .screen_memory import pending_screen_inputs
 from .visual_turn import adapt_proposal
 
 
@@ -1378,9 +1378,49 @@ def select_screen_response(
     """Resolve method, cache, grounded-plan and model sources in priority order."""
 
     screen, page = request.screen, request.page
-    method_proposal, cache_hit = match_screen_pattern(
-        request, services, prepared, allow_method=allow_method
+    scope = "saved_detail" if request.workflow_flags.get("post_save_detail_review") else "entry"
+    current_review = bool(
+        request.post_action_review
+        or request.workflow_flags.get("saved_result_open_pending")
+        or any(
+            item["source"] in request.values and item["source"] not in request.verified_fields
+            for item in request.required_verification
+        )
     )
+    if current_review:
+        method_proposal, cache_hit = None, None
+    else:
+        method_proposal, cache_hit = match_screen_pattern(
+            request, services, prepared, allow_method=allow_method
+        )
+        current_sources = {item.get("source") for item in screen.get("memory_fields", [])}
+        if method_proposal is not None and method_proposal.mapping is not None:
+            current_sources.update(
+                field.source for field in method_proposal.mapping.fields.values()
+            )
+        elif cache_hit is not None:
+            current_sources.update(
+                field.get("source")
+                for field in (cache_hit[1].get("mapping") or {}).get("fields", {}).values()
+            )
+        current_review = bool(
+            pending_screen_inputs(request.screen_nodes, scope) & current_sources
+            or (method_proposal is not None and method_proposal.operation == "complete")
+            or (cache_hit is not None and cache_hit[1].get("operation", "act") != "act")
+            or (request.phase == "save_result" and method_proposal is None)
+        )
+        if current_review:
+            method_proposal, cache_hit = None, None
+    if current_review:
+        # Stored structure chooses actions, never supplies readings for this run.
+        # One current mapping also plans the next action after reading the result.
+        services.log.append(
+            "verify",
+            payload={
+                "check": "memory_retrieval_exception",
+                "reason": "current_values_not_observed",
+            },
+        )
     services.log.append(
         "select",
         payload={
@@ -1392,7 +1432,7 @@ def select_screen_response(
                 else "screen_cache"
                 if cache_hit is not None
                 else "grounded_plan"
-                if request.grounded_interpretation is not None
+                if request.grounded_interpretation is not None and not current_review
                 else "model"
             ),
         },
@@ -1403,11 +1443,23 @@ def select_screen_response(
         _, cached = cache_hit
         response = ScreenMatch.model_validate(cached)
         if response.mapping is not None:
-            geometry = ScreenMatch.model_validate(
-                response.mapping.local_payload(screen, request.values)
+            mapping = ScreenMapping.model_validate(
+                {
+                    **response.mapping.model_dump(exclude={"fields"}),
+                    "fields": {
+                        name: field.model_dump(exclude={"value"})
+                        for name, field in response.mapping.fields.items()
+                    },
+                    "observed_step_results": [],
+                    "save_result": None,
+                    "message_targets": [],
+                    "repair_fields": [],
+                    "completion_evidence": [],
+                }
             )
+            geometry = ScreenMatch.model_validate(mapping.local_payload(screen, request.values))
             geometry = local_response(geometry, screen)
-            response = geometry.model_copy(update={"mapping": response.mapping})
+            response = geometry.model_copy(update={"mapping": mapping})
         services.log.append(
             "cache_hit",
             payload={
@@ -1416,7 +1468,7 @@ def select_screen_response(
                 "procedure_step": response.procedure_step,
             },
         )
-    elif request.grounded_interpretation is not None:
+    elif request.grounded_interpretation is not None and not current_review:
         grounded = request.grounded_interpretation
         plan_state = {
             **prepared.state,
@@ -1443,7 +1495,7 @@ def select_screen_response(
             },
         )
     else:
-        if screen.get("observation_route") == "memory_retrieval":
+        if screen.get("observation_route") == "memory_retrieval" and not current_review:
             services.log.append(
                 "verify",
                 payload={
@@ -1466,30 +1518,12 @@ def select_screen_response(
         )
         write_decision_artifact(services, "markers", response)
         response = local_response(response, screen)
-    exception = None
-    if method_proposal is not None or cache_hit is not None:
-        if response.mapping is None:
-            exception = "missing_screen_memory"
-        else:
-            node = request.screen_nodes.get(
-                json.dumps(response.mapping.screen_path, ensure_ascii=False), {}
-            )
-            for field in response.mapping.fields.values():
-                delivery = node.get("fields", {}).get(field.source, {}).get("delivery")
-                if (
-                    delivery
-                    and "value" in field.model_fields_set
-                    and field.source in request.values
-                    and not field_matches(field.source, field.value, request.values)
-                ):
-                    exception = "delivered_value_not_observed"
-                    break
-    if exception is not None:
+    if (method_proposal is not None or cache_hit is not None) and response.mapping is None:
         services.log.append(
             "verify",
             payload={
                 "check": "memory_retrieval_exception",
-                "reason": exception,
+                "reason": "missing_screen_memory",
             },
         )
         response = _call_screen_decision(

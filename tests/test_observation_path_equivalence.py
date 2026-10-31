@@ -37,10 +37,6 @@ def observed_inputs(brain, path=()):
     }
 
 
-class MissingRetrievedEvidence(AssertionError):
-    """Only measured warm memo loss is expected, not setup or other failures."""
-
-
 class ObservationBlockedByPlan(AssertionError):
     """Synthetic 106 replay reached the specific observation/plan coupling defect."""
 
@@ -690,7 +686,9 @@ def run_route(path, record, route):
                 },
                 method_id="synthetic-warm",
             )
-        responses = [raw] if compiled is not None else []
+        # Retrieval supplies structure; this pending saved-detail review must read
+        # the current frame even when a successful historical response is cached.
+        responses = [raw]
     brain, model = prepare_worker(path / "current", record, responses)
     if route == "model-to-pattern-cache":
         brain.visual_match_cache = ScreenPatternCache(cache_path, enabled=True)
@@ -715,16 +713,15 @@ def run_route(path, record, route):
     assert observed_inputs(brain).get("hbl_no", {}).get("value") == record.fields.hbl_no.value, (
         route
     )
-    if route == "model-to-compiled-memory":
+    if route in {"model-to-pattern-cache", "model-to-compiled-memory"}:
         assert len(model.prompts) == 1
-        assert sum(e.payload.get("check") == "method_bound" for e in brain.log.read_all()) == 1
-        if "hbl_no" not in brain.verified:
-            raise MissingRetrievedEvidence(
-                f"Current value received; action targets="
-                f"{[step.target for step in brain.visual_proposal.steps]}, "
-                f"evidence targets={[item.target for item in brain.visual_proposal.evidence]}; "
-                f"verified={brain.verified}"
-            )
+        assert not any(
+            e.payload.get("check") in {"method_bound", "visual_match_cache"}
+            for e in brain.log.read_all()
+        )
+        assert any(
+            e.payload.get("reason") == "current_values_not_observed" for e in brain.log.read_all()
+        )
     assert observed["visible_values"] == {
         "hbl_no": [(record.fields.hbl_no.value, (100, 15, 150, 30))]
     }, route
@@ -768,13 +765,7 @@ def run_route(path, record, route):
         )
         assert outcome is None, route
         brain._record_action_verification(decision, choice, None, None, effect, facts)
-    expected_calls = (
-        0
-        if route == "model-to-pattern-cache"
-        else 2
-        if route in {"empty-action-recovery", "identical-capture"}
-        else 1
-    )
+    expected_calls = 2 if route in {"empty-action-recovery", "identical-capture"} else 1
     assert len(model.prompts) == expected_calls, route
     events = brain.log.read_all()
     checks = [event.payload.get("check") for event in events]
@@ -783,8 +774,8 @@ def run_route(path, record, route):
         "field-batch": "screen_fill_values",
         "empty-action-recovery": "missing_match_actions_completed",
         "identical-capture": "similar_form_reused",
-        "model-to-pattern-cache": "visual_match_cache",
-        "model-to-compiled-memory": "method_bound",
+        "model-to-pattern-cache": "input_value_matches",
+        "model-to-compiled-memory": "input_value_matches",
     }[route]
     assert checks.count(required_check) == 1, (route, checks)
     return semantic_memory(brain)
