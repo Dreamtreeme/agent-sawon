@@ -1724,7 +1724,7 @@ def ground_screen_response(
     *,
     used_image: bool,
 ) -> ScreenMatch:
-    """Ground referenced controls and recover one unresolved action batch."""
+    """Ground a validated plan; prepare again only when grounding/recovery changes it."""
     with rejection_evidence(
         services.log,
         "screen_decision.ground_screen_response",
@@ -1733,6 +1733,8 @@ def ground_screen_response(
     ):
         screen, page = request.screen, request.page
         required = request.required_verification
+        validated_response = response
+        grounded_response = response
         if not response.needs_refinement:
             response = retain_action_targets(services, response, screen, page)
             response = retain_verification(
@@ -1743,6 +1745,7 @@ def ground_screen_response(
                 page if used_image else None,
             )
             response = sanitize_unused_controls(services, request.phase, response, screen, required)
+            grounded_response = response
             if response.operation == "act" and not response.steps:
                 completion = _call_screen_decision(
                     services,
@@ -1781,14 +1784,17 @@ def ground_screen_response(
                         "steps": len(response.steps),
                     },
                 )
-        response = prepare_screen_plan(
-            request,
-            services,
-            response,
-            prepared.capability,
-            set(prepared.active_fields),
-        )
-        if not response.needs_refinement:
+        # Equality only avoids repeated work; a changed response still follows
+        # the same validation path, including newly grounded action controls.
+        if response != validated_response:
+            response = prepare_screen_plan(
+                request,
+                services,
+                response,
+                prepared.capability,
+                set(prepared.active_fields),
+            )
+        if not response.needs_refinement and response != grounded_response:
             response = retain_action_targets(services, response, screen, page)
             response = sanitize_unused_controls(services, request.phase, response, screen, required)
         return response

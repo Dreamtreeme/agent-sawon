@@ -75,7 +75,7 @@ def test_generic_task_context_has_no_legacy_query_input_gate(tmp_path, record):
     assert "No application route is predefined" in context["guidance"]
 
 
-def test_saved_review_context_excludes_run_local_provenance(tmp_path, record):
+def test_saved_review_context_excludes_run_local_provenance(tmp_path, record, monkeypatch):
     brain, *_ = setup_brain(tmp_path, record, [])
     brain.phase = "final_query"
     brain.saved_evidence.begin("origin-a")
@@ -100,6 +100,20 @@ def test_saved_review_context_excludes_run_local_provenance(tmp_path, record):
         "session_id": "different-session",
     }
     second = brain._execution_context()["saved_record_review"]
+
+    snapshots = []
+    snapshot = type(brain.saved_evidence).snapshot
+
+    def capture_snapshot(evidence, values):
+        result = snapshot(evidence, values)
+        snapshots.append(result)
+        return result
+
+    monkeypatch.setattr(type(brain.saved_evidence), "snapshot", capture_snapshot)
+    request = brain._screen_decision_request({}, None)
+    assert len(snapshots) == 1
+    assert request.saved_record_review is snapshots[0]
+    assert request.execution_contract["saved_record_review"] == second
 
     assert first == second
     assert first == {

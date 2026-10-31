@@ -374,16 +374,18 @@ class Brain:
         policy = DecisionPolicy(
             replace(policy.facts, verified_field_names=tuple(sorted(model_verified)))
         )
-        contract = self._execution_context(policy, anticipate=True)
+        saved_record_review = (
+            self.saved_evidence.snapshot(self.values) if self.saved_evidence.session_id else None
+        )
+        contract = self._execution_context(
+            policy, anticipate=True, saved_record_review=saved_record_review
+        )
         pending_execution = None if self.pending is None else self.pending.get("execution")
         post_action_review = bool(
             pending_execution is not None and pending_execution.plan.verification == "fields"
         )
         context_layers = self.rolling_context.export_prompt_context(
             current_goal=self.goal,
-        )
-        saved_record_review = (
-            self.saved_evidence.snapshot(self.values) if self.saved_evidence.session_id else None
         )
         return ScreenDecisionRequest(
             screen=screen,
@@ -423,11 +425,14 @@ class Brain:
         )
 
     def _execution_context(
-        self, policy: DecisionPolicy | None = None, *, anticipate: bool = False
+        self,
+        policy: DecisionPolicy | None = None,
+        *,
+        anticipate: bool = False,
+        saved_record_review: dict | None = None,
     ) -> dict:
-        saved_record_review = (
-            self.saved_evidence.snapshot(self.values) if self.saved_evidence.session_id else None
-        )
+        if saved_record_review is None and self.saved_evidence.session_id:
+            saved_record_review = self.saved_evidence.snapshot(self.values)
         context = execution_context(
             ExecutionContextRequest(
                 policy=policy or self._decision_policy(),

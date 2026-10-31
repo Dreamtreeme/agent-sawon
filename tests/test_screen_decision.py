@@ -50,6 +50,22 @@ def task_instruction():
     )
 
 
+@pytest.fixture
+def decision_work_counts(monkeypatch):
+    """Count real preparation calls without replacing their behavior."""
+    counts = {}
+    for name in ("prepare_screen_plan", "retain_action_targets", "sanitize_unused_controls"):
+        original = getattr(matching, name)
+        counts[name] = 0
+
+        def counted(*args, _name=name, _original=original, **kwargs):
+            counts[_name] += 1
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(matching, name, counted)
+    return counts
+
+
 def test_ocr_fill_target_is_rejected_as_non_action_surface(tmp_path):
     class BrainStub:
         log = RunLog(tmp_path, case_id="defer-ocr-fill", agent_id="test")
@@ -423,6 +439,75 @@ def named_response(**overrides):
         ],
         **overrides,
     }
+
+
+@pytest.mark.parametrize("source", ["model", "method", "replanned"])
+def test_synthetic_unchanged_plan_is_not_prepared_or_grounded_twice(
+    tmp_path, record, decision_work_counts, source
+):
+    # Synthetic model/method input; all selection, correction and validation functions are real.
+    data = named_response()
+    invalid = named_response(
+        fields={"Reference": {**data["fields"]["Reference"], "source": None}},
+        steps=[{**data["steps"][0], "source": None}],
+    )
+    replies = [] if source == "method" else [invalid, data] if source == "replanned" else [data]
+    brain, model, *_ = setup_brain(tmp_path, record, replies)
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
+    request, services = matching_contract(brain)
+    if source == "method":
+        mapped = ScreenMatch.model_validate(data).mapping
+        proposal = ScreenMatch.model_validate(mapped.local_payload(request.screen, request.values))
+        request = replace(request, proposal=proposal.model_copy(update={"mapping": mapped}))
+
+    result = decide_screen(request, services)
+
+    assert [(step.action, step.source, step.point) for step in result.response.steps] == [
+        ("fill", "hbl_no", [175, 30])
+    ]
+    assert decision_work_counts == {
+        "prepare_screen_plan": 2 if source == "replanned" else 1,
+        "retain_action_targets": 1,
+        "sanitize_unused_controls": 1,
+    }
+    assert len(model.prompts) == {"method": 0, "model": 1, "replanned": 2}[source]
+    if source == "replanned":
+        assert any(
+            event.payload.get("check") == "combined_action_corrected"
+            for event in brain.log.read_all()
+        )
+
+
+def test_synthetic_newly_grounded_target_still_runs_action_validation(tmp_path, record):
+    # Synthetic omitted target: the existing fake supplies a disabled control during grounding.
+    brain, model, *_ = setup_brain(
+        tmp_path,
+        record,
+        [
+            {
+                "screen_kind": "query",
+                "controls": [{"id": 6, "role": "button", "enabled": False, "confidence": 1}],
+            }
+        ],
+    )
+    screen = {"ocr": [], "markers": [{"id": 6, "source": "omniparser", "text_ids": []}]}
+    request, services = matching_contract(brain, screen)
+    prepared = build_decision_prompt(request, services)
+    proposal = ScreenMatch(
+        screen_kind="query",
+        procedure_step="task-action",
+        controls=[],
+        steps=[{"target": 6, "action": "click", "intent": "navigate", "point": [10, 10]}],
+    )
+    validated = matching.validate_or_replan(proposal, request, services, prepared)
+
+    with pytest.raises(ValueError, match="screen_match_action_target_uncertain"):
+        matching.ground_screen_response(validated, request, services, prepared, used_image=False)
+
+    assert len(model.prompts) == 1
+    assert any(
+        event.payload.get("check") == "action_targets_grounded" for event in brain.log.read_all()
+    )
 
 
 def test_synthetic_current_field_source_is_not_reinferred_from_equal_input_value():
@@ -2132,7 +2217,9 @@ def test_synthetic_mappingless_cache_requires_current_model_observation(tmp_path
 
 
 # Cleanup audit C6: retain necessary preparation of a changed recovery response.
-def test_empty_action_recovery_preserves_education_and_current_observed_values(tmp_path, record):
+def test_empty_action_recovery_preserves_education_and_current_observed_values(
+    tmp_path, record, decision_work_counts
+):
     initial = named_response(steps=[])
     initial["fields"]["Reference"]["value"] = record.fields.hbl_no.value
     recovered = named_response(
@@ -2158,6 +2245,11 @@ def test_empty_action_recovery_preserves_education_and_current_observed_values(t
     assert brain.visual_proposal.mapping.fields["Reference"].value == record.fields.hbl_no.value
     assert brain.visual_proposal.steps[0].intent == "navigate"
     assert brain.visual_proposal.mapping.steps[0].target == "Continue"
+    assert decision_work_counts == {
+        "prepare_screen_plan": 2,
+        "retain_action_targets": 2,
+        "sanitize_unused_controls": 2,
+    }
 
 
 @pytest.mark.parametrize("operation", ["act", "stop"])
