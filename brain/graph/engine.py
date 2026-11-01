@@ -32,6 +32,7 @@ from brain.observe.progress import (
     navigation_target,
     semantic_target_key,
 )
+from brain.observe.summary import ancestors
 from brain.observe.values import field_matches as field_matches
 from brain.observe.values import values_for as values_for
 from brain.relay import Relay
@@ -1217,39 +1218,29 @@ class Brain:
             )
 
     def _bind_saved_evidence(self, response) -> None:
+        self.review = None
+        if self.settings.visual_model_only_review:
+            return
         prefix = "e" + str(self.observation.obs_id.int) + "0"
         self.saved_bindings = (
             str(self.observation.obs_id),
             {e.field: prefix + str(e.target) for e in response.evidence},
         )
-        controls = {control.id: control for control in response.controls}
-        row_roles = {"row", "dataitem", "listitem"}
-
-        def containing_row(target_id: int) -> int | None:
-            seen = set()
-            current = controls.get(target_id)
-            while current is not None and current.id not in seen:
-                seen.add(current.id)
-                if current.role.casefold() in row_roles:
-                    return current.id
-                current = controls.get(current.parent_id)
-            return None
-
+        elements = {item.ref: item for item in self.observation.elements}
         selected_row = next(
             (
-                row_id
+                row.ref
                 for step in response.steps
                 if step.action in {"click", "double_click"}
-                and (row_id := containing_row(step.target)) is not None
+                and (target := elements.get(prefix + str(step.target))) is not None
+                for row in [target, *reversed(ancestors(target, self.observation.elements))]
+                if row.role.casefold() in {"row", "dataitem", "listitem"}
             ),
             None,
         )
         self.saved_row_binding = (
-            (str(self.observation.obs_id), prefix + str(selected_row))
-            if selected_row is not None
-            else None
+            (str(self.observation.obs_id), selected_row) if selected_row is not None else None
         )
-        self.review = None
 
     def _observe(self) -> Observation:
         observation = redact(self.relay.observe(), self.secrets)

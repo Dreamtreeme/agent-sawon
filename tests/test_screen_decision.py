@@ -3709,6 +3709,7 @@ def test_semantic_mapping_never_retargets_actions_from_a_descriptive_fragment():
 @pytest.mark.parametrize("separate", [False, True], ids=["combined", "reused-observation"])
 def test_named_fields_replace_number_recovery_for_mixed_targets(tmp_path, record, separate):
     first = named_response()
+    first["fields"]["Reference"]["source"] = "mbl_no"
     data = named_response(
         fields={
             "Reference": {"source": "hbl_no", "role": "edit", "bbox": [100, 15, 150, 30]},
@@ -3723,22 +3724,28 @@ def test_named_fields_replace_number_recovery_for_mixed_targets(tmp_path, record
     brain, model, *_ = setup_brain(tmp_path, record, replies)
     brain._observe()
     if separate:
-        brain._observe()
+        # Replan on the same capture; a corrected source replaces the old binding.
+        brain.visual_proposal = None
     assert brain._select_node() == "review"
     assert [a.decision.action.source for a in brain.action_plan.actions] == ["hbl_no", "mbl_no"]
     assert [
         brain.visual_points.get(brain.observation, a.decision).point
         for a in brain.action_plan.actions
     ] == [(125, 28), (126, 103)]
+    selected = brain.screen_scanner._catalog.selected_fields.values()
+    assert {item["name"]: item["source"] for item in selected} == {
+        "Reference": "hbl_no",
+        "New reference": "mbl_no",
+    }
     assert len(model.prompts) == len(replies)
 
 
-def test_named_missing_target_fails_without_number_grounding_retry(tmp_path, record):
+def test_named_missing_target_defers_plan_without_number_grounding_retry(tmp_path, record):
     data = named_response()
     data["steps"][0]["target"] = "Missing field"
     brain, model, *_ = setup_brain(tmp_path, record, [data])
-    with pytest.raises(KeyError, match="Missing field"):
-        brain._observe()
+    brain._observe()
+    assert brain.visual_plan_error == "screen_match_action_target_undeclared"
     assert len(model.prompts) == 1
     assert not any(e.kind == "act" for e in brain.log.read_all())
 

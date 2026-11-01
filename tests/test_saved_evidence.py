@@ -285,8 +285,12 @@ def test_unique_selected_row_links_to_exact_submitted_query_when_input_is_not_de
     assert proof.query_identity["proof_kind"] == "submitted_query_input"
 
 
-def test_screen_binding_promotes_a_clicked_result_cell_to_its_parent_row(tmp_path, record):
+@pytest.mark.parametrize("model_only", [False, True], ids=["saved-review", "model-review"])
+def test_screen_binding_promotes_a_clicked_result_cell_to_its_parent_row(
+    tmp_path, record, model_only
+):
     brain, *_ = setup_brain(tmp_path, record, [])
+    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": model_only})
     observation = scene("query", [])
     prefix = "e" + str(observation.obs_id.int) + "0"
     brain.observation = observation.model_copy(
@@ -308,7 +312,11 @@ def test_screen_binding_promotes_a_clicked_result_cell_to_its_parent_row(tmp_pat
 
     brain._bind_saved_evidence(response)
 
-    assert brain.saved_row_binding == (str(observation.obs_id), prefix + "1")
+    if model_only:
+        assert brain.saved_bindings is None
+        assert brain.saved_row_binding is None
+    else:
+        assert brain.saved_row_binding == (str(observation.obs_id), prefix + "1")
 
 
 def test_different_result_row_still_resets_selected_row_link(record):

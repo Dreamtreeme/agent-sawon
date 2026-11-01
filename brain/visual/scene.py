@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -204,8 +205,9 @@ def bind_scene(
     *,
     threshold: float = 0.8,
     secrets: tuple[str, ...] = (),
+    selected_fields: Mapping[str, dict] | None = None,
 ) -> SceneObservation:
-    """Bind model structure to literal OCR. No model-generated field values."""
+    """Bind current geometry once, using explicit field readings or literal OCR."""
     shot = wire.screenshot
     if shot is None or shot.geometry is None:
         raise ValueError("visual_capture_missing")
@@ -279,25 +281,34 @@ def bind_scene(
         if uncertain:
             uncertainties.append(f"control:{control.id}:low_confidence_or_duplicate")
             uncertain_refs.append(prefix + str(control.id))
-        label = text(control.label_ids)
-        value = text(control.text_ids)
-        # Input names remain stable after typing: label, never the entered value.
-        name = (
-            (label or control.visual_description)
-            if control.role in {"edit", "combobox"}
-            else (value or label)
-        )
-        if not name and control.role in {"icon", "button", "checkbox", "tabitem", "menuitem"}:
-            name = control.visual_description
-        if uncertain:
-            name = ""
+        field = selected_fields.get(str(control.id)) if selected_fields is not None else None
+        if field is not None:
+            name = label = field["name"]
+            # Remembered geometry without an explicit reading must never inherit OCR values.
+            value = field.get("value")
+            for secret in secrets:
+                if secret and value:
+                    value = value.replace(secret, "[REDACTED]")
+        else:
+            label = text(control.label_ids)
+            value = text(control.text_ids) if not uncertain else None
+            # Input names remain stable after typing: label, never the entered value.
+            name = (
+                (label or control.visual_description)
+                if control.role in {"edit", "combobox"}
+                else (value or label)
+            )
+            if not name and control.role in {"icon", "button", "checkbox", "tabitem", "menuitem"}:
+                name = control.visual_description
+            if uncertain:
+                name = ""
         elements.append(
             UIElement(
                 ref=prefix + str(control.id),
                 role=control.role,
                 name=name,
-                label_hint=label or None,
-                value=(value or None) if not uncertain else None,
+                label_hint=label if field is not None else label or None,
+                value=value or None,
                 enabled=control.enabled and not uncertain,
                 focused=control.focused and not uncertain,
                 bbox=control.bbox,

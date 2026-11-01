@@ -72,6 +72,9 @@ def model_screen(screen: dict) -> dict:
 
 def local_response[T: BaseModel](response: T, screen: dict) -> T:
     """Decode text-marker references explicitly, never guess from integer overlap."""
+    if getattr(response, "mapping", None) is not None:
+        # Named mappings already bind current local OCR; no provider IDs crossed this boundary.
+        return response
     text_markers = {
         m["id"]: m["text_ids"] for m in screen.get("markers", []) if m["source"] == "ocr"
     }
@@ -94,10 +97,7 @@ def local_response[T: BaseModel](response: T, screen: dict) -> T:
                 control[field] = [oid for ref in refs for oid in text_markers[ref]]
     if issues:
         raise MarkerReferenceError(issues)
-    decoded = type(response).model_validate(payload)
-    if getattr(response, "mapping", None) is not None:
-        decoded = decoded.model_copy(update={"mapping": response.mapping})
-    return decoded
+    return type(response).model_validate(payload)
 
 
 def model_controls(controls: list, screen: dict) -> list[dict]:

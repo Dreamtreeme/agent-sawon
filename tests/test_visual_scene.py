@@ -60,13 +60,32 @@ def scene(value="AB12", confidence=0.99):
     return blocks, detection
 
 
-def test_input_uses_control_rectangle_not_label_and_only_ocr_value():
+@pytest.mark.parametrize(
+    ("selected", "expected_name", "expected_value"),
+    [
+        (None, "Identifier", "AB12"),
+        ({"name": "Reference", "value": "MODEL"}, "Reference", "MODEL"),
+        ({"name": "Reference"}, "Reference", None),
+        ({"name": "Reference", "value": ""}, "Reference", None),
+        ({"name": "Reference", "value": "private"}, "Reference", "[REDACTED]"),
+    ],
+    ids=["ocr", "model-reading", "unobserved", "blank", "redacted"],
+)
+def test_input_binds_control_geometry_and_authoritative_reading(
+    selected, expected_name, expected_value
+):
     blocks, detection = scene()
-    result = bind_scene(wire(), blocks, detection)
+    result = bind_scene(
+        wire(),
+        blocks,
+        detection,
+        selected_fields={"0": selected} if selected is not None else None,
+        secrets=("private",),
+    )
     target = result.elements[0]
     assert target.bbox == (100, 20, 200, 30)
-    assert target.name == target.label_hint == "Identifier"
-    assert target.value == "AB12"
+    assert target.name == target.label_hint == expected_name
+    assert target.value == expected_value
     assert result.evidence_source == "ocr_visual"
     assert result.wire.elements == []
     assert result.screenshot.desktop_point((200, 35)) == (0, 70)

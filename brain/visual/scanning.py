@@ -681,9 +681,6 @@ class ScreenScanner:
                     blocks,
                     allow_ocr_inputs=self.model_led_semantics,
                 )
-                scene = bind_scene(
-                    wire, blocks, detection, threshold=self.threshold, secrets=self.secrets
-                )
                 selected = request.screen.get("selected_fields", {})
                 for item in [] if "screen_path" in request.screen else selected.values():
                     sources = {
@@ -695,7 +692,14 @@ class ScreenScanner:
                     }
                     if not item.get("source") and len(sources) == 1:
                         item["source"] = next(iter(sources))
-                scene = self._apply_field_values(wire, scene, selected)
+                scene = bind_scene(
+                    wire,
+                    blocks,
+                    detection,
+                    threshold=self.threshold,
+                    secrets=self.secrets,
+                    selected_fields=selected,
+                )
                 catalog.selected_fields = {
                     str(control.id): selected[str(control.id)]
                     for control in detection.controls
@@ -835,27 +839,6 @@ class ScreenScanner:
         )
         return request, catalog.interpretation()
 
-    def _apply_field_values(self, wire, scene, selected):
-        prefix = "e" + str(wire.obs_id.int) + "0"
-        elements = []
-        for element in scene.elements:
-            field = selected.get(element.ref.removeprefix(prefix))
-            if field is not None:
-                # A remembered field identifies where to act, not what is visible now.
-                value = field.get("value")
-                for secret in self.secrets:
-                    if secret and value:
-                        value = value.replace(secret, "[REDACTED]")
-                element = element.model_copy(
-                    update={
-                        "name": field["name"],
-                        "label_hint": field["name"],
-                        "value": value or None,
-                    }
-                )
-            elements.append(element)
-        return scene.model_copy(update={"elements": elements})
-
     def bind_mapping(
         self, wire: Observation, meanings: SemanticDetection, fields: dict
     ) -> SceneObservation:
@@ -873,31 +856,22 @@ class ScreenScanner:
                 id=control.id, bbox=tuple(bbox), source="model_selected", confidence=1
             )
         detection = Detection(screen_kind=meanings.screen_kind, controls=controls)
-        scene = bind_scene(
-            wire, catalog.blocks, detection, threshold=self.threshold, secrets=self.secrets
-        )
-        previous_fields = list(catalog.selected_fields.values())
-        catalog.selected_fields = {
+        selected = {
             str(control.id): {
                 "name": control.visual_description,
                 **fields[control.visual_description].model_dump(exclude_unset=True),
             }
             for control in meanings.controls
         }
-        for item in catalog.selected_fields.values():
-            previous = next(
-                (
-                    old
-                    for old in previous_fields
-                    if old["name"] == item["name"]
-                    and old["role"] == item["role"]
-                    and same_control_region(old["bbox"], item["bbox"])
-                ),
-                None,
-            )
-            if previous is not None and previous.get("source"):
-                item["source"] = previous["source"]
-        scene = self._apply_field_values(wire, scene, catalog.selected_fields)
+        scene = bind_scene(
+            wire,
+            catalog.blocks,
+            detection,
+            threshold=self.threshold,
+            secrets=self.secrets,
+            selected_fields=selected,
+        )
+        catalog.selected_fields = selected
         catalog.markers = list(by_id.values())
         catalog.detection = detection
         return scene.model_copy(update={"capture_phash": perceptual_hash(catalog.page.image_path)})
@@ -939,10 +913,10 @@ class ScreenScanner:
             detection,
             threshold=self.threshold,
             secrets=self.secrets,
+            selected_fields=catalog.selected_fields,
         )
         catalog.detection = detection
         self._catalogs[catalog.key] = catalog
-        scene = self._apply_field_values(wire, scene, catalog.selected_fields)
         atomic_write_json(
             catalog.page.image_path.parent / "perception.json",
             {

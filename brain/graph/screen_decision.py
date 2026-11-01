@@ -296,6 +296,16 @@ class ScreenDecisionRequest:
     screen_nodes: Mapping[str, dict] = field(default_factory=dict)
     current_screen_path: list[str] = field(default_factory=list)
 
+    @cached_property
+    def evidence_scope(self) -> str:
+        return (
+            "saved_detail"
+            if self.workflow_flags.get("post_save_detail_review")
+            else "saved_detail_candidate"
+            if self.workflow_flags.get("saved_result_open_pending")
+            else "entry"
+        )
+
 
 @dataclass(frozen=True)
 class ScreenDecisionServices:
@@ -1378,7 +1388,6 @@ def select_screen_response(
     """Resolve method, cache, grounded-plan and model sources in priority order."""
 
     screen, page = request.screen, request.page
-    scope = "saved_detail" if request.workflow_flags.get("post_save_detail_review") else "entry"
     current_review = bool(
         request.post_action_review
         or request.workflow_flags.get("saved_result_open_pending")
@@ -1404,7 +1413,7 @@ def select_screen_response(
                 for field in (cache_hit[1].get("mapping") or {}).get("fields", {}).values()
             )
         current_review = bool(
-            pending_screen_inputs(request.screen_nodes, scope) & current_sources
+            pending_screen_inputs(request.screen_nodes, request.evidence_scope) & current_sources
             or (method_proposal is not None and method_proposal.operation == "complete")
             or (cache_hit is not None and cache_hit[1].get("operation", "act") != "act")
             or (request.phase == "save_result" and method_proposal is None)
@@ -1457,9 +1466,9 @@ def select_screen_response(
                     "completion_evidence": [],
                 }
             )
-            geometry = ScreenMatch.model_validate(mapping.local_payload(screen, request.values))
-            geometry = local_response(geometry, screen)
-            response = geometry.model_copy(update={"mapping": mapping})
+            response = ScreenMatch.model_validate(
+                mapping.local_payload(screen, request.values)
+            ).model_copy(update={"mapping": mapping})
         services.log.append(
             "cache_hit",
             payload={
@@ -1862,10 +1871,12 @@ def decide_screen(
     ):
         original_call = services.call
         prompt_sizes = []
+        mapping_plan_error: ScreenDecisionResult | None = None
 
         def traced_call(
             prompt: str, schema: type[ResponseT], *, page: RenderedPage | None = None
         ) -> ResponseT:
+            nonlocal mapping_plan_error
             prompt_sizes.append(len(prompt))
             with model_call_context(
                 decision_id=decision_id,
@@ -1881,7 +1892,17 @@ def decide_screen(
                     mapped = original_call(prompt, schema, page=model_page)
                     if mapped.mapping is not None:
                         write_decision_artifact(services, "semantic-mapping", mapped.mapping)
-                        payload = mapped.mapping.local_payload(screen, request.values)
+                        plan_error = None
+                        try:
+                            payload = mapped.mapping.local_payload(screen, request.values)
+                        except KeyError:
+                            if not defer_plan_errors:
+                                raise
+                            # Keep the current observation; reject only its unbound next action.
+                            plan_error = "screen_match_action_target_undeclared"
+                            payload = mapped.mapping.model_copy(update={"steps": []}).local_payload(
+                                screen, request.values
+                            )
                         if screen.get("unresolved_annotations"):
                             services.log.append(
                                 "verify",
@@ -1893,10 +1914,12 @@ def decide_screen(
                         response = ScreenMatch.model_validate(payload).model_copy(
                             update={"mapping": mapped.mapping}
                         )
-                        # ScreenPlan callers merge this full interpretation with their old one.
-                        return (
-                            local_response(response, screen) if schema is ScreenPlan else response
-                        )
+                        if plan_error is not None:
+                            mapping_plan_error = ScreenDecisionResult(
+                                response, None, plan_error=plan_error
+                            )
+                            raise ValueError(plan_error)
+                        return response
                     return mapped
                 return original_call(prompt, schema, page=page)
 
@@ -1911,62 +1934,52 @@ def decide_screen(
         )
         prepared = build_decision_prompt(request, services)
         capability = prepared.capability
-        selection = select_screen_response(request, services, prepared)
-        response = selection.response
-        cache_hit = selection.cache_hit
-        method_proposal = selection.method_proposal
-        used_image = selection.used_image
-        reported_response = response
-        try:
-            response = validate_or_replan(response, request, services, prepared)
-            response = ground_screen_response(
-                response,
-                request,
-                services,
-                selection.prepared,
-                used_image=used_image,
-            )
-        except ValueError as error:
-            if method_proposal is None:
-                if defer_plan_errors and str(error).startswith("screen_match_"):
-                    # Keep the observed fields even when the next action is unusable.
-                    # No rejected proposal may become a cache candidate.
-                    return ScreenDecisionResult(reported_response, None, plan_error=str(error))
-                raise
-            rejected = services.memory_retrieval.reject_pending(reason=str(error))
-            services.log.append(
-                "verify",
-                payload={
-                    "check": "method_fallback",
-                    "method_id": None if rejected is None else rejected["method_id"],
-                    "group_id": None if rejected is None else rejected["group_id"],
-                    "reason": str(error)[:160],
-                    "next": "visual_cache_or_model",
-                },
-            )
-            # Rebuild method memory while keeping the caller-owned education focus.
-            # A failed cache binding must not reset or invent teaching progress.
-            fallback_request = replace(
-                request,
-                proposal=None,
-            )
-            prepared = build_decision_prompt(fallback_request, services)
-            selection = select_screen_response(
-                fallback_request, services, prepared, allow_method=False
-            )
-            response = selection.response
-            reported_response = response
-            cache_hit = selection.cache_hit
-            method_proposal = None
-            used_image = selection.used_image
-            response = validate_or_replan(response, fallback_request, services, prepared)
-            response = ground_screen_response(
-                response,
-                fallback_request,
-                services,
-                selection.prepared,
-                used_image=used_image,
-            )
+        for allow_method in (True, False):
+            method_proposal = reported_response = None
+            try:
+                selection = select_screen_response(
+                    request, services, prepared, allow_method=allow_method
+                )
+                response = reported_response = selection.response
+                cache_hit = selection.cache_hit
+                method_proposal = selection.method_proposal
+                used_image = selection.used_image
+                response = validate_or_replan(response, request, services, prepared)
+                response = ground_screen_response(
+                    response,
+                    request,
+                    services,
+                    selection.prepared,
+                    used_image=used_image,
+                )
+            except ValueError as error:
+                if mapping_plan_error is not None:
+                    return mapping_plan_error
+                if method_proposal is None:
+                    if (
+                        defer_plan_errors
+                        and reported_response is not None
+                        and str(error).startswith("screen_match_")
+                    ):
+                        # Keep observations without caching the rejected next action.
+                        return ScreenDecisionResult(reported_response, None, plan_error=str(error))
+                    raise
+                rejected = services.memory_retrieval.reject_pending(reason=str(error))
+                services.log.append(
+                    "verify",
+                    payload={
+                        "check": "method_fallback",
+                        "method_id": None if rejected is None else rejected["method_id"],
+                        "group_id": None if rejected is None else rejected["group_id"],
+                        "reason": str(error)[:160],
+                        "next": "visual_cache_or_model",
+                    },
+                )
+                # Retry once without the rejected method; retain the caller's education focus.
+                request = replace(request, proposal=None)
+                prepared = build_decision_prompt(request, services)
+            else:
+                break
         observation_claim = None
         if reported_response.operation != "act" and reported_response.steps:
             observation_claim = {

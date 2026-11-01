@@ -41,10 +41,8 @@ class ObservationBlockedByPlan(AssertionError):
     """Synthetic 106 replay reached the specific observation/plan coupling defect."""
 
 
-@pytest.mark.xfail(
-    strict=True, raises=ObservationBlockedByPlan, reason="106 undeclared click target"
-)
-def test_synthetic_106_click_declaration_must_not_discard_observation(tmp_path, record):
+@pytest.mark.parametrize("recovery", [False, True], ids=["initial", "action-recovery"])
+def test_synthetic_106_click_declaration_must_not_discard_observation(tmp_path, record, recovery):
     # Synthetic reduction of seq261/540, using public fixtures, not private ERP data.
     declared = observed_response(record)
     control, _ = prepare_worker(tmp_path / "declared", record, [declared])
@@ -53,16 +51,22 @@ def test_synthetic_106_click_declaration_must_not_discard_observation(tmp_path, 
     assert control.visual_proposal.steps[0].point == [280, 75]
     missing = deepcopy(declared)
     del missing["fields"]["Continue"]
-    brain, model = prepare_worker(tmp_path / "missing", record, [missing])
-    try:
-        brain._observe()
-    except KeyError as exc:
-        assert exc.args == ("Continue",)
-        assert len(model.prompts) == 1
-        assert "hbl_no" not in observed_inputs(brain)
-        raise ObservationBlockedByPlan("Valid observed value lost on undeclared click") from exc
+    replies = [missing]
+    if recovery:
+        initial = deepcopy(declared)
+        initial["steps"] = []
+        initial["fields"]["Reference"]["value"] = "INITIAL READING"
+        replies.insert(0, initial)
+    brain, model = prepare_worker(tmp_path / "missing", record, replies)
+    brain._observe()
+    assert len(model.prompts) == len(replies)
     assert observed_inputs(brain)["hbl_no"]["value"] == record.fields.hbl_no.value
-    assert brain.visual_proposal.steps[0].point == [280, 75]
+    assert brain.visual_proposal.mapping.steps[0].point == [280, 75]
+    assert brain.visual_proposal.steps == []
+    assert brain.visual_plan_error == "screen_match_action_target_undeclared"
+    assert brain.visual_match_candidate is None
+    assert brain._select_node() == "observation"
+    assert not any(event.kind == "act" for event in brain.log.read_all())
 
 
 @pytest.mark.xfail(

@@ -17,13 +17,7 @@ def recall_context(request: ScreenDecisionRequest, *, projected_screen: dict | N
     """Restore current history, evidence and unfinished work without changing state."""
     contract = request.execution_contract
     required = request.required_verification
-    evidence_scope = (
-        "saved_detail"
-        if request.workflow_flags.get("post_save_detail_review")
-        else "saved_detail_candidate"
-        if request.workflow_flags.get("saved_result_open_pending")
-        else "entry"
-    )
+    evidence_scope = request.evidence_scope
     recorded_deliveries = {
         source
         for node in request.screen_nodes.values()

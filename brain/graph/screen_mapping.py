@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from brain.observe.values import field_matches
 from brain.task_instruction import ObservedStepResult
-from brain.visual.marker_contract import text_index
 from brain.visual.scene import contains
 from brain.vocabulary import (
     SCROLL_DIRECTION_KEYS,
@@ -150,9 +149,10 @@ class ScreenMapping(BaseModel):
                 return matching_names[0]
             raise KeyError(reference)
 
+        # Resolve executable targets before mutating the current screen catalog.
+        actions = [(step, field_name(step.target)) for step in self.steps]
         controls = []
         bindings = {name: field.source for name, field in self.fields.items() if field.source}
-        text_refs = text_index(screen)
         # The model's current view replaces speculative geometry from a similar capture.
         screen["screen_path"] = list(self.screen_path)
         geometry = screen["selected_fields"] = {}
@@ -164,7 +164,7 @@ class ScreenMapping(BaseModel):
                     id=target,
                     role=field.role,
                     label_ids=[],
-                    text_ids=[text_refs[i] for i in text_ids if i in text_refs],
+                    text_ids=text_ids,
                     confidence=1,
                     confidence_policy="argmax",
                     enabled=field.enabled,
@@ -199,8 +199,7 @@ class ScreenMapping(BaseModel):
         # Keep the complete explanation in the saved semantic mapping.
         result["purpose"] = self.purpose[:160]
         result["steps"] = []
-        for step in self.steps:
-            name = field_name(step.target)
+        for step, name in actions:
             action = step.model_dump()
             action["target"] = ids[name]
             if isinstance(step, NamedScrollAction):
