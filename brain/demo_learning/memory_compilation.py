@@ -35,6 +35,14 @@ from models.factory import create_model_client
 from sawon_runtime.storage import RunLog, atomic_write_json, rejection_evidence
 
 
+class MemoryFieldRename(BaseModel):
+    """Correct a recorded label without changing its control or delivered action."""
+
+    model_config = ConfigDict(extra="forbid")
+    old_name: str = Field(min_length=1)
+    new_name: str = Field(min_length=1)
+
+
 class MemoryGroupSelection(BaseModel):
     """One successful cached action boundary selected for memory reuse."""
 
@@ -44,6 +52,7 @@ class MemoryGroupSelection(BaseModel):
     context_anchors: list[str] = Field(default_factory=list)
     expected_result: str = Field(min_length=1, max_length=240)
     review_reason: str = ""
+    field_renames: list[MemoryFieldRename] = Field(default_factory=list)
     _discarded_context_anchors: int = PrivateAttr(default=0)
 
     @model_validator(mode="after")
@@ -90,6 +99,7 @@ class MemoryCandidate:
     response: dict
     observed_transitions: tuple[dict, ...] = ()
     satisfied_actions: tuple[dict, ...] = ()
+    after_observed_step_results: tuple[dict, ...] = ()
 
 
 MEMORY_COMPILATION_RULES = """Perform Memory Compilation as a retrospective process review
@@ -118,7 +128,8 @@ have an invisible business effect.
 
 Use screen hashes and matching_later_candidates only to test whether span boundaries may connect.
 They are supporting evidence, never proof of redundancy. Use the taught procedure,
-observed_transitions, and after_screen_ocr to determine effects. original_expected_result is only
+observed_transitions, after_screen_ocr, and after_observed_step_results to determine effects.
+original_expected_result is only
 the planner's prediction. For every retained candidate explain its unique effect or dependency.
 For every removed candidate name the removable span and the retained candidate, if any, that
 establishes the required effect.
@@ -130,6 +141,18 @@ evidence is unknown, not failure. Never invent, edit, duplicate, merge, or chang
 sources, coordinates, or markers. Return retained candidate IDs in execution order. The runtime
 reuses recorded points only under matching viewport and screen similarity. context_anchors must
 exclude instance values, transient messages, dates, and counters.
+
+fields contains the recorded semantic labels, input sources and control geometry; ocr contains
+the visible text and its geometry. Action targets refer to these field names when available.
+Compare a control's label with the text at its location and the subsequent observed result.
+If a recorded label is wrong, return field_renames with its exact old_name and corrected new_name.
+Apply this to retained groups even when their purpose has been rewritten to describe the
+actual effect. A group combines the retained actions with the entry observation before any
+removed span; the rename applies to both. Use unique semantic names without instance values.
+Rename only existing fields;
+do not move a control, alter its role/source, or rewrite the delivered action. Return an empty
+list when no label correction is supported. A changed screen alone does not establish the
+predicted destination or prove that another route is unavailable.
 """
 
 
@@ -317,9 +340,39 @@ def read_memory_candidates(
             normalized = ScreenMapping.model_validate({**mapping, "steps": []}).local_payload(
                 screen
             )
+            new_ids = {field["name"]: int(ref) for ref, field in screen["selected_fields"].items()}
+            remapped = {
+                control["id"]: new_ids[control["visual_description"]]
+                for control in response.get("controls", [])
+                if control.get("visual_description") in new_ids
+            }
+            # Delivered points/actions stay unchanged; frame-local references do not.
+            retained = [
+                {**step, "target": remapped.get(step["target"], step["target"])}
+                for step in retained
+            ]
+            already = [
+                {**step, "target": remapped.get(step["target"], step["target"])} for step in already
+            ]
             # Normalize geometry without restoring skipped actions from the provider plan.
             response = {**normalized, "operation": response.get("operation", "act")}
         response = {**response, "steps": retained}
+        after_id = next(
+            (
+                transition.get("after_obs_id")
+                for _, transition in reversed(delivered)
+                if transition.get("after_obs_id")
+            ),
+            None,
+        )
+        after_plan = next(
+            (
+                item
+                for item in plans
+                if item["obs_id"] == after_id and item["seq"] > max(seq for seq, _ in delivered)
+            ),
+            None,
+        )
         candidates.append(
             MemoryCandidate(
                 candidate_id="",
@@ -330,6 +383,11 @@ def read_memory_candidates(
                 response=response,
                 observed_transitions=tuple(transition for _, transition in delivered),
                 satisfied_actions=tuple(already),
+                after_observed_step_results=tuple(
+                    after_plan["response"].get("observed_step_results", [])
+                    if after_plan is not None
+                    else []
+                ),
             )
         )
     candidates.sort(key=lambda candidate: candidate.trace_index)
@@ -430,10 +488,32 @@ def memory_assembly_prompt(source: dict, candidates: list[MemoryCandidate]) -> s
                 "matching_later_candidates": matching_later_candidates,
                 "taught_step_id": response.get("taught_step_id"),
                 "ocr": [
-                    _redact(str(block["text"]), values) for block in candidate.screen.get("ocr", [])
+                    {"text": _redact(str(block["text"]), values), "bbox": block["bbox"]}
+                    for block in candidate.screen.get("ocr", [])
                 ],
-                "actions": response["steps"],
+                "fields": [
+                    {
+                        "name": field["name"],
+                        "role": field["role"],
+                        "bbox": field["bbox"],
+                        "source": field.get("source"),
+                    }
+                    for field in candidate.screen.get("selected_fields", {}).values()
+                ],
+                "actions": [
+                    {
+                        **step,
+                        "target": candidate.screen.get("selected_fields", {})
+                        .get(str(step["target"]), {})
+                        .get("name", step["target"]),
+                    }
+                    for step in response["steps"]
+                ],
                 "observed_transitions": observed,
+                "after_observed_step_results": [
+                    {**result, "observed_result": _redact(result["observed_result"], values)}
+                    for result in candidate.after_observed_step_results
+                ],
                 "already_satisfied": list(candidate.satisfied_actions),
                 "after_screen_ocr": [
                     _redact(str(block["text"]), values) for block in after.get("ocr", [])
@@ -467,6 +547,47 @@ def _required_sources(candidates: list[MemoryCandidate]) -> set[str]:
         for step in candidate.response["steps"]
         if step.get("source")
     }
+
+
+def _rename_group_fields(
+    group: MethodActionGroup, renames: list[MemoryFieldRename]
+) -> MethodActionGroup:
+    if not renames:
+        return group
+    names = {target.name for target in [*group.targets, *group.observed_fields]}
+    renamed = {item.old_name: item.new_name for item in renames}
+    if len(renamed) != len(renames) or renamed.keys() - names:
+        raise ValueError("memory_field_rename_invalid_reference")
+    if len({renamed.get(name, name) for name in names}) != len(names):
+        raise ValueError("memory_field_rename_name_collision")
+    return _identify_group(
+        group.model_copy(
+            update={
+                "targets": [
+                    target.model_copy(update={"name": renamed.get(target.name, target.name)})
+                    for target in group.targets
+                ],
+                "observed_fields": [
+                    target.model_copy(update={"name": renamed.get(target.name, target.name)})
+                    for target in group.observed_fields
+                ],
+                "actions": [
+                    action.model_copy(update={"target": renamed.get(action.target, action.target)})
+                    for action in group.actions
+                ],
+                "field_sources": {
+                    renamed.get(name, name): source for name, source in group.field_sources.items()
+                },
+                "message_targets": [renamed.get(name, name) for name in group.message_targets],
+            }
+        )
+    )
+
+
+def _identify_group(group: MethodActionGroup) -> MethodActionGroup:
+    updated = group.model_copy(update={"id": "pending"})
+    encoded = json.dumps(updated.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
+    return updated.model_copy(update={"id": hashlib.sha256(encoded.encode()).hexdigest()[:16]})
 
 
 def _rebase_entry_observation(
@@ -508,9 +629,7 @@ def _rebase_entry_observation(
         field_sources={renamed.get(key, key): value for key, value in entry.field_sources.items()},
         message_targets=[renamed.get(name, name) for name in entry.message_targets],
     )
-    updated = group.model_copy(update={**updates, "id": "pending"})
-    encoded = json.dumps(updated.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
-    return updated.model_copy(update={"id": hashlib.sha256(encoded.encode()).hexdigest()[:16]})
+    return _identify_group(group.model_copy(update=updates))
 
 
 def compile_memory(
@@ -606,6 +725,7 @@ def compile_memory(
                 )
             group = _rebase_entry_observation(group, entry_fragment.action_groups[0])
             refs.append(f"{source['source_case']}/visual/{entry.obs_id}:{entry.cache_key}")
+        group = _rename_group_fields(group, selection.field_renames)
         group = group.model_copy(
             update={
                 "trace_index": candidate.trace_index,
@@ -706,6 +826,7 @@ def assemble_memory(
                         "response": item.response,
                         "observed_transitions": item.observed_transitions,
                         "already_satisfied": item.satisfied_actions,
+                        "after_observed_step_results": item.after_observed_step_results,
                     }
                     for item in candidates
                 ],

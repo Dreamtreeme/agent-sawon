@@ -16,10 +16,16 @@ from brain.demo_learning.memory_compilation import (
     compile_memory,
     read_memory_candidates,
 )
-from brain.graph.memory_retrieval import open_memory_library
+from brain.graph.memory_retrieval import (
+    MemoryRetrieval,
+    RetrievalContext,
+    RetrievalState,
+    open_memory_library,
+)
 from brain.graph.save_review import SaveReviewResponse, validate_save_review
 from brain.graph.screen_decision import ScreenMatch, compile_match
-from brain.graph.screen_mapping import ScreenMapping
+from brain.graph.screen_mapping import ScreenMapping, mapping_prompt
+from brain.task_instruction import TaskInstruction
 from brain.visual.scene import Detection, VisualControl, bind_scene
 from pipeline.schemas import OcrBlock
 from sawon_runtime.storage import RunLog, atomic_write_json
@@ -182,8 +188,11 @@ def test_memory_compiler_preserves_purpose_points_and_trace_order(tmp_path):
     ]
 
 
-def test_synthetic_compilation_preserves_field_structure_without_source_run_readings(tmp_path):
-    # Synthetic successful save screen: the reference is observed, never filled in this batch.
+@pytest.mark.parametrize("pruned", [False, True], ids=["unpruned", "pruned"])
+def test_synthetic_compilation_preserves_field_structure_without_source_run_readings(
+    tmp_path, pruned
+):
+    # Synthetic wrong button name corrected during compilation; its executed point stays fixed.
     original = screen("Shipment editor")
     mapping = ScreenMapping.model_validate(
         {
@@ -196,32 +205,94 @@ def test_synthetic_compilation_preserves_field_structure_without_source_run_read
                     "bbox": [100, 40, 200, 30],
                     "value": "HBL-001",
                 },
-                "Save": {"role": "button", "bbox": [600, 500, 100, 40]},
+                "Open": {"role": "button", "bbox": [600, 500, 100, 40]},
                 "Blank": {"role": "edit", "bbox": [300, 40, 80, 30], "value": ""},
             },
-            "steps": [{"target": "Save", "action": "click", "intent": "save", "point": [650, 520]}],
+            "steps": [
+                {"target": "Open", "action": "click", "intent": "navigate", "point": [650, 520]}
+            ],
         }
     )
     payload = mapping.local_payload(original, source()["values"])
-    candidate = MemoryCandidate("c000", "a" * 64, "obs", 0, original, payload)
-    method = compile_memory(source(), [candidate], draft(groups=("c000",)), method_id="passive")
+    candidate = MemoryCandidate(
+        "c001" if pruned else "c000", "a" * 64, "obs", int(pruned), original, payload
+    )
+    inputs = (
+        [MemoryCandidate("c000", "b" * 64, "entry-obs", 0, original, payload), candidate]
+        if pruned
+        else [candidate]
+    )
+    reviewed = draft(groups=(candidate.candidate_id,)).model_dump()
+    reviewed["groups"][0].update(
+        purpose="Close the editor",
+        expected_result="The menu is visible",
+        field_renames=[{"old_name": "Open", "new_name": "Close"}],
+    )
+    method = compile_memory(source(), inputs, reviewed, method_id="passive")
     group = method.action_groups[0]
     assert group.screen_path == ["Shipment", "Details"]
     assert group.field_sources == {"Reference": "hbl_no"}
-    assert {f.name for f in group.observed_fields} == {"Reference", "Save", "Blank"}
+    assert {f.name for f in group.observed_fields} == {"Reference", "Close", "Blank"}
     assert {field.name: field.bbox for field in group.observed_fields} == {
         "Reference": (100, 40, 200, 30),
-        "Save": (600, 500, 100, 40),
+        "Close": (600, 500, 100, 40),
         "Blank": (300, 40, 80, 30),
     }
     assert "field_values" not in group.model_dump()
     assert "HBL-001" not in method.model_dump_json()
+    assert [(target.name, target.role, target.bbox) for target in group.targets] == [
+        ("Close", "button", (600, 500, 100, 40))
+    ]
+    assert [
+        (action.target, action.action, action.intent, action.point) for action in group.actions
+    ] == [("Close", "click", "navigate", (650, 520))]
+    assert "Open" in {field["name"] for field in candidate.screen["selected_fields"].values()}
     library = MethodLibrary(tmp_path / "passive-memory.json", enabled=True)
     library.upsert(method)
     restored = library.methods()[0].action_groups[0]
     assert restored.observed_fields == group.observed_fields
     assert restored.field_sources == {"Reference": "hbl_no"}
     assert "field_values" not in library.path.read_text(encoding="utf-8")
+    runtime = MemoryRetrieval(
+        RetrievalContext(
+            task=TaskInstruction.model_validate(source()["task"]),
+            task_sha256=source()["task_sha256"],
+            inputs={"hbl_no": "HBL-002"},
+            credentials={},
+            observation_id=None,
+        ),
+        RetrievalState(),
+        library,
+        case_dir=tmp_path,
+        log=RunLog(tmp_path, case_id="semantic-rename", agent_id="test"),
+    )
+    current = screen("Shipment editor")
+    current["ocr"].append({"id": 2, "text": "Close", "bbox": [620, 510, 50, 20]})
+    memory = runtime.retrieve_screen_memory(current)
+    assert memory is not None
+    expected_fields = {
+        "Reference": ("text", [100, 40, 200, 30], "hbl_no"),
+        "Close": ("button", [600, 500, 100, 40], None),
+        "Blank": ("edit", [300, 40, 80, 30], None),
+    }
+    assert {
+        field["name"]: (field["role"], field["bbox"], field["source"]) for field in memory["fields"]
+    } == expected_fields
+    prompt = mapping_prompt(
+        {},
+        {
+            **current,
+            "screen_path": group.screen_path,
+            "memory_fields": memory["fields"],
+            "retrieved_procedure": memory["procedure"],
+        },
+    )
+    supplied = json.loads(prompt[prompt.index("{") :])["screen"]
+    assert supplied["memory_fields"] == memory["fields"]
+    assert supplied["retrieved_procedure"][0]["steps"] == [
+        {"target": "Close", "action": "click", "intent": "navigate", "point": [650, 520]}
+    ]
+    assert "HBL-001" not in prompt
 
 
 def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_navigation(tmp_path):
@@ -464,7 +535,7 @@ def test_memory_compiler_rejects_missing_input():
         compile_memory(source(), without_capture, draft(), method_id="bad")
 
 
-def create_successful_case(tmp_path):
+def create_successful_case(tmp_path, *, reinterpreted=False):
     case = tmp_path / "cold"
     atomic_write_json(case / "result.json", {"status": "success"})
     task = source()["task"]
@@ -489,7 +560,11 @@ def create_successful_case(tmp_path):
             ],
         }
     )
-    match = mapping.local_payload(screen("Shipment editor"))
+    current = screen("Shipment editor")
+    if reinterpreted:
+        # Synthetic action recovery reinterprets the same capture after an earlier mapping.
+        mapping.local_payload(current)
+    match = mapping.local_payload(current)
     visual = case / "visual" / "obs-1"
     atomic_write_json(visual / "markers.json", {"image_size": [800, 600], "markers": []})
     atomic_write_json(visual / "ocr.json", {"blocks": screen("Shipment editor")["ocr"]})
@@ -660,9 +735,18 @@ def test_synthetic_accumulated_completion_uses_only_final_verified_observation(t
             assert "HBL-001" not in method.model_dump_json(), label
 
 
-def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):
-    case, cache_path, visual, mapping, match, education_sha = create_successful_case(tmp_path)
+@pytest.mark.parametrize("reinterpreted", [False, True], ids=["fresh", "reinterpreted"])
+def test_successful_case_is_joined_only_to_promoted_cache(tmp_path, reinterpreted):
+    case, cache_path, visual, mapping, match, education_sha = create_successful_case(
+        tmp_path, reinterpreted=reinterpreted
+    )
     loaded_source, loaded = read_memory_candidates(case, cache_path)
+    target = loaded[0].response["steps"][0]["target"]
+    assert loaded[0].screen["selected_fields"][str(target)]["name"] == "Reference"
+    assert (
+        next(c for c in loaded[0].response["controls"] if c["id"] == target)["visual_description"]
+        == "Reference"
+    )
 
     # A successful selection-phase plan is equally eligible. A duplicate artifact
     # on the same frame must not create a second execution step.
@@ -702,6 +786,12 @@ def test_successful_case_is_joined_only_to_promoted_cache(tmp_path):
             ],
         },
         method_id="named-warm",
+    )
+    retained_target = compiled.action_groups[0].targets[0]
+    assert (retained_target.name, retained_target.role, retained_target.bbox) == (
+        "Reference",
+        "edit",
+        (150, 280, 180, 40),
     )
     # Local normalization is authoritative; restoring semantic geometry must not
     # restore the provider's pre-normalization operation.
@@ -791,16 +881,28 @@ def test_memory_candidates_keep_navigation_after_satisfied_input(tmp_path, skip_
 def test_critic_graph_keeps_execution_order_and_excludes_wholly_skipped_plan(tmp_path):
     from brain.demo_learning.memory_compilation import memory_assembly_prompt
 
-    case, cache_path, _, _, fill, _ = create_successful_case(tmp_path)
-    click = response(target=91, intent="save", point=(700, 550), taught="save")
+    case, cache_path, _, fill_mapping, fill, _ = create_successful_case(tmp_path)
+    click_mapping = ScreenMapping.model_validate(
+        {
+            "screen_kind": "editor",
+            "fields": {"Save": {"role": "button", "bbox": [650, 520, 100, 60]}},
+            "steps": [{"target": "Save", "action": "click", "intent": "save", "point": [700, 550]}],
+        }
+    )
+    click = click_mapping.local_payload(screen("Shipment editor"))
     header = json.loads((case / "run_log.jsonl").read_text(encoding="utf-8").splitlines()[0])
     events = [header]
 
-    def proposal(plan):
+    def proposal(plan, *, obs_id="obs-1", mapping=None):
         events.append(
             {
                 "kind": "select",
-                "payload": {"check": "screen_plan_proposed", "obs_id": "obs-1", "response": plan},
+                "payload": {
+                    "check": "screen_plan_proposed",
+                    "obs_id": obs_id,
+                    "response": plan,
+                    **({"mapping": mapping.model_dump()} if mapping is not None else {}),
+                },
             }
         )
 
@@ -809,9 +911,18 @@ def test_critic_graph_keeps_execution_order_and_excludes_wholly_skipped_plan(tmp
             {"kind": "act", "payload": {"stage": "requested", "action": {"action_id": action_id}}}
         )
 
-    proposal(fill)
+    confirmed = {"step_id": "edit", "observed_result": "HBL-001 is filled", "completed": True}
+    unconfirmed = {
+        "step_id": "save",
+        "observed_result": "HBL-001 remains in the editor; saving is not confirmed",
+        "completed": False,
+    }
+    # Synthetic reused observation ID: an earlier claim must not become post-delivery evidence.
+    proposal({**fill, "steps": [], "observed_step_results": [unconfirmed]}, obs_id="after-1")
+    proposal(fill, mapping=fill_mapping)
     action("a1")
-    proposal(fill)  # Same frame, but this whole plan is skipped.
+    proposal({**fill, "steps": [], "observed_step_results": [confirmed]}, obs_id="after-1")
+    proposal(fill, mapping=fill_mapping)  # Same frame, but this whole plan is skipped.
     events.append(
         {
             "kind": "verify",
@@ -822,10 +933,14 @@ def test_critic_graph_keeps_execution_order_and_excludes_wholly_skipped_plan(tmp
             },
         }
     )
-    proposal(click)
+    proposal(click, mapping=click_mapping)
     action("a2")
+    proposal({**click, "steps": [], "observed_step_results": [unconfirmed]}, obs_id="after-2")
     # Reviews arrive after the next proposal, as in the combined observer/planner.
-    for action_id, intent, source_key in (("a1", "fill", "hbl_no"), ("a2", "save", None)):
+    for action_id, intent, source_key, after_id in (
+        ("a1", "fill", "hbl_no", "after-1"),
+        ("a2", "save", None, "after-2"),
+    ):
         events.append(
             {
                 "kind": "verify",
@@ -833,7 +948,7 @@ def test_critic_graph_keeps_execution_order_and_excludes_wholly_skipped_plan(tmp
                     "transition": {
                         "action_id": action_id,
                         "before_obs_id": "obs-1",
-                        "after_obs_id": None,
+                        "after_obs_id": after_id,
                         "delivery": "delivered",
                         "intent": intent,
                         "source": source_key,
@@ -851,11 +966,29 @@ def test_critic_graph_keeps_execution_order_and_excludes_wholly_skipped_plan(tmp
     assert [c.observed_transitions[0]["action_id"] for c in loaded] == ["a1", "a2"]
     assert len(source_data["nonexecuted_plans"]) == 1
     assert source_data["nonexecuted_plans"][0]["already_satisfied"][0]["source"] == "hbl_no"
+    assert list(loaded[0].after_observed_step_results) == [confirmed]
+    assert list(loaded[1].after_observed_step_results) == [unconfirmed]
     prompt = memory_assembly_prompt(source_data, loaded)
     assert '"previous_candidate_id": "c000"' in prompt
     assert '"screen_phash":' in prompt
     assert '"after_screen_phash":' in prompt
     assert '"matching_later_candidates":' in prompt
+    supplied = json.loads(prompt[prompt.index("{") :])["candidates"]
+    assert supplied[0]["ocr"] == [{"text": "Shipment editor", "bbox": [10, 10, 160, 20]}]
+    assert supplied[0]["fields"] == [
+        {"name": "Reference", "role": "edit", "bbox": [150, 280, 180, 40], "source": "hbl_no"}
+    ]
+    assert [item["actions"][0]["target"] for item in supplied] == ["Reference", "Save"]
+    assert [item["actions"][0]["point"] for item in supplied] == [[200, 300], [700, 550]]
+    assert supplied[0]["after_observed_step_results"] == [
+        {**confirmed, "observed_result": "{hbl_no} is filled"}
+    ]
+    assert supplied[1]["after_observed_step_results"] == [
+        {
+            **unconfirmed,
+            "observed_result": "{hbl_no} remains in the editor; saving is not confirmed",
+        }
+    ]
     method = compile_memory(source_data, loaded, draft(), method_id="critic")
     assert len({g.trace_index for g in method.action_groups}) == 2
 

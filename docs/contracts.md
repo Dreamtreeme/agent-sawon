@@ -1,6 +1,6 @@
 # 상태와 저장소 계약 지도
 
-기준일: 2026-10-31
+기준일: 2026-11-02
 
 이 문서는 런타임 상태와 계층 간 인터페이스의 기준 위치를 한 곳에 모읍니다. 설명과 구현이
 다르면 해당 계약을 소유한 코드와 이 문서를 같은 변경에서 맞춥니다.
@@ -18,7 +18,7 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `screen_decision`, `memory_retrieval` | 의미 이름·bbox·입력 key·행동 point의 모델 경계 |
 | 교육 단계 관찰 결과 | `brain/task_instruction.py`의 `ObservedStepResult` | `screen_mapping`, `screen_decision`, `cache/methods`, engine | 현재 모델 응답의 교육 완료를 실행 상태에 반영. 편찬물의 과거 결과는 현재 응답으로 복원하지 않음 |
 | 선택 결과의 요청 문맥 | `brain/graph/screen_decision.py`의 `ScreenSelection.prepared` | `decide_screen` → `ground_screen_response` | 같은 판단에서 확장한 교육 상세를 빈 행동 보완에 전달. 거절 후 재계획은 기존 prepared 사용. 턴 간 영구 상태가 아님 |
-| 기억 편찬 응답 | `brain/demo_learning/memory_compilation.py`의 `MemoryAssembly` / `MemoryGroupSelection` | 모델 클라이언트, `compile_memory` | 후보 ID로 성공 행동을 선택. context_anchors는 타입 검증 후 첫 8개를 보존하고 초과분 경고 기록 |
+| 기억 편찬 응답 | `brain/demo_learning/memory_compilation.py`의 `MemoryAssembly` / `MemoryGroupSelection` | 모델 클라이언트, `compile_memory` | 후보 ID로 전달 행동을 선택하고 `field_renames`로 잘못된 필드 이름을 교정. context_anchors는 첫 8개를 보존하고 초과분 경고 기록 |
 | 인출된 화면·행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup`, `MethodCompletion` | `method_from_match`, `compile_memory`, `MemoryRetrieval._restore_structure`, `screen_decision` | 화면 경로·행동 좌표·필드 기하·입력 키, 저장 결과 메시지 및 검토 조건을 결합. 과거 필드 값은 저장·복원하지 않음 |
 | 실행 문맥 회상 | `brain/graph/context_recall.py`의 `recall_context` | `DecisionPromptContext.state` | 캐시·모델이 필요할 때 이번 실행의 이력·누적 증거·남은 입력·진행 상태를 한 번 조립. 선택·모델 호출·상태 변경 없음 |
 | 화면 트리 기억 | `brain/graph/screen_memory.py`, `ProgressState.screen_nodes` | engine, context_recall, notebook | 방문한 경로별 필드·컨트롤 발견과 입력 전달 이력을 누적. 모델용 트리는 같은 상태에서 파생하며 과거 좌표를 포함하지 않음 |
@@ -132,6 +132,18 @@ trace가 없는 편찬물은 저장된 그룹 순서를 유지한다. 교육 단
 관찰이 된다. 유지 행동의 좌표·대상 기하는 원본 프레임에서 해석하고, 화면 경로·해시·필드 구조·
 관찰 완료 기록·저장 메시지는 진입 관찰에서 가져온다. 서로 다른 프레임의 마커 ID를 합치지
 않는다. 메시지와 행동의 이름이 겹치지만 위치가 다르면 메시지 이름만 내부적으로 구분한다.
+
+`read_memory_candidates`가 의미 매핑을 다시 투영할 때 전달된 행동의 임시 대상 ID는 원본
+컨트롤의 의미 이름을 통해 새 필드 ID로 연결한다. 실제 전달된 행동·좌표·입력 키는 유지하며
+미실행 행동을 복원하지 않는다. 관찰 뒤 교육 판단은 해당 `after_obs_id`와 전달 이후 계획 순서를
+함께 확인하여 `after_observed_step_results`로 편찬에 전달한다. 없는 후속 판단은 빈 목록이다.
+편찬 요청은 필드 이름·role·bbox·입력 키, OCR 텍스트·bbox, 의미 이름으로 연결한 행동과
+후속 관찰을 제공한다. 현재 입력 값과 과거 의미를 혼동하지 않도록 필드 관찰값은 보내지 않는다.
+`MemoryGroupSelection.field_renames`는 편찬 그룹의 기존 필드를 `old_name`에서 `new_name`으로
+교정한다. 제거 구간의 진입 관찰까지 연결한 뒤 최종 그룹의 행동 대상·관찰 필드·입력 키 연결·
+메시지 참조에 한 번 적용하므로 진입 관찰이 과거 이름을 되살리지 않는다. role·bbox·
+입력 키·전달 좌표를 수정할 수 없으며, 없는 필드 참조나 이름 충돌은 편찬 오류다. 생략된 목록은
+빈 목록으로 읽는다. 산출물 형식과 인출 경계는 유지하며 과거 산출물은 소급 변경하지 않는다.
 
 `screen_plan_proposed.mapping`은 편찬의 의미 매핑 원본이다. `MethodCompletion`은 완료 화면의
 경로·유사도·크기와 현재 값으로 확인할 대상 및 조건 번호를 저장한다. `condition_indexes`가
