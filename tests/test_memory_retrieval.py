@@ -1550,6 +1550,9 @@ def test_bound_edge_replaced_without_dispatch_unblocks_only_after_effect(tmp_pat
             ]
         }
     )
+    # Synthetic 140-shaped recovery: scrolling changes the full image, but the
+    # model chooses the same controls. Attribution must not require image similarity.
+    screen["screen_phash"] = first.screen_phash ^ ((1 << 14) - 1)
     runtime.remember(screen, fallback)
     assert runtime.state.pending["replaced_edge"] == old_edge
     runtime.delivered(complete=True)
@@ -1566,21 +1569,31 @@ def test_bound_edge_replaced_without_dispatch_unblocks_only_after_effect(tmp_pat
     assert (runtime.match_pattern(next_screen) is not None) is verified
 
 
-def test_same_frame_and_sources_do_not_make_another_control_the_same_edge(tmp_path):
+@pytest.mark.parametrize("mismatch", ["control", "viewport"])
+def test_same_actions_do_not_replace_another_control_or_coordinate_space(tmp_path, mismatch):
     brain, _, _ = setup(tmp_path)
     runtime = brain.memory_retrieval
     _, _, screen, _ = catalog(shift=20)
     bound = runtime.match_pattern(screen)
-    # Move Customer into Reference's region on the identical screenshot.
+    # Same inputs cannot justify either another control or a different coordinate space.
     fallback = bound.model_copy(
         update={
             "method_id": None,
             "steps": [
-                step.model_copy(update={"point": [step.point[0], step.point[1] + 70]})
+                step.model_copy(
+                    update={
+                        "point": [
+                            step.point[0],
+                            step.point[1] + (70 if mismatch == "control" else 0),
+                        ]
+                    }
+                )
                 for step in bound.steps
             ],
         }
     )
+    if mismatch == "viewport":
+        screen["image_size"] = [800, 400]
     runtime.remember(screen, fallback)
     assert runtime.state.pending.get("replaced_edge") is None
     assert not runtime.state.used

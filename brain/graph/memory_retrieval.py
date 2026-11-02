@@ -598,9 +598,11 @@ class MemoryRetrieval:
         if not remaining or not response.steps:
             return None
         group = remaining[0]
+        # Attribute the model's recovery action, not a saved coordinate replay.
+        # Scrolling may change the image while leaving this control in place.
         if (
             len(response.steps) != len(group.actions)
-            or screen_similarity_distance(group, screen, self.library.max_phash_distance) is None
+            or tuple(screen.get("image_size", ())) != group.image_size
         ):
             return None
         targets = {target.name: target for target in group.targets}
