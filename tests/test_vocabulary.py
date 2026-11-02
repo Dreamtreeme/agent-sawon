@@ -1,5 +1,6 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
+ScreenMatch/ScreenPlan add a current-model route resumption group (2026-11-02).
 ScreenMatch/ScreenPlan preserve table state, named parents and focus in observations (2026-11-02).
 ScreenMatch/ScreenPlan describe cumulative same-scope taught evidence (2026-10-31).
 ScreenMatch/ScreenPlan remove the unused provider evidence list (2026-10-29).
@@ -118,8 +119,8 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
             TargetedMatchAction,
             "010d16ae1c205f2e97b7661173dd1ff9f35ba34aa17a3d6b0a4165447c6f755c",
         ),
-        (ScreenPlan, "7ba22015f43bf6a2e6275f75ba39f3e7df941916ce5ceabb734a9f87145f79e6"),
-        (ScreenMatch, "7ba22015f43bf6a2e6275f75ba39f3e7df941916ce5ceabb734a9f87145f79e6"),
+        (ScreenPlan, "29d33f1dc0056f24b907ae03896831061f03c252400c96f17597f1cc1de055e1"),
+        (ScreenMatch, "29d33f1dc0056f24b907ae03896831061f03c252400c96f17597f1cc1de055e1"),
         (Decision, "0dd9a48fb753c30ea6f54d65c1272bfc631435abedc33d3864e138bf412f5bf0"),
         (
             WireActDecision,

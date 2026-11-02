@@ -27,6 +27,7 @@ from brain.vocabulary import SCROLL_DIRECTION_KEYS
 from sawon_runtime.storage import RunLog, atomic_write_json
 
 from .screen_mapping import ScreenMapping
+from .visual_points import is_wheel_scroll
 
 if TYPE_CHECKING:
     from .screen_decision import ScreenMatch
@@ -210,6 +211,21 @@ class MemoryRetrieval:
             passed.add(pending["replaced_edge"][1])
         return [group for group in self._ordered_groups(method) if group.id not in passed]
 
+    def _action_offset(self, method_id: str, group_id: str) -> int:
+        """Read the confirmed prefix, plus the delivery awaiting the next observation."""
+        events = self.state.history
+        if self.state.unverified is not None:
+            events = [*events, self.state.unverified]
+        return max(
+            (
+                item["action_progress"]["end"]
+                for item in events
+                if item.get("method_id") == method_id
+                and (item.get("action_progress") or {}).get("group_id") == group_id
+            ),
+            default=0,
+        )
+
     def _matching_route(
         self, screen: dict
     ) -> tuple[int, LearnedMethod, MethodActionGroup | MethodCompletion] | None:
@@ -238,11 +254,21 @@ class MemoryRetrieval:
         completed = {
             result.step_id for result in response.observed_step_results if result.completed
         }
-        resumed = []
-        for group in self._remaining_groups(method):
-            if group.taught_step_id not in completed:
-                break
-            resumed.append(group.id)
+        remaining = self._remaining_groups(method)
+        group_ids = [group.id for group in remaining]
+        # A current observation can identify an intermediate arrival within one
+        # taught step. This is a route cursor, not a claim of delivered actions.
+        resume_index = (
+            group_ids.index(response.resume_group_id)
+            if response.resume_group_id in group_ids
+            else None
+        )
+        resumed = group_ids[:resume_index] if resume_index is not None else []
+        if resume_index is None:
+            for group in remaining:
+                if group.taught_step_id not in completed:
+                    break
+                resumed.append(group.id)
         if not resumed:
             return
         event = {
@@ -250,6 +276,7 @@ class MemoryRetrieval:
             "status": "resumed",
             "resumed_group_ids": resumed,
             "completed_step_ids": sorted(completed),
+            "resume_group_id": response.resume_group_id if resume_index is not None else None,
             "observation_id": self.task_context.observation_id,
         }
         self.state.history.append(event)
@@ -293,7 +320,7 @@ class MemoryRetrieval:
                 continue
             if objective is not None and not self._matches_current_task(method):
                 continue
-            remaining = self._remaining_groups(method)[:2]
+            remaining = self._remaining_groups(method)
             relevant_slots = {
                 action.slot for group in remaining for action in group.actions if action.slot
             }
@@ -313,6 +340,21 @@ class MemoryRetrieval:
                             "trace_index": group.trace_index,
                             "predecessor_group_ids": group.predecessor_group_ids,
                             "context_anchors": group.context_anchors,
+                            "screen_path": group.screen_path,
+                            "expected_result": group.expected_result,
+                            "actions": [
+                                {
+                                    "action": action.action,
+                                    "target": action.target,
+                                    "source": group_input_sources(
+                                        method, group, self.state.bindings.get(method.id, {})
+                                    ).get(action.target),
+                                    "keys": action.keys,
+                                }
+                                for action in group.actions[
+                                    self._action_offset(method.id, group.id) :
+                                ]
+                            ],
                         }
                         for group in remaining
                     ],
@@ -353,7 +395,7 @@ class MemoryRetrieval:
                     **action.model_dump(mode="json", exclude={"slot"}),
                     "source": field_sources.get(action.target),
                 }
-                for action in group.actions
+                for action in group.actions[self._action_offset(method.id, group.id) :]
             ]
         fields = []
         for target in targets:
@@ -467,6 +509,8 @@ class MemoryRetrieval:
         if bound is None:
             return None
         response_data = dict(bound.response)
+        offset = self._action_offset(method.id, group.id)
+        response_data["steps"] = response_data["steps"][offset:]
         response = ScreenMatch.model_validate(
             {
                 **response_data,
@@ -499,6 +543,10 @@ class MemoryRetrieval:
             "group_id": bound.group_id,
             "origin": "reuse",
         }
+        if offset:
+            # Stage the actual suffix, so subsequent promotion cannot restore
+            # already performed inputs into this delivery's action group.
+            self.remember(screen, response, allow_recovery=False)
         self.log.append(
             "cache_hit",
             payload={
@@ -586,45 +634,49 @@ class MemoryRetrieval:
         atomic_write_json(self.case_dir / "method-progress.json", self.context())
         return event
 
-    def _replacement_group(
+    def _replacement_progress(
         self,
         method: LearnedMethod,
         mapping: dict[str, str],
         screen: dict,
         response: ScreenMatch,
-    ) -> str | None:
-        """Connect concrete recovery actions to the next edge, even after rejection."""
+    ) -> dict | None:
+        """Attribute the performed prefix without requiring the original batch boundary."""
         remaining = self._remaining_groups(method)
         if not remaining or not response.steps:
             return None
         group = remaining[0]
         # Attribute the model's recovery action, not a saved coordinate replay.
         # Scrolling may change the image while leaving this control in place.
-        if (
-            len(response.steps) != len(group.actions)
-            or tuple(screen.get("image_size", ())) != group.image_size
-        ):
+        if tuple(screen.get("image_size", ())) != group.image_size:
             return None
         targets = {target.name: target for target in group.targets}
         sources = {slot.name: mapping.get(slot.name, slot.source_key) for slot in method.slots}
-        for actual, expected in zip(response.steps, group.actions, strict=True):
+        start = self._action_offset(method.id, group.id)
+        end = start
+        for actual, expected in zip(response.steps, group.actions[start:], strict=False):
             if (actual.action, actual.source, actual.keys) != (
                 expected.action,
                 sources.get(expected.slot),
                 expected.keys,
             ):
-                return None
+                break
+            if is_wheel_scroll(actual.action, actual.keys):
+                end += 1
+                continue
             target = targets[expected.target]
             if actual.point is not None and tuple(actual.point) == (expected.point or target.point):
+                end += 1
                 continue
             # Recovery may allocate different marker IDs. Compare the actual
             # control region, never a historical frame-local ID or explanation.
             if target.bbox is None or actual.point is None:
-                return None
+                break
             x, y, width, height = target.bbox
             if not (x <= actual.point[0] <= x + width and y <= actual.point[1] <= y + height):
-                return None
-        return group.id
+                break
+            end += 1
+        return {"group_id": group.id, "start": start, "end": end} if end > start else None
 
     def remember(self, screen: dict, response: ScreenMatch, *, allow_recovery: bool = True) -> None:
         self.state.pending = None
@@ -647,6 +699,7 @@ class MemoryRetrieval:
             matches = [method for method in known.values() if self._matches_current_task(method)]
             previous = matches[0] if len(matches) == 1 else None
         replaced_edge = None
+        action_progress = None
         if previous is not None and task is not None and not self._matches_current_task(previous):
             previous = None
         mapping = {item.slot: item.source for item in response.method_bindings}
@@ -664,9 +717,15 @@ class MemoryRetrieval:
             if allow_recovery:
                 self._resume_from_model(previous, response)
                 self.state.blocked_method_ids.discard(previous.id)
-            replacement = self._replacement_group(previous, mapping, screen, response)
-            if replacement is not None:
-                replaced_edge = (previous.id, replacement)
+            action_progress = self._replacement_progress(previous, mapping, screen, response)
+            if action_progress is not None:
+                original = next(
+                    group
+                    for group in previous.action_groups
+                    if group.id == action_progress["group_id"]
+                )
+                if action_progress["end"] == len(original.actions):
+                    replaced_edge = (previous.id, original.id)
         if response.operation == "complete":
             available = dict(known)
             available.update(
@@ -729,6 +788,7 @@ class MemoryRetrieval:
                 "origin": "adaptation" if previous else "learned",
                 "taught_step_id": response.taught_step_id,
                 "replaced_edge": replaced_edge,
+                "action_progress": action_progress,
             }
 
     def _stage(self, method) -> None:
@@ -783,10 +843,12 @@ class MemoryRetrieval:
         if status == "delivered":
             self.state.unverified = {
                 "method": method,
+                "method_id": method.id,
                 "group_id": group_id,
                 "origin": pending["origin"],
                 "history_index": len(self.state.history) - 1,
                 "replaced_edge": pending.get("replaced_edge"),
+                "action_progress": pending.get("action_progress"),
             }
         self.log.append("verify", payload={"check": "method_execution", **event})
         atomic_write_json(self.case_dir / "method-progress.json", self.context())
@@ -813,7 +875,26 @@ class MemoryRetrieval:
             )
             return
         if success:
-            if delivered.get("replaced_edge") is not None:
+            progress = delivered.get("action_progress")
+            # The next plan may have been prepared before the previous effect
+            # review. If that prefix failed, its suffix cannot complete the gap.
+            connected = progress is None or progress["start"] <= self._action_offset(
+                method.id, progress["group_id"]
+            )
+            if progress is not None and connected:
+                self.state.history[delivered["history_index"]]["action_progress"] = delivered[
+                    "action_progress"
+                ]
+                self.log.append(
+                    "verify",
+                    payload={
+                        "check": "method_actions_matched",
+                        "method_id": method.id,
+                        "replacement_group_id": group_id,
+                        **delivered["action_progress"],
+                    },
+                )
+            if connected and delivered.get("replaced_edge") is not None:
                 self.state.history[delivered["history_index"]]["replaced_edge"] = delivered[
                     "replaced_edge"
                 ]

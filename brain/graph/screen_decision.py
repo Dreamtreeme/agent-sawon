@@ -132,6 +132,7 @@ class MethodChoice(BaseModel):
     purpose: str = Field(default="", max_length=160)
     taught_step_id: str | None = Field(default=None, max_length=80)
     method_id: str | None = None
+    resume_group_id: str | None = None
     method_bindings: list[MethodBinding] = Field(default_factory=list, max_length=100)
 
 
@@ -266,6 +267,7 @@ class ScreenMatch(SemanticDetection, ScreenPlan):
                         "requested_instruction_ids",
                         "taught_step_id",
                         "method_id",
+                        "resume_group_id",
                         "needs_refinement",
                         "observed_step_results",
                         "save_result",
@@ -1404,6 +1406,7 @@ def select_screen_response(
                         for name, field in response.mapping.fields.items()
                     },
                     "observed_step_results": [],
+                    "resume_group_id": None,
                     "save_result": None,
                     "message_targets": [],
                     "repair_fields": [],

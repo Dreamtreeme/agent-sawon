@@ -116,6 +116,13 @@ class ScreenMapping(BaseModel):
     procedure_step: str = "task-action"
     taught_step_id: str | None = None
     method_id: str | None = None
+    resume_group_id: str | None = Field(
+        default=None,
+        description=(
+            "First remembered group still needed from the current observed state. Earlier route "
+            "groups are bypassed, not reported as delivered or as completed taught steps."
+        ),
+    )
     requested_instruction_ids: list[str] = Field(default_factory=list)
     expected_result: str = ""
     save_result: (
@@ -293,6 +300,7 @@ class ScreenMappingWire(ScreenMapping):
     anthropic_nulls: ClassVar[dict[str, Any]] = {
         "properties/taught_step_id": "",
         "properties/method_id": "",
+        "properties/resume_group_id": "",
         "properties/grid": "",
         "properties/row": "",
         "properties/save_result": "",
@@ -412,6 +420,11 @@ visible now, then choose
 steps from that observed outcome plus prior memory. The runtime commits these observations before
 executing these same steps; do not wait for another turn just to acknowledge a completed action.
 Use taught_step_id for the work your next steps perform, not the already delivered action.
+When the current screen and accumulated memory establish a different position in a remembered
+route, select method_id and resume_group_id from method_memory.methods: resume_group_id is the
+first group still needed. Earlier groups are bypassed route steps, not actions reported as
+delivered or completed taught steps. Use the supplied group actions and expected results to
+identify this position; leave resume_group_id null when the position is unknown.
 Before choosing steps, return observed_step_results for the focused step and any delivered step
 whose result is now established. In observed_result, combine same-scope verified memory with new
 readings and non-input status relevant to the taught completion condition. Set completed from
