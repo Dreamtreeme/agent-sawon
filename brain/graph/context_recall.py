@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from brain.input_binding import MODEL_INPUTS_NAME
-from brain.visual.marker_contract import model_screen
+from brain.visual.frame import frame_input
 
 from .screen_memory import pending_screen_inputs, recall_screen_tree
 
@@ -88,7 +88,7 @@ def recall_context(request: ScreenDecisionRequest, *, projected_screen: dict | N
         )
     state = {
         "notebook": notebook,
-        "screen": model_screen(request.screen) if projected_screen is None else projected_screen,
+        "screen": frame_input(request.screen) if projected_screen is None else projected_screen,
         "execution": contract,
     }
     if request.post_action_review:

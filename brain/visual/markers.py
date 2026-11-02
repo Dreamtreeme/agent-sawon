@@ -42,6 +42,15 @@ class MergeSettings(BaseModel):
     nested_area_ratio: float = Field(default=0.45, gt=0, le=1, allow_inf_nan=False)
 
 
+def allowed_marker_actions(source: str) -> list[str]:
+    """Execution surfaces: text regions are clickable but are not writable controls."""
+    if source in {"omniparser", "model_selected"}:
+        return ["fill", "click", "double_click", "key"]
+    if source in {"ocr", "ocr_group"}:
+        return ["click", "double_click"]
+    return []
+
+
 def intersection(left: tuple, right: tuple) -> float:
     x, y, w, h = left
     a, b, c, d = right

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Annotated, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from brain.observe.values import field_matches
 from brain.task_instruction import ObservedStepResult
+from brain.visual.frame import frame_input
 from brain.visual.scene import contains
 from brain.vocabulary import (
     SCROLL_DIRECTION_KEYS,
@@ -18,6 +19,7 @@ from brain.vocabulary import (
     MatchActionIntent,
     ScrollDirection,
 )
+from models.schema import compact_provider_schema
 
 
 class ScreenField(BaseModel):
@@ -33,6 +35,14 @@ class ScreenField(BaseModel):
     )
     value: str = ""
     enabled: bool = True
+    parent: str | None = Field(
+        default=None, description="Exact name of a visible containing field; null if absent"
+    )
+    focused: bool = False
+    table_state: Literal["not_table", "empty", "rows", "uncertain"] | None = Field(
+        default=None,
+        description="Observed table contents; empty must be visibly established, never inferred",
+    )
 
 
 class NamedTarget(BaseModel):
@@ -136,7 +146,9 @@ class ScreenMapping(BaseModel):
 
     def local_payload(self, screen: dict, inputs: Mapping[str, str] | None = None) -> dict:
         """Allocate transient executor references only after the model chose meaning/geometry."""
-        next_id = max((m["id"] for m in screen.get("markers", [])), default=0) + 1
+        # Runtime refs are a projection of this frame, never accumulated model identities.
+        markers = [m for m in screen.get("markers", []) if m["source"] != "model_selected"]
+        next_id = max((m["id"] for m in markers), default=0) + 1
         ids = {name: next_id + i for i, name in enumerate(self.fields)}
 
         def field_name(reference: str) -> str:
@@ -151,10 +163,13 @@ class ScreenMapping(BaseModel):
 
         # Resolve executable targets before mutating the current screen catalog.
         actions = [(step, field_name(step.target)) for step in self.steps]
+        # Parent links enrich observation only; an undeclared parent must not erase it.
+        parents = {name: ids.get(field.parent) for name, field in self.fields.items()}
         controls = []
         bindings = {name: field.source for name, field in self.fields.items() if field.source}
         # The model's current view replaces speculative geometry from a similar capture.
         screen["screen_path"] = list(self.screen_path)
+        screen["markers"] = markers
         geometry = screen["selected_fields"] = {}
         for name, field in self.fields.items():
             target = ids[name]
@@ -168,8 +183,14 @@ class ScreenMapping(BaseModel):
                     confidence=1,
                     confidence_policy="argmax",
                     enabled=field.enabled,
+                    focused=field.focused,
+                    parent_id=parents[name],
                     visual_description=name,
-                    table_state="rows" if field.role == "table" and text_ids else "not_table",
+                    table_state=field.table_state
+                    if field.table_state is not None
+                    else "rows"
+                    if field.role == "table" and text_ids
+                    else "not_table",
                 )
             )
             screen.setdefault("markers", []).append(
@@ -266,10 +287,28 @@ class ScreenMappingWire(ScreenMapping):
 
     fields: list[NamedScreenField]
 
+    anthropic_unions: ClassVar[dict[str, dict[str, Any]]] = {
+        "properties/steps/items": {"source": "", "keys": "", "direction": ""},
+    }
+    anthropic_nulls: ClassVar[dict[str, Any]] = {
+        "properties/taught_step_id": "",
+        "properties/method_id": "",
+        "properties/grid": "",
+        "properties/row": "",
+        "properties/save_result": "",
+        "$defs/NamedAction/properties/source": "",
+        "$defs/NamedScreenField/properties/source": "",
+        "$defs/NamedScreenField/properties/parent": "",
+        "$defs/NamedScreenField/properties/table_state": "",
+    }
 
-def mapping_prompt(context: dict, screen: dict) -> str:
+    @classmethod
+    def model_json_schema(cls, *args, **kwargs):
+        return compact_provider_schema(super().model_json_schema(*args, **kwargs))
+
+
+def mapping_prompt(context: dict) -> str:
     state = dict(context)
-    state.pop("grounded_interpretation", None)
     # Preserve call purpose as data, without reintroducing numeric-target instructions.
     if "post_action_review" in state:
         state["review_instruction"] = (
@@ -281,34 +320,22 @@ def mapping_prompt(context: dict, screen: dict) -> str:
         state["education_instruction"] = (
             "Requested details are present. Return the decision, not another retrieval."
         )
-    if "correction" in screen:
-        state["correction"] = screen["correction"]
-    state["screen"] = {
-        "image_size": screen.get("image_size"),
-        "text_regions": [{"text": b["text"], "bbox": b["bbox"]} for b in screen.get("ocr", [])],
-        "control_regions": [
-            {"bbox": m["bbox"]} for m in screen.get("markers", []) if m["source"] == "omniparser"
-        ],
-    }
-    if screen.get("memory_fields"):
-        state["screen"]["memory_fields"] = screen["memory_fields"]
-        state["screen"]["memory_screen_path"] = screen.get("screen_path", [])
-        procedures = []
-        for group in screen.get("retrieved_procedure", []):
-            steps = []
-            for stored in group["steps"]:
-                step = {key: value for key, value in stored.items() if value is not None}
-                if step["action"] == "key":
-                    step.pop("source", None)
-                    for direction, key in SCROLL_DIRECTION_KEYS.items():
-                        if step["keys"] == key:
-                            step.update(action="scroll", direction=direction)
-                            del step["keys"]
-                            break
-                steps.append(step)
-            procedures.append({**group, "steps": steps})
-        state["screen"]["retrieved_procedure"] = procedures
     return CONTEXT_MAPPING_RULES + json.dumps(state, ensure_ascii=False)
+
+
+def observation_prompt(screen: dict) -> str:
+    """Use the same named observation contract for recorders and observation-only runs."""
+    return (
+        "Observe the current screenshot. Return screen_path and named fields with role, bbox, "
+        "and any visibly read value. Use semantic names, never detector numbers. Control regions "
+        "include their contained OCR text; outside captions remain in text_regions. "
+        "Name a visible containing field in parent and mark the currently focused field. "
+        "For tables report table_state=empty, rows, or uncertain from visible contents; "
+        "missing OCR alone never proves an empty table. "
+        "Do not infer business input sources without user education. Return source=null, "
+        "steps=[], operation=act. Request needs_refinement only for a missing visible control.\n"
+        + json.dumps({"screen": frame_input(screen)}, ensure_ascii=False)
+    )
 
 
 CONTEXT_MAPPING_RULES = """Choose the next screen action from recalled context and knowledge.

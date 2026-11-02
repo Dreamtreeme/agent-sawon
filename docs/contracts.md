@@ -16,6 +16,7 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | 그래프 라우팅 | `brain/graph/workflow.py` | LangGraph | `lifecycle.route`를 다음 책임 노드 또는 `finish`로 연결 |
 | `ExecutionRequest`/`ExecutionResult` | `brain/graph/execution.py` | `engine.py`, relay adapter | 준비된 행동 전달과 relay가 확인한 결과. 업무 성공을 판정하지 않음 |
 | 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `screen_decision`, `memory_retrieval` | 의미 이름·bbox·입력 key·행동 point의 모델 경계 |
+| 현재 화면 모델 입력 | `brain/visual/frame.py`의 `frame_input` | `context_recall`, 화면 판단, 관찰 녹화기 | 현재 OCR·후보 영역·포함 텍스트를 한 번 투영. 내부 마커 번호를 모델 계약에 노출하지 않음 |
 | 교육 단계 관찰 결과 | `brain/task_instruction.py`의 `ObservedStepResult` | `screen_mapping`, `screen_decision`, `cache/methods`, engine | 현재 모델 응답의 교육 완료를 실행 상태에 반영. 편찬물의 과거 결과는 현재 응답으로 복원하지 않음 |
 | 선택 결과의 요청 문맥 | `brain/graph/screen_decision.py`의 `ScreenSelection.prepared` | `decide_screen` → `ground_screen_response` | 같은 판단에서 확장한 교육 상세를 빈 행동 보완에 전달. 거절 후 재계획은 기존 prepared 사용. 턴 간 영구 상태가 아님 |
 | 기억 편찬 응답 | `brain/demo_learning/memory_compilation.py`의 `MemoryAssembly` / `MemoryGroupSelection` | 모델 클라이언트, `compile_memory` | 후보 ID로 전달 행동을 선택하고 `field_renames`로 잘못된 필드 이름을 교정. context_anchors는 첫 8개를 보존하고 초과분 경고 기록 |
@@ -196,8 +197,16 @@ relay가 입력 전달을 확인하면 `_accept_dispatched_action()`이 해당 �
 `ScreenMatch.evidence`와 `completion_evidence`는 유지한다. 모델 JSON 파싱 시에는 의미 매핑만
 보관하고, 실제 화면과 입력이 제공된 시점에 실행 참조와 입력 증거를 한 번 생성한다.
 최종 모델 프롬프트는 상태 dict에서 직접 만들며 중간 숫자 프롬프트를 역파싱하지 않는다.
+`frame_input`은 현재 캡처의 전체 OCR와 컨트롤 안의 `contained_text` 연결을 보존한다.
+`build_decision_prompt`가 결합 전 이 화면 snapshot을 만들고 `recall_context`와
+`mapping_prompt`는 같은 자료를 재사용한다. serializer는 raw screen을 다시 받거나 덮어쓰지 않는다.
+교육 확장과 복구 설명은 문맥에 추가하며, 이전 화면 기억과 인출된 구조는 현재 관찰값과 구분한다.
+모델 경계는 일반 판단·보완·관찰 녹화기 모두 `ScreenMappingWire`/`ScreenMapping`을 사용한다.
+숫자 마커 응답용 보완·복호화 프로토콜은 사용하지 않는다. `ScreenMatch`와 `SemanticDetection`의
+숫자 참조는 로컬 장면·실행 및 과거 기록을 읽는 내부 계약이다.
 
-`ScreenMapping.local_payload`는 현재 selected_fields를 교체한다. `ScreenScanner`는 모델의
+`ScreenMapping.local_payload`는 현재 selected_fields와 model_selected 기하를 교체한다.
+같은 매핑의 재투영이 번호나 마커 목록을 누적하지 않는다. `ScreenScanner`는 모델의
 현재 매핑에 이전 노드 필드를 보충하지 않는다. 실행 중 pHash 카탈로그는 탐지 기하만 재사용하며,
 필드의 의미·source를 자동 승계하지 않는다. 경로 없는 과거 편찬물은 특정 노드로 배정하지 않는다.
 그 기존 메서드 실행 경로는 유지하며, 노드 기억은 새 의미 매핑이 있는 관찰에서만 갱신한다.
@@ -219,16 +228,23 @@ relay가 입력 전달을 확인하면 `_accept_dispatched_action()`이 해당 �
 `ScreenDecisionResult.plan_error`로 인계하여 현재 필드 관찰을 보존한다. 원문 mapping에는
 거절된 행동을 남기며 실행·캐시·메서드 학습에는 넘기지 않는다. 정확한 대상과 좌표를 가진
 행동에 새로운 거절 조건을 추가하지 않는다.
+관찰 전용 실행과 녹화기도 같은 의미 매핑을 사용한다. `fields.parent`는 부모의 의미 이름이며
+실행 투영에서만 현재 ID로 바꾼다. `fields.focused`, `fields.table_state`는 기존 관찰 계약의
+포커스와 빈 표·행 존재·불확실 상태를 보존한다. 생략한 표 상태는 기존 투영 기본값을 따른다.
+관찰 전용 소비자는 행동을 실행하거나 기억하지 않는다.
 모델의 `needs_refinement` 및 내부 응답의 `needs_image`는 실행 가능한 대상이 함께 있다는
 이유로 취소하지 않는다. 기존 재탐지·이미지 보완 경로가 처리하며 재시도 한도는 유지한다.
 실행용 OCR 투영은 이 읽은 값을 덮어쓰지 않으며 구조 매핑의 누락된 값을 채우지도 않는다.
 의미 매핑의 `local_payload`는 현재 로컬 OCR ID를 직접 사용한다. 외부 마커 번호로 바꿨다가
-다시 복호화하지 않는다. 숫자 마커 응답의 변환은 해당 응답 경계에서만 수행한다.
+다시 복호화하지 않는다. `marker_contract`의 모델 번호 codec은 제거했다.
+최종 수용 계획은 `ScreenMatch.accepted_mapping`으로 의미 매핑에 반영한 뒤 캐시·편찬에 전달한다.
+관찰 필드와 설명 원문은 보존하며, 검증에서 제거·수정한 행동이 원래 mapping에서 부활하지 않는다.
+이 동기화 전후만으로 메서드 대체 여부를 바꾸지 않는다.
 `bind_scene`은 현재 selected_fields가 있으면 그 이름·값으로 요소를 한 번 생성한다.
 별도 재순회로 OCR 추정값을 모델 값으로 덮지 않으며, 매핑 없는 요소의 OCR 해석은 유지한다.
 값 생략은 미확인, 현재 모델 응답의 명시적 빈 문자열은 빈칸이다.
-캐시에 매핑을 저장할 때도 생략 여부를 보존한다. 화면 캐시 키의 `screen-field-source-v1`
-계약 접두부로 과거 assignments 응답과 분리한다. 과거 캐시 파일은 삭제·변환하지 않는다.
+캐시에 매핑을 저장할 때도 생략 여부를 보존한다. 화면 캐시 키는 현재 화면 입력 구조와
+업무 계약을 포함한다. 입력 구조가 달라진 과거 키는 맞지 않으며 과거 파일은 삭제·변환하지 않는다.
 현재 매핑이 없는 인출 메서드/화면 캐시는 기존 화면 판단 호출로 현재 이미지·문맥을 해석한다.
 이 호출은 새 기억 전용 모델이 아니며, 반환한 관찰과 행동 모두 공통 경로로 처리한다.
 빈 행동 보완에는 앞 응답의 관찰을 전달하되 완전한 현재 관찰을 다시 받는다. 마지막 응답이

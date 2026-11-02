@@ -26,6 +26,7 @@ from brain.graph.save_review import SaveReviewResponse, validate_save_review
 from brain.graph.screen_decision import ScreenMatch, compile_match
 from brain.graph.screen_mapping import ScreenMapping, mapping_prompt
 from brain.task_instruction import TaskInstruction
+from brain.visual.frame import frame_input
 from brain.visual.scene import Detection, VisualControl, bind_scene
 from pipeline.schemas import OcrBlock
 from sawon_runtime.storage import RunLog, atomic_write_json
@@ -213,7 +214,7 @@ def test_synthetic_compilation_preserves_field_structure_without_source_run_read
             ],
         }
     )
-    payload = mapping.local_payload(original, source()["values"])
+    payload = mapping.model_dump(exclude_unset=True)
     candidate = MemoryCandidate(
         "c001" if pruned else "c000", "a" * 64, "obs", int(pruned), original, payload
     )
@@ -246,7 +247,9 @@ def test_synthetic_compilation_preserves_field_structure_without_source_run_read
     assert [
         (action.target, action.action, action.intent, action.point) for action in group.actions
     ] == [("Close", "click", "navigate", (650, 520))]
-    assert "Open" in {field["name"] for field in candidate.screen["selected_fields"].values()}
+    assert "Open" in candidate.response["fields"]
+    assert original["markers"] == []
+    assert "selected_fields" not in original
     library = MethodLibrary(tmp_path / "passive-memory.json", enabled=True)
     library.upsert(method)
     restored = library.methods()[0].action_groups[0]
@@ -279,13 +282,16 @@ def test_synthetic_compilation_preserves_field_structure_without_source_run_read
         field["name"]: (field["role"], field["bbox"], field["source"]) for field in memory["fields"]
     } == expected_fields
     prompt = mapping_prompt(
-        {},
         {
-            **current,
-            "screen_path": group.screen_path,
-            "memory_fields": memory["fields"],
-            "retrieved_procedure": memory["procedure"],
-        },
+            "screen": frame_input(
+                {
+                    **current,
+                    "screen_path": group.screen_path,
+                    "memory_fields": memory["fields"],
+                    "retrieved_procedure": memory["procedure"],
+                }
+            )
+        }
     )
     supplied = json.loads(prompt[prompt.index("{") :])["screen"]
     assert supplied["memory_fields"] == memory["fields"]
@@ -293,6 +299,12 @@ def test_synthetic_compilation_preserves_field_structure_without_source_run_read
         {"target": "Close", "action": "click", "intent": "navigate", "point": [650, 520]}
     ]
     assert "HBL-001" not in prompt
+    bound = runtime.match_pattern(current)
+    assert bound is not None and bound.mapping is not None
+    assert {control.visual_description for control in bound.controls} == set(expected_fields)
+    assert len(current["selected_fields"]) == len(expected_fields)
+    assert len(current["markers"]) == len(expected_fields)
+    assert all("value" not in field.model_fields_set for field in bound.mapping.fields.values())
 
 
 def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_navigation(tmp_path):
@@ -565,6 +577,12 @@ def create_successful_case(tmp_path, *, reinterpreted=False):
         # Synthetic action recovery reinterprets the same capture after an earlier mapping.
         mapping.local_payload(current)
     match = mapping.local_payload(current)
+    if reinterpreted:
+        # Historical repeated projections used different IDs from the raw marker catalog.
+        for control in match["controls"]:
+            control["id"] += 10
+        for step in match["steps"]:
+            step["target"] += 10
     visual = case / "visual" / "obs-1"
     atomic_write_json(visual / "markers.json", {"image_size": [800, 600], "markers": []})
     atomic_write_json(visual / "ocr.json", {"blocks": screen("Shipment editor")["ocr"]})
@@ -742,11 +760,10 @@ def test_successful_case_is_joined_only_to_promoted_cache(tmp_path, reinterprete
     )
     loaded_source, loaded = read_memory_candidates(case, cache_path)
     target = loaded[0].response["steps"][0]["target"]
-    assert loaded[0].screen["selected_fields"][str(target)]["name"] == "Reference"
-    assert (
-        next(c for c in loaded[0].response["controls"] if c["id"] == target)["visual_description"]
-        == "Reference"
-    )
+    assert target == "Reference"
+    assert loaded[0].response["fields"][target]["bbox"] == [150, 280, 180, 40]
+    assert loaded[0].screen["markers"] == []
+    assert "selected_fields" not in loaded[0].screen
 
     # A successful selection-phase plan is equally eligible. A duplicate artifact
     # on the same frame must not create a second execution step.

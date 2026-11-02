@@ -518,8 +518,6 @@ class MemoryRetrieval:
 
     def _restore_structure(self, screen, response, screen_path, fields):
         """Recall field bindings and actions without claiming values on the current frame."""
-        from .screen_decision import ScreenMatch
-
         names = {int(ref): item["name"] for ref, item in screen.get("selected_fields", {}).items()}
         steps = []
         directions = {key: direction for direction, key in SCROLL_DIRECTION_KEYS.items()}
@@ -543,14 +541,12 @@ class MemoryRetrieval:
                 for item in response.completion_evidence
             ],
         )
-        restored = ScreenMatch.model_validate(
-            mapping.local_payload(screen, self.task_context.inputs)
-        )
+        screen["screen_path"] = list(screen_path)
         screen["memory_fields"] = [
             dict(name=name, **field.model_dump(exclude_unset=True))
             for name, field in mapping.fields.items()
         ]
-        return restored.model_copy(
+        return response.model_copy(
             update={"mapping": mapping, "method_bindings": response.method_bindings}
         )
 
@@ -633,10 +629,14 @@ class MemoryRetrieval:
         if not self.enabled:
             return
         task = self.task_context.task
-        sanitized = response.model_dump(mode="json")
+        sanitized = (
+            response.mapping.model_dump(mode="json", exclude_unset=True)
+            if response.mapping is not None
+            else response.model_dump(mode="json")
+        )
         for key in ("purpose", "expected_result"):
-            sanitized[key] = self._redact_credentials(sanitized[key])
-        for result in sanitized["observed_step_results"]:
+            sanitized[key] = self._redact_credentials(sanitized.get(key, ""))
+        for result in sanitized.get("observed_step_results", []):
             result["observed_result"] = self._redact_credentials(result["observed_result"])
         self.state.purpose = self._redact_credentials(response.purpose[:160])
         known = {method.id: method for method in self.library.methods()}

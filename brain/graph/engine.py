@@ -102,6 +102,7 @@ from .screen_batch import (
     ScreenFieldVerificationServices,
     verify_screen_fields,
 )
+from .screen_mapping import ScreenMapping, ScreenMappingWire, observation_prompt
 from .screen_memory import remember_input_delivery, remember_screen
 from .selection import (
     SelectionRequest,
@@ -580,7 +581,18 @@ class Brain:
             return self._groundable_interpretation(response, screen)
         # Observation classifies the current pixels only.  Task planning happens
         # later in _selection_call against this immutable interpretation.
-        return self._call(request.prompt(), SemanticDetection, page=request.page)
+        if request.correction is not None:
+            request.screen["correction"] = {"error": request.correction.get("error")}
+        page = request.page
+        capture = page.image_path.parent / "capture.png"
+        if capture.is_file():
+            page = page.model_copy(update={"image_path": capture})
+        wire = self._call(observation_prompt(request.screen), ScreenMappingWire, page=page)
+        mapping = ScreenMapping.model_validate(wire.model_dump(exclude_unset=True))
+        payload = mapping.model_copy(update={"steps": []}).local_payload(request.screen)
+        return SemanticDetection.model_validate(
+            {key: payload[key] for key in SemanticDetection.model_fields if key in payload}
+        )
 
     def _groundable_interpretation(self, response, screen: dict) -> SemanticDetection:
         """Keep model-only point targets in the plan, outside the local scene graph."""

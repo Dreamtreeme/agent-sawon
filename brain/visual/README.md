@@ -1,6 +1,6 @@
 # 현재 시각 경로
 
-기준일: 2026-10-23. 현재 운영 기준은 [`docs/current-runtime.md`](../../docs/current-runtime.md),
+기준일: 2026-11-02. 현재 운영 기준은 [`docs/current-runtime.md`](../../docs/current-runtime.md),
 그래프와 공개 계약은 [`docs/contracts.md`](../../docs/contracts.md)를 따릅니다. 이전 시각 경로의
 상세 실험 기록은 [`docs/archive/reports/brain-visual-readme-20261018.md`](../../docs/archive/reports/brain-visual-readme-20261018.md)에 보존합니다.
 
@@ -10,7 +10,7 @@
 |---|---|---|---|
 | PaddleOCR | 현재 캡처 | 문자열과 원본 이미지 bbox | 현재 관찰 |
 | OmniParser v2 | 현재 캡처 | 조작 후보 bbox | 현재 관찰 |
-| 로컬 의미 탐지 | 스크린샷, OCR, 후보 marker | role·label 관계를 가진 `Detection` | marker ID는 현재 catalog 안에서만 유효 |
+| 현재 화면 입력 | 스크린샷, OCR, 후보 bbox | 전체 OCR와 영역별 contained_text | 현재 캡처, 내부 ID 미노출 |
 | 업무 화면 매핑 | 사용자 교육, notebook, 스크린샷, text/control bbox | 의미 이름, 입력 key, 행동 point의 `ScreenMapping` | 의미 이름은 현재 화면 계약, point는 현재 캡처 |
 | 편찬된 기억 | 성공 trace, OCR anchor, pHash | 현재 화면에 재결합한 행동 | 교육 digest와 화면 유사도 범위 |
 
@@ -19,21 +19,19 @@
 두 경로 모두 새 `scan()`마다 OCR로 읽습니다. 캡처가 같아도 OCR을 생략하지 않습니다.
 같은 관찰을 다시 판단하는 `rematch()`와 보완 탐지는 이미 읽은 OCR을 사용하며, 현재 문맥 회상,
 패턴 매칭, 화면 판단은 같은 순서로 실행합니다.
-로컬 의미 탐지는 주어진 후보를 분류하며, 업무 모델의 ScreenMapping은 의미 이름과 bbox를
-선택합니다. 기억이 불충분하면 모델의 `needs_refinement` 응답으로 같은 캡처·OCR에서
+관찰과 업무 판단은 같은 ScreenMapping으로 의미 이름과 bbox를 선택합니다.
+기억이 불충분하면 모델의 `needs_refinement` 응답으로 같은 캡처·OCR에서
 탐지 경로로 돌아갑니다. 이 신호는 내부 타입뿐 아니라 provider 응답 스키마에도 있습니다.
 Florence-2의 기능 캡션은 빈 입력칸을 `Maximize`, `Center` 등으로 잘못 설명했으므로 현재
 런타임에서 사용하지 않습니다.
 
 ## marker 번호와 의미 이름
 
-두 모델 경계를 구분합니다.
-
-1. `brain/visual/scanning.py`의 로컬 의미 탐지는 이미 검출된 후보를 분류하기 위해 현재
-   catalog의 marker ID를 사용할 수 있습니다. 이 번호는 후보 bbox를 가리키는 임시 handle입니다.
-2. `brain/graph/screen_mapping.py`의 업무 판단은 OCR text+bbox와 detector control bbox를 받아
-   `수량`, `포장정보/단위` 같은 의미 이름을 만듭니다. `ScreenMapping`의 field(source 포함),
-   step과 evidence는 detector 번호를 업무 key로 사용하지 않습니다.
+`brain/visual/frame.py`는 현재 OCR와 각 후보 안의 텍스트 연결을 한 번 구성합니다.
+주 판단·관찰 녹화기·보완 응답은 `brain/graph/screen_mapping.py`의 의미 이름 계약을 공유합니다.
+`수량`, `포장정보/단위` 같은 이름에 source와 bbox를 연결하며 숫자 detector 번호를 모델의
+업무 key로 쓰지 않습니다. 로컬 장면과 실행기에 필요한 참조는 내부 어댑터에서 생성합니다.
+과거 기록과 내부 장면의 숫자 참조는 유지하지만 모델 번호용 별도 codec은 없습니다.
 
 따라서 OCR/OmniParser 번호가 다음 캡처에서 바뀌어도 notebook과 업무 입력의 의미 key가 번호에
 묶이지 않습니다. 기억 재사용은 성공 좌표를 viewport와 pHash로 검증해 재사용하고, 재결합 실패 시

@@ -20,7 +20,6 @@ from brain.graph.policy import DecisionPolicy, ExecutionFacts
 from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
 from brain.graph.screen_decision import (
-    TARGET_GROUNDING_RULES,
     ActionCapability,
     ScreenDecisionServices,
     ScreenMatch,
@@ -39,7 +38,7 @@ from brain.graph.screen_decision import (
 from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInstruction
-from brain.visual.scene import SceneObservation, SemanticDetection
+from brain.visual.scene import SceneObservation
 from sawon_runtime.storage import RunLog
 
 
@@ -56,7 +55,7 @@ def decision_work_counts(monkeypatch):
     counts = {}
     for name in (
         "prepare_screen_plan",
-        "retain_action_targets",
+        "retain_screen_observation",
         "sanitize_unused_controls",
         "recall_context",
     ):
@@ -181,10 +180,6 @@ def setup_brain(tmp_path, record, responses, *, task_instruction=None):
         item = next(plans)
         if prompt.startswith(CONTEXT_MAPPING_RULES):
             assert "fields" in item, "Provider fixtures must use semantic names and coordinates"
-        if prompt.startswith(TARGET_GROUNDING_RULES):
-            return {
-                key: value for key, value in item.items() if key in SemanticDetection.model_fields
-            }
         return item
 
     model = ScriptedModel(log, repeat(route))
@@ -399,13 +394,9 @@ def test_method_grounding_failure_retries_visual_cache_or_model_once(
 
 
 def response(meaning, **kwargs):
-    from brain.visual.marker_contract import model_controls
-
+    """Internal scene fixture; provider replies use named_response instead."""
     return {
         **meaning.model_dump(),
-        "controls": model_controls(
-            meaning.controls, {"markers": [m.model_dump() for m in fixture()[2]]}
-        ),
         "screen_kind": "query",
         "procedure_step": "enter-duplicate-key",
         "steps": [
@@ -474,7 +465,7 @@ def test_synthetic_unchanged_plan_is_not_prepared_or_grounded_twice(
     ]
     assert decision_work_counts == {
         "prepare_screen_plan": 2 if source == "replanned" else 1,
-        "retain_action_targets": 1,
+        "retain_screen_observation": 1,
         "sanitize_unused_controls": 1,
         "recall_context": 0 if source == "method" else 1,
     }
@@ -513,7 +504,7 @@ def test_synthetic_deferred_context_preserves_prebinding_prompt_and_cache_key(
         screen["markers"].append(
             {"id": 99, "source": "omniparser", "bbox": [100, 15, 150, 30], "text_ids": []}
         )
-        expected_prompts.append(matching.mapping_prompt(eager_state, screen))
+        expected_prompts.append(matching.mapping_prompt(eager_state))
         return ScreenMatch(screen_kind="query", procedure_step="task-action", controls=[], steps=[])
 
     def capture_context(*args, **kwargs):
@@ -534,36 +525,56 @@ def test_synthetic_deferred_context_preserves_prebinding_prompt_and_cache_key(
     assert result.response.steps[0].source == "hbl_no"
 
 
-def test_synthetic_newly_grounded_target_still_runs_action_validation(tmp_path, record):
-    # Synthetic omitted target: the existing fake supplies a disabled control during grounding.
+def test_synthetic_newly_grounded_target_still_runs_action_validation(
+    tmp_path, record, monkeypatch
+):
+    # Keep the pre-existing internal omission; recover through the real named model boundary.
     brain, model, *_ = setup_brain(
         tmp_path,
         record,
         [
             {
                 "screen_kind": "query",
-                "controls": [{"id": 6, "role": "button", "enabled": False, "confidence": 1}],
+                "fields": {
+                    "Continue": {"role": "button", "bbox": [0, 0, 20, 20], "enabled": False}
+                },
+                "steps": [
+                    {
+                        "target": "Continue",
+                        "action": "click",
+                        "intent": "navigate",
+                        "point": [10, 10],
+                    }
+                ],
             }
         ],
     )
-    screen = {"ocr": [], "markers": [{"id": 6, "source": "omniparser", "text_ids": []}]}
+    screen = {
+        "ocr": [],
+        "markers": [{"id": 6, "source": "omniparser", "bbox": [0, 0, 20, 20], "text_ids": []}],
+    }
     request, services = matching_contract(brain, screen)
-    prepared = build_decision_prompt(request, services)
     proposal = ScreenMatch(
         screen_kind="query",
         procedure_step="task-action",
         controls=[],
         steps=[{"target": 6, "action": "click", "intent": "navigate", "point": [10, 10]}],
     )
-    validated = matching.validate_or_replan(proposal, request, services, prepared)
+    monkeypatch.setattr(
+        matching,
+        "select_screen_response",
+        lambda _request, _services, prepared, **_: ScreenSelection(
+            proposal, None, None, False, prepared
+        ),
+    )
 
     with pytest.raises(ValueError, match="screen_match_action_target_uncertain"):
-        matching.ground_screen_response(validated, request, services, prepared, used_image=False)
+        decide_screen(request, services)
 
     assert len(model.prompts) == 1
-    assert any(
-        event.payload.get("check") == "action_targets_grounded" for event in brain.log.read_all()
-    )
+    recovery = json.loads(model.prompts[0][len(CONTEXT_MAPPING_RULES) :])["recovery"]
+    assert recovery["reason"] == "incomplete_observation"
+    assert list((tmp_path / "matching").glob("*-observation-recovery.json"))
 
 
 def test_synthetic_current_field_source_is_not_reinferred_from_equal_input_value():
@@ -925,7 +936,11 @@ def test_low_confidence_action_target_is_rejected_before_execution(
     assert rejected["reason"] == "screen_match_action_target_uncertain"
 
 
-def test_taught_direct_input_is_not_written_into_a_detected_grid_cell(tmp_path, record):
+def test_taught_direct_input_and_accepted_mapping_exclude_rejected_grid_write(
+    tmp_path, record, monkeypatch
+):
+    from brain.graph.screen_mapping import ScreenMapping
+
     task_instruction = TaskInstruction.model_validate(
         {
             "name": "Direct fields only",
@@ -944,26 +959,74 @@ def test_taught_direct_input_is_not_written_into_a_detected_grid_cell(tmp_path, 
             ],
         }
     )
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
-    proposed = ScreenMatch.model_validate(
-        {
-            "screen_kind": "editor",
-            "procedure_step": "task-action",
-            "controls": [
-                {"id": 3, "role": "cell", "confidence": 1},
-                {"id": 5, "role": "edit", "confidence": 1},
-            ],
-            "steps": [
-                {"target": 5, "action": "fill", "intent": "fill", "source": "hbl_no"},
-                {"target": 3, "action": "fill", "intent": "fill", "source": "shipper"},
-            ],
-        }
+    data = named_response(
+        screen_kind="editor",
+        taught_step_id="fill-record",
+        fields={
+            "House reference": {
+                "role": "edit",
+                "bbox": [10, 10, 80, 30],
+                "source": "hbl_no",
+            },
+            "Shipper cell": {
+                "role": "cell",
+                "bbox": [10, 50, 80, 30],
+                "source": "shipper",
+                "value": "",
+            },
+            "Blank unbound": {
+                "role": "edit",
+                "bbox": [110, 50, 80, 30],
+                "source": "",
+                "value": "",
+            },
+            "Unobserved unbound": {"role": "edit", "bbox": [200, 50, 80, 30]},
+            "Explicit null": {"role": "text", "bbox": [300, 50, 80, 30], "source": None},
+            "Viewport": {"role": "group", "bbox": [0, 0, 400, 200]},
+        },
+        steps=[
+            {
+                "target": "House reference",
+                "action": "fill",
+                "intent": "fill",
+                "point": [50.25, 25.75],
+            },
+            {
+                "target": "Shipper cell",
+                "action": "fill",
+                "intent": "fill",
+                "source": "shipper",
+                "point": [50, 65],
+            },
+            {
+                "target": "Viewport",
+                "action": "scroll",
+                "direction": "down",
+                "intent": "navigate",
+                "point": [300.25, 150.75],
+            },
+        ],
+        completion_evidence=[{"condition_index": 0, "target": "House reference"}],
+        message_targets=["undeclared save message"],
+        grid="Viewport",
     )
-
+    brain, model, *_ = setup_brain(tmp_path, record, [data], task_instruction=task_instruction)
     request, services = matching_contract(brain)
-    filtered = enforce_taught_input_surfaces(request, services, proposed)
+    remembered = []
+    services.memory_retrieval.enabled = True
+    monkeypatch.setattr(
+        services.memory_retrieval,
+        "remember",
+        lambda _screen, accepted, **_: remembered.append(accepted),
+    )
+    result = decide_screen(request, services)
+    filtered = result.response
 
-    assert [(step.target, step.source) for step in filtered.steps] == [(5, "hbl_no")]
+    assert [(step.action, step.source, step.point) for step in filtered.steps] == [
+        ("fill", "hbl_no", [50.25, 25.75]),
+        ("key", None, [300.25, 150.75]),
+    ]
+    assert filtered.steps[1].keys == "pagedown"
     event = next(
         item
         for item in brain.log.read_all()
@@ -972,11 +1035,37 @@ def test_taught_direct_input_is_not_written_into_a_detected_grid_cell(tmp_path, 
     assert event.payload["rejected"] == [
         {
             "source": "shipper",
-            "target": 3,
+            "target": next(
+                c.id for c in filtered.controls if c.visual_description == "Shipper cell"
+            ),
             "observed_surface": "table_cell",
             "allowed_surfaces": ["direct_input"],
         }
     ]
+    assert len(model.prompts) == 1 and len(remembered) == 1
+    stored = result.visual_match_candidate[1]["mapping"]
+    assert remembered[0].mapping.model_dump(mode="json", exclude_unset=True) == stored
+    assert stored["steps"] == [
+        {**data["steps"][0], "source": "hbl_no"},
+        data["steps"][2],
+    ]
+    assert stored["completion_evidence"] == stored["message_targets"] == []
+    assert stored["grid"] is None
+    # Keeping field presence is essential: omitted values are not observations of empty inputs.
+    assert stored["fields"] == data["fields"]
+    assert "value" not in stored["fields"]["House reference"]
+    assert "source" not in stored["fields"]["Unobserved unbound"]
+    assert stored["fields"]["Blank unbound"]["source"] == ""
+    assert stored["fields"]["Blank unbound"]["value"] == ""
+    replay = ScreenMapping.model_validate(stored).local_payload({}, request.values)
+    assert [(step["action"], step.get("source"), step["point"]) for step in replay["steps"]] == [
+        ("fill", "hbl_no", [50.25, 25.75]),
+        ("key", None, [300.25, 150.75]),
+    ]
+    assert replay["steps"][1]["keys"] == "pagedown"
+    assert "source" not in replay["steps"][1]
+    assert replay["completion_evidence"] == replay["message_targets"] == []
+    assert replay["grid"] is None
 
 
 @pytest.mark.parametrize(
@@ -2079,11 +2168,11 @@ def test_same_screen_navigation_clicks_compile_to_one_action_plan(intents):
     ],
 )
 def test_delivered_input_verification_omission_is_repaired_without_reusing_old_value(
-    tmp_path, record, mode
+    tmp_path, record, mode, monkeypatch
 ):
     from brain.graph.execution import GuardStop
     from brain.graph.schemas import Choice, Decision
-    from brain.graph.screen_decision import required_verification, retain_verification
+    from brain.graph.screen_decision import required_verification
     from brain.observe.summary import describe
     from brain.visual.markers import Marker, build_markers, ground_meanings
     from brain.visual.scene import SemanticDetection, bind_scene
@@ -2100,13 +2189,25 @@ def test_delivered_input_verification_omission_is_repaired_without_reusing_old_v
     table = {"id": table_id, "role": "table", "table_state": "empty", "confidence": 0.95}
     initial = SemanticDetection(screen_kind="query", controls=[field, table])
     before = bind_scene(wire(), blocks, ground_meanings(initial, markers, blocks))
-    from brain.visual.marker_contract import model_controls
-
-    supplemental = {
-        "controls": []
+    current_value = (
+        "DIFFERENT-NOW"
+        if mode in {"changed_value", "renamed_wrong_value", "resized_wrong_value"}
+        else expected
+    )
+    supplemental = named_response(
+        operation="stop",
+        steps=[],
+        fields={}
         if mode == "still_missing"
-        else model_controls(initial.controls[:1], {"markers": [m.model_dump() for m in markers]})
-    }
+        else {
+            "Reference": {
+                "role": "edit",
+                "source": "hbl_no",
+                "bbox": [100, 15, 150, 30],
+                "value": current_value,
+            }
+        },
+    )
     brain, model, _, _, _, _ = setup_brain(tmp_path, record, [supplemental])
     brain.observation = before
     target = next(e for e in before.elements if e.role == "edit")
@@ -2125,7 +2226,6 @@ def test_delivered_input_verification_omission_is_repaired_without_reusing_old_v
         "before_observation": before,
     }
     required = required_verification(brain.pending)
-    services = matching_contract(brain)[1]
     if mode in {"changed_value", "renamed_wrong_value", "resized_wrong_value"}:
         blocks[-1] = blocks[-1].model_copy(update={"text": "DIFFERENT-NOW"})
     if mode.startswith("renamed"):
@@ -2154,17 +2254,42 @@ def test_delivered_input_verification_omission_is_repaired_without_reusing_old_v
         grid=table_id,
         evidence=[{"field": "hbl_no", "target": field_id}],
     )
+    request, services = matching_contract(brain, screen)
+    request = replace(request, required_verification=tuple(required))
+    # Supply the existing local observation, then use decide_screen's real named-response binding.
+    monkeypatch.setattr(
+        matching,
+        "select_screen_response",
+        lambda _request, _services, prepared, **_: ScreenSelection(
+            matched, None, None, False, prepared
+        ),
+    )
     if mode == "still_missing":
         with pytest.raises(GuardStop, match="required_verification_missing"):
-            retain_verification(services, matched, screen, required)
+            decide_screen(request, services)
         assert len(model.prompts) == 1
         return
-    repaired = retain_verification(services, matched, screen, required)
+    repaired = decide_screen(request, services).response
     assert len(model.prompts) == (
         0 if mode == "present" or mode.startswith(("renamed", "resized")) else 1
     )
     assert repaired.operation == matched.operation and repaired.steps == matched.steps
-    brain.observation = bind_scene(current_wire, blocks, ground_meanings(repaired, markers, blocks))
+    current_markers = [
+        Marker(
+            id=item["id"],
+            source=item["source"],
+            bbox=item["bbox"],
+            text_ids=item.get("text_ids", []),
+            confidence=item.get("candidate_confidence", item.get("confidence", 1)),
+        )
+        for item in screen["markers"]
+    ]
+    brain.observation = bind_scene(
+        current_wire,
+        blocks,
+        ground_meanings(repaired, current_markers, blocks),
+        selected_fields=screen.get("selected_fields"),
+    )
     current_input = next(e for e in brain.observation.elements if e.role == "edit")
     accepted = brain._record_verified_field("hbl_no", current_input)
     assert accepted is (mode not in {"changed_value", "renamed_wrong_value", "resized_wrong_value"})
@@ -2172,8 +2297,6 @@ def test_delivered_input_verification_omission_is_repaired_without_reusing_old_v
 
 
 def test_model_only_review_delegates_required_verification_without_repair_call(tmp_path, record):
-    from brain.graph.screen_decision import retain_verification
-
     brain, model, *_ = setup_brain(tmp_path, record, [])
     brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
     matched = ScreenMatch(
@@ -2191,9 +2314,11 @@ def test_model_only_review_delegates_required_verification_without_repair_call(t
         }
     ]
 
+    request, services = matching_contract(brain)
+    request = replace(request, required_verification=tuple(required))
     assert (
-        retain_verification(
-            matching_contract(brain)[1], matched, {"ocr": [], "markers": []}, required
+        matching.retain_screen_observation(
+            matched, request, services, build_decision_prompt(request, services)
         )
         == matched
     )
@@ -2502,7 +2627,7 @@ def test_empty_action_recovery_preserves_education_and_current_observed_values(
     assert brain.visual_proposal.mapping.steps[0].target == "Continue"
     assert decision_work_counts == {
         "prepare_screen_plan": 2,
-        "retain_action_targets": 2,
+        "retain_screen_observation": 2,
         "sanitize_unused_controls": 2,
         "recall_context": 1,
     }
@@ -3461,6 +3586,7 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
     from brain.cache.methods import MethodLibrary, method_from_match
     from brain.graph.screen_mapping import ScreenMapping
     from brain.visual.action_rebind import perceptual_hash
+    from pipeline.schemas import OcrBlock
 
     converted_frames = []
     original_payload = ScreenMapping.local_payload
@@ -3477,12 +3603,21 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
                 "source": "hbl_no",
                 "role": "edit",
                 "bbox": [100, 15, 150, 30],
-                "value": "",
+                "value": "CURRENT",
             }
         },
         "steps": [{"target": "Reference", "action": "fill", "intent": "fill", "point": [125, 28]}],
     }
-    brain, model, _, _, _, _ = setup_brain(tmp_path, record, [raw])
+    brain, model, _, ocr, _, _ = setup_brain(tmp_path, record, [raw])
+    blocks = fixture()[0]
+    monkeypatch.setattr(
+        ocr,
+        "read",
+        lambda _page: [
+            *blocks,
+            OcrBlock(id=9, text="CURRENT", bbox=(110, 20, 70, 15), confidence=1),
+        ],
+    )
     brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
     brain._observe()
     assert len(converted_frames) == 1 and converted_frames[0]["markers"]
@@ -3496,17 +3631,31 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
         json.loads(artifact.read_text(encoding="utf-8"))["fields"]["Reference"]["source"]
         == "hbl_no"
     )
-    # Check the actual provider prompt after ScreenMapping rebuilds it.
+    # The final provider prompt keeps current OCR connected to the detector box.
     assert model.prompts[0].startswith("Choose the next screen action")
     for stage in ("Scanning", "Pattern Matching", "Memory Retrieval"):
         assert stage in model.prompts[0], stage
     assert '"id_namespace"' not in model.prompts[0]
-    assert '"text_regions"' in model.prompts[0]
+    prompted_frame = json.loads(model.prompts[0][len(CONTEXT_MAPPING_RULES) :])["screen"]
+    assert prompted_frame["text_regions"] == [
+        {"text": "Reference", "bbox": [10, 20, 60, 15]},
+        {"text": "CURRENT", "bbox": [110, 20, 70, 15]},
+    ]
+    assert prompted_frame["control_regions"] == [
+        {
+            "bbox": [100, 15, 150, 30],
+            "contained_text": [{"text": "CURRENT", "bbox": [110, 20, 70, 15]}],
+        }
+    ]
     schema = ScreenMatch.model_json_schema()
     assert schema["$defs"]["NamedAction"]["properties"]["target"]["type"] == "string"
     screen = brain.screen_scanner.planning_context()[0].screen
     mapping = ScreenMapping.model_validate(raw)
     payload = mapping.local_payload(screen)
+    original_markers = json.dumps(screen["markers"], ensure_ascii=False)
+    assert mapping.local_payload(screen) == payload
+    assert json.dumps(screen["markers"], ensure_ascii=False) == original_markers
+    assert len([m for m in screen["markers"] if m["source"] == "model_selected"]) == 1
     learned = method_from_match(screen, payload, method_id="semantic", purpose="Query")
     assert learned is not None
     chosen = learned.action_groups[0].targets[0]
@@ -3844,6 +3993,7 @@ def test_named_mixed_plan_failure_records_only_delivered_prefix(tmp_path, record
 # Cleanup audit C2: preserve final review and education context when removing prompt round trip.
 def test_mapping_preserves_review_and_retrieval_purpose_and_ignores_unused_grid():
     from brain.graph.screen_mapping import ScreenMapping, mapping_prompt
+    from brain.visual.frame import frame_input
 
     state = {
         "screen": {},
@@ -3859,7 +4009,8 @@ def test_mapping_preserves_review_and_retrieval_purpose_and_ignores_unused_grid(
         "point": [300, 150],
     }
     screen = {"memory_fields": ["Reference"], "retrieved_procedure": [{"steps": [stored]}]}
-    prompt = mapping_prompt(state, screen)
+    state["screen"] = frame_input(screen)
+    prompt = mapping_prompt(state)
     payload = json.loads(prompt[len(CONTEXT_MAPPING_RULES) :])
     assert "already delivered" in payload["review_instruction"]
     assert "not another retrieval" in payload["education_instruction"]

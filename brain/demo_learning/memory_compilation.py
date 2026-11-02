@@ -28,6 +28,7 @@ from brain.demo_learning.methods import read_screen
 from brain.graph.screen_mapping import ScreenMapping
 from brain.observe.values import values_for
 from brain.task_instruction import TaskInputRecord, TaskInstruction
+from brain.vocabulary import SCROLL_DIRECTION_KEYS
 from models.accounting import read_model_accounting
 from models.base import ModelClient
 from models.budget import CallBudget
@@ -335,27 +336,27 @@ def read_memory_candidates(
         screen = read_screen(case_dir, obs_id)
         mapping = plan.get("mapping") or (responses[key].get("mapping") if keys else None)
         if mapping is not None:
-            # Only geometry is recovered here; delivered steps below are authoritative.
-            # Historical provider actions may use an older model-facing scroll contract.
-            normalized = ScreenMapping.model_validate({**mapping, "steps": []}).local_payload(
-                screen
-            )
-            new_ids = {field["name"]: int(ref) for ref, field in screen["selected_fields"].items()}
-            remapped = {
-                control["id"]: new_ids[control["visual_description"]]
+            # Recorded executor IDs are decoded once; offline memory keeps semantic names.
+            named = ScreenMapping.model_validate({**mapping, "steps": []})
+            names = {
+                control["id"]: control["visual_description"]
                 for control in response.get("controls", [])
-                if control.get("visual_description") in new_ids
+                if control.get("visual_description") in named.fields
             }
-            # Delivered points/actions stay unchanged; frame-local references do not.
-            retained = [
-                {**step, "target": remapped.get(step["target"], step["target"])}
-                for step in retained
-            ]
-            already = [
-                {**step, "target": remapped.get(step["target"], step["target"])} for step in already
-            ]
-            # Normalize geometry without restoring skipped actions from the provider plan.
-            response = {**normalized, "operation": response.get("operation", "act")}
+            directions = {key: direction for direction, key in SCROLL_DIRECTION_KEYS.items()}
+
+            for actions in (retained, already):
+                for index, step in enumerate(actions):
+                    action = {key: value for key, value in step.items() if value is not None}
+                    target = step["target"]
+                    action["target"] = target if target in named.fields else names[target]
+                    if action["action"] == "key" and action["keys"] in directions:
+                        action.update(action="scroll", direction=directions[action.pop("keys")])
+                    actions[index] = action
+            response = {
+                **named.model_dump(exclude_unset=True),
+                "operation": response.get("operation", "act"),
+            }
         response = {**response, "steps": retained}
         after_id = next(
             (
@@ -421,7 +422,9 @@ def read_memory_candidates(
         keys = by_response.get(_canonical(final_response))
         final_mapping = plan.get("mapping") or (responses[keys[0]].get("mapping") if keys else None)
         if final_mapping is not None:
-            final_response = ScreenMapping.model_validate(final_mapping).local_payload(final_screen)
+            final_response = ScreenMapping.model_validate(final_mapping).model_dump(
+                exclude_unset=True
+            )
         completion = {"screen": final_screen, "response": final_response}
         if final_stop is not None and final_stop[0] > plan["seq"]:
             review = events[final_stop[0] - 1].get("payload", {})
@@ -498,7 +501,11 @@ def memory_assembly_prompt(source: dict, candidates: list[MemoryCandidate]) -> s
                         "bbox": field["bbox"],
                         "source": field.get("source"),
                     }
-                    for field in candidate.screen.get("selected_fields", {}).values()
+                    for field in (
+                        [dict(name=name, **field) for name, field in response["fields"].items()]
+                        if "fields" in response
+                        else candidate.screen.get("selected_fields", {}).values()
+                    )
                 ],
                 "actions": [
                     {
@@ -542,10 +549,17 @@ def memory_assembly_prompt(source: dict, candidates: list[MemoryCandidate]) -> s
 
 def _required_sources(candidates: list[MemoryCandidate]) -> set[str]:
     return {
-        step["source"]
+        source
         for candidate in candidates
         for step in candidate.response["steps"]
-        if step.get("source")
+        if (
+            source := step.get("source")
+            or (
+                candidate.response.get("fields", {}).get(step["target"], {}).get("source")
+                if step["action"] == "fill"
+                else None
+            )
+        )
     }
 
 

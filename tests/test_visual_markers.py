@@ -1,9 +1,12 @@
 """Coordinate invention regression and local detector -> semantic -> scene boundary."""
 
+import json
+
 import pytest
 from PIL import Image
 from test_visual_scene import wire
 
+from brain.graph.screen_mapping import observation_prompt
 from brain.visual.detector import DetectorSettings, OmniParserDetector
 from brain.visual.detector_worker import original_box, restore_region_box
 from brain.visual.markers import (
@@ -285,7 +288,7 @@ def test_missing_weights_fail_without_paid_fallback(tmp_path):
 
 
 @pytest.mark.parametrize("outcome", ["valid", "invalid", "provider_error"])
-def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_path, outcome):
+def test_perception_keeps_local_markers_out_of_named_observation_prompt(tmp_path, outcome):
     blocks, boxes, _, meaning = fixture()
 
     class Relay:
@@ -307,9 +310,14 @@ def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_pat
     calls = []
 
     def interpret(request):
-        prompt, page, payload = request.prompt(), request.page, request.screen
+        prompt = observation_prompt(request.screen)
+        page, payload = request.page, request.screen
         assert page.image_path.name == "markers.png"
-        assert "markers" in prompt
+        frame = json.loads(prompt.split("\n", 1)[1])["screen"]
+        assert frame["control_regions"] == [{"bbox": [100, 15, 150, 30], "contained_text": []}]
+        assert frame["text_regions"] == [{"text": "Reference", "bbox": [10, 20, 60, 15]}]
+        for private_key in ('"id"', '"label_ids"', '"text_ids"', '"markers"'):
+            assert private_key not in prompt
         assert all("confidence" not in marker for marker in payload["markers"])
         assert all("candidate_confidence" in marker for marker in payload["markers"])
         assert {marker["source"] for marker in payload["markers"]} == {"omniparser", "ocr"}
@@ -318,7 +326,6 @@ def test_complete_perception_uses_marked_image_and_preserves_raw_capture(tmp_pat
         with Image.open(page.image_path) as picture:
             assert picture.getpixel((10, 20)) == (255, 255, 255)  # OCR is evidence-only.
             assert picture.getpixel((100, 15)) == (255, 0, 0)  # Detector surface is numbered.
-        assert "NOT markers[].id" in prompt
         calls.append(page)
         if outcome == "provider_error":
             raise ValueError("provider_failure_with_private_details")
@@ -478,7 +485,7 @@ def test_perception_refines_only_after_basic_detection_reports_failure(
             return blocks
 
     def interpret(request):
-        prompt = request.prompt()
+        prompt = observation_prompt(request.screen)
         calls.append("meaning")
         clock[0] += 1
         assert '"refinement' not in prompt  # Search regions are not selectable markers.

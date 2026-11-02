@@ -9,6 +9,7 @@ import os
 from decimal import Decimal
 from pathlib import Path
 
+from brain.graph.screen_mapping import ScreenMapping, ScreenMappingWire, observation_prompt
 from brain.relay import HttpRelay
 from brain.settings import BrainSettings
 from brain.visual.detector import OmniParserDetector
@@ -70,17 +71,28 @@ def main(argv=None) -> int:
     budget = ImageCallBudget.from_config(args.model_config)
 
     def detect(request: SemanticRequest) -> SemanticDetection:
-        prompt, page = request.prompt(), request.page
+        screen, page = request.screen, request.page
+        if request.correction is not None:
+            screen["correction"] = {"error": request.correction.get("error")}
+        prompt = observation_prompt(screen)
+        capture = page.image_path.parent / "capture.png"
+        if capture.exists():
+            page = page.model_copy(update={"image_path": capture})
         accounting = read_model_accounting(log)
         if accounting.unknown:
             raise ValueError("unknown_model_call_cost")
         used = accounting.known_usd
-        if used + budget(prompt, SemanticDetection, page) > Decimal(str(args.max_cost_usd)):
+        if used + budget(prompt, ScreenMappingWire, page) > Decimal(str(args.max_cost_usd)):
             raise ValueError("demonstration_cost_cap")
-        result = model.complete_json(prompt, SemanticDetection, images=[page.image_path])
+        result = model.complete_json(prompt, ScreenMappingWire, images=[page.image_path])
         if used + result.usd > Decimal(str(args.max_cost_usd)):
             raise ValueError("demonstration_cost_cap")
-        return result.response
+        mapping = ScreenMapping.model_validate(result.response.model_dump(exclude_unset=True))
+        # Recording owns observations only, even if the model proposes an action.
+        payload = mapping.model_copy(update={"steps": []}).local_payload(screen)
+        return SemanticDetection.model_validate(
+            {key: payload[key] for key in SemanticDetection.model_fields if key in payload}
+        )
 
     settings = BrainSettings.load(args.brain_config)
     perception = ScreenScanner(

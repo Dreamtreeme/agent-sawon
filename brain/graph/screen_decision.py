@@ -23,16 +23,12 @@ from brain.input_binding import (
 from brain.observe.evidence import input_surface
 from brain.settings import BrainSettings
 from brain.task_instruction import ObservedStepResult, TaskInstruction
-from brain.visual.marker_contract import (
-    allowed_marker_actions,
-    local_response,
-    model_controls,
-    model_screen,
-)
-from brain.visual.markers import marker_role_allowed
+from brain.visual.frame import frame_input
+from brain.visual.markers import allowed_marker_actions, marker_role_allowed
 from brain.visual.scene import ControlMeaning, SemanticDetection, contains, overlap
 from brain.vocabulary import (
     ACTION_CONTROL_ROLES,
+    SCROLL_DIRECTION_KEYS,
     ActionCapabilityIntent,
     KeyInput,
     MatchActionIntent,
@@ -142,18 +138,8 @@ class MethodChoice(BaseModel):
 class ScreenPlan(MethodChoice):
     """Task decision over a previously grounded screen interpretation."""
 
-    anthropic_unions: ClassVar[dict[str, dict[str, Any]]] = {
-        "properties/steps/items": {"source": "", "keys": "", "direction": ""},
-    }
-    anthropic_nulls: ClassVar[dict[str, Any]] = {
-        "properties/taught_step_id": "",
-        "properties/method_id": "",
-        "properties/grid": "",
-        "properties/row": "",
-        "properties/save_result": "",
-        "$defs/NamedAction/properties/source": "",
-        "$defs/NamedScreenField/properties/source": "",
-    }
+    anthropic_unions: ClassVar[dict[str, dict[str, Any]]] = ScreenMappingWire.anthropic_unions
+    anthropic_nulls: ClassVar[dict[str, Any]] = ScreenMappingWire.anthropic_nulls
 
     model_config = ConfigDict(extra="forbid")
     mapping: ScreenMapping | None = Field(default=None, exclude=True)
@@ -250,6 +236,51 @@ class ScreenMatch(SemanticDetection, ScreenPlan):
     def interpretation(self) -> SemanticDetection:
         return SemanticDetection.model_validate(
             self.model_dump(include=set(SemanticDetection.model_fields))
+        )
+
+    def accepted_mapping(self, screen: dict) -> ScreenMapping | None:
+        """Keep observations intact while persisting the plan the executor actually accepted."""
+        if self.mapping is None:
+            return None
+        names = {
+            control.id: screen.get("selected_fields", {})
+            .get(str(control.id), {})
+            .get("name", control.visual_description)
+            for control in self.controls
+        }
+        directions = {key: direction for direction, key in SCROLL_DIRECTION_KEYS.items()}
+        steps = []
+        for step in self.steps:
+            data = step.model_dump(exclude_none=True)
+            data["target"] = names[step.target]
+            if step.action == "key" and step.keys in directions:
+                data.update(action="scroll", direction=directions[data.pop("keys")])
+                data.pop("source", None)
+            steps.append(data)
+        return ScreenMapping.model_validate(
+            {
+                **self.mapping.model_dump(exclude_unset=True),
+                **self.model_dump(
+                    include={
+                        "operation",
+                        "requested_instruction_ids",
+                        "taught_step_id",
+                        "method_id",
+                        "needs_refinement",
+                        "observed_step_results",
+                        "save_result",
+                        "repair_fields",
+                    }
+                ),
+                "steps": steps,
+                "completion_evidence": [
+                    {"condition_index": item.condition_index, "target": names[item.target]}
+                    for item in self.completion_evidence
+                ],
+                "message_targets": [names[target] for target in self.message_targets],
+                "grid": names[self.grid] if self.grid is not None else None,
+                "row": names[self.row] if self.row is not None else None,
+            }
         )
 
 
@@ -363,19 +394,6 @@ def _call_screen_decision(
 
 def write_decision_artifact(services: ScreenDecisionServices, kind: str, value: BaseModel) -> None:
     atomic_write_json(services.case_dir / "matching" / f"{uuid4().hex}-{kind}.json", value)
-
-
-TARGET_GROUNDING_RULES = """Ground only the listed action target markers on the CURRENT image.
-The existing task plan is immutable: do not replace, reorder, or add actions.
-Return each required_target_id exactly once in controls, plus only a necessary visible parent.
-Use the supplied existing marker ID and geometry; never substitute an OCR caption marker for an
-enclosing detector marker. Classify its visible role, labels, contained literal text, enabled state,
-and focus state. All label_ids/text_ids use the printed visible text-marker IDs. Do not invent IDs,
-boxes, values, actions, or hidden controls. Report uncertainty when the role cannot be grounded.
-The requested action must appear in that marker's allowed_actions. OCR click proxies may retain
-role=text when their visible caption is the requested click target; they cannot be writable or
-keyboard targets.
-"""
 
 
 def verification_requirements(
@@ -560,44 +578,32 @@ def required_verification(pending: PendingAction | None) -> list[dict]:
     return required
 
 
-def retain_verification(
-    services: ScreenDecisionServices,
+def retain_screen_observation(
     response: ScreenMatch,
-    screen: dict,
-    required: list[dict] | tuple[dict, ...],
+    request: ScreenDecisionRequest,
+    services: ScreenDecisionServices,
+    prepared: DecisionPromptContext,
+    *,
     page=None,
-):
-    if services.settings.visual_model_only_review:
-        services.log.append(
-            "verify",
-            payload={
-                "check": "required_verification_delegated",
-                "reviewer": "screen_model",
-                "sources": sorted(item["source"] for item in required),
-            },
-        )
-        return response
+) -> ScreenMatch:
+    """Recover an incomplete observation through the one named decision contract."""
+    required = list(request.required_verification)
 
-    def missing(controls):
+    def missing_verification(candidate):
         absent, _ = verification_requirements(
-            controls,
-            screen,
-            list(required),
-            response.screen_kind,
+            candidate.controls,
+            request.screen,
+            required,
+            candidate.screen_kind,
             services.settings.visual_min_confidence,
         )
-        # In model-led mode the worker can bind a field directly to CURRENT
-        # visual evidence.  That binding is stronger than trying to recover the
-        # old, empty input extent by IoU after the value has changed the OCR box.
-        # The graph still rereads the bound element and compares its literal OCR
-        # value before any proposed next action is eligible.
         if services.settings.visual_model_led_semantics:
-            by_id = {control.id: control for control in controls}
+            controls = {control.id: control for control in candidate.controls}
             explicit = {
                 evidence.field
-                for evidence in response.evidence
+                for evidence in candidate.evidence
                 if (
-                    (control := by_id.get(evidence.target)) is not None
+                    (control := controls.get(evidence.target)) is not None
                     and control.enabled
                     and control.role in {"edit", "combobox"}
                     and (
@@ -606,129 +612,67 @@ def retain_verification(
                     )
                 )
             }
+            # Current explicit bindings survive resize; literal value verification
+            # still happens before execution, as it did before contract unification.
             absent = [item for item in absent if item["source"] not in explicit]
         return absent
 
-    absent = missing(response.controls)
-    if not absent:
-        return response
-    # Only an actual omission causes this measured repair call. The action/proof
-    # proposal remains unchanged; original verification still checks current values.
-    supplement = _call_screen_decision(
-        services,
-        "target_grounding",
-        "Return only missing verification controls and their necessary parents from CURRENT "
-        "OCR/markers. Preserve their labels and literal contained text. No actions or invented "
-        "values/boxes. Report uncertainty if they cannot be observed.\n"
-        "All references, including label_ids/text_ids, use the printed text marker IDs.\n"
-        + json.dumps(
-            {"required_verification": absent, "screen": model_screen(screen)}, ensure_ascii=False
-        ),
-        SemanticDetection,
-        page=page,
-    )
-    supplement = local_response(supplement, screen)
-    controls = {c.id: c for c in response.controls}
-    controls.update({c.id: c for c in supplement.controls})
-    response = response.model_copy(
-        update={
-            "controls": list(controls.values()),
-            "uncertainties": [*response.uncertainties, *supplement.uncertainties],
-        }
-    )
-    remaining = missing(response.controls)
-    services.log.append(
-        "verify",
-        payload={
-            "check": "required_verification_repaired",
-            "sources": [r["source"] for r in absent],
-            "ok": not remaining,
-        },
-    )
-    if remaining:
-        raise GuardStop("required_verification_missing")
-    return response
-
-
-def retain_action_targets(
-    services: ScreenDecisionServices, response: ScreenMatch, screen: dict, page=None
-) -> ScreenMatch:
-    """Add semantics for omitted targets that exist in the current marker catalog."""
-    controls = {control.id: control for control in response.controls}
-    required = (
-        {step.target for step in response.steps}
-        | {evidence.target for evidence in response.evidence}
-        | {evidence.target for evidence in response.completion_evidence}
-    )
-    missing = required - controls.keys()
-    if not missing:
-        return response
-
-    marker_ids = {marker["id"] for marker in screen.get("markers", [])}
-    # Existing meanings outside the catalog indicate an invalid interpretation,
-    # which the normal semantic-grounding retry must replace as a whole.
-    if not controls.keys() <= marker_ids:
-        return response
-    # A plan may combine catalog markers with explicit model points. Recover the
-    # catalog omissions here and leave point-only targets to the executor's
-    # current-frame binding path.
-    recoverable = missing & marker_ids
-    if not recoverable:
-        return response
-
-    original_steps = response.steps
-    supplement = _call_screen_decision(
-        services,
-        "input_evidence_recovery",
-        TARGET_GROUNDING_RULES
-        + json.dumps(
-            {
-                "required_target_ids": sorted(recoverable),
-                "existing_controls": model_controls(response.controls, screen),
-                "screen": model_screen(screen),
+    if services.settings.visual_model_only_review:
+        absent = []
+        services.log.append(
+            "verify",
+            payload={
+                "check": "required_verification_delegated",
+                "reviewer": "screen_model",
+                "sources": sorted(item["source"] for item in required),
             },
-            ensure_ascii=False,
+        )
+    else:
+        absent = missing_verification(response)
+    targets = (
+        {step.target for step in response.steps}
+        | {item.target for item in response.evidence}
+        | {item.target for item in response.completion_evidence}
+    )
+    missing = targets - {control.id for control in response.controls}
+    if not absent and not missing:
+        return response
+    recovered = _call_screen_decision(
+        services,
+        "target_grounding" if absent else "input_evidence_recovery",
+        mapping_prompt(
+            {
+                **prepared.state,
+                "recovery": {
+                    "reason": "incomplete_observation",
+                    "instruction": (
+                        "Return the current named fields, their source keys and observed values, "
+                        "and remaining actions together. Include every action target in fields. "
+                        "Do not infer current values from past memory or repeat satisfied inputs."
+                    ),
+                    "required_sources": [item["source"] for item in absent],
+                    "current_observation": (
+                        response.mapping.model_dump(exclude_unset=True)
+                        if response.mapping
+                        else None
+                    ),
+                },
+            }
         ),
-        SemanticDetection,
+        ScreenMatch,
         page=page,
     )
-    supplement = local_response(supplement, screen)
-    supplied = {control.id: control for control in supplement.controls}
-    if not recoverable <= supplied.keys():
+    if not services.settings.visual_model_only_review and missing_verification(recovered):
+        raise GuardStop("required_verification_missing")
+    recovered_targets = (
+        {step.target for step in recovered.steps}
+        | {item.target for item in recovered.evidence}
+        | {item.target for item in recovered.completion_evidence}
+    )
+    if recovered_targets - {control.id for control in recovered.controls}:
         raise GuardStop("action_target_semantics_missing")
-
-    # Preserve every prior meaning. Only the omitted targets and their explicit
-    # parent chain may be added by this repair call.
-    allowed = set(recoverable)
-    for target_id in tuple(recoverable):
-        current = supplied.get(target_id)
-        visited: set[int] = set()
-        while current is not None and current.parent_id is not None:
-            if current.parent_id in visited:
-                raise GuardStop("action_target_parent_cycle")
-            visited.add(current.parent_id)
-            allowed.add(current.parent_id)
-            current = supplied.get(current.parent_id)
-    controls.update({key: value for key, value in supplied.items() if key in allowed})
-    repaired = response.model_copy(
-        update={
-            "controls": list(controls.values()),
-            "uncertainties": [*response.uncertainties, *supplement.uncertainties],
-        }
-    )
-    if repaired.steps != original_steps:
-        raise AssertionError("action_target_grounding_changed_plan")
-    write_decision_artifact(services, "target-grounding", repaired)
-    services.log.append(
-        "verify",
-        payload={
-            "check": "action_targets_grounded",
-            "marker_ids": sorted(recoverable),
-            "procedure_step": response.procedure_step,
-            "plan_preserved": True,
-        },
-    )
-    return repaired
+    write_decision_artifact(services, "observation-recovery", recovered)
+    return recovered
 
 
 def bind_value_evidence_to_controls(
@@ -1184,7 +1128,7 @@ def enforce_taught_input_surfaces(
         source = resolve_input_key(step.source, request.values) or step.source
         control = controls.get(step.target)
         if control is None:
-            # Missing action roles are grounded by retain_action_targets before execution.
+            # Missing action fields are recovered by the shared observation path.
             continue
         parents = []
         parent_id = control.parent_id
@@ -1321,7 +1265,7 @@ def build_decision_prompt(
     )
     # Pattern binding can mutate these two sources. Preserve their original
     # snapshot timing so later recovery prompts and cache keys stay unchanged.
-    screen = model_screen(request.screen)
+    screen = frame_input(request.screen)
     methods = services.memory_retrieval
     method_memory = methods.prompt_context() if methods.enabled else None
 
@@ -1479,18 +1423,10 @@ def select_screen_response(
         )
     elif request.grounded_interpretation is not None and not current_review:
         grounded = request.grounded_interpretation
-        plan_state = {
-            **prepared.state,
-            "grounded_interpretation": {
-                "screen_kind": grounded.screen_kind,
-                "controls": model_controls(grounded.controls, screen),
-                "uncertainties": grounded.uncertainties,
-            },
-        }
         plan = _call_screen_decision(
             services,
             "grounded_screen_plan",
-            mapping_prompt(plan_state, screen),
+            mapping_prompt(prepared.state),
             ScreenPlan,
             page=page,
         )
@@ -1521,12 +1457,11 @@ def select_screen_response(
                 if request.workflow_flags.get("save_issued")
                 else "screen_decision"
             ),
-            mapping_prompt(prepared.state, screen),
+            mapping_prompt(prepared.state),
             ScreenMatch,
             page=page,
         )
         write_decision_artifact(services, "markers", response)
-        response = local_response(response, screen)
     if (method_proposal is not None or cache_hit is not None) and response.mapping is None:
         services.log.append(
             "verify",
@@ -1538,11 +1473,10 @@ def select_screen_response(
         response = _call_screen_decision(
             services,
             "grounded_screen_plan",
-            mapping_prompt(prepared.state, screen),
+            mapping_prompt(prepared.state),
             ScreenMatch,
             page=page,
         )
-        response = local_response(response, screen)
         method_proposal = None
         cache_hit = None
     if response.requested_instruction_ids:
@@ -1592,12 +1526,11 @@ def select_screen_response(
         response = _call_screen_decision(
             services,
             "education_retrieval",
-            mapping_prompt(expanded, screen),
+            mapping_prompt(expanded),
             ScreenMatch,
             page=page,
         )
         write_decision_artifact(services, "education-plan", response)
-        response = local_response(response, screen)
         if response.requested_instruction_ids:
             if not response.steps:
                 raise ValueError("education_retrieval_unresolved")
@@ -1617,12 +1550,11 @@ def select_screen_response(
         response = _call_screen_decision(
             services,
             "image_recovery",
-            mapping_prompt(prepared.state, screen),
+            mapping_prompt(prepared.state),
             ScreenMatch,
             page=page,
         )
         write_decision_artifact(services, "image", response)
-        response = local_response(response, screen)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
     if response.mapping is None:
@@ -1665,12 +1597,10 @@ def validate_or_replan(
             if str(error) == "screen_match_action_surface_mismatch":
                 correction_instruction = (
                     "Re-read the CURRENT screen and return a corrected interpretation and "
-                    "plan. For every step, choose a target marker whose allowed_actions "
-                    "contains the requested action. OCR markers may only be click targets "
-                    "when their visible text is the requested tab, button, menu, link, row, "
-                    "or cell; "
-                    "never fill or send keys to OCR. Keep controls and steps target IDs "
-                    "consistent."
+                    "plan. For every step, name its actual visible field and control bbox. "
+                    "A caption alone may be clicked but cannot serve as a writable input. "
+                    "Fill and keyboard actions must target the actual input control. "
+                    "Use the exact semantic field name in steps[].target."
                 )
                 artifact_kind = "action-surface-correction"
                 correction_check = "action_surface_corrected"
@@ -1688,17 +1618,20 @@ def validate_or_replan(
                 "correction": {
                     "error": str(error),
                     "instruction": correction_instruction,
-                    "rejected_target_ids": sorted(step.target for step in response.steps),
+                    "rejected_fields": [
+                        control.visual_description
+                        for control in response.controls
+                        if control.id in {step.target for step in response.steps}
+                    ],
                 },
             }
             corrected = _call_screen_decision(
                 services,
                 "replan_after_rejection",
-                mapping_prompt(correction_state, request.screen),
+                mapping_prompt(correction_state),
                 ScreenMatch,
                 page=request.page,
             )
-            corrected = local_response(corrected, request.screen)
             if corrected.mapping is None:
                 corrected = bind_value_evidence_to_controls(services, corrected, request.screen)
             corrected = prepare_screen_plan(
@@ -1716,8 +1649,8 @@ def validate_or_replan(
             return corrected
         interpretation = response.interpretation()
         correction_instruction = (
-            "Keep grounded_interpretation unchanged. Return a task plan that matches the "
-            "supplied capability and the execution contract."
+            "Return current named fields and a task plan matching the supplied capability "
+            "and execution contract. Preserve current readings and correct the rejected action."
         )
         if str(error) == "screen_match_step_not_executable":
             correction_instruction += (
@@ -1727,8 +1660,8 @@ def validate_or_replan(
             )
         elif str(error) == "screen_match_model_point_required":
             correction_instruction += (
-                " Every step targeting a model-created control ID MUST include an "
-                "original-image [x,y] point inside that CURRENT visible control, including fill."
+                " Every step MUST include an original-image [x,y] point inside its named "
+                "CURRENT visible control, including fill."
             )
         elif str(error) == "screen_match_completion_decision_required":
             correction_instruction += (
@@ -1739,11 +1672,6 @@ def validate_or_replan(
             )
         correction_state = {
             **prepared.state,
-            "grounded_interpretation": {
-                "screen_kind": interpretation.screen_kind,
-                "controls": model_controls(interpretation.controls, request.screen),
-                "uncertainties": interpretation.uncertainties,
-            },
             "correction": {
                 "error": str(error),
                 "instruction": correction_instruction,
@@ -1752,7 +1680,7 @@ def validate_or_replan(
         plan = _call_screen_decision(
             services,
             "replan_after_rejection",
-            mapping_prompt(correction_state, request.screen),
+            mapping_prompt(correction_state),
             ScreenPlan,
             page=request.page,
         )
@@ -1792,13 +1720,8 @@ def ground_screen_response(
         validated_response = response
         grounded_response = response
         if not response.needs_refinement:
-            response = retain_action_targets(services, response, screen, page)
-            response = retain_verification(
-                services,
-                response,
-                screen,
-                required,
-                page if used_image else None,
+            response = retain_screen_observation(
+                response, request, services, prepared, page=page if used_image else None
             )
             response = sanitize_unused_controls(services, request.phase, response, screen, required)
             grounded_response = response
@@ -1824,14 +1747,12 @@ def ground_screen_response(
                                     else None
                                 ),
                             },
-                            "controls": model_controls(response.controls, screen),
                         },
-                        request.screen,
                     ),
                     ScreenMatch,
                     page=page if used_image else None,
                 )
-                response = local_response(completion, screen)
+                response = completion
                 services.log.append(
                     "verify",
                     payload={
@@ -1840,8 +1761,12 @@ def ground_screen_response(
                         "steps": len(response.steps),
                     },
                 )
-        # Equality only avoids repeated work; a changed response still follows
-        # the same validation path, including newly grounded action controls.
+        if not response.needs_refinement and response != grounded_response:
+            response = retain_screen_observation(
+                response, request, services, prepared, page=page if used_image else None
+            )
+            response = sanitize_unused_controls(services, request.phase, response, screen, required)
+        # Recoveries return a complete plan; validate the final one, after every recovery.
         if response != validated_response:
             response = prepare_screen_plan(
                 request,
@@ -1850,9 +1775,6 @@ def ground_screen_response(
                 prepared.capability,
                 set(prepared.active_fields),
             )
-        if not response.needs_refinement and response != grounded_response:
-            response = retain_action_targets(services, response, screen, page)
-            response = sanitize_unused_controls(services, request.phase, response, screen, required)
         return response
 
 
@@ -2016,6 +1938,9 @@ def decide_screen(
                     else "model",
                 },
             )
+        remember_response = response != method_proposal
+        if response.mapping is not None:
+            response = response.model_copy(update={"mapping": response.accepted_mapping(screen)})
         visual_match_candidate = (
             (
                 cache_hit[0] if cache_hit is not None else screen_pattern_key(prepared.state),
@@ -2046,7 +1971,7 @@ def decide_screen(
                 "prompt_chars": sum(prompt_sizes),
             },
         )
-        if services.memory_retrieval.enabled and response != method_proposal:
+        if services.memory_retrieval.enabled and remember_response:
             services.memory_retrieval.remember(screen, response, allow_recovery=cache_hit is None)
         return ScreenDecisionResult(
             response=response,

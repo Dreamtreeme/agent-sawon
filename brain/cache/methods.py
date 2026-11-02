@@ -14,7 +14,8 @@ from typing import Any, Literal
 import portalocker
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from brain.observe.values import normalize
+from brain.graph.screen_mapping import ScreenMapping
+from brain.observe.values import field_matches, normalize
 from brain.task_instruction import ObservedStepResult
 from brain.visual.action_rebind import hash_distance
 from brain.visual.markers import marker_role_allowed
@@ -25,6 +26,7 @@ from brain.visual.scene import (
     overlap,
     same_control_region,
 )
+from brain.vocabulary import SCROLL_DIRECTION_KEYS
 from sawon_runtime.storage import atomic_write_json
 
 # Historical completion targets can bind through label-to-control geometry.
@@ -389,7 +391,7 @@ def _method_target(
 
 def method_from_match(
     screen: dict,
-    response: dict,
+    response: dict | ScreenMapping,
     *,
     method_id: str,
     purpose: str,
@@ -407,23 +409,50 @@ def method_from_match(
     """
     if screen.get("screen_phash") is None or not screen.get("image_size"):
         return None
+    mapping = (
+        response
+        if isinstance(response, ScreenMapping)
+        else ScreenMapping.model_validate(response)
+        if "fields" in response
+        else None
+    )
+    if mapping is not None:
+        response = mapping.model_dump(exclude_unset=True)
+        selected_fields = {
+            name: {"name": name, **field.model_dump(exclude_unset=True)}
+            for name, field in mapping.fields.items()
+        }
+        controls = {
+            name: {"role": field.role, "visual_description": name}
+            for name, field in mapping.fields.items()
+        }
+        steps = []
+        for action in mapping.steps:
+            step = action.model_dump(exclude_none=True)
+            if step["action"] == "scroll":
+                step.update(action="key", keys=SCROLL_DIRECTION_KEYS[step.pop("direction")])
+            elif step["action"] == "fill":
+                step["source"] = step.get("source") or mapping.fields[step["target"]].source
+            steps.append(step)
+    else:
+        selected_fields = screen.get("selected_fields", {})
+        controls = {item["id"]: item for item in response.get("controls", [])}
+        steps = response.get("steps", [])
     markers = {item["id"]: item for item in screen.get("markers", [])}
-    controls = {item["id"]: item for item in response.get("controls", [])}
-    steps = response.get("steps", [])
     if not steps or response.get("operation", "act") != "act":
         return None
     if slots is None:
         sources = dict.fromkeys(step["source"] for step in steps if step.get("source"))
         slots = [MethodSlot(name=key, description=key, source_key=key) for key in sources]
     by_source = {slot.source_key: slot.name for slot in slots}
-    targets: dict[int, MethodTarget] = {}
+    targets: dict[int | str, MethodTarget] = {}
     actions = []
 
     def coordinate_target(
-        target_id: int, control: dict, point: list | tuple | None, default_name: str
+        target_id: int | str, control: dict, point: list | tuple | None, default_name: str
     ) -> MethodTarget | None:
         marker = markers.get(target_id)
-        selected = screen.get("selected_fields", {}).get(str(target_id), {})
+        selected = selected_fields.get(str(target_id), {})
         bbox = selected.get("bbox") or (marker["bbox"] if marker else None)
         if point is None:
             if bbox is None:
@@ -507,14 +536,14 @@ def method_from_match(
     }
     observed_controls = {
         **{
-            int(ref): {"role": field["role"]}
-            for ref, field in screen.get("selected_fields", {}).items()
+            (ref if mapping is not None else int(ref)): {"role": field["role"]}
+            for ref, field in selected_fields.items()
         },
         **controls,
     }
     for target_id, control in observed_controls.items():
         name = (
-            screen.get("selected_fields", {}).get(str(target_id), {}).get("name")
+            selected_fields.get(str(target_id), {}).get("name")
             or sources_by_target.get(target_id)
             or control.get("visual_description")
         )
@@ -525,7 +554,7 @@ def method_from_match(
             continue
         # Message anchors live on action targets. Never copy instance values into this layout.
         observed_fields.append(target.model_copy(update={"anchor_texts": []}))
-        if source := sources_by_target.get(target_id) or screen.get("selected_fields", {}).get(
+        if source := sources_by_target.get(target_id) or selected_fields.get(
             str(target_id), {}
         ).get("source"):
             field_sources[target.name] = source
@@ -539,7 +568,7 @@ def method_from_match(
         actions=actions,
         expected_result=response.get("expected_result", "")[:240],
         screen_kind=response.get("screen_kind", "unknown"),
-        screen_path=list(screen.get("screen_path", [])),
+        screen_path=list(response.get("screen_path", screen.get("screen_path", []))),
         screen_phash=screen.get("screen_phash"),
         image_size=screen.get("image_size"),
         observed_fields=observed_fields,
@@ -563,7 +592,7 @@ def method_from_match(
 
 def method_completion_from_match(
     screen: dict,
-    response: dict,
+    response: dict | ScreenMapping,
     method: LearnedMethod,
     values: Mapping[str, str] | None = None,
     *,
@@ -571,9 +600,33 @@ def method_completion_from_match(
 ) -> LearnedMethod | None:
     """Compile the geometry and source bindings used by the model's final review."""
 
+    mapping = (
+        response
+        if isinstance(response, ScreenMapping)
+        else ScreenMapping.model_validate(response)
+        if "fields" in response
+        else None
+    )
+    if mapping is not None:
+        response = mapping.model_dump(exclude_unset=True)
+        selected_fields = {
+            name: {"name": name, **field.model_dump(exclude_unset=True)}
+            for name, field in mapping.fields.items()
+        }
+        controls = {name: {"role": field.role} for name, field in mapping.fields.items()}
+        evidence = [
+            {"field": field.source, "target": name}
+            for name, field in mapping.fields.items()
+            if field.source
+            and "value" in field.model_fields_set
+            and (values is None or field_matches(field.source, field.value, values))
+        ]
+    else:
+        selected_fields = screen.get("selected_fields", {})
+        controls = {item["id"]: item for item in response.get("controls", [])}
+        evidence = response.get("evidence", [])
     if response.get("operation") != "complete" or response.get("steps"):
         return None
-    evidence = response.get("evidence", [])
     completion_evidence = response.get("completion_evidence", [])
     # The compiler may supply the fields from the actual final accumulated review.
     # This admits its last observation, not a reusable success flag for the next run.
@@ -582,14 +635,13 @@ def method_completion_from_match(
         return None
     markers = {item["id"]: item for item in screen.get("markers", [])}
     blocks = {item["id"]: item for item in screen.get("ocr", [])}
-    controls = {item["id"]: item for item in response.get("controls", [])}
     slots = list(method.slots)
     by_source = {slot.source_key: slot.name for slot in slots}
     for field in dict.fromkeys(item["field"] for item in evidence):
         if field not in by_source:
             by_source[field] = field
             slots.append(MethodSlot(name=field, description=field, source_key=field))
-    conditions: dict[int, list[int]] = {}
+    conditions: dict[int | str, list[int]] = {}
     for item in completion_evidence:
         conditions.setdefault(item["target"], []).append(item["condition_index"])
     targets = []
@@ -597,10 +649,10 @@ def method_completion_from_match(
         marker = markers.get(item["target"])
         control = controls.get(item["target"])
         condition_indexes = conditions.get(item["target"], [])
-        if marker is None or control is None:
+        selected = selected_fields.get(str(item["target"]))
+        if control is None or (marker is None and selected is None):
             return None
-        selected = screen.get("selected_fields", {}).get(str(item["target"]))
-        if selected and screen.get("screen_path") and screen.get("screen_phash") is not None:
+        if selected and (mapping is not None or screen.get("screen_path")):
             x, y, width, height = selected["bbox"]
             target = MethodTarget(
                 name=selected["name"],
@@ -633,7 +685,7 @@ def method_completion_from_match(
         targets=targets,
         expected_result=response.get("expected_result", "")[:240],
         screen_kind=response.get("screen_kind", "unknown"),
-        screen_path=list(screen.get("screen_path", [])),
+        screen_path=list(response.get("screen_path", screen.get("screen_path", []))),
         screen_phash=screen.get("screen_phash"),
         image_size=screen.get("image_size"),
     )
@@ -914,13 +966,22 @@ class MethodLibrary:
                 and current_kind != group.screen_kind
             ):
                 continue
-            bound = _coordinate_bindings(group, screen, self.max_phash_distance)
+            targets = (
+                list(
+                    {
+                        target.name: target for target in [*group.observed_fields, *group.targets]
+                    }.values()
+                )
+                if group.screen_path
+                else group.targets
+            )
+            bound = _coordinate_bindings(group, screen, self.max_phash_distance, targets=targets)
             if bound is None:
                 continue
-            if len({value[0]["id"] for value in bound.values()}) != len(bound):
+            if len({bound[target.name][0]["id"] for target in group.targets}) != len(group.targets):
                 continue
             steps, controls = [], {}
-            for target in group.targets:
+            for target in targets:
                 marker, label_ids = bound[target.name]
                 controls[marker["id"]] = _bound_control(target, marker, label_ids, screen)
             for action in group.actions:
@@ -944,9 +1005,17 @@ class MethodLibrary:
                     }
                 )
             else:
-                for target in group.targets:
+                field_sources = group_input_sources(method, group, slot_map)
+                for target in targets:
                     marker, _ = bound[target.name]
                     _register_bound_target(screen, target, marker)
+                    if group.screen_path:
+                        screen["selected_fields"][str(marker["id"])] = {
+                            "name": target.name,
+                            "role": target.role,
+                            "bbox": list(target.bbox),
+                            "source": field_sources.get(target.name),
+                        }
                 return BoundMethod(
                     method.id,
                     group.id,
