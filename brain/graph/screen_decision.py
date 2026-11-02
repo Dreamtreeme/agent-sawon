@@ -44,7 +44,6 @@ from .model_call import ResponseT, ScreenModelCall
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision, FieldName
 from .screen_mapping import ScreenMapping, ScreenMappingWire, mapping_prompt
-from .screen_memory import pending_screen_inputs
 from .visual_turn import adapt_proposal
 
 
@@ -1326,7 +1325,10 @@ def match_screen_pattern(
             method_proposal = None
     cache_hit = (
         services.cache.lookup(prepared.cache_key)
-        if method_proposal is None and services.cache.enabled and request.phase != "save_result"
+        if method_proposal is None
+        and services.cache.enabled
+        and request.phase != "save_result"
+        and not request.post_action_review
         else None
     )
     return method_proposal, cache_hit
@@ -1343,10 +1345,11 @@ def select_screen_response(
 
     screen, page = request.screen, request.page
     current_review = bool(
-        request.post_action_review
-        or request.workflow_flags.get("saved_result_open_pending")
+        request.workflow_flags.get("saved_result_open_pending")
         or any(
-            item["source"] in request.values and item["source"] not in request.verified_fields
+            item.get("screen") == "query"
+            and item["source"] in request.values
+            and item["source"] not in request.verified_fields
             for item in request.required_verification
         )
     )
@@ -1356,21 +1359,13 @@ def select_screen_response(
         method_proposal, cache_hit = match_screen_pattern(
             request, services, prepared, allow_method=allow_method
         )
-        current_sources = {item.get("source") for item in screen.get("memory_fields", [])}
-        if method_proposal is not None and method_proposal.mapping is not None:
-            current_sources.update(
-                field.source for field in method_proposal.mapping.fields.values()
-            )
-        elif cache_hit is not None:
-            current_sources.update(
-                field.get("source")
-                for field in (cache_hit[1].get("mapping") or {}).get("fields", {}).values()
-            )
         current_review = bool(
-            pending_screen_inputs(request.screen_nodes, request.evidence_scope) & current_sources
-            or (method_proposal is not None and method_proposal.operation == "complete")
+            (method_proposal is not None and method_proposal.operation != "act")
             or (cache_hit is not None and cache_hit[1].get("operation", "act") != "act")
-            or (request.phase == "save_result" and method_proposal is None)
+            or (
+                method_proposal is None
+                and (request.post_action_review or request.phase == "save_result")
+            )
         )
         if current_review:
             method_proposal, cache_hit = None, None

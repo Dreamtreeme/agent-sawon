@@ -129,12 +129,18 @@ def test_synthetic_split_batch_and_shifted_wheel_preserve_original_progress(tmp_
     assert runtime.state.history[-1]["replaced_edge"] == (method.id, first.id)
 
 
-@pytest.mark.parametrize("effect", [False, None], ids=["no-effect", "unknown-effect"])
-def test_synthetic_unverified_prefix_cannot_commit_original_action_progress(tmp_path, effect):
+@pytest.mark.parametrize(
+    "effect, end", [(False, 1), (None, 3)], ids=["failed-input", "unobserved-navigation"]
+)
+def test_synthetic_failed_input_or_unobserved_navigation_cannot_commit_progress(
+    tmp_path, effect, end
+):
     _, runtime, method, first, _, screen, response = synthetic_scroll_route(tmp_path)
-    runtime.remember(deepcopy(screen), synthetic_slice(response, 0, 1))
+    runtime.remember(deepcopy(screen), synthetic_slice(response, 0, end))
     runtime.delivered(complete=True)
-    assert runtime._action_offset(method.id, first.id) == 1  # Next observation's provisional view.
+    assert (
+        runtime._action_offset(method.id, first.id) == end
+    )  # Next observation's provisional view.
     runtime.verify_delivery(success=effect)
 
     assert runtime._action_offset(method.id, first.id) == 0

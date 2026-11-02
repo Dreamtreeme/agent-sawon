@@ -752,7 +752,7 @@ def run_route(path, record, route):
             brain.observation,
             delivered=[{"choice": choice, "decision": decision}],
         )
-        assert brain._verify_screen_batch(execution, brain.observation) == "review"
+        assert brain._verify_screen_batch(execution, brain.observation) == ("review", True)
         assert execution.matched_refs == {target.ref}
     else:
         facts = []

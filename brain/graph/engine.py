@@ -1526,14 +1526,36 @@ class Brain:
         )
 
     def _decision_policy(self) -> DecisionPolicy:
+        last_observed: dict[str, int] = {}
+        for node in self.screen_nodes.values():
+            for source, field in node["fields"].items():
+                observed = field.get("last_observation")
+                if observed is not None and observed["scope"] == "entry":
+                    last_observed[source] = max(
+                        last_observed.get(source, -1), observed["observation_number"]
+                    )
         return DecisionPolicy(
             replace(
                 self._workflow_facts(),
                 field_names=tuple(sorted(self.values)),
-                # Completion evidence and source availability are independent:
-                # policy keeps all field_names reusable while verified names
-                # determine whether the task is ready to save.
+                # Delivered values permit the save action, not completion.
                 verified_field_names=tuple(sorted(self.verified)),
+                delivered_field_names=tuple(
+                    sorted(
+                        {
+                            source
+                            for node in self.screen_nodes.values()
+                            for source, field in node["fields"].items()
+                            if source in self.values
+                            and (delivery := field.get("delivery"))
+                            and delivery["scope"] == "entry"
+                            and delivery["value"] == self.values[source]
+                            # A later reading supersedes delivery, including a
+                            # mismatch observed in another node for this source.
+                            and delivery["observation_number"] >= last_observed.get(source, -1)
+                        }
+                    )
+                ),
                 available_credential_sources=tuple(
                     sorted(source for source, value in self.credentials.items() if value)
                 ),
@@ -2304,7 +2326,11 @@ class Brain:
             self.phase == "task"
             and self.save_issued
             and decision.screen_kind == "query"
-            and choice.type in {"click", "double_click", "key"}
+            and decision.intent in {"navigate", "select_option"}
+            and (
+                choice.type in {"click", "double_click"}
+                or (choice.type == "key" and choice.keys == "enter")
+            )
         ):
             # This is a transition candidate, not proof of opening or identity.
             # The next observed editor starts review for row, button and keyboard
@@ -2774,6 +2800,14 @@ class Brain:
     ) -> tuple[WorkerNode | None, Observation, ObservedEffect]:
         if choice.type not in {"set_text", "type_text"}:
             return None, observation, observed_effect
+        if choice.source in self.values and self._continues_memory_action():
+            # A bound next action needs no invented reading of the delivered input.
+            # Current values will be reviewed at the business-result boundary.
+            self.log.append(
+                "verify",
+                payload={"check": "input_review_deferred", "source": choice.source},
+            )
+            return None, observation, ObservedEffect.UNKNOWN
         descriptor = pending["descriptor"]
         element = delivered_input_element(
             pending, observation, choice, self._input_surfaces(choice.source)
@@ -2995,9 +3029,19 @@ class Brain:
                 log_transition(self.log, delivered)
         log_transition(self.log, pending, observation, observed_effect, tuple(new_facts))
 
+    def _continues_memory_action(self) -> bool:
+        pending = self.memory_retrieval.state.pending
+        return bool(
+            self.settings.visual_model_only_review
+            and pending is not None
+            and pending["origin"] == "reuse"
+            and self.visual_proposal is not None
+            and self.visual_proposal.operation == "act"
+        )
+
     def _verify_screen_batch(
         self, execution: PlanExecution, observation: Observation
-    ) -> WorkerNode:
+    ) -> tuple[WorkerNode, bool | None]:
         result = verify_screen_fields(
             ScreenFieldVerificationRequest(
                 execution=execution,
@@ -3005,6 +3049,7 @@ class Brain:
                 model_only_review=self.settings.visual_model_only_review,
                 verified_fields=frozenset(self.verified),
                 visual_proposal=self.visual_proposal,
+                defer_unobserved=self._continues_memory_action(),
             ),
             ScreenFieldVerificationServices(
                 input_surfaces=self._input_surfaces,
@@ -3038,8 +3083,9 @@ class Brain:
         if result.failure_reason is not None:
             outcome = self._fail(result.failure_reason)
             if outcome == "finish":
-                return outcome
-        return "review"
+                return outcome, False
+            return "review", False
+        return "review", None if result.payload.get("deferred") else True
 
     def _capture_action_effect(self, observation: Observation) -> None:
         """Publish local capture facts before semantics plans; no business verdict here."""
@@ -3071,9 +3117,8 @@ class Brain:
             method_effect_verified = False
             execution = pending.get("execution")
             if execution is not None and execution.plan.verification == "fields":
-                outcome = self._verify_screen_batch(execution, observation)
-                if len(execution.matched_refs) == len(execution.delivered):
-                    method_effect_verified = True
+                outcome, method_effect_verified = self._verify_screen_batch(execution, observation)
+                if method_effect_verified:
                     self._stage_visual_match_candidate(pending)
                 return outcome
             if pending.get("login_plan_descriptors") and all(

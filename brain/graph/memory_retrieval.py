@@ -860,27 +860,18 @@ class MemoryRetrieval:
         atomic_write_json(self.case_dir / "method-progress.json", self.context())
 
     def verify_delivery(self, *, success: bool | None) -> None:
-        """Keep only a delivered method edge that produced observable progress."""
+        """Record effects separately from acknowledged, possibly split input delivery."""
 
         delivered, self.state.unverified = self.state.unverified, None
         if delivered is None:
             return
         method = delivered["method"]
         group_id = delivered["group_id"]
-        if success is None:
-            self.state.history[delivered["history_index"]]["status"] = "provisional"
-            self.log.append(
-                "verify",
-                payload={
-                    "check": "method_effect",
-                    "method_id": method.id,
-                    "group_id": group_id,
-                    "success": None,
-                    "reason": "observation_unavailable",
-                },
-            )
-            return
-        if success:
+        group = next((item for item in method.action_groups if item.id == group_id), None)
+        input_delivery = bool(
+            group is not None and group.actions and all(a.action == "fill" for a in group.actions)
+        )
+        if success is True or (success is None and input_delivery):
             progress = delivered.get("action_progress")
             # The next plan may have been prepared before the previous effect
             # review. If that prefix failed, its suffix cannot complete the gap.
@@ -913,21 +904,29 @@ class MemoryRetrieval:
                         "replacement_group_id": group_id,
                     },
                 )
+        if success is not False:
+            if success is None:
+                self.state.history[delivered["history_index"]]["status"] = "provisional"
             self.log.append(
                 "verify",
                 payload={
                     "check": "method_effect",
                     "method_id": method.id,
                     "group_id": group_id,
-                    "success": True,
+                    "success": success,
+                    **(
+                        {
+                            "reason": "input_review_deferred"
+                            if input_delivery
+                            else "observation_unavailable"
+                        }
+                        if success is None
+                        else {}
+                    ),
                 },
             )
             return
         history_index = delivered["history_index"]
-        group = next(
-            (item for item in method.action_groups if item.id == group_id),
-            None,
-        )
         if group is not None and any(action.action == "fill" for action in group.actions):
             # Pixel rereads can miss a just-delivered value. Keep the batch
             # provisional; whole-task success is the later business proof that

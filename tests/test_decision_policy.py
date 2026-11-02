@@ -6,6 +6,7 @@ from dataclasses import FrozenInstanceError, replace
 import pytest
 from case_labels import labeled_case
 from pydantic import ValidationError
+from test_brain import record as record
 from test_wire_contract import schema_accepts
 
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
@@ -178,14 +179,23 @@ def test_broad_action_types_cannot_bypass_intent_or_source_contract():
 
 
 def test_facts_are_canonical_immutable_and_cannot_contain_values_or_secret_names():
-    facts = ExecutionFacts("task", field_names=("mbl_no", "hbl_no", "hbl_no"))
+    facts = ExecutionFacts(
+        "task",
+        field_names=("mbl_no", "hbl_no", "hbl_no"),
+        delivered_field_names=("mbl_no", "hbl_no", "hbl_no"),
+    )
     assert facts.field_names == ("hbl_no", "mbl_no")
+    assert facts.delivered_field_names == ("hbl_no", "mbl_no")
     with pytest.raises(FrozenInstanceError):
         facts.phase = "save_result"
     with pytest.raises(ValueError, match="unsupported names"):
         ExecutionFacts("task", available_credential_sources=("private-password-value",))
-    with pytest.raises(ValueError, match="belong to this task"):
-        ExecutionFacts("task", field_names=("hbl_no",), verified_field_names=("mbl_no",))
+    for attribute in ("verified_field_names", "delivered_field_names"):
+        with labeled_case(attribute):
+            with pytest.raises(ValueError, match="belong to this task"):
+                ExecutionFacts("task", field_names=("hbl_no",), **{attribute: ("mbl_no",)})
+            with pytest.raises(ValueError, match="unsupported names"):
+                ExecutionFacts("task", **{attribute: ("credential.password",)})
     with pytest.raises(ValueError, match="must be available"):
         ExecutionFacts("task", submitted_credentials=("credential.password",))
     policy = DecisionPolicy(facts)
@@ -213,16 +223,151 @@ def test_prompt_lists_the_same_reduced_choices_without_inferring_login_screen():
     assert prompt["verified_facts"]["credential_inputs_submitted"] == ["credential.username"]
 
 
-def test_task_verified_inputs_remain_available_while_save_becomes_allowed():
+@pytest.mark.parametrize(
+    "verified, delivered, save_issued, expected_save, remaining",
+    [
+        pytest.param(("invoice.number", "vendor_code"), (), False, True, (), id="verified"),
+        pytest.param(
+            (),
+            ("invoice.number", "vendor_code"),
+            False,
+            True,
+            ("invoice.number", "vendor_code"),
+            id="delivered",
+        ),
+        pytest.param(
+            ("invoice.number",),
+            ("vendor_code",),
+            False,
+            True,
+            ("vendor_code",),
+            id="verified-and-delivered",
+        ),
+        pytest.param(
+            (),
+            ("invoice.number",),
+            False,
+            False,
+            ("invoice.number", "vendor_code"),
+            id="missing-delivery",
+        ),
+        pytest.param(
+            (),
+            ("invoice.number", "vendor_code"),
+            True,
+            False,
+            ("invoice.number", "vendor_code"),
+            id="already-saved",
+        ),
+    ],
+)
+def test_task_inputs_remain_available_and_delivery_allows_save_without_verifying(
+    verified, delivered, save_issued, expected_save, remaining
+):
     facts = ExecutionFacts(
         "task",
         field_names=("invoice.number", "vendor_code"),
-        verified_field_names=("invoice.number", "vendor_code"),
+        verified_field_names=verified,
+        delivered_field_names=delivered,
+        save_issued=save_issued,
     )
-    prompt = DecisionPolicy(facts).as_prompt()
+    policy = DecisionPolicy(facts)
+    prompt = policy.as_prompt()
     choices = prompt["allowed_next_choices"]
     fill = next(choice for choice in choices if choice["intent"] == "fill")
 
-    assert prompt["remaining_fields"] == []
+    assert facts.remaining_fields == remaining
+    assert prompt["remaining_fields"] == list(remaining)
     assert fill["action"][0]["source"] == ["invoice.number", "vendor_code"]
-    assert any(choice["intent"] == "save" for choice in choices)
+    assert any(choice["intent"] == "save" for choice in choices) is expected_save
+    assert_contract(policy, action("save", screen="editor"), expected_save)
+    assert prompt["delivered_fields"] == list(delivered)
+    assert "delivered_fields" not in prompt["verified_facts"]
+    assert facts.verified_field_names == verified
+    assert prompt["verified_facts"]["verified_fields"] == list(verified)
+    assert facts.final_evidence_ready is False
+    assert prompt["verified_facts"]["final_evidence_ready"] is False
+
+
+@pytest.mark.parametrize("phase", ["duplicate_query", "enter", "save_result", "final_query"])
+def test_delivery_does_not_relax_legacy_save_policy(phase):
+    facts = ExecutionFacts(
+        phase,
+        field_names=("hbl_no",),
+        delivered_field_names=("hbl_no",),
+        duplicate_clear=True,
+    )
+
+    assert facts.remaining_fields == ("hbl_no",)
+    assert facts.final_evidence_ready is False
+    assert_contract(DecisionPolicy(facts), action("save", screen="editor"), False)
+
+
+@pytest.mark.parametrize(
+    "current_reading, reading_path, redeliver, expected_save",
+    [
+        pytest.param(None, "Entry", False, True, id="unobserved-delivery"),
+        pytest.param("matching", "Entry", False, True, id="matching-observation"),
+        pytest.param("mismatch", "Entry", False, False, id="current-mismatch"),
+        pytest.param("mismatch", "Other tab", False, False, id="mismatch-on-another-node"),
+        pytest.param("mismatch", "Other tab", True, True, id="redelivered-after-mismatch"),
+    ],
+)
+def test_current_observation_supersedes_delivered_save_eligibility(
+    tmp_path, record, current_reading, reading_path, redeliver, expected_save
+):
+    from test_screen_decision import setup_brain, wire
+
+    from brain.graph.screen_decision import ScreenMatch
+    from brain.graph.screen_mapping import ScreenMapping
+    from brain.graph.screen_memory import remember_input_delivery
+    from brain.visual.scene import SceneObservation
+
+    brain, *_ = setup_brain(tmp_path, record, [])
+    brain.observation = SceneObservation(wire=wire(), screen_kind="editor", elements=[])
+    source = "hbl_no"
+
+    def observe_fields(path, fields, number):
+        brain.observation_number = number
+        brain._remember_model_task_evidence(
+            ScreenMatch(
+                screen_kind="editor",
+                procedure_step="task-action",
+                controls=[],
+                mapping=ScreenMapping(screen_path=[path], fields=fields),
+            )
+        )
+
+    fields = {
+        key: {"source": key, "role": "edit", "bbox": [10, 10, 100, 20]} for key in brain.values
+    }
+    observe_fields("Entry", fields, 1)
+    for key, value in brain.values.items():
+        remember_input_delivery(
+            brain.screen_nodes,
+            ["Entry"],
+            key,
+            value,
+            observation_id=str(brain.observation.obs_id),
+            observation_number=1,
+            scope="entry",
+        )
+    if current_reading is not None:
+        value = brain.values[source] if current_reading == "matching" else "WRONG CURRENT VALUE"
+        observe_fields(reading_path, {source: {**fields[source], "value": value}}, 2)
+    if redeliver:
+        remember_input_delivery(
+            brain.screen_nodes,
+            [reading_path],
+            source,
+            brain.values[source],
+            observation_id=str(brain.observation.obs_id),
+            observation_number=3,
+            scope="entry",
+        )
+
+    policy = brain._decision_policy()
+    assert (source in policy.facts.delivered_field_names) is (current_reading is None or redeliver)
+    assert (source in policy.facts.verified_field_names) is (current_reading == "matching")
+    assert policy.facts.final_evidence_ready is False
+    assert_contract(policy, action("save", screen="editor"), expected_save)

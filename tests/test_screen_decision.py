@@ -1113,17 +1113,19 @@ def test_post_save_query_input_is_not_mistaken_for_a_saved_result_row(
 
 
 @pytest.mark.parametrize(
-    "role, action_type, intent",
+    "role, action_type, intent, keys, opens_detail",
     [
-        ("cell", "double_click", "navigate"),
-        ("button", "click", "navigate"),
-        ("cell", "key", "navigate"),
-        ("cell", "click", "search"),
+        ("cell", "double_click", "navigate", None, True),
+        ("button", "click", "navigate", None, True),
+        ("cell", "key", "navigate", "enter", True),
+        ("cell", "click", "search", None, False),
+        ("cell", "key", "navigate", "tab", False),
+        ("cell", "key", "navigate", "pagedown", False),
     ],
-    ids=["row", "edit-button", "keyboard", "search-intent"],
+    ids=["row", "edit-button", "keyboard-open", "search", "focus-tab", "scroll"],
 )
 def test_post_save_result_transition_starts_detail_review_and_advances_taught_step(
-    tmp_path, record, role, action_type, intent
+    tmp_path, record, role, action_type, intent, keys, opens_detail
 ):
     from sawon_interfaces import UIElement
 
@@ -1154,7 +1156,7 @@ def test_post_save_result_transition_starts_detail_review_and_advances_taught_st
         intent=intent,
         subgoal="open saved result",
         reason="review the persisted values",
-        action=Choice(type=action_type, ref="e1", keys="enter" if action_type == "key" else None),
+        action=Choice(type=action_type, ref="e1", keys=keys),
     )
     brain.observation = query
     action = brain._wire_action(decision.action, decision)
@@ -1165,7 +1167,13 @@ def test_post_save_result_transition_starts_detail_review_and_advances_taught_st
         progress_scope="task:requery-saved-record:0",
         point_refined=False,
     )
-    assert brain.saved_detail_transition_pending is True
+    assert brain.saved_detail_transition_pending is opens_detail
+    if not opens_detail:
+        assert brain.saved_detail_transition_step is None
+        assert not brain.model_saved_detail_review
+        assert not brain.post_save_query_identity_verified
+        assert not brain.post_save_verified
+        return
 
     # A row selection that stays on the query screen is not a completed transition.
     brain.observation = SceneObservation(wire=wire(), screen_kind="query", elements=[result])
@@ -2079,15 +2087,17 @@ def test_synthetic_mappingless_method_requires_current_model_observation(tmp_pat
     assert result.response.mapping.fields["Reference"].source == "hbl_no"
     assert len(model.prompts) == 1
     assert any(
-        e.payload.get("context", {}).get("purpose") == "input_review"
+        e.payload.get("reason") == "missing_screen_memory"
         for e in brain.log.read_all()
-        if e.kind == "model_call"
+        if e.payload.get("check") == "memory_retrieval_exception"
     )
 
 
 def test_synthetic_mappingless_cache_requires_current_model_observation(tmp_path, record):
     blocks, _, markers, meaning = fixture()
-    brain, model, *_ = setup_brain(tmp_path, record, [named_response()])
+    current = named_response()
+    current["fields"]["Reference"]["value"] = "WRONG"
+    brain, model, *_ = setup_brain(tmp_path, record, [current])
     screen = {
         "ocr": [block.model_dump() for block in blocks],
         "markers": [marker.model_dump() for marker in markers],
@@ -2107,6 +2117,9 @@ def test_synthetic_mappingless_cache_requires_current_model_observation(tmp_path
     result = decide_screen(request, services)
 
     assert result.response.mapping.fields["Reference"].source == "hbl_no"
+    assert result.response.mapping.fields["Reference"].value == "WRONG"
+    assert result.response.evidence == []
+    assert result.response.steps[0].source == "hbl_no"
     assert len(model.prompts) == 1
     assert not any(
         event.kind == "cache_hit" and event.payload.get("check") == "visual_match_cache"
@@ -2128,7 +2141,7 @@ def test_synthetic_mappingless_cache_requires_current_model_observation(tmp_path
         "cache-stop",
     ],
 )
-def test_synthetic_structure_retrieval_reads_current_values_once_before_continuing(
+def test_synthetic_structure_retrieval_reviews_only_decisions_needing_current_values(
     tmp_path, record, review
 ):
     # Synthetic stored method/cache and fake model; selection and prompt assembly are real.
@@ -2235,16 +2248,24 @@ def test_synthetic_structure_retrieval_reads_current_values_once_before_continui
 
     result = decide_screen(request, services)
 
-    assert len(model.prompts) == 1
-    assert result.response.mapping.fields["Reference"].value == record.fields.hbl_no.value
     assert [(step.action, step.point) for step in result.response.steps] == [("click", [280, 30])]
-    assert [item.field for item in result.response.evidence] == ["hbl_no"]
     assert not any(e.payload.get("check") == "visual_match_cache" for e in brain.log.read_all())
-    assert [
+    exceptions = [
         e.payload["reason"]
         for e in brain.log.read_all()
         if e.payload.get("check") == "memory_retrieval_exception"
-    ] == ["current_values_not_observed"]
+    ]
+    if review in {"batch", "pending-memory"}:
+        assert model.prompts == []
+        assert "value" not in result.response.mapping.fields["Reference"].model_fields_set
+        assert result.response.evidence == []
+        assert result.response.observed_step_results == []
+        assert exceptions == []
+    else:
+        assert len(model.prompts) == 1
+        assert result.response.mapping.fields["Reference"].value == record.fields.hbl_no.value
+        assert [item.field for item in result.response.evidence] == ["hbl_no"]
+        assert exceptions == ["current_values_not_observed"]
 
 
 def test_synthetic_unseen_pending_input_does_not_interrupt_structural_navigation(tmp_path, record):
@@ -3636,7 +3657,7 @@ def test_delivered_value_updates_batch_and_action_memory_without_duplicate_evide
     brain.pending = {"execution": execution, "before_observation": execution.before}
     brain._observe()
     assert "hbl_no" in brain.verified
-    assert brain._verify_screen_batch(execution, brain.observation) == "review"
+    assert brain._verify_screen_batch(execution, brain.observation) == ("review", True)
     assert not any(
         e.payload.get("reason") == "screen_fill_evidence_missing" for e in brain.log.read_all()
     )

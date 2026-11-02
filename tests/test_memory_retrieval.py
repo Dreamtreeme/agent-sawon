@@ -26,6 +26,7 @@ from brain.cache.methods import (
     method_completion_from_match,
     method_from_match,
 )
+from brain.graph.completion import CompletionRetry, evaluate_task_completion
 from brain.graph.engine import Brain
 from brain.graph.memory_retrieval import open_memory_library
 from brain.graph.screen_decision import MethodBinding, ScreenMatch
@@ -713,6 +714,7 @@ def test_synthetic_saved_review_requires_current_model_values_after_structure_re
 def test_synthetic_retrieval_inputs_new_values_then_model_confirms_not_ocr(tmp_path, corrupt_ocr):
     # Synthetic OCR, capture and provider reply; real observation/decision/executor/memory code.
     brain, model, relay = setup(tmp_path)
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "enforce"})
     runtime = brain.memory_retrieval
     method = runtime.library.methods()[0]
     first = method.action_groups[0].model_copy(
@@ -721,17 +723,33 @@ def test_synthetic_retrieval_inputs_new_values_then_model_confirms_not_ocr(tmp_p
             "trace_index": 0,
         }
     )
-    button = MethodTarget(name="Next", role="button", bbox=(300, 140, 80, 30), point=(340, 155))
+    button = MethodTarget(name="Save", role="button", bbox=(300, 140, 80, 30), point=(340, 155))
     second = first.model_copy(
         update={
-            "id": "next",
+            "id": "scroll",
             "trace_index": 1,
             "predecessor_group_ids": [first.id],
             "targets": [button],
             "observed_fields": first.targets,
             "field_sources": {action.target: action.slot for action in first.actions},
             "actions": [
-                MethodAction(target="Next", action="click", intent="navigate", point=button.point)
+                MethodAction(
+                    target="Save",
+                    action="key",
+                    intent="navigate",
+                    keys="pagedown",
+                    point=button.point,
+                )
+            ],
+        }
+    )
+    third = second.model_copy(
+        update={
+            "id": "save",
+            "trace_index": 2,
+            "predecessor_group_ids": [second.id],
+            "actions": [
+                MethodAction(target="Save", action="click", intent="save", point=button.point)
             ],
         }
     )
@@ -752,20 +770,28 @@ def test_synthetic_retrieval_inputs_new_values_then_model_confirms_not_ocr(tmp_p
         },
         completion_evidence=[dict(condition_index=0, target=first.targets[0].name)],
     )
-    method = method.model_copy(update={"action_groups": [first, second]})
+    method = method.model_copy(update={"action_groups": [first, second, third]})
     method = method_completion_from_match(
         final_screen, final_mapping.local_payload(final_screen), method, brain.values
     )
     assert method.completion is not None
     atomic_write_json(runtime.library.path, MethodDocument(methods=[method]))
-    current_review = final_mapping.model_dump(exclude_unset=True)
-    current_review.update(
-        operation="act",
-        completion_evidence=[],
-        steps=[{"target": "Next", "action": "click", "intent": "navigate", "point": [340, 155]}],
+    save_review = ScreenMapping(
+        screen_kind="query",
+        screen_path=["Saved records"],
+        save_result="ready_for_query",
+        message_targets=["Save result"],
+        fields={
+            "Save result": dict(role="text", bbox=[10, 20, 200, 30], value="Saved"),
+            "Open saved record": dict(role="button", bbox=list(button.bbox)),
+        },
+        steps=[
+            dict(target="Open saved record", action="click", intent="navigate", point=button.point)
+        ],
     )
-    current_review["fields"]["Next"] = dict(role="button", bbox=[300, 140, 80, 30])
-    model.decisions = iter([current_review, final_mapping.model_dump(exclude_unset=True)])
+    model.decisions = iter(
+        [save_review.model_dump(exclude_unset=True), final_mapping.model_dump(exclude_unset=True)]
+    )
     labels = brain.screen_scanner.ocr.read(None)
 
     def read_current_values(page):
@@ -815,22 +841,53 @@ def test_synthetic_retrieval_inputs_new_values_then_model_confirms_not_ocr(tmp_p
         for e in brain.log.read_all()
         if e.payload.get("check") == "memory_retrieval_exception"
     ]
-    assert len(model.prompts) == 1
-    assert any(item["reason"] == "current_values_not_observed" for item in exceptions)
+    assert model.prompts == [] and exceptions == []
+    assert not brain.verified and not brain.post_save_verified
+    for source, value in brain.values.items():
+        field = brain.screen_nodes['["Entry"]']["fields"][source]
+        assert field["delivery"]["value"] == value
+        assert field["delivery"]["scope"] == "entry"
+        assert "last_observation" not in field
+    assert runtime.state.history[-1]["status"] == "provisional"
+    assert brain.result is None
+    with pytest.raises(CompletionRetry, match="task_completion_evidence_required"):
+        evaluate_task_completion(
+            brain.observation,
+            brain.decision.model_copy(update={"operation": "complete", "action": None}),
+            brain.values,
+            brain.task_instruction.completion_conditions,
+            model_only_review=True,
+        )
+    # Current delivery permits a remembered Save even in enforce mode. Neither
+    # readable nor corrupted OCR turns that delivery into an observed business fact.
+    for action_type in ("scroll", "click"):
+        assert brain._select_node() == "review"
+        assert brain._review_node() == "execution"
+        assert brain._act_node() == "observation"
+        assert relay.actions[-1].root.type == action_type
+        assert model.prompts == [] and brain.result is None
+        assert not brain.verified and not brain.post_save_verified
+        if action_type == "scroll":
+            assert brain._verify_node() == "review"
+            assert model.prompts == []
+    assert len(relay.actions) == 4 and brain.save_issued
+    assert brain._verify_node() == "review"
+    assert len(model.prompts) == 1 and brain.result is None
+    assert not brain.verified and not brain.post_save_verified
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    assert brain._act_node() == "observation"
+    assert len(relay.actions) == 5 and relay.actions[-1].root.type == "click"
+    assert brain.result is None
+    assert brain._verify_node() == "review"
+    assert brain.visual_proposal.operation == "complete"
+    assert brain.visual_proposal.mapping.fields[first.targets[0].name].value == "New customer B"
+    assert len(model.prompts) == 2
     assert set(brain.verified) == {"customer", "reference"}
     assert (
         brain.screen_nodes['["Entry"]']["fields"]["reference"]["last_observation"]["value"]
         == "ORDER-B"
     )
-    # Synthetic model-approved memory survives the corrupted reread through real graph nodes.
-    assert brain._select_node() == "review"
-    assert brain._review_node() == "execution"
-    assert brain._act_node() == "observation"
-    assert len(relay.actions) == 3 and relay.actions[-1].root.type == "click"
-    assert brain._verify_node() == "review"
-    assert brain.visual_proposal.operation == "complete"
-    assert brain.visual_proposal.mapping.fields[first.targets[0].name].value == "New customer B"
-    assert len(model.prompts) == 2
     final_plan = next(
         e
         for e in reversed(brain.log.read_all())
@@ -1511,7 +1568,7 @@ def test_next_observation_error_does_not_discard_delivered_method(tmp_path):
         e for e in reversed(brain.log.read_all()) if e.payload.get("check") == "method_effect"
     )
     assert event.payload["success"] is None
-    assert event.payload["reason"] == "observation_unavailable"
+    assert event.payload["reason"] == "input_review_deferred"
 
 
 @pytest.mark.parametrize("verified", [False, True], ids=["no-effect", "observed-effect"])
@@ -1733,22 +1790,43 @@ def test_synthetic_next_route_mismatch_does_not_jump_to_a_later_similar_save(tmp
     assert not runtime.state.used and runtime.state.pending is None
 
 
-def test_synthetic_rejected_plan_reconnects_after_model_delivers_the_same_next_actions(tmp_path):
+@pytest.mark.parametrize("prefix_size", [1, 2], ids=["split-inputs", "whole-input-batch"])
+@pytest.mark.parametrize("review_effect", [True, None], ids=["observed", "review-deferred"])
+def test_synthetic_rejected_plan_reconnects_after_model_delivers_the_same_next_actions(
+    tmp_path, prefix_size, review_effect
+):
     _, _, runtime, method, first, second, current, _ = synthetic_ordered_route(tmp_path)
     bound = runtime.match_pattern(deepcopy(current))
     assert bound is not None
     runtime.reject_pending(reason="synthetic_preparation_rejection")
     assert runtime.state.pending is None and method.id in runtime.state.blocked_method_ids
     # Synthetic fresh model response: same concrete actions, no claimed educational completion.
-    recovery = bound.model_copy(update={"method_id": None, "observed_step_results": []})
+    recovery = bound.model_copy(
+        update={
+            "method_id": None,
+            "observed_step_results": [],
+            "steps": bound.steps[:prefix_size],
+        }
+    )
     runtime.remember(current, recovery)
-    assert runtime.state.pending["replaced_edge"] == (method.id, first.id)
+    assert runtime.state.pending["action_progress"]["end"] == prefix_size
     replacement = runtime.state.pending["group_id"]
     runtime.delivered(complete=True)
-    runtime.verify_delivery(success=True)
+    runtime.verify_delivery(success=review_effect)
 
     assert runtime.state.used == {(method.id, replacement)}
     assert (method.id, first.id) not in runtime.state.used
+    assert runtime.state.history[-1]["action_progress"]["end"] == prefix_size
+    assert runtime.state.history[-1]["status"] == (
+        "provisional" if review_effect is None else "delivered"
+    )
+    if prefix_size < len(first.actions):
+        assert runtime.state.history[-1].get("replaced_edge") is None
+        remaining = runtime.match_pattern(deepcopy(current))
+        assert remaining is not None
+        assert [step.source for step in remaining.steps] == ["reference"]
+        runtime.delivered(complete=True)
+        runtime.verify_delivery(success=review_effect)
     assert runtime.state.history[-1]["replaced_edge"] == (method.id, first.id)
     response = runtime.match_pattern(deepcopy(current))
     assert response is not None and runtime.state.pending["group_id"] == second.id

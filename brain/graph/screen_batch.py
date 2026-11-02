@@ -192,6 +192,7 @@ class ScreenFieldVerificationRequest:
     model_only_review: bool
     verified_fields: frozenset[str]
     visual_proposal: Any | None
+    defer_unobserved: bool = False
 
 
 @dataclass(frozen=True)
@@ -221,19 +222,28 @@ def verify_screen_fields(
         delivered for delivered in execution.delivered if delivered["choice"].source is not None
     ]
     if request.model_only_review:
-        matched, mismatched = [], []
+        matched, mismatched, deferred = [], [], []
+        mapping = getattr(request.visual_proposal, "mapping", None)
+        observed_sources = (
+            {item.source for item in mapping.fields.values() if "value" in item.model_fields_set}
+            if mapping is not None
+            else set()
+        )
         for delivered in delivered_fields:
             source = delivered["choice"].source
             if source in request.verified_fields:
                 matched.append(source)
+            elif request.defer_unobserved and source not in observed_sources:
+                deferred.append(source)
             else:
                 mismatched.append(source)
         payload = {
             "check": "screen_fill_values",
-            "ok": not mismatched,
+            "ok": False if mismatched else None if deferred else True,
             "matched": matched,
             "mismatched": mismatched,
             "delegated": [delivered["choice"].source for delivered in delivered_fields],
+            "deferred": deferred,
             "reviewer": "screen_model",
         }
         return ScreenFieldVerificationResult(

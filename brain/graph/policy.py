@@ -1,4 +1,4 @@
-"""Derive provider choices and runtime membership from the same verified facts.
+"""Derive provider choices and runtime membership from the same execution facts.
 
 This policy has no environment access. A screen kind is a model claim, not an
 observation; the engine still grounds targets and validates observed effects.
@@ -54,6 +54,7 @@ class ExecutionFacts:
     phase: Phase
     field_names: tuple[FieldName, ...] = ()
     verified_field_names: tuple[FieldName, ...] = ()
+    delivered_field_names: tuple[FieldName, ...] = ()
     available_credential_sources: tuple[CredentialSource, ...] = ()
     submitted_credentials: tuple[CredentialSource, ...] = ()
     query_value_verified: bool = False
@@ -65,7 +66,7 @@ class ExecutionFacts:
     def __post_init__(self) -> None:
         if self.phase not in get_args(Phase):
             raise ValueError("Unknown execution phase")
-        for attribute in ("field_names", "verified_field_names"):
+        for attribute in ("field_names", "verified_field_names", "delivered_field_names"):
             value = getattr(self, attribute)
             if (
                 not isinstance(value, tuple)
@@ -84,6 +85,8 @@ class ExecutionFacts:
             object.__setattr__(self, attribute, tuple(sorted(set(value))))
         if not set(self.verified_field_names).issubset(self.field_names):
             raise ValueError("Verified fields must belong to this task")
+        if not set(self.delivered_field_names).issubset(self.field_names):
+            raise ValueError("Delivered fields must belong to this task")
         if not set(self.submitted_credentials).issubset(self.available_credential_sources):
             raise ValueError("Submitted credential sources must be available")
 
@@ -167,8 +170,8 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
             rules.append(_ActionRule("login", ("login",), click_types=("click",), keys=("enter",)))
         # Task inputs remain reusable across screens (for example, the same
         # identifier can be entered in a query and later in an editor).  The
-        # verified set answers a different question: whether every supplied
-        # input has been evidenced at least once and Save may be offered.
+        # verified set tracks observed values; acknowledged delivery can also
+        # make Save available without becoming evidence of task completion.
         if facts.field_names:
             rules.extend(
                 [
@@ -182,7 +185,10 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
                     ),
                 ]
             )
-        if not facts.remaining_fields and not facts.save_issued:
+        ready_to_save = set(facts.field_names) <= (
+            set(facts.verified_field_names) | set(facts.delivered_field_names)
+        )
+        if ready_to_save and not facts.save_issued:
             rules.append(_ActionRule("save", work_screens, click_types=("click",), keys=("enter",)))
         if facts.save_issued:
             rules.append(
@@ -392,6 +398,7 @@ class DecisionPolicy:
             "current_step": self.current_step,
             "allowed_next_choices": choices,
             "remaining_fields": list(self.facts.remaining_fields),
+            "delivered_fields": list(self.facts.delivered_field_names),
             "remaining_credential_sources": list(self.facts.remaining_credentials),
             "credential_action_if_login": (
                 "credential_input"
