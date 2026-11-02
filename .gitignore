@@ -11,6 +11,8 @@ build/
 dist/
 .tools/
 cases/
+# Dated local records, retired audit tools and their test outputs.
+/docs/archive/20??-??-??/
 diagnostics/
 data/
 *.db

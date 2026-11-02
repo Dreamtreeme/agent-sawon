@@ -2,7 +2,7 @@
 
 기준일: 2026-11-02. 현재 운영 기준은 [`docs/current-runtime.md`](../../docs/current-runtime.md),
 그래프와 공개 계약은 [`docs/contracts.md`](../../docs/contracts.md)를 따릅니다. 이전 시각 경로의
-상세 실험 기록은 [`docs/archive/reports/brain-visual-readme-20261018.md`](../../docs/archive/reports/brain-visual-readme-20261018.md)에 보존합니다.
+2026-10-18 상세 실험 기록은 [날짜별 로컬 아카이브](../../docs/archive/README.md)에 보존합니다.
 
 ## 책임 분리
 

@@ -69,5 +69,4 @@ relay action and are redacted from action logs. Logs remain append-only, status
 writes atomic, and success leaves the case awaiting human approval.
 
 The current ownership map is [the contract guide](../../docs/contracts.md). Historical validation
-is preserved in the [2026-10-08 runtime refactor](../../docs/archive/reports/refactor-runtime-stages-20261008.md)
-and [residual contract cleanup](../../docs/archive/reports/runtime-residual-fixes-20261008.md) reports.
+is preserved in the 2026-10-08 reports in the [dated local archive](../../docs/archive/README.md).

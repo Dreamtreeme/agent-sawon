@@ -18,7 +18,8 @@
 현재 문서 추출과 주요 ERP 실험은 선적 업무입니다. 다른 회사·업무에는 해당 교육과 별도 검증이
 필요합니다. 기억 재사용 중에도 모델 판단이 개입할 수 있으며, 모델 없는 재현과 ERP 저장 성공은
 별도 결과입니다. 일반 테스트·오프라인 재생은 실제 ERP 전체의 호환성이나 성공률을 보장하지 않습니다.
-기록 누락 때문에 전체 재생하지 못한 사례도 있습니다. 범위와 근거는 [재생 보고](docs/test-cleanup/graph-replay-20261023.md)에 있습니다.
+기록 누락 때문에 전체 재생하지 못한 사례도 있습니다. 2026-10-23 재생 감사 결과와 당시
+감사 도구는 [날짜별 로컬 아카이브](docs/archive/README.md)에 보관합니다.
 
 ## 사전 요구사항
 
@@ -147,8 +148,8 @@ CI는 Windows/Linux 순차 검사와 Linux 병렬 검사를 수행합니다.
 [CI 실행 결과](https://github.com/Dreamtreeme/agent-sawon/actions/workflows/check.yml)와
 [workflow 설정](.github/workflows/check.yml)을 확인하세요. 비공개 저장소 접근 권한이 필요합니다.
 
-상세 개수·시간·커버리지는 [정리 보고](docs/test-cleanup/cleanup-final-20261023.md),
-이번 로직 대조·회귀 검사 기록은 [README 검토 기록](docs/test-cleanup/readme-runtime-review-20261023.md)에 있습니다.
+과거 개수·시간·커버리지와 로직 대조 기록은 [날짜별 로컬 아카이브](docs/archive/README.md)에
+보관합니다. 현재 결과는 위 테스트 명령으로 확인합니다.
 
 ## 코드 구조와 심화 문서
 

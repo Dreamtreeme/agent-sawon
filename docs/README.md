@@ -25,11 +25,9 @@ brief와 보고서는 배경·측정 이력이며 현행 설정의 권위가 아
 
 ## 역사 기록
 
-- [날짜별 설계·분석·파일럿 보고서](archive/reports/README.md)
-- [2026-10-18 이전 누적 CODEX_BRIEF](archive/CODEX_BRIEF-through-20261018.md)
-- [2026-10-12 이전 AGENTS.md](archive/AGENTS-20261012-before-rewrite.md)
-- [테스트 정리 측정](test-cleanup/)
+- [날짜별 로컬 아카이브와 Git 이력 복원 안내](archive/README.md)
 - sibling bench의 `docs/progress.md`와 `evidence/`
 
-역사 파일은 내용을 소급 수정하지 않습니다. 현재 문서에서 역사 결과를 인용할 때는 날짜와
-당시 모델·설정·seed를 함께 적습니다.
+일회성 보고서·테스트 정리 측정·과거 지침·첨부 화면은 `archive/YYYY-MM-DD/`에 원래 경로와
+원문을 보존합니다. 날짜별 폴더는 Git에서 제외되므로 새 체크아웃에는 포함되지 않습니다.
+현재 문서에서 역사 결과를 인용할 때는 날짜와 당시 모델·설정·seed를 함께 적습니다.
