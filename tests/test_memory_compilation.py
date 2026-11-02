@@ -134,6 +134,15 @@ def draft(*, groups=("c000", "c001")):
     )
 
 
+def test_direct_group_compilation_preserves_existing_artifact_identities():
+    method = compile_memory(source(), candidates(), draft(), method_id="identity-check")
+    # Existing IDs are references in persisted route and execution-progress artifacts.
+    assert [group.id for group in method.action_groups] == [
+        "ec1669a4ff2191c6",
+        "b6f1463c5e4043b3",
+    ]
+
+
 def test_memory_compiler_preserves_purpose_points_and_trace_order(tmp_path):
     from pydantic import ValidationError
 
@@ -161,7 +170,7 @@ def test_memory_compiler_preserves_purpose_points_and_trace_order(tmp_path):
     current["ocr"] = []
     current["screen_kind"] = "editor"
     bound = MethodLibrary(path, enabled=True).bind_with_context(
-        "warm-shipment",
+        restored,
         {},
         current,
         {"hbl_no": "HBL-002"},
@@ -347,7 +356,7 @@ def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_naviga
         ],
     }
     rebound = library.bind_with_context(
-        method.id, {}, current, {"hbl_no": "HBL-002"}, group_id=group.id
+        method, {}, current, {"hbl_no": "HBL-002"}, group_id=group.id
     )
     assert rebound is not None
     plan = ScreenMatch.model_validate(rebound.response)
@@ -375,7 +384,7 @@ def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_naviga
     for label, text in [("different-result", "Save rejected"), ("missing-message", "")]:
         changed = {**current, "ocr": [{**current["ocr"][0], "text": text}, current["ocr"][1]]}
         fallback = library.bind_with_context(
-            method.id, {}, changed, {"hbl_no": "HBL-002"}, group_id=group.id
+            method, {}, changed, {"hbl_no": "HBL-002"}, group_id=group.id
         )
         assert fallback is not None, label
         assert ScreenMatch.model_validate(fallback.response).save_result is None, label
@@ -461,9 +470,7 @@ def test_synthetic_pruned_click_rebases_entry_memory_without_rebinding_action_id
     library = MethodLibrary(tmp_path / "methods.json", enabled=True)
     library.upsert(method)
     current = {**before, "markers": [], "selected_fields": {}}
-    rebound = library.bind_with_context(
-        method.id, {}, current, source()["values"], group_id=group.id
-    )
+    rebound = library.bind_with_context(method, {}, current, source()["values"], group_id=group.id)
     assert rebound is not None
     assert rebound.response["steps"][0]["action"] == "double_click"
     assert rebound.response["steps"][0]["point"] == [190.0, 187.0]
@@ -631,6 +638,44 @@ def create_successful_case(tmp_path, *, reinterpreted=False):
     )
 
     return case, cache_path, visual, mapping, match, education_sha
+
+
+@pytest.mark.parametrize("cache_state", ["omitted", "missing", "invalid"])
+def test_recorded_mapping_compiles_without_opening_legacy_cache(tmp_path, cache_state):
+    case, cache_path, _, mapping, match, _ = create_successful_case(tmp_path)
+    log_path = case / "run_log.jsonl"
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    events.insert(
+        2,
+        {
+            "payload": {
+                "check": "screen_plan_proposed",
+                "obs_id": "obs-1",
+                "response": match,
+                "mapping": mapping.model_dump(mode="json"),
+            }
+        },
+    )
+    log_path.write_text("\n".join(json.dumps(event) for event in events), encoding="utf-8")
+    if cache_state == "invalid":
+        cache_path.write_text("not a cache document", encoding="utf-8")
+    else:
+        cache_path.unlink()
+    cache_argument = None if cache_state == "omitted" else cache_path
+
+    loaded_source, loaded = read_memory_candidates(case, cache_argument)
+    assert len(loaded) == 1
+    assert loaded[0].cache_key.startswith("trace:")
+    assert loaded[0].response["steps"][0]["target"] == "Reference"
+    compiled = compile_memory(
+        loaded_source, loaded, draft(groups=(loaded[0].candidate_id,)), method_id="modern-trace"
+    )
+    assert compiled.action_groups[0].actions[0].point == (200, 300)
+    assert "HBL-001" not in compiled.model_dump_json()
+
+    atomic_write_json(case / "result.json", {"status": "stopped"})
+    with pytest.raises(ValueError, match="requires_successful_cold_run"):
+        read_memory_candidates(case, cache_argument)
 
 
 def test_synthetic_completion_survives_recorded_trace_compilation_without_old_values(tmp_path):
@@ -841,7 +886,11 @@ def test_successful_case_is_joined_only_to_promoted_cache(tmp_path, reinterprete
     }
     library = open_memory_library(path, tmp_path / "warm", enabled=True, compiled_only=True)
     bound = library.bind_with_context(
-        "named-warm", {}, current, {"hbl_no": "HBL-002"}, group_id=compiled.action_groups[0].id
+        library.methods()[0],
+        {},
+        current,
+        {"hbl_no": "HBL-002"},
+        group_id=compiled.action_groups[0].id,
     )
     assert bound is not None
     assert bound.response["steps"][0]["point"] == [200, 300]

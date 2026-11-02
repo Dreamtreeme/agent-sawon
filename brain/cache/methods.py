@@ -162,6 +162,28 @@ class LearnedMethod(BaseModel):
         return self
 
 
+def merge_method_contents(
+    previous: LearnedMethod,
+    incoming: LearnedMethod,
+    *,
+    preserve_previous_groups: bool = True,
+    incoming_groups_first: bool = False,
+) -> dict[str, Any]:
+    """Merge reusable contents without changing caller-owned identity or revision policy."""
+    groups = {group.id: group for group in incoming.action_groups}
+    if preserve_previous_groups:
+        if incoming_groups_first:
+            for group in previous.action_groups:
+                groups.setdefault(group.id, group)
+        else:
+            groups = {group.id: group for group in previous.action_groups} | groups
+    return {
+        "action_groups": list(groups.values()),
+        "slots": list({slot.name: slot for slot in previous.slots + incoming.slots}.values()),
+        "completion": incoming.completion or previous.completion,
+    }
+
+
 def group_input_sources(
     method: LearnedMethod, group: MethodActionGroup, slot_map: dict[str, str]
 ) -> dict[str, str | None]:
@@ -389,19 +411,14 @@ def _method_target(
     )
 
 
-def method_from_match(
+def action_group_from_match(
     screen: dict,
     response: dict | ScreenMapping,
     *,
-    method_id: str,
-    purpose: str,
     slots: list[MethodSlot] | None = None,
     context_anchors: tuple[str, ...] | list[str] = (),
-    source_transitions: tuple[str, ...] | list[str] = (),
-    task_objective: str = "",
-    task_contract_sha256: str = "",
     values: dict[str, str] | None = None,
-) -> LearnedMethod | None:
+) -> MethodActionGroup | None:
     """Retain executed screen-bound coordinates and parameterize their input sources.
 
     The caller supplies model-extracted purpose and input roles. Coordinates, screenshot
@@ -578,7 +595,33 @@ def method_from_match(
         repair_fields=list(response.get("repair_fields", [])) if has_save_review else [],
     )
     encoded = json.dumps(group.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
-    group = group.model_copy(update={"id": hashlib.sha256(encoded.encode()).hexdigest()[:16]})
+    return group.model_copy(update={"id": hashlib.sha256(encoded.encode()).hexdigest()[:16]})
+
+
+def method_from_match(
+    screen: dict,
+    response: dict | ScreenMapping,
+    *,
+    method_id: str,
+    purpose: str,
+    slots: list[MethodSlot] | None = None,
+    context_anchors: tuple[str, ...] | list[str] = (),
+    source_transitions: tuple[str, ...] | list[str] = (),
+    task_objective: str = "",
+    task_contract_sha256: str = "",
+    values: dict[str, str] | None = None,
+) -> LearnedMethod | None:
+    """Wrap one executed group for runtime learning and single-batch authoring."""
+    group = action_group_from_match(
+        screen, response, slots=slots, context_anchors=context_anchors, values=values
+    )
+    if group is None:
+        return None
+    if slots is None:
+        slots = [
+            MethodSlot(name=source, description=source, source_key=source)
+            for source in dict.fromkeys(action.slot for action in group.actions if action.slot)
+        ]
     return LearnedMethod(
         id=method_id,
         purpose=purpose,
@@ -872,11 +915,22 @@ class MethodLibrary:
         self.path = Path(path)
         self.enabled = enabled
         self.max_phash_distance = max_phash_distance
+        self._snapshot_bytes: bytes | None = None
+        self._snapshot_methods: tuple[LearnedMethod, ...] = ()
 
     def methods(self) -> list[LearnedMethod]:
         if not self.enabled or not self.path.exists():
+            self._snapshot_bytes = None
+            self._snapshot_methods = ()
             return []
-        return MethodDocument.model_validate_json(self.path.read_bytes()).methods
+        # Read the bytes before reusing parsed models: external writers may replace
+        # the file or preserve its size/timestamps. Upsert calls this under its lock.
+        content = self.path.read_bytes()
+        if content != self._snapshot_bytes:
+            methods = MethodDocument.model_validate_json(content).methods
+            self._snapshot_methods = tuple(methods)
+            self._snapshot_bytes = content
+        return list(self._snapshot_methods)
 
     def catalog(
         self, task: str | None = None, task_contract_sha256: str | None = None
@@ -922,21 +976,18 @@ class MethodLibrary:
                 # The incoming method carries the runtime's successful procedure
                 # order. Runtime promotion may replace obsolete branches with one
                 # fully verified path; import and authoring callers retain variants.
-                groups = {item.id: item for item in method.action_groups}
-                if not replace_action_groups:
-                    for item in previous.action_groups:
-                        groups.setdefault(item.id, item)
                 method = method.model_copy(
                     update={
-                        "revision": previous.revision + 1,
-                        "action_groups": list(groups.values()),
-                        "slots": list(
-                            {slot.name: slot for slot in previous.slots + method.slots}.values()
+                        **merge_method_contents(
+                            previous,
+                            method,
+                            preserve_previous_groups=not replace_action_groups,
+                            incoming_groups_first=True,
                         ),
+                        "revision": previous.revision + 1,
                         "source_transitions": list(
                             dict.fromkeys(previous.source_transitions + method.source_transitions)
                         ),
-                        "completion": method.completion or previous.completion,
                     }
                 )
             existing[method.id] = method
@@ -945,16 +996,13 @@ class MethodLibrary:
 
     def bind_with_context(
         self,
-        method_id: str,
+        method: LearnedMethod,
         slot_map: dict[str, str],
         screen: dict,
         values: dict[str, str],
         *,
         group_id: str | None = None,
     ) -> BoundMethod | None:
-        method = next((item for item in self.methods() if item.id == method_id), None)
-        if method is None:
-            return None
         sources = {slot.name: slot_map.get(slot.name, slot.source_key) for slot in method.slots}
         for group in method.action_groups:
             if group_id is not None and group.id != group_id:
@@ -1048,15 +1096,14 @@ class MethodLibrary:
 
     def bind_completion_with_context(
         self,
-        method_id: str,
+        method: LearnedMethod,
         slot_map: dict[str, str],
         screen: dict,
         values: dict[str, str],
     ) -> dict | None:
         """Bind final-review targets and conditions; current values require a fresh review."""
 
-        method = next((item for item in self.methods() if item.id == method_id), None)
-        if method is None or method.completion is None:
+        if method.completion is None:
             return None
         sources = {slot.name: slot_map.get(slot.name, slot.source_key) for slot in method.slots}
         controls: dict[int, dict] = {}

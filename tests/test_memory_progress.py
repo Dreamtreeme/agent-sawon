@@ -1,11 +1,13 @@
 """Synthetic split-action recoveries use existing fake capture/model fixtures."""
 
 from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 from test_memory_retrieval import synthetic_ordered_route
 
 from brain.cache.methods import MethodAction, MethodDocument
+from brain.graph.screen_mapping import ScreenMapping
 from sawon_runtime.storage import atomic_write_json
 
 
@@ -45,6 +47,49 @@ def synthetic_slice(response, start, end):
             ),
         }
     )
+
+
+@pytest.mark.parametrize("redact", [None, "purpose", "expected_result", "observed_step_results"])
+def test_synthetic_learning_revalidates_only_redacted_mapping(tmp_path, monkeypatch, redact):
+    _, runtime, _, first, _, screen, response = synthetic_scroll_route(tmp_path)
+    runtime.task_context = replace(
+        runtime.task_context, credentials={"credential.password": "private-session-secret"}
+    )
+    payload = response.mapping.model_dump(exclude_unset=True)
+    if redact == "observed_step_results":
+        payload[redact] = [
+            dict(
+                step_id=first.taught_step_id,
+                completed=False,
+                observed_result="private-session-secret is pending",
+            )
+        ]
+    elif redact is not None:
+        payload[redact] = "private-session-secret is pending"
+    # An explicit empty reading and an unobserved field must remain distinguishable.
+    field = next(iter(payload["fields"]))
+    payload["fields"][field]["value"] = ""
+    mapping = ScreenMapping.model_validate(payload)
+    response = response.model_copy(update={"mapping": mapping})
+    before = mapping.model_dump(exclude_unset=True)
+    validations = []
+    validate_mapping = ScreenMapping.model_validate
+
+    def validate(value, *args, **kwargs):
+        validations.append(value)
+        return validate_mapping(value, *args, **kwargs)
+
+    monkeypatch.setattr(ScreenMapping, "model_validate", validate)
+    runtime.remember(deepcopy(screen), response)
+
+    assert len(validations) == int(redact is not None)
+    assert mapping.model_dump(exclude_unset=True) == before
+    assert "value" in mapping.fields[field].model_fields_set
+    assert any("value" not in item.model_fields_set for item in mapping.fields.values())
+    learned = runtime.state.pending["method"]
+    assert "private-session-secret" not in learned.model_dump_json()
+    if redact is not None:
+        assert "{credential.password}" in learned.model_dump_json()
 
 
 @pytest.mark.parametrize("batch_sizes", [(3,), (2, 1)], ids=["whole", "split-fill-and-scroll"])
@@ -171,3 +216,40 @@ def test_synthetic_suffix_prepared_before_failed_review_cannot_complete_the_miss
     assert runtime._action_offset(method.id, first.id) == 0
     assert "replaced_edge" not in runtime.state.history[-1]
     assert runtime.state.history[-1]["status"] == "delivered"
+
+
+def test_synthetic_promotion_selects_delivered_variants_before_deduplication(tmp_path):
+    _, runtime, method, first, second, _, _ = synthetic_scroll_route(tmp_path)
+    obsolete = first.model_copy(update={"id": "unused-input", "trace_index": 0})
+    first = first.model_copy(update={"trace_index": 1})
+    retry = first.model_copy(
+        update={"id": "input-retry", "trace_index": 2, "predecessor_group_ids": [first.id]}
+    )
+    second = second.model_copy(update={"trace_index": 3, "predecessor_group_ids": [retry.id]})
+    candidate = method.model_copy(update={"action_groups": [obsolete, first, retry, second]})
+    runtime._stage(candidate)
+    runtime._stage(
+        candidate.model_copy(
+            update={"action_groups": [retry.model_copy(update={"purpose": "Repeated input"})]}
+        )
+    )
+    assert [group.id for group in runtime.state.staged[method.id].action_groups] == [
+        obsolete.id,
+        first.id,
+        retry.id,
+        second.id,
+    ]
+    runtime.state.history.extend(
+        dict(method_id=method.id, group_id=group.id, status="delivered")
+        for group in (first, retry, second)
+    )
+
+    assert runtime.finish(success=True) == 1
+
+    promoted = runtime.library.methods()[0]
+    assert [group.id for group in promoted.action_groups] == [first.id, second.id]
+    assert [group.trace_index for group in promoted.action_groups] == [0, 1]
+    assert [group.predecessor_group_ids for group in promoted.action_groups] == [[], [first.id]]
+    assert promoted.completion == method.completion
+    # The runtime snapshot is unchanged by selection, deduplication and relinking.
+    assert candidate.action_groups[-1].predecessor_group_ids == [retry.id]

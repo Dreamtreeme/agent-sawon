@@ -17,6 +17,7 @@ from brain.cache.methods import (
     MethodSlot,
     compile_method_candidate,
     group_input_sources,
+    merge_method_contents,
     method_completion_from_match,
     method_from_match,
     screen_similarity_distance,
@@ -51,7 +52,7 @@ class RetrievalState:
     history: list[dict] = field(default_factory=list)
     pending: dict | None = None
     unverified: dict | None = None
-    staged: dict[str, MethodDocument] = field(default_factory=dict)
+    staged: dict[str, LearnedMethod] = field(default_factory=dict)
     staged_completions: dict[str, MethodCompletion] = field(default_factory=dict)
     blocked_method_ids: set[str] = field(default_factory=set)
 
@@ -145,9 +146,8 @@ class MemoryRetrieval:
             group.trace_index is not None for group in method.action_groups
         )
 
-    def _compile_trace_graph(self, method: LearnedMethod) -> LearnedMethod:
-        """Turn the delivered successful path into a reusable execution graph."""
-
+    def _delivered_groups(self, method: LearnedMethod) -> list[MethodActionGroup]:
+        """Select this run's delivered path before retry deduplication."""
         delivered = list(
             dict.fromkeys(
                 item["group_id"]
@@ -158,16 +158,17 @@ class MemoryRetrieval:
             )
         )
         by_id = {group.id: group for group in method.action_groups}
-        order = [group_id for group_id in delivered if group_id in by_id]
         # A promoted graph is the path verified in this successful run. Keeping
         # every historical variant made several actions bind the same screen,
         # which forced model fallback and could replay an obsolete no-op branch.
-        if not order:
-            return method
+        return [by_id[group_id] for group_id in delivered if group_id in by_id]
+
+    @staticmethod
+    def _compile_trace_graph(method: LearnedMethod) -> LearnedMethod:
+        """Link the surviving groups once, after compilation removes retries."""
         groups = []
         previous = None
-        for index, group_id in enumerate(order):
-            group = by_id[group_id]
+        for index, group in enumerate(method.action_groups):
             groups.append(
                 group.model_copy(
                     update={
@@ -176,7 +177,7 @@ class MemoryRetrieval:
                     }
                 )
             )
-            previous = group_id
+            previous = group.id
         return method.model_copy(update={"action_groups": groups})
 
     def _binding_values(self) -> dict[str, str]:
@@ -324,6 +325,30 @@ class MemoryRetrieval:
             relevant_slots = {
                 action.slot for group in remaining for action in group.actions if action.slot
             }
+            groups = []
+            for group in remaining:
+                sources = group_input_sources(method, group, self.state.bindings.get(method.id, {}))
+                groups.append(
+                    {
+                        "id": group.id,
+                        "purpose": group.purpose,
+                        "taught_step_id": group.taught_step_id,
+                        "trace_index": group.trace_index,
+                        "predecessor_group_ids": group.predecessor_group_ids,
+                        "context_anchors": group.context_anchors,
+                        "screen_path": group.screen_path,
+                        "expected_result": group.expected_result,
+                        "actions": [
+                            {
+                                "action": action.action,
+                                "target": action.target,
+                                "source": sources.get(action.target),
+                                "keys": action.keys,
+                            }
+                            for action in group.actions[self._action_offset(method.id, group.id) :]
+                        ],
+                    }
+                )
             methods.append(
                 {
                     "id": method.id,
@@ -332,32 +357,7 @@ class MemoryRetrieval:
                     "slots": [
                         slot.model_dump() for slot in method.slots if slot.name in relevant_slots
                     ],
-                    "groups": [
-                        {
-                            "id": group.id,
-                            "purpose": group.purpose,
-                            "taught_step_id": group.taught_step_id,
-                            "trace_index": group.trace_index,
-                            "predecessor_group_ids": group.predecessor_group_ids,
-                            "context_anchors": group.context_anchors,
-                            "screen_path": group.screen_path,
-                            "expected_result": group.expected_result,
-                            "actions": [
-                                {
-                                    "action": action.action,
-                                    "target": action.target,
-                                    "source": group_input_sources(
-                                        method, group, self.state.bindings.get(method.id, {})
-                                    ).get(action.target),
-                                    "keys": action.keys,
-                                }
-                                for action in group.actions[
-                                    self._action_offset(method.id, group.id) :
-                                ]
-                            ],
-                        }
-                        for group in remaining
-                    ],
+                    "groups": groups,
                 }
             )
         return {
@@ -455,7 +455,7 @@ class MemoryRetrieval:
         }
         if isinstance(group, MethodCompletion):
             completion = self.library.bind_completion_with_context(
-                method.id, mapping, screen, self.task_context.inputs
+                method, mapping, screen, self.task_context.inputs
             )
             if completion is None:
                 return None
@@ -504,7 +504,7 @@ class MemoryRetrieval:
             )
             return response
         bound = self.library.bind_with_context(
-            method.id, mapping, screen, self._binding_values(), group_id=group.id
+            method, mapping, screen, self._binding_values(), group_id=group.id
         )
         if bound is None:
             return None
@@ -683,15 +683,35 @@ class MemoryRetrieval:
         if not self.enabled:
             return
         task = self.task_context.task
-        sanitized = (
-            response.mapping.model_dump(mode="json", exclude_unset=True)
-            if response.mapping is not None
-            else response.model_dump(mode="json")
-        )
+        source_response = response.mapping if response.mapping is not None else response
+        redacted = {}
         for key in ("purpose", "expected_result"):
-            sanitized[key] = self._redact_credentials(sanitized.get(key, ""))
-        for result in sanitized.get("observed_step_results", []):
-            result["observed_result"] = self._redact_credentials(result["observed_result"])
+            original = getattr(source_response, key)
+            value = self._redact_credentials(original)
+            if value != original:
+                redacted[key] = value
+        results = source_response.observed_step_results
+        result_texts = [self._redact_credentials(result.observed_result) for result in results]
+        if any(
+            value != result.observed_result
+            for result, value in zip(results, result_texts, strict=True)
+        ):
+            redacted["observed_step_results"] = [
+                {**result.model_dump(mode="json"), "observed_result": value}
+                for result, value in zip(results, result_texts, strict=True)
+            ]
+        # Keep validated mappings intact unless redaction changes their contents.
+        # Changed dictionaries still pass through the compiler's mapping validation.
+        sanitized = (
+            {
+                **source_response.model_dump(
+                    mode="json", exclude_unset=response.mapping is not None
+                ),
+                **redacted,
+            }
+            if redacted or response.mapping is None
+            else source_response
+        )
         self.state.purpose = self._redact_credentials(response.purpose[:160])
         known = {method.id: method for method in self.library.methods()}
         previous = known.get(response.method_id or self.state.active_method_id)
@@ -728,10 +748,7 @@ class MemoryRetrieval:
                     replaced_edge = (previous.id, original.id)
         if response.operation == "complete":
             available = dict(known)
-            available.update(
-                (method_id, document.methods[0])
-                for method_id, document in self.state.staged.items()
-            )
+            available.update(self.state.staged)
             if previous is None and task is not None:
                 matches = [
                     method for method in available.values() if self._matches_current_task(method)
@@ -792,23 +809,12 @@ class MemoryRetrieval:
             }
 
     def _stage(self, method) -> None:
-        document = self.state.staged.get(method.id)
-        if document is None:
-            self.state.staged[method.id] = MethodDocument(methods=[method])
-            return
-        previous = document.methods[0]
-        groups = {item.id: item for item in previous.action_groups}
-        groups.update({item.id: item for item in method.action_groups})
-        slots = {item.name: item for item in previous.slots}
-        slots.update({item.name: item for item in method.slots})
-        merged = previous.model_copy(
-            update={
-                "action_groups": list(groups.values()),
-                "slots": list(slots.values()),
-                "completion": method.completion or previous.completion,
-            }
+        previous = self.state.staged.get(method.id)
+        self.state.staged[method.id] = (
+            previous.model_copy(update=merge_method_contents(previous, method))
+            if previous is not None
+            else method
         )
-        self.state.staged[method.id] = MethodDocument(methods=[merged])
 
     def delivered(self, *, complete: bool) -> None:
         pending, self.state.pending = self.state.pending, None
@@ -948,13 +954,12 @@ class MemoryRetrieval:
         if history_index < len(self.state.history):
             self.state.history[history_index]["status"] = "unproductive"
         if delivered["origin"] != "reuse":
-            document = self.state.staged.get(method.id)
-            if document is not None:
-                candidate = document.methods[0]
+            candidate = self.state.staged.get(method.id)
+            if candidate is not None:
                 groups = [item for item in candidate.action_groups if item.id != group_id]
                 if groups:
-                    self.state.staged[method.id] = MethodDocument(
-                        methods=[candidate.model_copy(update={"action_groups": groups})]
+                    self.state.staged[method.id] = candidate.model_copy(
+                        update={"action_groups": groups}
                     )
                 else:
                     self.state.staged.pop(method.id, None)
@@ -970,9 +975,7 @@ class MemoryRetrieval:
         atomic_write_json(self.case_dir / "method-progress.json", self.context())
 
     def finish(self, *, success: bool) -> int:
-        candidates = {
-            method_id: document.methods[0] for method_id, document in self.state.staged.items()
-        }
+        candidates = dict(self.state.staged)
         known = {method.id: method for method in self.library.methods()}
         for method_id, completion in self.state.staged_completions.items():
             method = candidates.get(method_id) or known.get(method_id)
@@ -981,16 +984,10 @@ class MemoryRetrieval:
         for method_id, candidate in list(candidates.items()):
             previous = known.get(method_id)
             if previous is not None:
-                groups = {group.id: group for group in previous.action_groups}
-                groups.update({group.id: group for group in candidate.action_groups})
-                slots = {slot.name: slot for slot in previous.slots}
-                slots.update({slot.name: slot for slot in candidate.slots})
                 candidate = candidate.model_copy(
                     update={
+                        **merge_method_contents(previous, candidate),
                         "artifact_kind": previous.artifact_kind,
-                        "action_groups": list(groups.values()),
-                        "slots": list(slots.values()),
-                        "completion": candidate.completion or previous.completion,
                     }
                 )
             candidates[method_id] = candidate.model_copy(
@@ -998,8 +995,9 @@ class MemoryRetrieval:
             )
         methods = []
         for method in candidates.values():
+            delivered = self._delivered_groups(method)
             compiled = compile_method_candidate(
-                self._compile_trace_graph(method),
+                method.model_copy(update={"action_groups": delivered}) if delivered else method,
                 {
                     **self.task_context.inputs,
                     **{
@@ -1009,7 +1007,8 @@ class MemoryRetrieval:
                     },
                 },
             )
-            compiled = self._compile_trace_graph(compiled)
+            if delivered:
+                compiled = self._compile_trace_graph(compiled)
             methods.append(compiled)
         promoted = 0
         promoted_methods = []

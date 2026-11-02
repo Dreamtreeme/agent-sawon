@@ -9,12 +9,15 @@ There is no separate legacy Procedure loader.
 
 `ScreenScanner.scan` checks viewport/pHash before OCR or control detection.
 `MemoryRetrieval.retrieve_screen_memory` supplies field geometry, input bindings and procedures;
-a miss uses Scanning. Both restore current execution state with `context_recall.recall_context`,
-then `screen_decision.match_screen_pattern` binds existing plans before model action selection.
-Context Recall performs no model calls or state changes. Even identical captures enter this shared
-sequence; only OCR/detection is skipped. `ScreenMapping.needs_refinement` connects model responses
+a miss uses Scanning. `screen_decision.match_screen_pattern` binds existing plans before model
+action selection. Cache lookup or model review builds `context_recall.recall_context` lazily;
+bound method actions do not build a model prompt. Context Recall performs no model calls or state
+changes. Every capture gets fresh OCR; similar captures can reuse detector geometry.
+`ScreenMapping.needs_refinement` connects model responses
 to local scanning on the same capture and OCR.
 Current OCR values, accumulated notebook and education share the same review/execution path.
+Model requests carry the original capture. Numbered images are diagnostic artifacts, generated
+once per geometry version. The capture hash and a decision's cache key are each reused internally.
 The four LangGraph responsibility nodes remain; see
 [the terminology guide](../../docs/runtime-terminology.md) for the internal branch and contracts.
 

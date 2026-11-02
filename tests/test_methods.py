@@ -1,8 +1,11 @@
+import os
+
 import pytest
 from pydantic import ValidationError
 
 from brain.cache.methods import (
     LearnedMethod,
+    MethodDocument,
     MethodLibrary,
     MethodSlot,
     compile_method_candidate,
@@ -11,6 +14,7 @@ from brain.cache.methods import (
 )
 from brain.graph.screen_decision import ScreenMatch
 from brain.task_instruction import ObservedStepResult
+from sawon_runtime.storage import atomic_write_json
 
 
 def scene(*, offset=0, old_value="Old customer", ids=0):
@@ -71,9 +75,10 @@ def test_saved_coordinate_method_uses_new_source_without_ocr_rebinding(tmp_path)
     library = MethodLibrary(tmp_path / "methods.json", enabled=True)
     library.upsert(learned())
     restored = MethodLibrary(library.path, enabled=True)
+    method = restored.methods()[0]
     current = {"screen_phash": 123, "image_size": [800, 600], "ocr": [], "markers": []}
     bound = restored.bind_with_context(
-        "find-party", {"requested_party": "supplier"}, current, {"supplier": "New supplier"}
+        method, {"requested_party": "supplier"}, current, {"supplier": "New supplier"}
     )
     assert bound is not None
     response = ScreenMatch.model_validate(bound.response)
@@ -84,16 +89,14 @@ def test_saved_coordinate_method_uses_new_source_without_ocr_rebinding(tmp_path)
     assert "Old customer" not in library.path.read_text(encoding="utf-8")
     assert restored.catalog("Prepare a delivery")[0]["id"] == "find-party"
     assert restored.catalog("Unrelated task") == []
-    assert restored.bind_with_context("find-party", {}, current, {"unrelated": "value"}) is None
+    assert restored.bind_with_context(method, {}, current, {"unrelated": "value"}) is None
     # The configured distance is inclusive; viewport mismatch must not rescale coordinates.
     for label, update, expected in [
         ("distance-six", {"screen_phash": 123 ^ 63}, True),
         ("distance-seven", {"screen_phash": 123 ^ 127}, False),
         ("resized", {"image_size": [1600, 900]}, False),
     ]:
-        result = restored.bind_with_context(
-            "find-party", {}, {**current, **update}, {"party": "Next"}
-        )
+        result = restored.bind_with_context(method, {}, {**current, **update}, {"party": "Next"})
         assert (result is not None) is expected, label
 
 
@@ -111,6 +114,63 @@ def test_library_rejects_same_method_id_from_another_task_contract(tmp_path):
         library.upsert(other_task)
 
     assert library.methods() == [first]
+
+
+def test_library_reuses_parsed_snapshot_but_detects_external_writes(tmp_path, monkeypatch):
+    path = tmp_path / "methods.json"
+    first = learned()
+    atomic_write_json(path, MethodDocument(methods=[first]))
+    library = MethodLibrary(path, enabled=True)
+    parse = MethodDocument.model_validate_json
+    parsed = []
+
+    def tracked_parse(content):
+        parsed.append(content)
+        return parse(content)
+
+    monkeypatch.setattr(MethodDocument, "model_validate_json", tracked_parse)
+    returned = library.methods()
+    returned.clear()
+    assert library.methods() == [first]
+    assert len(parsed) == 1
+
+    # An external same-size write with a restored timestamp must still invalidate parsing.
+    stat = path.stat()
+    path.write_bytes(path.read_bytes().replace(b"Find the requested", b"Seek the requested"))
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert library.methods()[0].purpose.startswith("Seek ")
+    assert len(parsed) == 2
+
+    # Upsert must merge against the latest external contents under the existing file lock.
+    other = first.model_copy(update={"id": "external-method"})
+    atomic_write_json(path, MethodDocument(methods=[first, other]))
+    updated = library.upsert(first)
+    assert updated.revision == 2
+    assert {item.id for item in library.methods()} == {first.id, other.id}
+    path.unlink()
+    assert library.methods() == []
+    atomic_write_json(path, MethodDocument(methods=[other]))
+    assert library.methods() == [other]
+    path.write_text("invalid document", encoding="utf-8")
+    for _ in range(2):
+        with pytest.raises(ValidationError):
+            library.methods()
+    atomic_write_json(path, MethodDocument(methods=[other]))
+    assert library.methods() == [other]
+
+
+def test_binding_uses_chosen_method_without_reopening_library(tmp_path, monkeypatch):
+    library = MethodLibrary(tmp_path / "unused.json", enabled=True)
+    method = learned()
+
+    def unexpected_read():
+        pytest.fail("The selected method is already the binding snapshot")
+
+    monkeypatch.setattr(library, "methods", unexpected_read)
+    current = {"screen_phash": 123, "image_size": [800, 600], "ocr": [], "markers": []}
+    bound = library.bind_with_context(method, {}, current, {"party": "Current customer"})
+    assert bound is not None
+    assert [step["point"] for step in bound.response["steps"]] == [[200, 40], [415, 40]]
 
 
 def test_trace_graph_rejects_unknown_predecessor():
@@ -169,7 +229,7 @@ def test_saved_coordinates_ignore_competing_table_labels(tmp_path):
     # Competing labels and detector IDs are irrelevant after screenshot matching.
     current = {"image_size": [1200, 800], "screen_phash": 123, "ocr": [], "markers": []}
     bound = library.bind_with_context(
-        "entry", {}, current, {"destination": "B", "mass": "2", "count": "3"}
+        method, {}, current, {"destination": "B", "mass": "2", "count": "3"}
     )
     assert bound is not None
     assert [step["source"] for step in bound.response["steps"]] == ["destination", "mass", "count"]
@@ -231,7 +291,7 @@ def test_synthetic_observed_step_results_remain_compile_history_not_current_evid
     for index, completed in enumerate((False, True)):
         current = {"screen_phash": 123, "image_size": [800, 600], "ocr": [], "markers": []}
         bound = library.bind_with_context(
-            method.id,
+            compiled,
             {},
             current,
             {"party": "New customer"},
@@ -334,7 +394,9 @@ def completion_response(*, ids=0):
     }
 
 
-def test_completion_recipe_binds_review_structure_without_copying_prior_readings(tmp_path):
+def test_completion_recipe_binds_review_structure_without_copying_prior_readings(
+    tmp_path, monkeypatch
+):
     method = learned().model_copy(
         update={
             "slots": [
@@ -377,7 +439,7 @@ def test_completion_recipe_binds_review_structure_without_copying_prior_readings
 
     current = completion_scene(customer="Later customer", reference="ORDER-C", ids=100)
     bound = library.bind_completion_with_context(
-        method.id,
+        restored,
         {},
         current,
         {"customer": "Later customer", "reference": "ORDER-C"},
@@ -399,7 +461,7 @@ def test_completion_recipe_binds_review_structure_without_copying_prior_readings
     assert {item.condition_index for item in response.completion_evidence} == {0}
     # These bindings are review locations, not proof that the new input is on screen.
     changed_input = library.bind_completion_with_context(
-        method.id,
+        restored,
         {"customer": "next_customer", "reference": "next_reference"},
         current,
         {"next_customer": "Not yet observed", "next_reference": "ORDER-D"},
@@ -410,7 +472,7 @@ def test_completion_recipe_binds_review_structure_without_copying_prior_readings
     assert "evidence" not in changed_input
     assert (
         library.bind_completion_with_context(
-            method.id,
+            restored,
             {},
             current,
             {"reference": "ORDER-C"},
@@ -420,6 +482,20 @@ def test_completion_recipe_binds_review_structure_without_copying_prior_readings
     stored = library.path.read_text(encoding="utf-8")
     assert "New customer B" not in stored
     assert "field_values" not in stored
+
+    def unexpected_read():
+        pytest.fail("Completion binding must use the selected method snapshot")
+
+    monkeypatch.setattr(library, "methods", unexpected_read)
+    assert (
+        library.bind_completion_with_context(
+            restored,
+            {},
+            completion_scene(customer="Later customer", reference="ORDER-C", ids=100),
+            {"customer": "Later customer", "reference": "ORDER-C"},
+        )
+        == bound
+    )
     assert "ORDER-B" not in stored
 
 
@@ -438,6 +514,6 @@ def test_coordinate_method_keeps_each_action_point_and_ignores_numbered_catalog(
     assert method is not None
     library = MethodLibrary(tmp_path / "methods.json", enabled=True)
     library.upsert(method)
-    replay = library.bind_with_context("points", {}, screen, {})
+    replay = library.bind_with_context(method, {}, screen, {})
     assert replay is not None
     assert [step["point"] for step in replay.response["steps"]] == [[20, 30], [21, 31]]

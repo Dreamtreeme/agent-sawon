@@ -20,8 +20,8 @@ from brain.cache.methods import (
     MethodActionGroup,
     MethodDocument,
     MethodSlot,
+    action_group_from_match,
     method_completion_from_match,
-    method_from_match,
 )
 from brain.cache.pattern_matching import ScreenPatternDocument
 from brain.demo_learning.methods import read_screen
@@ -231,7 +231,7 @@ def _case_values(case_dir: Path) -> dict[str, str]:
 
 
 def read_memory_candidates(
-    case_dir: Path, visual_cache: Path
+    case_dir: Path, visual_cache: Path | None = None
 ) -> tuple[dict, list[MemoryCandidate]]:
     """Join delivered actions to successful source observations and promoted geometry."""
 
@@ -241,11 +241,25 @@ def read_memory_candidates(
         raise ValueError("warm_method_requires_successful_cold_run")
     task_path = case_dir / "task-instruction.json"
     task = TaskInstruction.model_validate_json(task_path.read_bytes())
-    cache = ScreenPatternDocument.model_validate_json(Path(visual_cache).read_bytes())
-    by_response: dict[str, list[str]] = {}
-    for entry in cache.entries:
-        by_response.setdefault(_canonical(entry.response), []).append(entry.key)
-    responses = {entry.key: entry.response for entry in cache.entries}
+    legacy_responses: dict[str, tuple[str, dict]] | None = None
+
+    def recorded_mapping(plan: dict) -> tuple[str, dict | None]:
+        nonlocal legacy_responses
+        response = _canonical(plan["response"])
+        trace_key = "trace:" + hashlib.sha256(response.encode()).hexdigest()
+        if mapping := plan.get("mapping"):
+            return trace_key, mapping
+        if legacy_responses is None:
+            legacy_responses = {}
+            if visual_cache is not None:
+                cache = ScreenPatternDocument.model_validate_json(Path(visual_cache).read_bytes())
+                for entry in cache.entries:
+                    legacy_responses.setdefault(
+                        _canonical(entry.response), (entry.key, entry.response)
+                    )
+        key, cached = legacy_responses.get(response, (trace_key, {}))
+        return key, cached.get("mapping")
+
     events = [
         json.loads(line)
         for line in (case_dir / "run_log.jsonl").read_text(encoding="utf-8").splitlines()
@@ -327,14 +341,8 @@ def read_memory_candidates(
         if delivery_ids in seen:
             continue
         seen.add(delivery_ids)
-        keys = by_response.get(_canonical(response))
-        key = (
-            keys[0]
-            if keys
-            else "trace:" + hashlib.sha256(_canonical(response).encode()).hexdigest()
-        )
+        key, mapping = recorded_mapping(plan)
         screen = read_screen(case_dir, obs_id)
-        mapping = plan.get("mapping") or (responses[key].get("mapping") if keys else None)
         if mapping is not None:
             # Recorded executor IDs are decoded once; offline memory keeps semantic names.
             named = ScreenMapping.model_validate({**mapping, "steps": []})
@@ -419,8 +427,7 @@ def read_memory_candidates(
             continue
         final_screen = read_screen(case_dir, plan["obs_id"])
         final_response = plan["response"]
-        keys = by_response.get(_canonical(final_response))
-        final_mapping = plan.get("mapping") or (responses[keys[0]].get("mapping") if keys else None)
+        _, final_mapping = recorded_mapping(plan)
         if final_mapping is not None:
             final_response = ScreenMapping.model_validate(final_mapping).model_dump(
                 exclude_unset=True
@@ -706,38 +713,31 @@ def compile_memory(
             "purpose": selection.purpose,
             "expected_result": selection.expected_result,
         }
-        fragment = method_from_match(
+        group = action_group_from_match(
             candidate.screen,
             response,
-            method_id=method_id,
-            purpose=assembly.purpose,
             slots=slots,
             context_anchors=context_anchors,
-            task_objective=source["task"]["objective"],
-            task_contract_sha256=source["task_sha256"],
             values=source["values"],
         )
-        if fragment is None:
+        if group is None:
             raise ValueError(
                 "warm_method_candidate_could_not_be_compiled:" + candidate.candidate_id
             )
-        group = fragment.action_groups[0]
         if entry is not candidate:
             # The model removed a contiguous span. Its first before-screen becomes
             # this action's entry; each frame's IDs are resolved in its own fragment.
-            entry_fragment = method_from_match(
+            entry_group = action_group_from_match(
                 entry.screen,
                 entry.response,
-                method_id=method_id,
-                purpose=assembly.purpose,
                 slots=slots,
                 values=source["values"],
             )
-            if entry_fragment is None:
+            if entry_group is None:
                 raise ValueError(
                     "warm_method_candidate_could_not_be_compiled:" + entry.candidate_id
                 )
-            group = _rebase_entry_observation(group, entry_fragment.action_groups[0])
+            group = _rebase_entry_observation(group, entry_group)
             refs.append(f"{source['source_case']}/visual/{entry.obs_id}:{entry.cache_key}")
         group = _rename_group_fields(group, selection.field_renames)
         group = group.model_copy(
@@ -892,7 +892,7 @@ def assemble_memory(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-case", type=Path, required=True)
-    parser.add_argument("--visual-cache", type=Path, required=True)
+    parser.add_argument("--visual-cache", type=Path)
     parser.add_argument("--case-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--method-id", default="memory-" + uuid4().hex[:12])

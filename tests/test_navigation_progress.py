@@ -253,7 +253,7 @@ def test_synthetic_model_completion_survives_previous_scroll_cycle(tmp_path, rec
     assert brain.post_save_verified == set(brain.values)
     assert len(model.prompts) == 2, "reuse the observed completion without another model call"
     assert cache.finish(success=True) == 1, "terminal routing must retain the delivered candidate"
-    assert cache.lookup(cache_state) == (cache_key, candidate)
+    assert cache.lookup(cache_key) == (cache_key, candidate)
 
 
 def test_synthetic_scroll_failure_budget_belongs_to_screen_and_goal(tmp_path, record):

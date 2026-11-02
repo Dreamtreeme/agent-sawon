@@ -372,6 +372,10 @@ class DecisionPromptContext:
     def state(self) -> dict:
         return self.state_factory()
 
+    @cached_property
+    def cache_key(self) -> str:
+        return screen_pattern_key(self.state)
+
 
 @dataclass(frozen=True)
 class ScreenSelection:
@@ -1320,7 +1324,11 @@ def match_screen_pattern(
                 },
             )
             method_proposal = None
-    cache_hit = services.cache.lookup(prepared.state) if method_proposal is None else None
+    cache_hit = (
+        services.cache.lookup(prepared.cache_key)
+        if method_proposal is None and services.cache.enabled and request.phase != "save_result"
+        else None
+    )
     return method_proposal, cache_hit
 
 
@@ -1809,12 +1817,7 @@ def decide_screen(
                 phase=request.phase,
             ):
                 if schema in {ScreenMatch, ScreenPlan}:
-                    model_page = page
-                    if page is not None:
-                        capture = page.image_path.parent / "capture.png"
-                        if capture.is_file():
-                            model_page = page.model_copy(update={"image_path": capture})
-                    mapped = original_call(prompt, schema, page=model_page)
+                    mapped = original_call(prompt, schema, page=page)
                     if mapped.mapping is not None:
                         write_decision_artifact(services, "semantic-mapping", mapped.mapping)
                         plan_error = None
@@ -1946,7 +1949,7 @@ def decide_screen(
             response = response.model_copy(update={"mapping": response.accepted_mapping(screen)})
         visual_match_candidate = (
             (
-                cache_hit[0] if cache_hit is not None else screen_pattern_key(prepared.state),
+                cache_hit[0] if cache_hit is not None else prepared.cache_key,
                 {
                     **response.model_dump(mode="json"),
                     **(

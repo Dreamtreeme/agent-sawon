@@ -583,11 +583,7 @@ class Brain:
         # later in _selection_call against this immutable interpretation.
         if request.correction is not None:
             request.screen["correction"] = {"error": request.correction.get("error")}
-        page = request.page
-        capture = page.image_path.parent / "capture.png"
-        if capture.is_file():
-            page = page.model_copy(update={"image_path": capture})
-        wire = self._call(observation_prompt(request.screen), ScreenMappingWire, page=page)
+        wire = self._call(observation_prompt(request.screen), ScreenMappingWire, page=request.page)
         mapping = ScreenMapping.model_validate(wire.model_dump(exclude_unset=True))
         payload = mapping.model_copy(update={"steps": []}).local_payload(request.screen)
         return SemanticDetection.model_validate(

@@ -40,8 +40,21 @@ core가 bench 구현에서 직접 import할 수 있는 것은 `sawon_interfaces`
 모델용 문맥은 처음 읽을 때 생성한다. 메서드 결합이 수정할 수 있는 화면 투영·메서드 문맥은
 결합 전에 확보한다. 교육 확장 응답은 확장한 문맥을 후속 보완에 전달한다. 생성하지 않은
 문맥을 진단 때문에 만들지 않으며 그 판단에는 `match_context_size` 이벤트가 없다.
+`DecisionPromptContext.cache_key`는 같은 문맥에서 한 번 계산한다. `ScreenPatternCache.lookup`
+과 이후 후보 저장은 그 키를 공유하며, 캐시 저장소는 요청 문맥을 다시 해석하지 않는다.
 `ScreenDecisionRequest.evidence_scope`는 그 요청의 workflow flags에서 검토 범위를 한 번
 계산한다. Context Recall과 현재값 검토의 선택은 이 값을 공유하며 별도 진행 플래그를 저장하지 않는다.
+
+`SemanticRequest.page`는 원본 캡처다. `markers.png`와 `markers-refined.png`는 진단 파일로
+분리한다. `_SceneCatalog.key`의 캡처 해시를 관찰·판단·장면 결합이 공유하고 마커 이미지는
+탐지 기하가 만들어지거나 바뀔 때만 생성한다. 현재 프레임 OCR은 생략하지 않는다.
+
+`RetrievalState.staged`는 `LearnedMethod`를 직접 보관한다. `MethodDocument`는 파일 입출력
+경계이며 내부 병합을 위해 메서드 한 개를 문서로 감싸지 않는다. `merge_method_contents`는
+그룹·슬롯·완료 내용의 병합만 공유하고, 호출자가 기존 메타데이터·성공 횟수 정책을 유지한다.
+승격은 실제 전달 그룹 선택 → 정제·중복 제거 → 남은 경로 연결 순서로 수행한다.
+기억 라이브러리는 파일 내용이 바뀐 때만 JSON을 다시 검증한다. 파일 읽기와 잠금은 유지하여
+동일 크기·수정 시각의 외부 변경도 확인한다. 선택한 메서드는 결합기로 직접 전달한다.
 
 ## 상태 수명
 

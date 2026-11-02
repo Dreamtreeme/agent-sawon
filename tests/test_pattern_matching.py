@@ -21,7 +21,7 @@ def test_visual_match_cache_promotes_only_a_successful_run(tmp_path):
     legacy.stage(previous_scroll_key, {"mapping": {"steps": [{"action": "key", "keys": "pageup"}]}})
     assert legacy.finish(success=True) == 2
     before = legacy.path.read_bytes()
-    assert legacy.lookup(state) is None
+    assert legacy.lookup(key) is None
     assert legacy.path.read_bytes() == before
 
     failed = ScreenPatternCache(path, enabled=True)
@@ -32,7 +32,7 @@ def test_visual_match_cache_promotes_only_a_successful_run(tmp_path):
     successful = ScreenPatternCache(path, enabled=True)
     successful.stage(key, {"procedure_step": "fill"})
     assert successful.finish(success=True) == 1
-    assert ScreenPatternCache(path, enabled=True).lookup(state) == (
+    assert ScreenPatternCache(path, enabled=True).lookup(key) == (
         key,
         {"procedure_step": "fill"},
     )
@@ -45,8 +45,8 @@ def test_visual_match_cache_key_includes_workflow_state(tmp_path):
     cache.stage(screen_pattern_key(before), {"procedure_step": "search"})
     assert cache.finish(success=True) == 1
     cache = ScreenPatternCache(tmp_path / "visual.json", enabled=True)
-    assert cache.lookup(before) is not None
-    assert cache.lookup(after) is None
+    assert cache.lookup(screen_pattern_key(before)) is not None
+    assert cache.lookup(screen_pattern_key(after)) is None
 
 
 def test_visual_match_cache_key_ignores_run_metadata_but_keeps_action_context():

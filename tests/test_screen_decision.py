@@ -488,7 +488,14 @@ def test_synthetic_deferred_context_preserves_prebinding_prompt_and_cache_key(
     expected_key = screen_pattern_key(eager_state)
     expected_prompts = []
     contexts = []
+    cache_keys = []
     recall = matching.recall_context
+    services.cache.enabled = True
+
+    def record_cache_key(state):
+        key = screen_pattern_key(state)
+        cache_keys.append(key)
+        return key
 
     def select(screen):
         methods.state.purpose = "Newly bound group"
@@ -507,6 +514,7 @@ def test_synthetic_deferred_context_preserves_prebinding_prompt_and_cache_key(
 
     monkeypatch.setattr(methods, "match_pattern", select)
     monkeypatch.setattr(matching, "recall_context", capture_context)
+    monkeypatch.setattr(matching, "screen_pattern_key", record_cache_key)
     result = decide_screen(request, services)
 
     assert model.prompts == expected_prompts
@@ -515,6 +523,7 @@ def test_synthetic_deferred_context_preserves_prebinding_prompt_and_cache_key(
         eager_state, ensure_ascii=False
     )  # Unsorted whole JSON also checks field order.
     assert result.visual_match_candidate[0] == expected_key
+    assert cache_keys == [expected_key], "cache miss and promotion must share the same calculation"
     assert result.response.steps[0].source == "hbl_no"
 
 
@@ -1568,7 +1577,7 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(
 
 @pytest.mark.parametrize("has_review", [False, True], ids=["action-only", "current-save-review"])
 def test_save_result_reuses_bound_review_or_requests_current_model_review(
-    tmp_path, record, task_instruction, has_review
+    tmp_path, record, task_instruction, has_review, monkeypatch
 ):
     from brain.graph.screen_mapping import ScreenMapping
 
@@ -1612,6 +1621,11 @@ def test_save_result_reuses_bound_review_or_requests_current_model_review(
         {**cached.model_dump(mode="json"), "mapping": cached.mapping.model_dump(mode="json")},
     )
     assert cache.finish(success=True) == 1
+
+    def unused_lookup(key):
+        pytest.fail("save-result review must not read a cache entry it will discard")
+
+    monkeypatch.setattr(cache, "lookup", unused_lookup)
 
     selected = select_screen_response(request, services, prepared)
 
@@ -3249,7 +3263,7 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
         "markers": [],
     }
     bound = library.bind_with_context(
-        "semantic", {"hbl_no": "next_number"}, fresh, {"next_number": "NEW-2"}
+        learned, {"hbl_no": "next_number"}, fresh, {"next_number": "NEW-2"}
     )
     assert bound is not None
     assert bound.response["steps"][0]["point"] == [125, 28]
@@ -3261,8 +3275,7 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
         {"image_size": [800, 400]},
     ):
         assert (
-            library.bind_with_context("semantic", {}, {**fresh, **change}, {"hbl_no": "NEXT"})
-            is None
+            library.bind_with_context(learned, {}, {**fresh, **change}, {"hbl_no": "NEXT"}) is None
         )
     assert screen["screen_phash"] == perceptual_hash(
         next((tmp_path / "visual").glob("*/capture.png"))

@@ -100,10 +100,9 @@ class ScreenPatternCache:
                 "Invalid visual match cache; preserved without modification"
             ) from exc
 
-    def lookup(self, state: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    def lookup(self, key: str) -> tuple[str, dict[str, Any]] | None:
         if not self.enabled:
             return None
-        key = screen_pattern_key(state)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with portalocker.Lock(self.lock_path, mode="a", timeout=self.lock_timeout):
             entry = next((item for item in self._read_unlocked().entries if item.key == key), None)

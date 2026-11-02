@@ -15,6 +15,7 @@ from test_brain import ScriptedModel
 from test_methods import completion_response, completion_scene, learned
 from test_visual_scene import wire
 
+import brain.graph.memory_retrieval as memory_retrieval
 import brain.graph.screen_decision as screen_decision
 from brain.cache.methods import (
     MethodAction,
@@ -948,7 +949,7 @@ def test_model_adaptation_is_retained_only_after_whole_batch_delivery(tmp_path, 
         assert candidate.methods[0].action_groups == groups
         current_screen = brain.screen_scanner.planning_context()[0].screen
         bound = brain.memory_retrieval.library.bind_with_context(
-            "business-entry", {}, current_screen, brain.values
+            candidate.methods[0], {}, current_screen, brain.values
         )
         assert bound is not None
         assert bound.group_id == groups[-1].id
@@ -1380,7 +1381,7 @@ def test_successful_fallback_keeps_untried_followup_in_the_same_taught_step(tmp_
     assert (installed.id, followup_group.id) not in brain.memory_retrieval.state.used
 
 
-def test_method_history_does_not_own_education_completion(tmp_path):
+def test_method_history_does_not_own_education_completion(tmp_path, monkeypatch):
     brain, _, _ = setup(tmp_path)
     method = brain.memory_retrieval.library.methods()[0]
     first = method.action_groups[0].model_copy(
@@ -1430,6 +1431,14 @@ def test_method_history_does_not_own_education_completion(tmp_path):
         ]
     )
 
+    source_groups = []
+    resolve_sources = memory_retrieval.group_input_sources
+
+    def resolve_once(method, group, slot_map):
+        source_groups.append(group.id)
+        return resolve_sources(method, group, slot_map)
+
+    monkeypatch.setattr(memory_retrieval, "group_input_sources", resolve_once)
     procedure = brain._taught_procedure_progress()
     memory = brain.memory_retrieval.prompt_context()
 
@@ -1440,6 +1449,11 @@ def test_method_history_does_not_own_education_completion(tmp_path):
         "group-third",
     ]
     assert len(memory["recent_executions"]) == 2
+    assert source_groups == [second.id, third.id]
+    assert [action["source"] for action in memory["methods"][0]["groups"][0]["actions"]] == [
+        "customer",
+        "reference",
+    ]
 
 
 # Cleanup audit C7: retain predecessor order and exclusion of consumed groups.

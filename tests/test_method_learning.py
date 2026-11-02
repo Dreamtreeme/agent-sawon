@@ -95,7 +95,7 @@ def test_learned_method_reuses_saved_coordinate_with_new_source_without_another_
         "markers": [],
     }
     bound = MethodLibrary(path, enabled=True).bind_with_context(
-        method.id, {"reference": "new_key"}, current, {"new_key": "NEW-REFERENCE-B"}
+        method, {"reference": "new_key"}, current, {"new_key": "NEW-REFERENCE-B"}
     )
     assert bound is not None
     assert bound.response["steps"][0]["point"] == [165.0, 50.5]

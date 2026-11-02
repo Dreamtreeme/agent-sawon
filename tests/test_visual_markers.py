@@ -43,6 +43,26 @@ def fixture():
     return blocks, boxes, markers, meaning
 
 
+@pytest.fixture
+def capture_work(monkeypatch):
+    from brain.visual import scanning
+
+    work = {"hashes": [], "renders": []}
+    hash_capture, render = scanning.perceptual_hash, scanning.render_markers
+
+    def count_hash(path):
+        work["hashes"].append(path)
+        return hash_capture(path)
+
+    def count_render(path, output, markers):
+        work["renders"].append(output)
+        return render(path, output, markers)
+
+    monkeypatch.setattr(scanning, "perceptual_hash", count_hash)
+    monkeypatch.setattr(scanning, "render_markers", count_render)
+    return work
+
+
 def test_only_local_geometry_becomes_click_target():
     blocks, _, markers, meaning = fixture()
     scene = bind_scene(
@@ -302,7 +322,7 @@ def test_perception_keeps_local_markers_out_of_named_observation_prompt(tmp_path
     def interpret(request):
         prompt = observation_prompt(request.screen)
         page, payload = request.page, request.screen
-        assert page.image_path.name == "markers.png"
+        assert page.image_path.name == "capture.png"
         frame = json.loads(prompt.split("\n", 1)[1])["screen"]
         assert frame["control_regions"] == [{"bbox": [100, 15, 150, 30], "contained_text": []}]
         assert frame["text_regions"] == [{"text": "Reference", "bbox": [10, 20, 60, 15]}]
@@ -314,6 +334,8 @@ def test_perception_keeps_local_markers_out_of_named_observation_prompt(tmp_path
         text = next(m for m in payload["markers"] if m["source"] == "ocr")
         assert text["contained_ocr_ids"] == [8]
         with Image.open(page.image_path) as picture:
+            assert picture.getpixel((100, 15)) == (255, 255, 255)  # Original model image.
+        with Image.open(page.image_path.parent / "markers.png") as picture:
             assert picture.getpixel((10, 20)) == (255, 255, 255)  # OCR is evidence-only.
             assert picture.getpixel((100, 15)) == (255, 0, 0)  # Detector surface is numbered.
         calls.append(page)
@@ -445,7 +467,7 @@ def test_refinement_budget_stops_before_a_model_call(tmp_path):
 
 @pytest.mark.parametrize("missing,on_rematch", [(False, False), (True, False), (True, True)])
 def test_perception_refines_only_after_basic_detection_reports_failure(
-    tmp_path, missing, on_rematch, monkeypatch
+    tmp_path, missing, on_rematch, monkeypatch, capture_work
 ):
     blocks, boxes, _, meaning = fixture()
     blocks.append(OcrBlock(id=9, text="Second", confidence=0.99, bbox=(10, 120, 60, 15)))
@@ -478,6 +500,7 @@ def test_perception_refines_only_after_basic_detection_reports_failure(
 
     def interpret(request):
         prompt = observation_prompt(request.screen)
+        assert request.page.image_path.name == "capture.png"
         calls.append("meaning")
         clock[0] += 1
         assert '"refinement' not in prompt  # Search regions are not selectable markers.
@@ -506,9 +529,18 @@ def test_perception_refines_only_after_basic_detection_reports_failure(
     assert event.payload["local_detector_ms"] == (
         (10000 if missing else 0) + (0 if on_rematch else 2000)
     )
+    request, _ = perception.planning_context()
+    assert request.screen["screen_phash"] == perception._catalog.key[0]
+    assert len(capture_work["hashes"]) == 1
+    assert [path.name for path in capture_work["renders"]] == ["markers.png"] + (
+        ["markers-refined.png"] if missing else []
+    )
+    if missing:
+        with Image.open(request.page.image_path.parent / "markers-refined.png") as picture:
+            assert picture.getpixel((100, 115)) == (255, 0, 0)
 
 
-def test_failed_refinement_returns_navigation_semantics_to_decision_graph(tmp_path):
+def test_failed_refinement_returns_navigation_semantics_to_decision_graph(tmp_path, capture_work):
     blocks, boxes, _, meaning = fixture()
     blocks.append(OcrBlock(id=9, text="More", confidence=0.99, bbox=(10, 120, 60, 15)))
     calls = []
@@ -570,6 +602,7 @@ def test_failed_refinement_returns_navigation_semantics_to_decision_graph(tmp_pa
     assert calls == ["full", "meaning", "refine", "meaning", "meaning"]
     assert any(element.role == "group" for element in scene.elements)
     assert "required input extent missing" in scene.uncertainties
+    assert len(capture_work["hashes"]) == len(capture_work["renders"]) == 1
 
 
 @pytest.mark.parametrize(
@@ -645,7 +678,7 @@ def test_synthetic_phash_catalog_reuse_boundary(
         assert reused[0]["detector_skipped"] is True
 
 
-def test_same_screen_rematch_uses_fresh_ocr_and_reused_geometry(tmp_path):
+def test_same_screen_rematch_uses_fresh_ocr_and_reused_geometry(tmp_path, capture_work):
     blocks, boxes, _, meaning = fixture()
     calls = {"capture": 0, "ocr": 0, "detector": 0}
     requests = []
@@ -692,16 +725,21 @@ def test_same_screen_rematch_uses_fresh_ocr_and_reused_geometry(tmp_path):
     current = wire()
     assert perception.scan(current).elements[0].role == "combobox"
     before_rematch = calls.copy()
+    before_capture_work = {kind: list(paths) for kind, paths in capture_work.items()}
     corrected = perception.rematch(current)
     assert calls == before_rematch  # Rematching must not capture or run local models.
     assert corrected.obs_id == current.obs_id and corrected.elements[0].role == "combobox"
     assert requests[1].correction is None
     assert requests[1].screen["observation_route"] == "memory_retrieval"
-    assert perception.planning_context()[0].screen["observation_route"] == "memory_retrieval"
+    request, _ = perception.planning_context()
+    assert request.screen["observation_route"] == "memory_retrieval"
+    assert request.screen["screen_phash"] == corrected.capture_phash
+    assert capture_work == before_capture_work
     assert "control:0:value_outside_local_marker" in corrected.global_uncertainties
     assert perception.scan(wire()).elements[0].role == "combobox"
     assert calls == {"capture": 3, "ocr": 3, "detector": 1}
     assert len(requests) == 4  # Reused captures also resolve current context before returning.
+    assert len(capture_work["hashes"]) == len(capture_work["renders"]) == 3
 
 
 def test_input_value_comes_from_contained_ocr_when_model_omits_text_ids():

@@ -75,9 +75,6 @@ def main(argv=None) -> int:
         if request.correction is not None:
             screen["correction"] = {"error": request.correction.get("error")}
         prompt = observation_prompt(screen)
-        capture = page.image_path.parent / "capture.png"
-        if capture.exists():
-            page = page.model_copy(update={"image_path": capture})
         accounting = read_model_accounting(log)
         if accounting.unknown:
             raise ValueError("unknown_model_call_cost")

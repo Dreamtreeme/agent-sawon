@@ -294,6 +294,8 @@ class ScreenScanner:
                 "local_detector_api_cost_usd": 0,
             },
         )
+        # Numbered images are diagnostics; semantic requests keep the original capture.
+        render_markers(page.image_path, folder / "markers.png", markers)
         return _SceneCatalog(
             cache_key, page, blocks, boxes, markers, selected_fields=selected_fields, memory=memory
         ), detector_ms
@@ -440,13 +442,11 @@ class ScreenScanner:
         page, blocks, boxes, markers = catalog.page, catalog.blocks, catalog.boxes, catalog.markers
         path = page.image_path
         folder = path.parent
-        marked_path = folder / ("markers-refined.png" if catalog.refined else "markers.png")
         request = self._semantic_request(
             page,
-            path,
-            marked_path,
             markers,
             blocks,
+            screen_phash=catalog.key[0],
             memory=catalog.memory,
             selected_fields=catalog.selected_fields,
             reused=catalog.reused,
@@ -548,9 +548,14 @@ class ScreenScanner:
                     },
                 )
                 boxes = boxes + refined
-                markers = build_markers(
+                refined_markers = build_markers(
                     blocks, boxes, page.width, page.height, settings=self.merge_settings
                 )
+                if [(m.id, m.bbox) for m in refined_markers if m.source == "omniparser"] != [
+                    (m.id, m.bbox) for m in markers if m.source == "omniparser"
+                ]:
+                    render_markers(path, folder / "markers-refined.png", refined_markers)
+                markers = refined_markers
                 atomic_write_json(
                     folder / "markers-refined.json",
                     {
@@ -558,8 +563,7 @@ class ScreenScanner:
                         "refinement_regions": regions,
                     },
                 )
-                marked_path = folder / "markers-refined.png"
-                request = self._semantic_request(page, path, marked_path, markers, blocks)
+                request = self._semantic_request(page, markers, blocks, screen_phash=catalog.key[0])
                 continue
             try:
                 if catalog.memory is not None and "screen_path" not in request.screen:
@@ -740,15 +744,11 @@ class ScreenScanner:
         catalog = self._catalog
         if catalog is None or catalog.detection is None:
             raise ValueError("visual_interpretation_unavailable")
-        path = catalog.page.image_path
-        folder = path.parent
-        marked_path = folder / ("markers-refined.png" if catalog.refined else "markers.png")
         request = self._semantic_request(
             catalog.page,
-            path,
-            marked_path,
             catalog.markers,
             catalog.blocks,
+            screen_phash=catalog.key[0],
             memory=catalog.memory,
             selected_fields=catalog.selected_fields,
             reused=catalog.reused,
@@ -790,7 +790,7 @@ class ScreenScanner:
         catalog.selected_fields = selected
         catalog.markers = list(by_id.values())
         catalog.detection = detection
-        return scene.model_copy(update={"capture_phash": perceptual_hash(catalog.page.image_path)})
+        return scene.model_copy(update={"capture_phash": catalog.key[0]})
 
     def merge_interpretation(
         self, wire: Observation, meanings: SemanticDetection
@@ -842,26 +842,24 @@ class ScreenScanner:
                 "detection": detection.model_dump(mode="json"),
             },
         )
-        return scene.model_copy(update={"capture_phash": perceptual_hash(catalog.page.image_path)})
+        return scene.model_copy(update={"capture_phash": catalog.key[0]})
 
     def _semantic_request(
         self,
         page,
-        path,
-        marked_path,
         markers,
         blocks,
         *,
+        screen_phash: int,
         memory=None,
         selected_fields=None,
         reused=False,
     ) -> SemanticRequest:
-        render_markers(path, marked_path, markers)
         request = SemanticRequest(
-            page=page.model_copy(update={"image_path": marked_path}),
+            page=page,
             screen={
                 "image_size": [page.width, page.height],
-                "screen_phash": perceptual_hash(path),
+                "screen_phash": screen_phash,
                 "minimum_confidence": self.threshold,
                 "ocr": [block.model_dump(mode="json") for block in blocks],
                 "markers": [
