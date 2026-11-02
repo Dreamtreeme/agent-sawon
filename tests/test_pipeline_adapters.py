@@ -10,7 +10,7 @@ from PIL import Image
 
 from pipeline.ocr import PaddleOcrEngine
 from pipeline.ocr_worker import recognize
-from pipeline.render import PipelineDependencyError, render_document
+from pipeline.render import render_document
 from pipeline.schemas import DocumentInput, OcrBlock, PageExtraction, PipelineSettings, RenderedPage
 
 
@@ -80,23 +80,23 @@ def test_paddle_malformed_parallel_arrays_are_rejected():
         recognize(fake, "not-read.png")
 
 
-def test_missing_paddle_is_actionable_not_fake_ocr(monkeypatch, page):
-    def missing(*_):
-        raise ModuleNotFoundError("paddleocr")
-
-    monkeypatch.setattr("pipeline.ocr.create_engine", missing)
-    with pytest.raises(PipelineDependencyError, match="No OCR fallback"):
-        PaddleOcrEngine(PipelineSettings(ocr_execution="in_process")).read(page)
-
-
 def test_ocr_outside_page_rejected(monkeypatch, page):
-    monkeypatch.setattr("pipeline.ocr.create_engine", lambda *_: object())
     block = {"id": 0, "text": "Cargo", "confidence": 0.99, "bbox": [0, 0, 100, 40]}
     supplied = [block]
-    monkeypatch.setattr("pipeline.ocr.recognize", lambda *_: supplied)
-    assert PaddleOcrEngine(PipelineSettings(ocr_execution="in_process")).read(page) == [
-        OcrBlock.model_validate(block)
-    ]
+
+    class Worker:
+        last_metrics = {}
+
+        def __init__(self, command, *, directory, shared_key=None):
+            pass
+
+        def request(self, payload, *, timeout):
+            assert payload["device"] == "gpu:0"
+            return {"blocks": supplied}
+
+    monkeypatch.setattr("pipeline.ocr.PersistentWorker", Worker)
+    settings = PipelineSettings(ocr_execution="subprocess", ocr_device="gpu:0")
+    assert PaddleOcrEngine(settings).read(page) == [OcrBlock.model_validate(block)]
     for invalid, limits, error in [
         ([{**block, "bbox": [0, 0, 200, 40]}], {}, "ocr_bbox_outside_page"),
         ([block, block], {}, "duplicate_ocr_block_id"),
@@ -106,7 +106,7 @@ def test_ocr_outside_page_rejected(monkeypatch, page):
     ]:
         supplied = invalid
         with pytest.raises(ValueError, match=error):
-            PaddleOcrEngine(PipelineSettings(ocr_execution="in_process", **limits)).read(page)
+            PaddleOcrEngine(settings.model_copy(update=limits)).read(page)
 
 
 def test_image_render_preserves_real_pixels_and_page_coordinates(tmp_path):
@@ -153,7 +153,9 @@ def test_external_ocr_reuses_worker_and_closes_it(monkeypatch, page):
             closed.append(True)
 
     monkeypatch.setattr("pipeline.ocr.PersistentWorker", Worker)
-    engine = PaddleOcrEngine(PipelineSettings(ocr_python="C:/OCR env/python.exe"))
+    engine = PaddleOcrEngine(
+        PipelineSettings(ocr_device="gpu:0", ocr_python="C:/OCR env/python.exe")
+    )
     first = engine.read(page)
     second = engine.read(
         page.model_copy(update={"image_path": page.image_path.parent / "other.png"})
@@ -164,4 +166,5 @@ def test_external_ocr_reuses_worker_and_closes_it(monkeypatch, page):
     assert created[0][-1] == "--serve"
     assert len(requests) == 2 and requests[0][0]["image"] != requests[1][0]["image"]
     assert all(timeout == 300 for _, timeout in requests)
+    assert all(payload["device"] == "gpu:0" for payload, _ in requests)
     assert closed == [True]

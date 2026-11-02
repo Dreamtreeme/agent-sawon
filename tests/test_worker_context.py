@@ -1,51 +1,35 @@
-"""Provider adapters must preserve the same workflow context and verified facts."""
+"""Screen mapping receives current execution context and verified facts."""
 
 import json
 
 import pytest
 from test_brain import record as record
 from test_screen_decision import fixture, named_response, setup_brain
-from test_visual_scene import wire
 
 from brain.graph.schemas import Choice, Decision
 from brain.graph.screen_decision import ScreenMatch
 from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
 from brain.task_instruction import TaskInstruction
-from brain.visual.markers import build_markers, ground_meanings
-from brain.visual.scene import bind_scene
+from brain.visual.markers import build_markers
 
 
 @pytest.mark.parametrize(
-    "phase,step,verified,submitted",
+    "phase,step",
     [
-        ("task", "task-action", False, False),
-        ("save_result", "inspect-save", False, False),
+        ("task", "task-action"),
+        ("save_result", "inspect-save"),
     ],
 )
-def test_direct_and_screen_matching_receive_identical_execution_context(
-    tmp_path, record, phase, step, verified, submitted
-):
-    blocks, boxes, _, meanings = fixture()
+def test_screen_matching_receives_current_execution_context(tmp_path, record, phase, step):
+    blocks, boxes, _, _ = fixture()
     markers = build_markers(blocks, boxes, 400, 200)
     brain, model, *_ = setup_brain(
         tmp_path,
         record,
         [named_response(procedure_step=step, steps=[], operation="stop")],
     )
-    brain.observation = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
     brain.phase = phase
-    brain.query_value_verified = verified
-    brain.query_submitted = submitted
     expected = brain._execution_context()
-    direct = brain._decision_prompt().split("TRUSTED_TASK=", 1)[1].split("\nUI_TEXT=", 1)[0]
-    direct = json.loads(direct)
-    assert direct["phase_instruction"] == expected["guidance"]
-    assert direct["execution_policy"]["current_step"] == expected["checkpoint"]
-    assert (
-        sorted({c["intent"] for c in direct["execution_policy"]["allowed_next_choices"]})
-        == expected["allowed_intents"]
-    )
-    assert direct["final_required_fields"] == expected["final_required_fields"]
     brain._decide_visual_screen(
         {
             "ocr": [b.model_dump() for b in blocks],
@@ -73,128 +57,6 @@ def test_generic_task_context_has_no_legacy_query_input_gate(tmp_path, record):
     assert context["remaining_inputs"] == sorted(brain.values)
     assert "remaining_fields" not in context
     assert "No application route is predefined" in context["guidance"]
-
-
-def test_saved_review_context_excludes_run_local_provenance(tmp_path, record, monkeypatch):
-    brain, *_ = setup_brain(tmp_path, record, [])
-    brain.phase = "final_query"
-    brain.saved_evidence.begin("origin-a")
-    brain.saved_evidence.query_row_seen = True
-    brain.saved_evidence.fields["hbl_no"] = {"obs_id": "obs-a", "ref": "ref-a"}
-    brain.saved_evidence.query_identity = {
-        "obs_id": "obs-a",
-        "capture_id": "capture-a",
-        "screenshot": "run-a.png",
-        "ref": "ref-a",
-        "session_id": brain.saved_evidence.session_id,
-    }
-    first = brain._execution_context()["saved_record_review"]
-
-    brain.saved_evidence.session_id = "different-session"
-    brain.saved_evidence.origin_obs_id = "origin-b"
-    brain.saved_evidence.query_identity = {
-        "obs_id": "obs-b",
-        "capture_id": "capture-b",
-        "screenshot": "run-b.png",
-        "ref": "ref-b",
-        "session_id": "different-session",
-    }
-    second = brain._execution_context()["saved_record_review"]
-
-    snapshots = []
-    snapshot = type(brain.saved_evidence).snapshot
-
-    def capture_snapshot(evidence, values):
-        result = snapshot(evidence, values)
-        snapshots.append(result)
-        return result
-
-    monkeypatch.setattr(type(brain.saved_evidence), "snapshot", capture_snapshot)
-    request = brain._screen_decision_request({}, None)
-    assert len(snapshots) == 1
-    assert request.saved_record_review is snapshots[0]
-    assert request.execution_contract["saved_record_review"] == second
-
-    assert first == second
-    assert first == {
-        "identity_field": "hbl_no",
-        "record_id": brain.values["hbl_no"],
-        "query_row_seen": True,
-        "confirmed_fields": ["hbl_no"],
-        "missing_fields": sorted(set(brain.values) - {"hbl_no"}),
-        "conflict": None,
-        "detail_identity_observed": False,
-    }
-
-
-def test_pending_last_record_fill_proposes_save_without_mutating_verified_fields(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [])
-    brain.phase = "enter"
-    brain.duplicate_clear = True
-    last_field = "consignee"
-    brain.verified = {field: f"ref-{field}" for field in brain.values if field != last_field}
-    brain.decision = Decision(
-        screen_kind="editor",
-        operation="act",
-        intent="fill",
-        subgoal="fill-entry",
-        reason="fill final field",
-        action=Choice(type="set_text", ref="e1", source=last_field),
-    )
-    brain.pending = {"decision": brain.decision}
-
-    actual = brain._execution_context()
-    proposed = brain._execution_context(anticipate=True)
-
-    assert actual["checkpoint"] == "fill_fields"
-    assert proposed["checkpoint"] == "save"
-    assert proposed["conditional"]
-    assert proposed["remaining_fields"] == []
-    assert proposed["last_delivered_actions"] == [
-        {
-            "intent": "fill",
-            "source": last_field,
-            "screen_kind": "editor",
-            "action": "set_text",
-            "subgoal": "fill-entry",
-        }
-    ]
-    assert proposed["allowed_intents"] == [
-        "cancel",
-        "navigate",
-        "save",
-        "select_tab",
-        "stop",
-        "wait",
-    ]
-    assert last_field not in brain.verified
-    assert brain._decision_policy().current_step == "fill_fields"
-
-
-def test_pending_external_selection_anticipates_its_verified_field(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [])
-    brain.phase = "enter"
-    brain.duplicate_clear = True
-    selected_field = "shipper"
-    brain.verified = {field: f"ref-{field}" for field in brain.values if field != selected_field}
-    brain.decision = Decision(
-        screen_kind="partner",
-        operation="act",
-        intent="select_option",
-        subgoal="select-shipper",
-        reason="select partner",
-        action=Choice(type="click", ref="e1"),
-    )
-    brain.pending = {"decision": brain.decision, "effect_source": selected_field}
-
-    actual = brain._execution_context()
-    proposed = brain._execution_context(anticipate=True)
-
-    assert actual["checkpoint"] == "fill_fields"
-    assert proposed["checkpoint"] == "save"
-    assert proposed["conditional"]
-    assert proposed["remaining_fields"] == []
-    assert selected_field not in brain.verified
 
 
 def test_pending_external_selection_exposes_only_post_verification_steps(tmp_path, record):
@@ -294,7 +156,6 @@ def test_opening_saved_detail_scopes_request_without_erasing_entry_on_failed_nav
     tmp_path, record
 ):
     brain, *_ = setup_brain(tmp_path, record, [])
-    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
     brain.save_issued = True
     entry = {field: f"entry-{field}" for field in brain.values}
     brain.verified = dict(entry)

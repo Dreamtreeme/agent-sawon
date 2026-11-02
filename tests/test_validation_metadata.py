@@ -25,12 +25,8 @@ class Items(BaseModel):
 
 
 @pytest.fixture
-def final_search_schema():
-    return DecisionPolicy(
-        ExecutionFacts(
-            "final_query", duplicate_clear=True, save_issued=True, query_value_verified=True
-        )
-    ).response_schema()
+def task_response_schema():
+    return DecisionPolicy(ExecutionFacts("task", field_names=("hbl_no",))).response_schema()
 
 
 def test_nested_schema_fields_and_indices_survive_without_input():
@@ -120,7 +116,7 @@ def test_schema_annotation_values_do_not_authorize_union_branches():
     assert safe_validation_errors(error, metadata) == [{"type": "int_parsing", "loc": []}]
 
 
-def test_actual_wire_union_preserves_decision_intent_path(final_search_schema):
+def test_actual_wire_union_preserves_decision_intent_path(task_response_schema):
     payload = {
         "decision": {
             "screen_kind": "query",
@@ -132,15 +128,15 @@ def test_actual_wire_union_preserves_decision_intent_path(final_search_schema):
         }
     }
     with pytest.raises(ValidationError) as raised:
-        final_search_schema.model_validate(payload)
-    result = safe_validation_errors(raised.value, final_search_schema)
+        task_response_schema.model_validate(payload)
+    result = safe_validation_errors(raised.value, task_response_schema)
     assert {"type": "literal_error", "loc": ["decision", "intent"]} in result
     encoded = json.dumps(result)
     assert "Wire" not in encoded
     assert "PRIVATE" not in encoded
 
 
-def test_actual_nested_wire_union_preserves_action_ref_path(final_search_schema):
+def test_actual_nested_wire_union_preserves_action_ref_path(task_response_schema):
     payload = {
         "decision": {
             "screen_kind": "query",
@@ -152,8 +148,8 @@ def test_actual_nested_wire_union_preserves_action_ref_path(final_search_schema)
         }
     }
     with pytest.raises(ValidationError) as raised:
-        final_search_schema.model_validate(payload)
-    result = safe_validation_errors(raised.value, final_search_schema)
+        task_response_schema.model_validate(payload)
+    result = safe_validation_errors(raised.value, task_response_schema)
     assert {"type": "string_type", "loc": ["decision", "action", "ref"]} in result
     assert "PRIVATE" not in json.dumps(result)
 

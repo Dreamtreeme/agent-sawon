@@ -6,7 +6,7 @@ from brain.cache import ScreenPatternCache, screen_pattern_key
 
 def test_visual_match_cache_promotes_only_a_successful_run(tmp_path):
     path = tmp_path / "visual.json"
-    state = {"screen": {"markers": [1]}, "workflow": {"phase": "enter"}}
+    state = {"screen": {"markers": [1]}, "workflow": {"phase": "task"}}
     key = screen_pattern_key(state)
     # Synthetic pre-source-contract key: preserve its file but never parse the old response.
     old_key = hashlib.sha256(

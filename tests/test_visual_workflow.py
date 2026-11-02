@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
+from runtime_profile import current_settings
 from sawon_interfaces import (
     CaptureGeometry,
     ImageTarget,
@@ -16,7 +17,6 @@ from test_brain import record as record
 from brain.graph.engine import Brain
 from brain.graph.schemas import Choice, Decision
 from brain.graph.transitions import ObservedEffect
-from brain.settings import BrainSettings
 from brain.visual.scene import SceneObservation
 from sawon_runtime.storage import RunLog
 
@@ -154,10 +154,7 @@ def test_caret_recheck_failure_rules_are_local_and_independent(tmp_path, monkeyp
             goal="Save for approval",
             relay=relay,
             model=ScriptedModel(log, []),
-            settings=BrainSettings(
-                screen_matching=False,
-                visual_input_blur_recheck=enabled,
-            ),
+            settings=current_settings(case_dir, visual_input_blur_recheck=enabled),
             case_dir=case_dir,
             run_log=log,
             visual_ocr=object(),

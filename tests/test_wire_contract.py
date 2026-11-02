@@ -10,7 +10,6 @@ from case_labels import labeled_case
 from pydantic import ValidationError
 
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
-from brain.graph.schemas import DecisionResponse
 
 
 def schema_accepts(value, schema, root=None):
@@ -118,9 +117,7 @@ def complete():
     return decision(
         "complete",
         "verify",
-        grid_ref="e2",
-        row_ref="e3",
-        evidence=[{"field": "hbl_no", "ref": "e4"}],
+        completion_evidence=[{"condition_index": 0, "ref": "e4"}],
     )
 
 
@@ -129,9 +126,7 @@ def test_wire_schema_accepts_every_supported_action_and_result_branch():
         ("click", decision(action={"type": "click", "ref": "e1"})),
         (
             "text",
-            decision(
-                intent="query_input", action={"type": "set_text", "ref": "e1", "source": "hbl_no"}
-            ),
+            decision(intent="fill", action={"type": "set_text", "ref": "e1", "source": "hbl_no"}),
         ),
         (
             "key",
@@ -140,15 +135,17 @@ def test_wire_schema_accepts_every_supported_action_and_result_branch():
         ("wait", decision(intent="wait", action={"type": "wait", "duration_ms": 0})),
         ("focus", decision(action={"type": "focus_window", "handle": 99})),
         ("stop", decision("stop", "stop")),
-        ("duplicate", decision("duplicate_clear", "verify", grid_ref="e2")),
         ("complete", complete()),
     ]
-    schema = DecisionResponse.model_json_schema()
+    response_schema = DecisionPolicy(
+        ExecutionFacts("task", field_names=("hbl_no",))
+    ).response_schema()
+    schema = response_schema.model_json_schema()
     for case, payload in cases:
         with labeled_case(case):
             envelope = {"decision": payload}
             assert schema_accepts(envelope, schema)
-            response = DecisionResponse.model_validate_json(json.dumps(envelope))
+            response = response_schema.model_validate_json(json.dumps(envelope))
             internal = response.to_decision()
             assert internal.operation == payload["operation"]
             assert internal.intent == payload["intent"]
@@ -170,40 +167,46 @@ def test_wire_schema_and_local_validation_reject_each_invalid_contract_shape():
         ("missing-ref", decision(action={"type": "click"})),
         ("null-ref", decision(action={"type": "click", "ref": None})),
         ("blank-ref", decision(action={"type": "click", "ref": "  "})),
-        ("missing-source", decision(action={"type": "set_text", "ref": "e1"})),
-        ("null-source", decision(action={"type": "type_text", "ref": "e1", "source": None})),
+        ("missing-source", decision(intent="fill", action={"type": "set_text", "ref": "e1"})),
+        (
+            "null-source",
+            decision(intent="fill", action={"type": "type_text", "ref": "e1", "source": None}),
+        ),
         ("missing-key", decision(action={"type": "key", "ref": "e1"})),
         ("missing-handle", decision(action={"type": "focus_window"})),
         ("missing-option", decision(action={"type": "select_option", "ref": "e1"})),
         ("wait-too-long", decision(intent="wait", action={"type": "wait", "duration_ms": 3001})),
         ("stop-with-action", decision("stop", "stop", action={"type": "click", "ref": "e1"})),
         ("complete-with-action", {**complete(), "action": {"type": "click", "ref": "e1"}}),
-        ("missing-grid", {**complete(), "grid_ref": None}),
-        ("blank-row", {**complete(), "row_ref": " "}),
-        ("duplicate-without-grid", decision("duplicate_clear", "verify")),
+        ("missing-completion-evidence", decision("complete", "verify")),
+        (
+            "blank-completion-ref",
+            {**complete(), "completion_evidence": [{"condition_index": 0, "ref": " "}]},
+        ),
     ]
-    schema = DecisionResponse.model_json_schema()
+    response_schema = DecisionPolicy(
+        ExecutionFacts("task", field_names=("hbl_no",))
+    ).response_schema()
+    schema = response_schema.model_json_schema()
     for case, payload in cases:
         with labeled_case(case):
             envelope = {"decision": payload}
             assert not schema_accepts(envelope, schema)
             with pytest.raises(ValidationError) as raised:
-                DecisionResponse.model_validate_json(json.dumps(envelope))
+                response_schema.model_validate_json(json.dumps(envelope))
             assert raised.value.errors()
 
 
 def test_provider_schema_does_not_accept_raw_unwrapped_response():
     payload = decision("stop", "stop")
-    schema = DecisionPolicy(ExecutionFacts("final_query")).response_schema()
+    schema = DecisionPolicy(ExecutionFacts("task")).response_schema()
     assert not schema_accepts(payload, schema.model_json_schema())
     with pytest.raises(ValidationError):
         schema.model_validate_json(json.dumps(payload))
 
 
 def test_unrelated_operations_do_not_offer_nullable_grid_fields():
-    response = DecisionPolicy(
-        ExecutionFacts("final_query", duplicate_clear=True, save_issued=True)
-    ).response_schema()
+    response = DecisionPolicy(ExecutionFacts("task")).response_schema()
     schema = response.model_json_schema()
     for operation, intent in (("act", "navigate"), ("stop", "stop")):
         with labeled_case(operation):
@@ -220,13 +223,9 @@ def test_unrelated_operations_do_not_offer_nullable_grid_fields():
 
 
 def test_provider_schema_uses_documented_enum_for_single_literal_branches():
-    schema = DecisionResponse
+    schema = DecisionPolicy(ExecutionFacts("task")).response_schema()
     exported = schema.model_json_schema()
     assert '"const"' not in json.dumps(exported)
     stop = exported["$defs"]["WireStopDecision"]["properties"]
     assert stop["operation"]["enum"] == ["stop"]
     assert stop["intent"]["enum"] == ["stop"]
-    invalid = {"decision": decision("duplicate_clear", "verify")}
-    assert not schema_accepts(invalid, exported)
-    with pytest.raises(ValidationError):
-        schema.model_validate(invalid)

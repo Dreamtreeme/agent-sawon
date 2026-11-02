@@ -24,32 +24,6 @@ def action(intent, *, screen="query", kind="click", **choice):
     }
 
 
-def proof(operation):
-    result = {
-        "screen_kind": "query",
-        "operation": operation,
-        "intent": "verify",
-        "subgoal": "Check observed result evidence",
-        "reason": "The current result contains the submitted proof",
-        "action": None,
-        "grid_ref": "current-grid",
-    }
-    if operation == "complete":
-        result.update(row_ref="current-row", evidence=[{"field": "hbl_no", "ref": "cell"}])
-    return result
-
-
-def stop(screen="query"):
-    return {
-        "screen_kind": screen,
-        "operation": "stop",
-        "intent": "stop",
-        "subgoal": "Stop safely",
-        "reason": "No supported next step",
-        "action": None,
-    }
-
-
 def assert_contract(policy, payload, expected):
     """Independent exported-schema oracle, Pydantic, and runtime must agree."""
     schema = policy.response_schema()
@@ -66,7 +40,7 @@ def assert_contract(policy, payload, expected):
 
 def test_credential_submission_removes_only_submitted_sources_and_then_offers_login():
     initial = ExecutionFacts(
-        phase="duplicate_query",
+        phase="task",
         available_credential_sources=("credential.username", "credential.password"),
     )
     username = action("credential", screen="login", kind="set_text", source="credential.username")
@@ -96,7 +70,7 @@ def test_credential_submission_removes_only_submitted_sources_and_then_offers_lo
 
 def test_credential_input_is_never_offered_on_other_claimed_screens():
     policy = DecisionPolicy(
-        ExecutionFacts("duplicate_query", available_credential_sources=("credential.password",))
+        ExecutionFacts("task", available_credential_sources=("credential.password",))
     )
     for screen in ("menu", "query", "editor", "partner", "dialog", "unknown"):
         with labeled_case(screen):
@@ -108,7 +82,7 @@ def test_credential_input_is_never_offered_on_other_claimed_screens():
 
 
 def test_absent_credentials_do_not_offer_a_login_command_or_credential_input():
-    policy = DecisionPolicy(ExecutionFacts("duplicate_query"))
+    policy = DecisionPolicy(ExecutionFacts("task"))
     assert_contract(policy, action("login", screen="login"), False)
     assert_contract(
         policy,
@@ -118,67 +92,8 @@ def test_absent_credentials_do_not_offer_a_login_command_or_credential_input():
     assert policy.as_prompt()["credential_action_if_login"] is None
 
 
-def test_query_input_then_search_have_disjoint_preconditions():
-    for phase in ("duplicate_query", "final_query"):
-        with labeled_case(phase):
-            facts = ExecutionFacts(
-                phase, duplicate_clear=phase == "final_query", save_issued=phase == "final_query"
-            )
-            text = action("query_input", kind="set_text", source="hbl_no")
-            search = action("search")
-            assert_contract(DecisionPolicy(facts), text, True)
-            assert_contract(DecisionPolicy(facts), search, False)
-            verified = replace(facts, query_value_verified=True)
-            assert_contract(DecisionPolicy(verified), text, False)
-            assert_contract(DecisionPolicy(verified), search, True)
-            assert_contract(
-                DecisionPolicy(verified), action("search", kind="key", keys="enter"), True
-            )
-            searched = replace(verified, query_submitted=True)
-            assert_contract(DecisionPolicy(searched), text, False)
-            assert_contract(DecisionPolicy(searched), search, False)
-
-
-def test_duplicate_checkpoint_freezes_ui_until_result_evidence_or_stop():
-    before = DecisionPolicy(ExecutionFacts("duplicate_query", query_value_verified=True))
-    after = DecisionPolicy(replace(before.facts, query_submitted=True))
-    for operation in ("duplicate_clear", "duplicate_found"):
-        assert_contract(before, proof(operation), False)
-        assert_contract(after, proof(operation), True)
-    for payload in (
-        action("navigate"),
-        action("cancel", kind="key", keys="esc"),
-        action("wait", kind="wait"),
-    ):
-        assert_contract(after, payload, False)
-    assert_contract(after, stop(), True)
-    assert_contract(after, stop("unknown"), True)
-    assert after.current_step == "duplicate_result_evidence"
-
-
-def test_field_readback_removes_verified_sources_and_prevents_early_save():
-    facts = ExecutionFacts("enter", field_names=("hbl_no", "packages.unit"), duplicate_clear=True)
-    first = action("fill", screen="editor", kind="set_text", source="hbl_no")
-    option = action("fill", screen="editor", kind="set_text", source="packages.unit")
-    save = action("save", screen="editor")
-    assert_contract(DecisionPolicy(facts), first, True)
-    assert_contract(DecisionPolicy(facts), option, True)
-    assert_contract(DecisionPolicy(facts), save, False)
-    first_verified = replace(facts, verified_field_names=("hbl_no",))
-    assert_contract(DecisionPolicy(first_verified), first, False)
-    assert_contract(DecisionPolicy(first_verified), option, True)
-    assert_contract(DecisionPolicy(first_verified), save, False)
-    ready = replace(facts, verified_field_names=facts.field_names)
-    assert_contract(DecisionPolicy(ready), first, False)
-    assert_contract(DecisionPolicy(ready), option, False)
-    assert_contract(DecisionPolicy(ready), save, True)
-    assert_contract(DecisionPolicy(replace(ready, duplicate_clear=False)), save, False)
-    assert_contract(DecisionPolicy(replace(ready, save_issued=True)), save, False)
-    assert_contract(DecisionPolicy(ExecutionFacts("enter", duplicate_clear=True)), save, False)
-
-
 def test_partner_selection_and_search_remain_available_during_unfinished_entry():
-    policy = DecisionPolicy(ExecutionFacts("enter", field_names=("shipper",), duplicate_clear=True))
+    policy = DecisionPolicy(ExecutionFacts("task", field_names=("shipper",)))
     allowed = [
         action("fill", screen="partner", kind="type_text", source="shipper"),
         action("search", screen="partner"),
@@ -187,66 +102,10 @@ def test_partner_selection_and_search_remain_available_during_unfinished_entry()
     ]
     for payload in allowed:
         assert_contract(policy, payload, True)
-        assert_contract(
-            DecisionPolicy(replace(policy.facts, phase="final_query", save_issued=True)),
-            payload,
-            False,
-        )
-
-
-def test_final_completion_requires_all_prior_runtime_facts():
-    ready = ExecutionFacts(
-        "final_query",
-        duplicate_clear=True,
-        save_issued=True,
-        query_value_verified=True,
-        query_submitted=True,
-        final_evidence_ready=True,
-    )
-    assert ready.final_query_workflow_ready
-    for missing, value, workflow_ready in (
-        ("phase", "enter", False),
-        ("duplicate_clear", False, False),
-        ("save_issued", False, False),
-        ("query_value_verified", False, False),
-        ("query_submitted", False, False),
-        ("final_evidence_ready", False, True),
-    ):
-        with labeled_case(missing):
-            incomplete = replace(ready, **{missing: value})
-            assert incomplete.final_query_workflow_ready is workflow_ready
-            assert_contract(DecisionPolicy(ready), proof("complete"), True)
-            assert_contract(DecisionPolicy(incomplete), proof("complete"), False)
-            assert_contract(DecisionPolicy(ready), proof("duplicate_clear"), False)
-
-
-def test_final_proof_can_reveal_current_controls_without_repeating_input_or_search():
-    policy = DecisionPolicy(
-        ExecutionFacts(
-            "final_query",
-            duplicate_clear=True,
-            save_issued=True,
-            query_value_verified=True,
-            query_submitted=True,
-            final_evidence_ready=True,
-        )
-    )
-    for payload in (
-        action("navigate", kind="focus_window", handle=12),
-        action("select_tab", screen="editor"),
-        action("wait", kind="wait", duration_ms=0),
-        action("cancel", screen="dialog", kind="key", keys="esc"),
-    ):
-        assert_contract(policy, payload, True)
-    assert policy.current_step == "final_row_evidence"
-    empty_proof = {**proof("complete"), "evidence": []}
-    assert_contract(
-        policy, empty_proof, True
-    )  # The engine independently checks actual field proof.
 
 
 def test_save_confirmation_requires_a_prior_save_and_a_dialog_activation():
-    facts = ExecutionFacts("final_query", duplicate_clear=True)
+    facts = ExecutionFacts("save_result")
     payload = action("confirm_save", screen="dialog")
     assert_contract(DecisionPolicy(facts), payload, False)
     issued = DecisionPolicy(replace(facts, save_issued=True))
@@ -264,8 +123,7 @@ def test_broad_action_types_cannot_bypass_intent_or_source_contract():
             ("navigate-as-wait", action("navigate", kind="wait")),
             ("search-as-double-click", action("search", kind="double_click")),
             ("search-as-text", action("search", kind="set_text", source="hbl_no")),
-            ("query-input-as-click", action("query_input", kind="click")),
-            ("query-input-wrong-source", action("query_input", kind="set_text", source="mbl_no")),
+            ("fill-wrong-source", action("fill", kind="set_text", source="unknown_field")),
             ("fill-as-click", action("fill", screen="editor", kind="click")),
             ("wait-as-click", action("wait", kind="click")),
             ("cancel-as-text", action("cancel", kind="set_text", source="hbl_no")),
@@ -275,31 +133,30 @@ def test_broad_action_types_cannot_bypass_intent_or_source_contract():
         (
             "wait-as-eligible-search",
             action("search", kind="wait"),
-            ExecutionFacts("duplicate_query", query_value_verified=True),
+            ExecutionFacts("task", field_names=("hbl_no",)),
             action("search"),
         ),
         (
             "wait-as-eligible-save",
             action("save", screen="editor", kind="wait"),
             ExecutionFacts(
-                "enter",
+                "task",
                 field_names=("hbl_no",),
                 verified_field_names=("hbl_no",),
-                duplicate_clear=True,
             ),
             action("save", screen="editor"),
         ),
         (
             "wait-as-eligible-confirm-save",
             action("confirm_save", screen="dialog", kind="wait"),
-            ExecutionFacts("save_result", duplicate_clear=True, save_issued=True),
+            ExecutionFacts("save_result", save_issued=True),
             action("confirm_save", screen="dialog"),
         ),
         (
             "wait-as-eligible-login",
             action("login", screen="login", kind="wait"),
             ExecutionFacts(
-                "duplicate_query",
+                "task",
                 available_credential_sources=("credential.username", "credential.password"),
                 submitted_credentials=("credential.username", "credential.password"),
             ),
@@ -314,31 +171,23 @@ def test_broad_action_types_cannot_bypass_intent_or_source_contract():
                 assert_contract(policy, payload, False)
                 continue
             for current in (
-                ExecutionFacts("duplicate_query"),
-                ExecutionFacts("enter", field_names=("hbl_no", "mbl_no"), duplicate_clear=True),
-                ExecutionFacts(
-                    "final_query",
-                    duplicate_clear=True,
-                    save_issued=True,
-                    query_value_verified=True,
-                ),
+                ExecutionFacts("task", field_names=("hbl_no", "mbl_no")),
+                ExecutionFacts("save_result", save_issued=True),
             ):
                 assert_contract(DecisionPolicy(current), payload, False)
 
 
 def test_facts_are_canonical_immutable_and_cannot_contain_values_or_secret_names():
-    facts = ExecutionFacts(
-        "enter", field_names=("mbl_no", "hbl_no", "hbl_no"), duplicate_clear=True
-    )
+    facts = ExecutionFacts("task", field_names=("mbl_no", "hbl_no", "hbl_no"))
     assert facts.field_names == ("hbl_no", "mbl_no")
     with pytest.raises(FrozenInstanceError):
-        facts.phase = "final_query"
+        facts.phase = "save_result"
     with pytest.raises(ValueError, match="unsupported names"):
-        ExecutionFacts("duplicate_query", available_credential_sources=("private-password-value",))
+        ExecutionFacts("task", available_credential_sources=("private-password-value",))
     with pytest.raises(ValueError, match="belong to this task"):
-        ExecutionFacts("enter", field_names=("hbl_no",), verified_field_names=("mbl_no",))
+        ExecutionFacts("task", field_names=("hbl_no",), verified_field_names=("mbl_no",))
     with pytest.raises(ValueError, match="must be available"):
-        ExecutionFacts("duplicate_query", submitted_credentials=("credential.password",))
+        ExecutionFacts("task", submitted_credentials=("credential.password",))
     policy = DecisionPolicy(facts)
     assert policy.response_schema() is DecisionPolicy(replace(facts)).response_schema()
     assert '"const"' not in json.dumps(policy.response_schema().model_json_schema())
@@ -347,16 +196,15 @@ def test_facts_are_canonical_immutable_and_cannot_contain_values_or_secret_names
 def test_prompt_lists_the_same_reduced_choices_without_inferring_login_screen():
     policy = DecisionPolicy(
         ExecutionFacts(
-            "enter",
+            "task",
             field_names=("hbl_no", "mbl_no"),
             verified_field_names=("hbl_no",),
             available_credential_sources=("credential.username", "credential.password"),
             submitted_credentials=("credential.username",),
-            duplicate_clear=True,
         )
     )
     prompt = policy.as_prompt()
-    assert prompt["current_step"] == "fill_fields"
+    assert prompt["current_step"] == "task"
     assert prompt["remaining_fields"] == ["mbl_no"]
     assert prompt["remaining_credential_sources"] == ["credential.password"]
     assert prompt["credential_action_if_login"] == "credential_input"

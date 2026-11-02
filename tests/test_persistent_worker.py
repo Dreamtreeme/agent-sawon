@@ -286,6 +286,7 @@ def test_brain_closes_local_workers_on_completion_and_interruption(
         log=log,
         detect=lambda _request: None,
         detector=detector,
+        model_led_semantics=True,
     )
 
     def run():

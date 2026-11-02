@@ -37,7 +37,7 @@ def arguments(tmp_path):
     )
     brain_config = tmp_path / "brain.toml"
     brain_config.write_text(
-        "screen_matching = false\nmax_cost_usd = 0.4\n",
+        "screen_matching = true\nmax_cost_usd = 0.4\n",
         encoding="utf-8",
     )
     pipeline_config = tmp_path / "pipeline.toml"
@@ -137,7 +137,7 @@ def test_only_extracted_record_is_given_to_brain_and_log_costs_continue(
                 "--recovery-model-config",
                 str(tmp_path / "recovery.toml"),
                 "--summary-strategy",
-                "flat_fields",
+                "label_grouped",
             ]
         )
         == 0

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 from PIL import Image
+from runtime_profile import current_settings
 from sawon_interfaces import ActionResult
 from test_brain import ScriptedModel
 from test_methods import completion_response, completion_scene, learned
@@ -28,7 +29,7 @@ from brain.graph.engine import Brain
 from brain.graph.memory_retrieval import open_memory_library
 from brain.graph.screen_decision import MethodBinding, ScreenMatch
 from brain.graph.screen_mapping import ScreenMapping
-from brain.settings import BrainSettings
+from brain.settings import MethodSettings
 from brain.task_instruction import (
     ObservedStepResult,
     TaskInputRecord,
@@ -165,7 +166,6 @@ def test_synthetic_provider_refinement_reenters_scanning_with_same_capture(
 ):
     # Synthetic image/OCR/provider replies; real provider parsing, decision and scanner functions.
     brain, model, relay = setup(tmp_path, changed_label=True)
-    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
     next_plan = next(model.decisions)
     if identical:
         brain.method_library.enabled = False
@@ -353,18 +353,16 @@ def setup(
         goal=task.objective,
         relay=relay,
         model=model,
-        settings=BrainSettings(
+        settings=current_settings(
+            tmp_path,
+            task_instruction=task,
             task_path=task_path,
-            screen_matching=True,
-            visual_screen_fill=True,
-            visual_model_led_semantics=True,
-            visual_model_only_review=True,
-            methods={
-                "enabled": True,
-                "compiled_only": True,
-                "path": source.path,
-                "promotion_path": promotion_path,
-            },
+            methods=MethodSettings(
+                enabled=True,
+                compiled_only=True,
+                path=source.path,
+                promotion_path=promotion_path,
+            ),
         ),
         case_dir=tmp_path / "case",
         run_log=log,
@@ -582,7 +580,6 @@ def test_synthetic_missing_layout_uses_model_coordinates_at_executor(tmp_path, o
 def test_synthetic_saved_review_requires_current_model_values_after_structure_retrieval(tmp_path):
     # Synthetic successful source and fake desktop; real compile/bind/graph/memo/execution paths.
     brain, model, relay = setup(tmp_path)
-    brain.settings = brain.settings.model_copy(update={"guard_mode": "observe_only"})
     brain.task_instruction = brain.task_instruction.model_copy(
         update={
             "procedure": [

@@ -5,16 +5,14 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from runtime_profile import current_settings
 from test_brain import FakeRelay, ScriptedModel, decision
 
 from brain.graph.engine import Brain
-from brain.graph.execution import GuardStop
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
 from brain.graph.schemas import DecisionResponse
 from brain.input_binding import normalize_action_source, resolve_input_key
-from brain.observe import describe
 from brain.observe.values import values_for
-from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from sawon_runtime.storage import RunLog
 
@@ -169,52 +167,6 @@ def test_task_save_requires_all_inputs_evidenced_and_is_issued_once():
     assert not issued.allows(save)
 
 
-def test_generic_task_policy_uses_evidence_ledger_to_authorize_save(tmp_path):
-    record = TaskInputRecord(
-        case_id="invoice-save",
-        inputs={"invoice.number": "INV-17", "vendor_code": "V-9"},
-    )
-    relay = FakeRelay(record)
-    relay.mode = "editor"
-    log = RunLog(tmp_path, case_id=record.case_id, agent_id="generic-task-test")
-    brain = Brain(
-        record=record,
-        goal="Save the supplied invoice.",
-        relay=relay,
-        model=ScriptedModel(log, []),
-        settings=BrainSettings(
-            screen_matching=False,
-            visual_model_only_review=True,
-        ),
-        case_dir=tmp_path,
-        run_log=log,
-        visual_ocr=object(),
-    )
-    brain.phase = "task"
-    brain.task_instruction = TaskInstruction(
-        name="Save invoice",
-        objective="Save the supplied invoice.",
-        completion_conditions=["The saved invoice is visible."],
-    )
-    brain.observation = relay.observe()
-    save = DecisionResponse.model_validate(
-        {
-            "decision": decision(
-                intent="save",
-                kind="editor",
-                action={"type": "click", "ref": "e7"},
-            )
-        }
-    ).to_decision()
-
-    with pytest.raises(GuardStop, match="action_not_allowed_by_state"):
-        brain._guard_action(save)
-
-    brain.verified = {field: "current-model-evidence" for field in brain.values}
-    assert brain._decision_policy().allows(save)
-    brain._guard_action(save)
-
-
 def test_task_completion_is_tied_to_user_condition_not_all_input_fields():
     policy = DecisionPolicy(
         ExecutionFacts(phase="task", field_names=("invoice.number", "vendor_code"))
@@ -261,7 +213,7 @@ def test_generic_search_does_not_require_or_mutate_legacy_query_state(tmp_path):
         goal="Find the supplied invoice in the current business system.",
         relay=relay,
         model=ScriptedModel(log, []),
-        settings=BrainSettings(screen_matching=False),
+        settings=current_settings(tmp_path),
         case_dir=tmp_path,
         run_log=log,
         visual_ocr=object(),
@@ -304,10 +256,7 @@ def test_model_only_review_accepts_model_bound_completion_without_value_recheck(
         goal="Save the supplied invoice.",
         relay=relay,
         model=ScriptedModel(log, []),
-        settings=BrainSettings(
-            screen_matching=False,
-            visual_model_only_review=True,
-        ),
+        settings=current_settings(tmp_path),
         case_dir=tmp_path,
         run_log=log,
         visual_ocr=object(),
@@ -353,10 +302,7 @@ def test_model_owned_generic_evidence_is_not_invalidated_by_later_screens(tmp_pa
         goal="Save the supplied invoice.",
         relay=relay,
         model=ScriptedModel(log, []),
-        settings=BrainSettings(
-            screen_matching=False,
-            visual_model_only_review=True,
-        ),
+        settings=current_settings(tmp_path),
         case_dir=tmp_path,
         run_log=log,
         visual_ocr=object(),
@@ -414,107 +360,3 @@ def test_business_facts_survive_identical_anonymous_screen_descriptors(tmp_path)
         ("packages.unit", "active"),
         ("packages.count", "active"),
     ]
-
-
-def test_task_fill_cannot_overwrite_surface_owned_by_another_input(tmp_path):
-    record = TaskInputRecord(
-        case_id="invoice-17",
-        inputs={"invoice.number": "INV-17", "vendor_code": "V-9"},
-    )
-    relay = FakeRelay(record)
-    relay.mode = "editor"
-    log = RunLog(tmp_path, case_id=record.case_id, agent_id="surface-owner-test")
-    brain = Brain(
-        record=record,
-        goal="Save the supplied invoice.",
-        relay=relay,
-        model=ScriptedModel(log, []),
-        settings=BrainSettings(
-            screen_matching=False,
-            visual_model_only_review=True,
-        ),
-        case_dir=tmp_path,
-        run_log=log,
-        visual_ocr=object(),
-    )
-    brain.phase = "task"
-    brain.task_instruction = TaskInstruction(
-        name="Save invoice",
-        objective="Save the supplied invoice.",
-        completion_conditions=["The saved invoice is visible."],
-    )
-    brain.observation = relay.observe()
-    target = next(item for item in brain.observation.elements if item.role == "Edit")
-    brain.evidence_ledger.record(
-        "invoice.number",
-        describe(target, brain.observation.elements),
-        str(brain.observation.obs_id),
-    )
-    conflicting = DecisionResponse.model_validate(
-        {
-            "decision": decision(
-                intent="fill",
-                kind="editor",
-                action={"type": "set_text", "ref": target.ref, "source": "vendor_code"},
-            )
-        }
-    ).to_decision()
-
-    with pytest.raises(GuardStop, match="input_surface_claimed_by_other_field"):
-        brain._guard_action(conflicting)
-    assert brain._last_surface_conflict == {
-        "surface_owner": "invoice.number",
-        "requested_source": "vendor_code",
-        "target_ref": target.ref,
-    }
-
-
-def test_surface_conflict_during_plan_preflight_reobserves_for_recovery(tmp_path):
-    record = TaskInputRecord(
-        case_id="invoice-18",
-        inputs={"invoice.number": "INV-18", "vendor_code": "V-10"},
-    )
-    relay = FakeRelay(record)
-    relay.mode = "editor"
-    log = RunLog(tmp_path, case_id=record.case_id, agent_id="surface-recovery-test")
-    brain = Brain(
-        record=record,
-        goal="Save the supplied invoice.",
-        relay=relay,
-        model=ScriptedModel(log, []),
-        settings=BrainSettings(
-            screen_matching=False,
-            visual_model_only_review=True,
-        ),
-        case_dir=tmp_path,
-        run_log=log,
-        visual_ocr=object(),
-    )
-    brain.phase = "task"
-    brain.task_instruction = TaskInstruction(
-        name="Save invoice",
-        objective="Save the supplied invoice.",
-        completion_conditions=["The saved invoice is visible."],
-    )
-    brain.observation = relay.observe()
-    target = next(item for item in brain.observation.elements if item.role == "Edit")
-    brain.evidence_ledger.record(
-        "invoice.number",
-        describe(target, brain.observation.elements),
-        str(brain.observation.obs_id),
-    )
-    brain.decision = DecisionResponse.model_validate(
-        {
-            "decision": decision(
-                intent="fill",
-                kind="editor",
-                action={"type": "set_text", "ref": target.ref, "source": "vendor_code"},
-            )
-        }
-    ).to_decision()
-    brain.execution_authorized = True
-
-    assert brain._act_node() == "observation"
-    assert brain.result is None
-    assert brain.feedback[-1]["reason"] == "input_surface_claimed_by_other_field"
-    assert "key/navigation/scroll" in brain.feedback[-1]["required_response"]

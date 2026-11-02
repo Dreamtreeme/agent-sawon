@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 from PIL import Image
+from runtime_profile import current_settings
 from sawon_interfaces import ActionResult
 from test_brain import ScriptedModel, element
 from test_brain import record as record
@@ -12,7 +13,6 @@ from test_visual_scene import wire
 from brain.graph.click_refinement import DetailedClick
 from brain.graph.engine import Brain
 from brain.graph.schemas import Choice, Decision
-from brain.settings import BrainSettings
 from brain.visual.markers import Marker, ground_meanings
 from brain.visual.scanning import VisualGroundingError
 from brain.visual.scene import SemanticDetection, bind_scene
@@ -82,16 +82,11 @@ def setup(
         goal="Open the second panel",
         relay=relay,
         model=model,
-        settings=BrainSettings(
-            screen_matching=False,
-            visual_click_refinement=enabled,
-        ),
+        settings=current_settings(tmp_path, visual_click_refinement=enabled),
         case_dir=tmp_path,
         run_log=log,
         visual_ocr=object(),
     )
-    brain.phase = "enter"
-    brain.duplicate_clear = True
     brain.steps = 1
 
     def observe():

@@ -1,3 +1,4 @@
+import base64
 import json
 from copy import deepcopy
 from decimal import Decimal
@@ -13,6 +14,7 @@ from brain.graph.screen_decision import ScreenMatch
 from brain.visual.scene import SemanticDetection
 from models.anthropic_client import AnthropicClient, anthropic_provider_schema
 from models.base import TokenUsage
+from models.budget import CallBudget
 from models.factory import create_model_client
 from models.pricing import PriceBook
 from models.schema import NullableWireCodec
@@ -50,6 +52,9 @@ def test_structured_vision_request_and_usage_share_one_measured_call(tmp_path):
     client, sdk, log = setup(tmp_path)
     image = tmp_path / "screen.png"
     Image.new("RGB", (10, 10)).save(image)
+    budget = CallBudget.from_config(Path(__file__).parents[1] / "config/models.toml")
+    assert budget is not None
+    reserved = budget("Match this screen", Answer)
 
     result = client.complete_json("Match this screen", Answer, images=[image])
 
@@ -61,12 +66,17 @@ def test_structured_vision_request_and_usage_share_one_measured_call(tmp_path):
         cache_write_tokens=20,
     )
     assert result.usd == Decimal("0.0000279")
+    assert reserved > result.usd
     request = sdk.messages.create.call_args.kwargs
     assert request["model"] == "claude-haiku-5-5"
     assert request["thinking"] == {"type": "adaptive"}
     assert request["output_config"]["effort"] == "low"
+    assert request["max_tokens"] == budget.max_output_tokens == 8192
     assert request["output_config"]["format"]["type"] == "json_schema"
     assert request["messages"][0]["content"][0]["source"]["media_type"] == "image/png"
+    assert base64.b64decode(request["messages"][0]["content"][0]["source"]["data"]) == (
+        image.read_bytes()
+    )
     assert sdk.messages.create.call_count == len(log.read_all()) == 1
 
 
@@ -252,6 +262,38 @@ def test_wire_metadata_survives_api_failure_and_does_not_leak_to_next_call(tmp_p
     succeeded = log.read_all()[-1].payload
     assert succeeded["wire_schema_codec"] == "none"
     assert succeeded["wire_schema_sha256"] != failed.payload["wire_schema_sha256"]
+
+
+def test_api_failure_logs_status_without_request_or_response_secrets(tmp_path):
+    import httpx
+    from anthropic import APIStatusError
+
+    client, sdk, log = setup(tmp_path)
+    error = APIStatusError(
+        "PRIVATE_PROMPT SECRET_KEY",
+        response=httpx.Response(
+            503,
+            text="PRIVATE_RESPONSE_BODY",
+            request=httpx.Request(
+                "POST",
+                "https://example.test/?key=SECRET_KEY",
+                headers={"Authorization": "SECRET_BEARER"},
+            ),
+        ),
+        body={"message": "PRIVATE_PROMPT SECRET_KEY"},
+    )
+    sdk.messages.create.side_effect = error
+    with pytest.raises(APIStatusError) as raised:
+        client.complete_json("PRIVATE_PROMPT", Answer)
+    assert raised.value is error
+    (event,) = log.read_all()
+    assert event.payload["http_status"] == 503
+    assert event.payload["error_type"] == "APIStatusError"
+    assert event.cost.usd is None
+    assert event.cost.input_tokens is None and event.cost.output_tokens is None
+    for private in ("PRIVATE_PROMPT", "SECRET_KEY", "SECRET_BEARER", "PRIVATE_RESPONSE_BODY"):
+        assert private not in event.model_dump_json()
+    sdk.messages.create.assert_called_once()
 
 
 def test_unannotated_nullable_contract_remains_unchanged():

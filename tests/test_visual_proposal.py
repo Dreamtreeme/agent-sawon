@@ -11,8 +11,7 @@ from brain.graph.screen_decision import ScreenMatch, compile_match
 from brain.visual.scene import SemanticDetection
 
 
-def test_current_policy_rejects_wrong_phase_action_and_unknown_marker():
-    from brain.graph.policy import DecisionPolicy, ExecutionFacts
+def test_current_proposal_rejects_unknown_marker():
     from brain.graph.schemas import DecisionResponse
 
     proposal = ScreenMatch(
@@ -30,11 +29,6 @@ def test_current_policy_rejects_wrong_phase_action_and_unknown_marker():
     bound = compile_match(proposal, observation, DecisionResponse)
     assert bound.decision.action.ref == "e105"
     assert proposal.steps[0].target == 5
-    policy = DecisionPolicy(
-        ExecutionFacts(phase="enter", duplicate_clear=True, field_names=("hbl_no",))
-    )
-    with pytest.raises(ValueError):
-        compile_match(proposal, observation, policy.response_schema())
     # Metadata does not turn local semantic detection into a persistence claim.
     assert "next_step" not in SemanticDetection.model_fields
 
@@ -72,7 +66,10 @@ def test_capture_renewal_keeps_exact_points_and_locally_rebinds_changed_content(
 
     relay.observe = changed_capture
     selected = Decision.model_validate(
-        decision(intent="query_input", action=text_choice("hbl_no", "e1"))
+        decision(
+            intent="query_input",
+            action=text_choice("hbl_no", "e" + str(previous.obs_id.int) + "01"),
+        )
     )
     action = brain._wire_action(selected.action, selected)
     assert action.root.obs_id != previous.obs_id

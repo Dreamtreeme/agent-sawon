@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
+from runtime_profile import current_settings
 from sawon_interfaces import ActionResult, ShipmentRecord, UIElement, WindowInfo
 from test_visual_scene import wire as capture_wire
 
@@ -18,8 +20,6 @@ from brain.observe import redact, summarize
 from brain.observe.rows import row_refs
 from brain.relay import HttpRelay
 from brain.run import main
-from brain.settings import BrainSettings
-from brain.task_instruction import TaskInstruction
 from brain.visual.scene import SceneObservation
 from models.base import MeasuredModelClient, ProviderReply, TokenUsage
 from sawon_runtime.storage import RunLog, StateStore
@@ -190,6 +190,32 @@ def text_choice(field, ref):
     return {"type": "set_text", "ref": ref, "source": field}
 
 
+def test_synthetic_current_graph_records_model_stop_without_desktop_actions(tmp_path, record):
+    """Replace the retired enforce-mode stop replay with current fake screen input."""
+    from test_screen_decision import named_response, setup_brain
+
+    from sawon_runtime.storage import CaseStatus
+
+    brain, model, relay, *_ = setup_brain(
+        tmp_path,
+        record,
+        [named_response(screen_kind="menu", steps=[], operation="stop")],
+    )
+    relay.health = lambda: {"ok": True}
+    delivered = []
+    relay.act = lambda action: delivered.append(action)
+
+    result = brain.run()
+
+    assert result.status == "stopped"
+    assert result.reason == "model_requested_stop"
+    assert len(model.prompts) == 1
+    assert delivered == []
+    assert brain.state_store.read().status == CaseStatus.FAILED
+    assert type(result).model_validate_json((tmp_path / "result.json").read_bytes()) == result
+    assert any(event.kind == "observe" for event in brain.log.read_all())
+
+
 def test_generic_task_save_enters_shared_save_review(tmp_path, record):
     relay = FakeRelay(record)
     relay.mode = "editor"
@@ -200,7 +226,7 @@ def test_generic_task_save_enters_shared_save_review(tmp_path, record):
         goal="Register a shipment",
         relay=relay,
         model=model,
-        settings=BrainSettings(screen_matching=False),
+        settings=current_settings(tmp_path),
         case_dir=tmp_path,
         run_log=log,
         visual_ocr=object(),
@@ -225,10 +251,7 @@ def test_generic_task_save_enters_shared_save_review(tmp_path, record):
     assert brain.phase == "save_result"
 
 
-@pytest.mark.parametrize(
-    ("generic_task", "expected_phase"), [(True, "task"), (False, "final_query")]
-)
-def test_save_review_returns_to_the_owning_workflow(tmp_path, record, generic_task, expected_phase):
+def test_save_review_returns_to_the_task_workflow(tmp_path, record):
     relay = FakeRelay(record)
     relay.mode = "editor"
     log = RunLog(tmp_path, case_id=record.case_id, agent_id="brain-test")
@@ -237,21 +260,12 @@ def test_save_review_returns_to_the_owning_workflow(tmp_path, record, generic_ta
         goal="Register a shipment",
         relay=relay,
         model=ScriptedModel(log, []),
-        settings=BrainSettings(screen_matching=False),
+        settings=current_settings(tmp_path),
         case_dir=tmp_path,
         run_log=log,
         visual_ocr=object(),
     )
     brain.phase = "save_result"
-    brain.task_instruction = (
-        TaskInstruction(
-            name="Register shipment",
-            objective="Register the supplied shipment.",
-            completion_conditions=["The shipment is saved."],
-        )
-        if generic_task
-        else None
-    )
     brain.observation = relay.observe()
     evidence_ref = next(item.ref for item in brain.observation.elements if item.name)
     review = SaveReviewResponse.model_validate(
@@ -266,7 +280,7 @@ def test_save_review_returns_to_the_owning_workflow(tmp_path, record, generic_ta
     )
 
     assert brain._apply_save_review(review) is None
-    assert brain.phase == expected_phase
+    assert brain.phase == "task"
 
 
 class ScriptedModel(MeasuredModelClient):
@@ -306,35 +320,13 @@ class ScriptedModel(MeasuredModelClient):
         return self.price
 
 
-def test_blocked_foreground_stops_before_decision_or_input(tmp_path, record):
-    relay = FakeRelay(record, blocked=True)
-    log = RunLog(tmp_path, case_id=record.case_id, agent_id="blocked-test")
-    model = ScriptedModel(log, [])
-    brain = Brain(
-        record=record,
-        goal="Enter the record",
-        relay=relay,
-        model=model,
-        settings=BrainSettings(screen_matching=False),
-        case_dir=tmp_path,
-        run_log=log,
-        visual_ocr=object(),
-    )
-    result = brain.run()
-    assert result.reason == "blocked_foreground"
-    assert len(model.prompts) == 1
-    assert not relay.actions
-
-
 def test_summary_preserves_grid_relationships_and_omits_ids(record):
     observation = FakeRelay(record, duplicate=True).observe()
     original = observation.elements[-1]
-    for strategy in ("flat_fields", "label_grouped"):
-        summary = json.loads(summarize(observation, strategy))
-        cell = next(item for item in summary["elements"] if item["ref"] == original.ref)
-        assert cell["parent_ref"] == "e6"
-        assert cell["value"] == original.value
     grouped = json.loads(summarize(observation, "label_grouped"))
+    cell = next(item for item in grouped["elements"] if item["ref"] == original.ref)
+    assert cell["parent_ref"] == "e6"
+    assert cell["value"] == original.value
     assert grouped["elements"][-1]["region"][-1]["ref"] == "e6"
 
 
@@ -423,11 +415,7 @@ def test_decision_schema_has_no_freeform_text_or_coordinate_action():
 def test_cli_setup_failure_has_durable_result_and_never_reuses_case(tmp_path, record, monkeypatch):
     record_path = tmp_path / "record.json"
     record_path.write_text(record.model_dump_json(), encoding="utf-8")
-    config = tmp_path / "brain.toml"
-    config.write_text(
-        'schema_version = "0.1"\nscreen_matching = false\n',
-        encoding="utf-8",
-    )
+    config = Path(__file__).resolve().parents[1] / "config/brain.visual.toml"
     ocr_config = tmp_path / "pipeline.toml"
     ocr_config.write_text('schema_version = "0.1"\n', encoding="utf-8")
     case_dir = tmp_path / "new-case"
@@ -474,8 +462,7 @@ def test_generic_container_requires_unambiguous_direct_grid_cells(shape):
     assert "e2" not in row_refs(items)
 
 
-@pytest.mark.parametrize("strategy", ["flat_fields", "label_grouped"])
-def test_nested_grid_summary_uses_nearest_row_context(record, strategy):
+def test_nested_grid_summary_uses_nearest_row_context(record):
     observation = FakeRelay(record, duplicate=True).observe()
     observation.elements.extend(
         [
@@ -486,7 +473,7 @@ def test_nested_grid_summary_uses_nearest_row_context(record, strategy):
     )
     assert row_refs(observation.elements, grid_ref="e4") == {"e6"}
     assert row_refs(observation.elements, grid_ref="e80") == {"e81"}
-    summary = json.loads(summarize(observation, strategy))
+    summary = json.loads(summarize(observation, "label_grouped"))
     by_ref = {item["ref"]: item for item in summary["elements"]}
     assert by_ref["e82"]["row_ref"] == "e81"
     assert by_ref["e81"]["row_ref"] == "e81"

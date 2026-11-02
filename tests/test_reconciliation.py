@@ -49,30 +49,8 @@ def test_unique_current_query_input_is_a_fact_but_result_cells_are_not(record):
     assert generic.query_input.source == "invoice.number"
 
 
-def test_observed_query_value_advances_policy_directly_to_search(tmp_path, record):
-    brain, _, _, _, _, _ = setup_brain(tmp_path, record, [])
-    brain.phase = "final_query"
-    brain.duplicate_clear = brain.save_issued = True
-    observed = scene(
-        "query",
-        [raw_element("e1", "edit", value=brain.values["hbl_no"])],
-    )
-    brain.observation = observed
-
-    brain._apply_observation_reconciliation(observed)
-
-    assert brain.query_value_verified
-    assert brain.business_revision == 1
-    assert brain._decision_policy().current_step == "search"
-    assert any(
-        event.payload.get("check") == "observed_state_reconciled" for event in brain.log.read_all()
-    )
-
-
 def test_matching_visible_fill_is_removed_before_dispatch(tmp_path, record):
     brain, _, _, _, _, _ = setup_brain(tmp_path, record, [])
-    brain.phase = "enter"
-    brain.duplicate_clear = True
     observed = scene(
         "editor",
         [raw_element("e1", "edit", value=brain.values["hbl_no"])],

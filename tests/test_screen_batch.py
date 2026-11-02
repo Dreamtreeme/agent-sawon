@@ -4,13 +4,14 @@ import hashlib
 import json
 
 import pytest
+from runtime_profile import current_settings
 from sawon_interfaces import ActionBatchResult, ActionResult
 from test_brain import ScriptedModel, values_for
 from test_brain import record as record
 from test_visual_workflow import SyntheticScanner, VisualFixture
 
 from brain.graph.engine import Brain
-from brain.settings import BrainSettings
+from brain.graph.screen_decision import ScreenMatch
 from brain.visual.action_rebind import ActionTargetBinding
 from sawon_runtime.storage import RunLog
 
@@ -43,14 +44,36 @@ class BatchedChangingPixelsRelay(ChangingPixelsRelay):
 
 
 class CountingScanner(SyntheticScanner):
-    def __init__(self, relay):
+    def __init__(self, relay, brain, response_count):
         super().__init__(relay)
+        self.brain = brain
+        self.response_count = response_count
         self.action_counts = []
 
     def scan(self, wire):
         self.action_counts.append(len(self.relay.actions))
         scene = super().scan(wire)
-        return scene.model_copy(update={"screen_kind": self.relay.mode})
+        prefix = "e" + str(scene.obs_id.int) + "0"
+        scene = scene.model_copy(
+            update={
+                "screen_kind": self.relay.mode,
+                "elements": [
+                    item.model_copy(
+                        update={
+                            "ref": prefix + item.ref[1:],
+                            "parent_ref": prefix + item.parent_ref[1:] if item.parent_ref else None,
+                        }
+                    )
+                    for item in scene.elements
+                ],
+            }
+        )
+        if self.response_count:
+            self.response_count -= 1
+            self.brain.visual_proposal = self.brain._call(
+                "Current synthetic screen: observe values and plan the next action", ScreenMatch
+            )
+        return scene
 
     def rebind_action(self, scene, target, fresh, *, planned_point=None, max_phash_distance=16):
         """The synthetic relay exposes its current local detections directly."""
@@ -75,8 +98,13 @@ class CountingScanner(SyntheticScanner):
 
 def screen_plan(record):
     return {
-        "fields": [{"source": f, "ref": f"e{i + 20}"} for i, f in enumerate(values_for(record))],
-        "next_decision": None,
+        "screen_kind": "editor",
+        "procedure_step": "task-action",
+        "controls": [],
+        "steps": [
+            {"source": field, "target": i + 20, "action": "fill", "intent": "fill"}
+            for i, field in enumerate(values_for(record))
+        ],
     }
 
 
@@ -88,15 +116,12 @@ def make_brain(tmp_path, record, relay, responses):
         goal="Save for approval",
         relay=relay,
         model=model,
-        settings=BrainSettings(
-            screen_matching=False,
-            visual_screen_fill=True,
-        ),
+        settings=current_settings(tmp_path),
         case_dir=tmp_path,
         run_log=log,
         visual_ocr=object(),
     )
-    perception = CountingScanner(relay)
+    perception = CountingScanner(relay, brain, len(responses))
     brain.screen_scanner = perception
     return brain, perception, model
 
@@ -126,7 +151,6 @@ def test_direct_fill_batch_records_delivered_prefix_on_relay_failure(tmp_path, r
     relay = PartialBatch(record)
     relay.mode = "editor"
     brain, _, _ = make_brain(tmp_path, record, relay, [screen_plan(record)])
-    brain.phase, brain.duplicate_clear = "enter", True
     brain._observe()
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
@@ -146,117 +170,19 @@ def test_successful_input_delivery_separates_unrelated_phase_failures(tmp_path, 
     relay = BatchedChangingPixelsRelay(record)
     relay.mode = "editor"
     brain, _, _ = make_brain(tmp_path, record, relay, [screen_plan(record)])
-    brain.phase, brain.duplicate_clear = "enter", True
     brain._observe()
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
-    brain.phase_failures["enter"] = 1
+    brain.phase_failures["task"] = 1
 
     assert brain._act_node() == "observation"
     assert brain.pending is not None
 
-    assert brain.phase_failures["enter"] == 0
+    assert brain.phase_failures["task"] == 0
     assert not brain.verified  # delivery is not semantic/business verification
 
 
-def test_wrong_field_is_not_verified_and_only_that_field_is_replanned(tmp_path, record):
-    class CorruptOnce(ChangingPixelsRelay):
-        corrupt_once = True
-
-        def act(self, action):
-            result = super().act(action)
-            if self.corrupt_once and self.inputs["mbl_no"]:
-                self.inputs["mbl_no"] = "WRONG"
-                self.corrupt_once = False
-            return result
-
-    relay = CorruptOnce(record)
-    relay.mode = "editor"
-    repair = {"fields": [{"source": "mbl_no", "ref": "e21"}], "next_decision": None}
-    brain, perception, _ = make_brain(tmp_path, record, relay, [screen_plan(record), repair])
-    brain.phase, brain.duplicate_clear = "enter", True
-    brain._observe()
-    assert brain._select_node() == "review"
-    assert brain._review_node() == "execution"
-    assert brain._act_node() == "observation"
-    assert brain.pending is not None
-    assert brain._verify_node() == "review"
-    assert set(brain.verified) == set(brain.values) - {"mbl_no"}
-    assert brain._select_node() == "review"
-    assert brain._review_node() == "execution"
-    assert brain._act_node() == "observation"
-    assert brain.pending is not None
-    assert brain._verify_node() == "review"
-    assert set(brain.verified) == set(brain.values)
-    assert perception.action_counts == [0, 11, 12]
-
-
-def test_shared_source_verifies_and_repairs_each_delivered_target(tmp_path, record):
-    from brain.graph.screen_decision import ScreenMatch
-
-    for wrong_ref in ("e20", "e21", None):
-        relay = ChangingPixelsRelay(record)
-        relay.mode = "editor"
-        plan = {
-            "fields": [{"source": "hbl_no", "ref": ref} for ref in ("e20", "e21")],
-            "next_decision": None,
-        }
-        brain, perception, _ = make_brain(tmp_path / str(wrong_ref), record, relay, [plan])
-        original = perception.scan
-        staged = []
-        brain._stage_visual_match_candidate = lambda pending, staged=staged: staged.append(pending)
-
-        def observe(wire, original=original, relay=relay, wrong_ref=wrong_ref, brain=brain):
-            scene = original(wire)
-            if relay.actions:
-                # One source-level evidence item must not stand for both distinct targets.
-                good_ref = "e21" if wrong_ref == "e20" else "e20"
-                target = int(good_ref[1:])
-                prefix = "e" + str(scene.obs_id.int) + "0"
-                scene = scene.model_copy(
-                    update={
-                        "elements": [
-                            item.model_copy(update={"ref": prefix + str(target)})
-                            if item.ref == good_ref
-                            else item
-                            for item in scene.elements
-                        ]
-                    }
-                )
-                brain.visual_proposal = ScreenMatch(
-                    screen_kind="editor",
-                    procedure_step="task-action",
-                    controls=[],
-                    operation="act",
-                    evidence=[{"field": "hbl_no", "target": target}],
-                )
-            return scene
-
-        perception.scan = observe
-        brain.phase, brain.duplicate_clear = "enter", True
-        brain._observe()
-        assert brain._select_node() == "review"
-        assert brain._review_node() == "execution"
-        assert brain._act_node() == "observation"
-        assert brain.pending is not None
-        if wrong_ref:
-            relay.inputs["hbl_no" if wrong_ref == "e20" else "mbl_no"] = "WRONG"
-        assert brain._verify_node() == "review"
-        assert ("hbl_no" in brain.verified) is (wrong_ref is None)
-        assert len(staged) == (1 if wrong_ref is None else 0)
-        if wrong_ref:
-            assert brain.decision.action.ref == wrong_ref
-        transitions = [
-            event.payload["transition"]
-            for event in brain.log.read_all()
-            if event.payload.get("check") == "action_transition"
-        ]
-        assert [item["observed_effect"] for item in transitions] == [
-            "unchecked" if ref == wrong_ref else "input_value_matches" for ref in ("e20", "e21")
-        ]
-
-
-@pytest.mark.parametrize("failure", ["button", "duplicate_ref", "process_change", "move"])
+@pytest.mark.parametrize("failure", ["duplicate_ref", "process_change", "move"])
 def test_invalid_plan_and_mid_batch_geometry_change_stop_remaining_inputs(
     tmp_path, record, failure
 ):
@@ -282,12 +208,9 @@ def test_invalid_plan_and_mid_batch_geometry_change_stop_remaining_inputs(
     relay = DriftingRelay(record)
     relay.mode = "editor"
     plan = screen_plan(record)
-    if failure == "button":
-        plan["fields"][-1]["ref"] = "e7"
     if failure == "duplicate_ref":
-        plan["fields"][-1]["ref"] = "e20"
+        plan["steps"][-1]["target"] = 20
     brain, _, _ = make_brain(tmp_path, record, relay, [plan])
-    brain.phase, brain.duplicate_clear = "enter", True
     brain._observe()
     selected = brain._select_node()
     if selected == "review":
@@ -319,9 +242,26 @@ def test_shared_executor_checks_whole_plan_step_budget_before_delivery(
 ):
     relay = ChangingPixelsRelay(record)
     relay.mode = "editor"
-    brain, perception, _ = make_brain(tmp_path, record, relay, [screen_plan(record)])
+    observed_values = {
+        "screen_kind": "editor",
+        "procedure_step": "task-action",
+        "controls": [],
+        "mapping": {
+            "fields": {
+                source: {
+                    "source": source,
+                    "role": "edit",
+                    "value": value,
+                    "bbox": [(index + 20) * 10, 10, 8, 20],
+                }
+                for index, (source, value) in enumerate(values_for(record).items())
+            }
+        },
+    }
+    brain, perception, _ = make_brain(
+        tmp_path, record, relay, [screen_plan(record), observed_values]
+    )
     brain.settings = brain.settings.model_copy(update={"max_steps": max_steps})
-    brain.phase, brain.duplicate_clear = "enter", True
     brain._observe()
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
@@ -337,38 +277,6 @@ def test_shared_executor_checks_whole_plan_step_budget_before_delivery(
     else:
         assert outcome == "finish"
         assert brain.result.reason == "max_steps"
-
-
-@pytest.mark.parametrize("role", ["Cell", "Edit"])
-def test_detail_row_cannot_substitute_for_flat_record_field(tmp_path, record, role):
-    from test_brain import element
-
-    relay = ChangingPixelsRelay(record)
-    relay.mode = "editor"
-    brain, _, _ = make_brain(
-        tmp_path,
-        record,
-        relay,
-        [
-            {
-                "fields": [{"source": "description", "ref": "e91"}],
-                "next_decision": None,
-            }
-        ],
-    )
-    brain.phase, brain.duplicate_clear = "enter", True
-    scene = brain._observe()
-    table = element("e90", "Table", name="Optional detail lines")
-    cell = element("e91", role, name="Description", value=brain.values["description"], parent="e90")
-    brain.observation = scene.model_copy(update={"elements": [*scene.elements, table, cell]})
-    assert brain._select_node() == "review"
-    assert brain._review_node() == "execution"
-    assert brain._act_node() == "observation"
-    assert not relay.actions
-    assert not brain._record_verified_field("description", cell)
-    assert any(
-        e.payload.get("reason") == "record_input_scope_mismatch" for e in brain.log.read_all()
-    )
 
 
 @pytest.mark.parametrize("accept", [True, False])
@@ -413,12 +321,24 @@ def test_login_plan_sends_two_credentials_and_click_before_any_reread(tmp_path, 
     relay = LoginVisual(record)
     relay.mode = "login"
     plan = {
-        "fields": [
-            {"source": "credential.username", "ref": "e14"},
-            {"source": "credential.password", "ref": "e8"},
+        "screen_kind": "login",
+        "procedure_step": "task-action",
+        "controls": [],
+        "steps": [
+            {
+                "source": "credential.username",
+                "target": 14,
+                "action": "fill",
+                "intent": "credential",
+            },
+            {
+                "source": "credential.password",
+                "target": 8,
+                "action": "fill",
+                "intent": "credential",
+            },
+            {"target": 15, "action": "click", "intent": "login", "point": [154, 20]},
         ],
-        "login_ref": "e15",
-        "next_decision": None,
     }
     brain, perception, model = make_brain(tmp_path, record, relay, [plan])
     brain.credentials = {
@@ -443,43 +363,6 @@ def test_login_plan_sends_two_credentials_and_click_before_any_reread(tmp_path, 
     assert all("fixture-secret-901" not in prompt for prompt in model.prompts)
 
 
-@pytest.mark.parametrize("wrong_value", [False, True])
-def test_joint_verification_survives_corrected_visual_label(tmp_path, record, wrong_value):
-    relay = ChangingPixelsRelay(record)
-    relay.mode = "editor"
-    brain, perception, _ = make_brain(tmp_path, record, relay, [screen_plan(record)])
-    original = perception.scan
-
-    def corrected_labels(wire):
-        scene = original(wire)
-        if relay.actions:
-            scene = scene.model_copy(
-                update={
-                    "elements": [
-                        e.model_copy(
-                            update={"name": "Corrected caption", "label_hint": "Corrected"}
-                        )
-                        if e.role == "edit"
-                        else e
-                        for e in scene.elements
-                    ]
-                }
-            )
-        return scene
-
-    perception.scan = corrected_labels
-    brain.phase, brain.duplicate_clear = "enter", True
-    brain._observe()
-    assert brain._select_node() == "review"
-    assert brain._review_node() == "execution"
-    assert brain._act_node() == "observation"
-    assert brain.pending is not None
-    if wrong_value:
-        relay.inputs["mbl_no"] = "WRONG"
-    assert brain._verify_node() == "review"
-    assert set(brain.verified) == set(brain.values) - ({"mbl_no"} if wrong_value else set())
-
-
 def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
     from brain.graph.execution import ActionPlan, PlanExecution
     from brain.graph.schemas import Choice, Decision
@@ -489,7 +372,6 @@ def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
     relay = ChangingPixelsRelay(record)
     relay.mode = "editor"
     brain, _, _ = make_brain(tmp_path, record, relay, [])
-    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
     brain.task_instruction = TaskInstruction(
         name="Enter shipment",
         objective="Enter the supplied shipment.",
@@ -593,31 +475,3 @@ def test_model_only_batch_consumes_observation_evidence_once(tmp_path, record):
     assert turns[0].success
     memo = brain.rolling_context.export_prompt_context(current_goal=brain.goal)
     assert memo["scratchpad"]["completed_milestones"] == ["검증 완료: hbl_no"]
-
-
-def test_save_policy_uses_current_verified_evidence(tmp_path, record):
-    from test_brain import decision
-
-    relay = ChangingPixelsRelay(record)
-    relay.mode = "editor"
-    relay.inputs.update(values_for(record))
-    proposal = {
-        "fields": [],
-        "next_decision": {
-            "decision": decision(
-                intent="save",
-                kind="editor",
-                action={"type": "click", "ref": "e7"},
-                evidence=[
-                    {"field": f, "ref": f"e{i + 20}"} for i, f in enumerate(values_for(record))
-                ],
-            )
-        },
-    }
-    brain, _, _ = make_brain(tmp_path, record, relay, [proposal])
-    brain.phase, brain.duplicate_clear = "enter", True
-    brain._observe()
-    assert not brain.verified
-    assert brain._select_node() == "review"
-    assert brain._review_node() == "execution"
-    assert set(brain.verified) == set(brain.values)

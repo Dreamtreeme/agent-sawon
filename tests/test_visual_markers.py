@@ -45,7 +45,9 @@ def fixture():
 
 def test_only_local_geometry_becomes_click_target():
     blocks, _, markers, meaning = fixture()
-    scene = bind_scene(wire(), blocks, ground_meanings(meaning, markers, blocks))
+    scene = bind_scene(
+        wire(), blocks, ground_meanings(meaning, markers, blocks, allow_ocr_inputs=True)
+    )
     target = next(e for e in scene.elements if e.role == "edit")
     assert target.bbox == (100, 15, 150, 30)
     assert target.name == "Reference" and target.enabled
@@ -62,26 +64,7 @@ def test_unknown_or_duplicate_marker_cannot_be_bound(ids):
         {"controls": [{"id": i, "role": "button", "confidence": 1} for i in ids]}
     )
     with pytest.raises(ValueError, match="unknown_or_duplicate"):
-        ground_meanings(meaning, markers, blocks)
-
-
-def test_label_is_never_promoted_to_input():
-    blocks, _, markers, _ = fixture()
-    label = next(m for m in markers if m.source == "ocr")
-    meaning = SemanticDetection.model_validate(
-        {
-            "controls": [
-                {
-                    "id": label.id,
-                    "role": "edit",
-                    "confidence": 1,
-                    "text_ids": [8],
-                }
-            ]
-        }
-    )
-    with pytest.raises(ValueError, match="ocr_text_is_not"):
-        ground_meanings(meaning, markers, blocks)
+        ground_meanings(meaning, markers, blocks, allow_ocr_inputs=True)
 
 
 def test_remote_label_cannot_turn_window_chrome_into_input():
@@ -98,8 +81,13 @@ def test_remote_label_cannot_turn_window_chrome_into_input():
     )
 
     with pytest.raises(ValueError, match="input_label_not_near_control"):
-        ground_meanings(wrong, markers, blocks)
-    assert ground_meanings(correct, markers, blocks).controls[0].bbox == [178, 66, 913, 49]
+        ground_meanings(wrong, markers, blocks, allow_ocr_inputs=True)
+    assert ground_meanings(correct, markers, blocks, allow_ocr_inputs=True).controls[0].bbox == [
+        178,
+        66,
+        913,
+        49,
+    ]
 
 
 def test_unsupported_ocr_structure_is_kept_as_text_without_dropping_child_control():
@@ -117,7 +105,7 @@ def test_unsupported_ocr_structure_is_kept_as_text_without_dropping_child_contro
         }
     )
 
-    grounded = ground_meanings(meaning, markers, blocks)
+    grounded = ground_meanings(meaning, markers, blocks, allow_ocr_inputs=True)
     scene = bind_scene(wire(), blocks, grounded)
 
     assert [element.role for element in scene.elements] == ["edit", "text"]
@@ -236,7 +224,9 @@ def test_ocr_caption_can_be_a_tab_target_without_detector_extent(text_ids):
             ],
         }
     )
-    scene = bind_scene(wire(), blocks, ground_meanings(meaning, markers, blocks))
+    scene = bind_scene(
+        wire(), blocks, ground_meanings(meaning, markers, blocks, allow_ocr_inputs=True)
+    )
     tab = next(e for e in scene.elements if e.role == "tabitem")
     assert tab.enabled and tab.bbox == blocks[0].bbox
     assert tab.name == "Reference"
@@ -249,7 +239,7 @@ def test_ocr_caption_cannot_replace_its_literal_text():
         {"controls": [{"id": label.id, "role": "tabitem", "text_ids": [999], "confidence": 1}]}
     )
     with pytest.raises(ValueError, match="ocr_marker_text_mismatch"):
-        ground_meanings(meaning, markers, blocks)
+        ground_meanings(meaning, markers, blocks, allow_ocr_inputs=True)
 
 
 def test_resize_rounding_is_inverted_per_axis():
@@ -336,7 +326,9 @@ def test_perception_keeps_local_markers_out_of_named_observation_prompt(tmp_path
         return meaning
 
     log = RunLog(tmp_path, case_id="markers", agent_id="test")
-    perception = ScreenScanner(Relay(), Ocr(), tmp_path, log, interpret, detector=Detector())
+    perception = ScreenScanner(
+        Relay(), Ocr(), tmp_path, log, interpret, detector=Detector(), model_led_semantics=True
+    )
     if outcome == "provider_error":
         with pytest.raises(ValueError):
             perception.scan(wire())
@@ -494,7 +486,13 @@ def test_perception_refines_only_after_basic_detection_reports_failure(
         )
 
     perception = ScreenScanner(
-        Relay(), Ocr(), tmp_path, log, interpret, detector=Detector(DetectorSettings(), log)
+        Relay(),
+        Ocr(),
+        tmp_path,
+        log,
+        interpret,
+        detector=Detector(DetectorSettings(), log),
+        model_led_semantics=True,
     )
     current = wire()
     perception.scan(current)
@@ -566,6 +564,7 @@ def test_failed_refinement_returns_navigation_semantics_to_decision_graph(tmp_pa
         RunLog(tmp_path, case_id="refinement-recovery", agent_id="test"),
         interpret,
         detector=Detector(DetectorSettings(), RunLog(tmp_path, case_id="d", agent_id="test")),
+        model_led_semantics=True,
     )
     scene = perception.scan(wire())
     assert calls == ["full", "meaning", "refine", "meaning", "meaning"]
@@ -625,6 +624,7 @@ def test_synthetic_phash_catalog_reuse_boundary(
         detector=Detector(),
         reuse_similar=True,
         max_phash_distance=6,
+        model_led_semantics=True,
     )
     scanner.scan(wire())
     current = wire()
@@ -686,6 +686,7 @@ def test_same_screen_rematch_uses_fresh_ocr_and_reused_geometry(tmp_path):
         interpret,
         detector=Detector(),
         reuse_similar=True,
+        model_led_semantics=True,
     )
     assert perception.scan(wire()).elements[0].role == "edit"
     current = wire()
@@ -706,7 +707,9 @@ def test_same_screen_rematch_uses_fresh_ocr_and_reused_geometry(tmp_path):
 def test_input_value_comes_from_contained_ocr_when_model_omits_text_ids():
     blocks, _, markers, meaning = fixture()
     blocks.append(OcrBlock(id=9, text="CT", bbox=(110, 20, 20, 15), confidence=0.99))
-    scene = bind_scene(wire(), blocks, ground_meanings(meaning, markers, blocks))
+    scene = bind_scene(
+        wire(), blocks, ground_meanings(meaning, markers, blocks, allow_ocr_inputs=True)
+    )
     field = next(e for e in scene.elements if e.role == "edit")
     assert field.value == "CT"
     assert field.name == "Reference"
@@ -714,11 +717,9 @@ def test_input_value_comes_from_contained_ocr_when_model_omits_text_ids():
 
 @pytest.mark.parametrize("clipped", [False, True])
 @pytest.mark.parametrize("explicit_cells", [True, False])
-def test_ocr_rows_feed_existing_final_review_without_inventing_values(clipped, explicit_cells):
+def test_ocr_rows_preserve_literals_and_parent_links(clipped, explicit_cells):
     from test_visual_scene import wire
 
-    from brain.graph.review import review_final
-    from brain.observe.values import field_matches
     from brain.visual.scene import SemanticDetection, bind_scene
 
     blocks = [
@@ -756,10 +757,14 @@ def test_ocr_rows_feed_existing_final_review_without_inventing_values(clipped, e
             ],
         ],
     )
-    scene = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
-    review = review_final(scene, {"hbl_no": "ID-A", "description": "parts"}, field_matches)
-    assert review.status == ("needs_more" if clipped else "ready")
-    assert review.missing_fields == (("description",) if clipped else ())
+    scene = bind_scene(
+        wire(), blocks, ground_meanings(meanings, markers, blocks, allow_ocr_inputs=True)
+    )
+    row_element = next(element for element in scene.elements if element.role == "row")
+    table_element = next(element for element in scene.elements if element.role == "table")
+    assert row_element.parent_ref == table_element.ref
+    children = [element for element in scene.elements if element.parent_ref == row_element.ref]
+    assert [element.value for element in children] == ["ID-A", "par..." if clipped else "parts"]
     invalid = meanings.model_copy(
         update={
             "controls": [
@@ -768,7 +773,7 @@ def test_ocr_rows_feed_existing_final_review_without_inventing_values(clipped, e
         }
     )
     with pytest.raises(ValueError, match="ocr_group_is_not_input"):
-        ground_meanings(invalid, markers, blocks)
+        ground_meanings(invalid, markers, blocks, allow_ocr_inputs=True)
 
 
 def test_auto_cell_parent_uses_same_containment_threshold_as_scene_validation():
@@ -787,7 +792,7 @@ def test_auto_cell_parent_uses_same_containment_threshold_as_scene_validation():
         }
     )
 
-    detection = ground_meanings(meanings, markers, blocks)
+    detection = ground_meanings(meanings, markers, blocks, allow_ocr_inputs=True)
 
     text = next(control for control in detection.controls if control.id == 2)
     assert text.role == "text"

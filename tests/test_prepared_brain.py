@@ -1,14 +1,16 @@
 """Prepared extraction handoff validates its report before any environment access."""
 
+from pathlib import Path
+
 import pytest
 from case_labels import labeled_case
+from runtime_profile import current_settings
 from test_brain import FakeRelay, ScriptedModel
 from test_pipeline_evaluate import record as extracted_record
 from test_pipeline_evaluate import report as checked_report
 
 import brain.run as runner
 from brain.graph import Brain
-from brain.settings import BrainSettings
 from pipeline.checks import can_enter, record_fingerprint
 from pipeline.handoff import validate_prepared_case
 from pipeline.schemas import Check
@@ -60,15 +62,14 @@ def execute(mode, case_dir, record, log, monkeypatch, *, options=()):
             goal="Enter checked extraction",
             relay=relay,
             model=model,
-            settings=BrainSettings(screen_matching=False),
+            settings=current_settings(case_dir.parent),
             case_dir=case_dir,
             run_log=log,
             prepared_case=True,
             visual_ocr=object(),
         )
         return brain.run, relay, models
-    settings = case_dir.parent / "brain.toml"
-    settings.write_text("screen_matching = false\n", encoding="utf-8")
+    settings = Path(__file__).resolve().parents[1] / "config/brain.visual.toml"
     monkeypatch.setattr(runner, "HttpRelay", lambda *args, **kwargs: relay)
     monkeypatch.setattr(runner, "create_model_client", model_factory)
     monkeypatch.setattr(runner.CallBudget, "from_config", lambda _path: None)
@@ -151,13 +152,18 @@ def test_brain_rechecks_each_independent_prepared_handoff_gate(tmp_path, monkeyp
             before_record = (case_dir / "record.json").read_bytes()
             before_report = (case_dir / "checks.json").read_bytes()
             call, relay, models = execute("engine", case_dir, record, log, monkeypatch)
+            # Current setup records education before run() validates the prepared case.
+            initialized_log = log.path.read_bytes()
+            assert initialized_log.startswith(before_log)
+            assert len(initialized_log.splitlines()) == len(before_log.splitlines()) + 1
+            assert log.read_all()[-1].payload["check"] == "user_education_loaded"
             with pytest.raises(ValueError) as raised:
                 call()
             assert str(raised.value) == expected_error
             assert state.read() == before_state
             assert relay.health_calls == relay.calls == 0 and relay.actions == []
             assert all(model.prompts == [] for model in models)
-            assert log.path.read_bytes() == before_log
+            assert log.path.read_bytes() == initialized_log
             assert (case_dir / "record.json").read_bytes() == before_record
             assert (case_dir / "checks.json").read_bytes() == before_report
             assert not (case_dir / "result.json").exists()

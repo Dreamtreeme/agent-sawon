@@ -137,7 +137,9 @@ def test_perception_rejection_preserves_the_two_compared_images_and_hashes(tmp_p
             return path
 
     # Neither OCR, detector nor model should be reached on this branch.
-    perception = ScreenScanner(Relay(), None, tmp_path, log, None, detector=None)
+    perception = ScreenScanner(
+        Relay(), None, tmp_path, log, None, detector=None, model_led_semantics=True
+    )
     fresh = wire(600, 240)
     with pytest.raises(ValueError, match="^visual_scene_family_changed$"):
         perception.rebind_action(scene, target, fresh)
@@ -212,6 +214,7 @@ def test_perception_reuses_one_local_catalog_and_never_calls_semantic_model(tmp_
         RunLog(tmp_path, case_id="rebind", agent_id="test"),
         semantic_model,
         detector=Detector(),
+        model_led_semantics=True,
     )
     fresh = wire(600, 240)
     first = perception.rebind_action(scene, target, fresh)

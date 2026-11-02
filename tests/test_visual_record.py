@@ -8,10 +8,10 @@ from uuid import uuid4
 
 import pytest
 from PIL import Image
+from runtime_profile import current_settings
 from sawon_interfaces import CaptureGeometry, Observation, Screenshot, WindowInfo
 
 from brain.graph.screen_mapping import ScreenMappingWire
-from brain.settings import BrainSettings
 from brain.visual import record
 from brain.visual.markers import Marker
 from brain.visual.scene import SceneObservation
@@ -20,6 +20,7 @@ from sawon_runtime.visual import OcrBlock
 
 
 def recorder_fixture(monkeypatch, tmp_path, *, fields=None):
+    settings = current_settings(tmp_path)
     window = WindowInfo(handle=1, title="Synthetic", process="fixture.exe")
     observation = Observation(
         obs_id=uuid4(),
@@ -117,9 +118,7 @@ def recorder_fixture(monkeypatch, tmp_path, *, fields=None):
     monkeypatch.setattr(record, "HttpRelay", lambda *_args: Relay())
     monkeypatch.setattr(record, "PaddleOcrEngine", lambda _settings: Ocr())
     monkeypatch.setattr(record, "OmniParserDetector", lambda *_args: Detector())
-    monkeypatch.setattr(
-        record.BrainSettings, "load", lambda _path: BrainSettings(screen_matching=False)
-    )
+    monkeypatch.setattr(record.BrainSettings, "load", lambda _path: settings)
     monkeypatch.setattr(record.PipelineSettings, "load", lambda _path: None)
     monkeypatch.setattr(record.ImageCallBudget, "from_config", lambda _path: budget)
     monkeypatch.setattr(
