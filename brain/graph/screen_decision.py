@@ -875,12 +875,6 @@ def _validate_completion_annotations(
 ) -> ScreenMatch:
     if any(item.field not in request.values for item in response.evidence):
         raise ValueError("screen_match_unknown_task_field")
-    if (
-        response.operation == "complete"
-        and not response.completion_evidence
-        and services.memory_retrieval.completion_receipt(request.screen) is None
-    ):
-        raise ValueError("screen_match_task_completion_evidence_required")
     if response.operation != "complete" and response.completion_evidence:
         services.log.append(
             "verify",

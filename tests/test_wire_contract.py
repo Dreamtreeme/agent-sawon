@@ -136,6 +136,7 @@ def test_wire_schema_accepts_every_supported_action_and_result_branch():
         ("focus", decision(action={"type": "focus_window", "handle": 99})),
         ("stop", decision("stop", "stop")),
         ("complete", complete()),
+        ("model-complete-without-annotations", decision("complete", "verify")),
     ]
     response_schema = DecisionPolicy(
         ExecutionFacts("task", field_names=("hbl_no",))
@@ -178,7 +179,6 @@ def test_wire_schema_and_local_validation_reject_each_invalid_contract_shape():
         ("wait-too-long", decision(intent="wait", action={"type": "wait", "duration_ms": 3001})),
         ("stop-with-action", decision("stop", "stop", action={"type": "click", "ref": "e1"})),
         ("complete-with-action", {**complete(), "action": {"type": "click", "ref": "e1"}}),
-        ("missing-completion-evidence", decision("complete", "verify")),
         (
             "blank-completion-ref",
             {**complete(), "completion_evidence": [{"condition_index": 0, "ref": " "}]},

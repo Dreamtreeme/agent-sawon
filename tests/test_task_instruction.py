@@ -10,7 +10,7 @@ from test_brain import FakeRelay, ScriptedModel, decision
 
 from brain.graph.engine import Brain
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
-from brain.graph.schemas import DecisionResponse
+from brain.graph.schemas import CompletionEvidence, DecisionResponse
 from brain.input_binding import normalize_action_source, resolve_input_key
 from brain.observe.values import values_for
 from brain.task_instruction import TaskInputRecord, TaskInstruction
@@ -187,6 +187,15 @@ def test_task_completion_is_tied_to_user_condition_not_all_input_fields():
     )
 
     assert response.to_decision().completion_evidence[0].condition_index == 0
+    without_annotations = response.model_dump()
+    without_annotations["decision"].pop("completion_evidence")
+    assert (
+        policy.response_schema()
+        .model_validate(without_annotations)
+        .to_decision()
+        .completion_evidence
+        == []
+    )
 
 
 def test_task_instruction_contains_business_intent_without_ui_steps():
@@ -291,3 +300,38 @@ def test_model_only_review_accepts_model_bound_completion_without_value_recheck(
         if event.payload.get("check") == "task_completion_fields"
     )
     assert event.payload["reviewer"] == "screen_model"
+
+    # The semantic declaration is model-owned; supplied annotations still have
+    # to name real current targets and existing user conditions. These are
+    # synthetic boundary inputs, not another model/ERP execution.
+    from brain.graph.completion import CompletionRetry, evaluate_task_completion
+    from brain.graph.execution import GuardStop
+
+    conditions = brain.task_instruction.completion_conditions
+    unannotated = complete.model_copy(update={"evidence": [], "completion_evidence": []})
+    reviewed = evaluate_task_completion(
+        brain.observation, unannotated, brain.values, conditions, model_only_review=True
+    )
+    assert reviewed.payload["conditions"] == {}, "do not invent condition indices or targets"
+    with pytest.raises(CompletionRetry, match="task_completion_evidence_required"):
+        evaluate_task_completion(
+            brain.observation, unannotated, brain.values, conditions, model_only_review=False
+        )
+    for annotation, reason in (
+        (
+            CompletionEvidence(condition_index=1, ref="e2"),
+            "task_completion_condition_unknown",
+        ),
+        (
+            CompletionEvidence(condition_index=0, ref="missing"),
+            "task_completion_evidence_missing",
+        ),
+    ):
+        with pytest.raises(GuardStop, match=reason):
+            evaluate_task_completion(
+                brain.observation,
+                unannotated.model_copy(update={"completion_evidence": [annotation]}),
+                brain.values,
+                conditions,
+                model_only_review=True,
+            )

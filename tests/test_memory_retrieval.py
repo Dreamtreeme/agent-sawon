@@ -26,7 +26,6 @@ from brain.cache.methods import (
     method_completion_from_match,
     method_from_match,
 )
-from brain.graph.completion import CompletionRetry, evaluate_task_completion
 from brain.graph.engine import Brain
 from brain.graph.memory_retrieval import open_memory_library
 from brain.graph.screen_decision import MethodBinding, ScreenMatch
@@ -876,14 +875,6 @@ def test_synthetic_retrieval_executes_and_finishes_current_route_without_model(
         assert "last_observation" not in field
     assert runtime.state.history[-1]["status"] == "provisional"
     assert brain.result is None
-    with pytest.raises(CompletionRetry, match="task_completion_evidence_required"):
-        evaluate_task_completion(
-            brain.observation,
-            brain.decision.model_copy(update={"operation": "complete", "action": None}),
-            brain.values,
-            brain.task_instruction.completion_conditions,
-            model_only_review=True,
-        )
     # Current delivery permits a remembered Save even in enforce mode. Neither
     # readable nor corrupted OCR turns that delivery into an observed business fact.
     for action_type in ("scroll", "click"):

@@ -391,7 +391,7 @@ class DecisionPolicy:
                     "intent": "verify",
                     "screen_kind": list(_SCREENS),
                     "action": None,
-                    "requires": ["current_evidence_for_applicable_user_completion_condition"],
+                    "requires": ["user_conditions_satisfied_by_observations_and_memory"],
                 }
             )
         return {

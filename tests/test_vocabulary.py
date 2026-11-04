@@ -3,6 +3,7 @@
 ScreenMatch/ScreenPlan add a current-model route resumption group (2026-11-02).
 ScreenMatch/ScreenPlan preserve table state, named parents and focus in observations (2026-11-02).
 ScreenMatch/ScreenPlan describe accumulated screen-tree observations (2026-11-04).
+Task completion annotations are optional for model-owned completion (2026-11-04).
 ScreenMatch/ScreenPlan remove the unused provider evidence list (2026-10-29).
 ScreenMatch/ScreenPlan separate pointer, keyboard and scroll actions (2026-10-28).
 ScreenMatch/ScreenPlan embed source in fields, removing assignments (2026-10-27).
@@ -128,19 +129,19 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
         ),
         (
             DecisionResponse,
-            "4d9656f93d9c67fb899b06b47e59fe11cf6da39eb37019c40b05e522afe06559",
+            "7410a47133139cd431807ef8df528fe3fe8c69b90e64a6603c68b20e8ac8083f",
         ),
         (
             SaveReviewResponse,
-            "df4d869aa37754a0680ee8c431149e73520243c7222fb5fa35008ad09c98f6cc",
+            "ff43cc8625bb9fe58a15c07ff84aa18e8ffe6b797e0aa44b71144d9c76541895",
         ),
         (
             ScreenFillPlan,
-            "901a70c77c434069224da425d0304e43c8b051c39934c8b6f7908ede884f0d3b",
+            "004a77860a409bb8b21629b8e3b7b64cd57416e18d27221f85efb4dc680b5ef6",
         ),
         (
             LoginScreenPlan,
-            "0c3348524763e3f67827f360493ebf424cd2bc8fb91378c8dc001451c06bb258",
+            "f56f74598e1597dccdd3db9b8c42d84787878deab8afc63dfb993c1d4a95a01b",
         ),
         (
             ActionTransition,

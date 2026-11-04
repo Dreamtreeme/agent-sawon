@@ -211,6 +211,9 @@ proof_kind=`executed_route_and_matching_terminal_screen`으로 기록한다.
 검토 대상만 복원하며 기억 경로는 이번 실행의 진행과 현재 종료 화면으로 완료를 판정한다.
 탐색·복구에서는 현재 모델이 사용자 조건과 누적 관찰을 대조하여 `complete`를 반환하고,
 기존 `evaluate_task_completion`이 사용자 조건과 현재 참조의 실행 계약을 확인한다.
+모델 전용 경로의 `completion_evidence`는 선택적 주석이다. 생략해도 이미 수용한 모델의
+완료 선언을 다시 거절하지 않으며, 제공된 조건 번호·대상 참조는 계속 검증한다. 비모델 검토는
+조건 주석을 요구한다. 코드가 생략된 주석의 조건 번호나 현재 관찰값을 만들어 채우지 않는다.
 
 `ProgressState.screen_nodes`는 화면 트리의 단일 상태 저장소이며 경로의 JSON 문자열로
 인덱싱한다. 노드는 path·업무 키별 fields·이름별 controls를 보관하고, 관찰값은 각 필드의

@@ -228,7 +228,7 @@ class WireTaskCompleteDecision(WireDecisionBase):
     intent: Literal["verify"]
     action: None = None
     evidence: list[WireEvidence] = Field(default_factory=list)
-    completion_evidence: list[WireCompletionEvidence] = Field(min_length=1)
+    completion_evidence: list[WireCompletionEvidence] = Field(default_factory=list)
 
 
 class DecisionResponse(WireModel):

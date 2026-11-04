@@ -669,7 +669,7 @@ def method_completion_from_match(
     if response.get("operation") != "complete" or response.get("steps"):
         return None
     completion_evidence = response.get("completion_evidence", [])
-    if not completion_evidence:
+    if not evidence and not completion_evidence:
         return None
     markers = {item["id"]: item for item in screen.get("markers", [])}
     blocks = {item["id"]: item for item in screen.get("ocr", [])}

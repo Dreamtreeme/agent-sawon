@@ -71,7 +71,7 @@ def evaluate_task_completion(
         ):
             raise GuardStop("task_completion_evidence_missing")
         condition_evidence.setdefault(item.condition_index, []).append(item.ref)
-    if not condition_evidence:
+    if not condition_evidence and not model_only_review:
         raise CompletionRetry("task_completion_evidence_required")
     return TaskCompletionResult(
         fields=tuple(fields),

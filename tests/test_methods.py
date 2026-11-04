@@ -526,7 +526,8 @@ def test_synthetic_completion_keeps_user_condition_anchor_without_an_input_sourc
         assert len(bound["completion_evidence"]) == 1, label
         assert "evidence" not in bound and "observed_step_results" not in bound, label
         response["completion_evidence"] = []
-        assert method_completion_from_match(completion_scene(), response, learned()) is None, label
+        unannotated = method_completion_from_match(completion_scene(), response, learned())
+        assert (unannotated is not None) is bool(evidence), label
 
 
 def test_coordinate_method_keeps_each_action_point_and_ignores_numbered_catalog(tmp_path):

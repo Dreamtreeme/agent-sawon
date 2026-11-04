@@ -762,7 +762,7 @@ def test_synthetic_completion_survives_recorded_trace_compilation_without_old_va
     assert all("value" not in field.model_fields_set for field in bound.mapping.fields.values())
 
 
-def test_synthetic_completion_requires_final_model_condition_evidence(tmp_path):
+def test_synthetic_completion_uses_only_the_final_model_observation(tmp_path):
     # Synthetic successful trace using existing fakes, not a live ERP recording.
     case, cache_path, _, mapping, match, _ = create_successful_case(tmp_path)
     final = mapping.model_copy(
@@ -791,11 +791,11 @@ def test_synthetic_completion_requires_final_model_condition_evidence(tmp_path):
     for label, last_obs_id, accepted in (
         ("accepted-final-observation", "obs-1", True),
         ("different-final-observation", "different", False),
-        ("missing-user-condition", "obs-1", False),
+        ("unannotated-model-completion", "obs-1", True),
         ("later-action-on-same-frame", "obs-1", False),
     ):
         plan = json.loads(json.dumps(final_plan))
-        if label == "missing-user-condition":
+        if label == "unannotated-model-completion":
             plan["payload"]["response"]["completion_evidence"] = []
             plan["payload"]["mapping"]["completion_evidence"] = []
         events = [
@@ -824,7 +824,9 @@ def test_synthetic_completion_requires_final_model_condition_evidence(tmp_path):
         )
         assert (method.completion is not None) == accepted, label
         if accepted:
-            assert method.completion.targets[0].condition_indexes == [0], label
+            assert method.completion.targets[0].condition_indexes == (
+                [] if label == "unannotated-model-completion" else [0]
+            ), label
             assert method.completion.targets[0].slot == "hbl_no", label
             assert method.completion.targets[0].target.bbox == (150, 280, 180, 40), label
             assert "field_values" not in method.completion.model_dump(), label
