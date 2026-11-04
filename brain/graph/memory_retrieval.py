@@ -463,7 +463,11 @@ class MemoryRetrieval:
         bindings = self.state.bindings.get(method.id, {})
         if isinstance(group, MethodCompletion):
             sources = {slot.name: bindings.get(slot.name, slot.source_key) for slot in method.slots}
-            field_sources = {item.target.name: sources[item.slot] for item in group.targets}
+            field_sources = {
+                item.target.name: sources[item.slot]
+                for item in group.targets
+                if item.slot is not None
+            }
             targets = [item.target for item in group.targets]
             group_id, predecessors, steps = None, [], []
         else:
@@ -556,7 +560,7 @@ class MemoryRetrieval:
                     item.target.name: dict(
                         role=item.target.role,
                         bbox=list(item.target.bbox),
-                        source=sources[item.slot],
+                        **({"source": sources[item.slot]} if item.slot is not None else {}),
                     )
                     for item in method.completion.targets
                     if item.target.bbox is not None

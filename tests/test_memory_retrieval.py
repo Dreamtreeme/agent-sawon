@@ -93,9 +93,11 @@ def test_synthetic_similarity_routes_before_ocr_and_shared_context(tmp_path, sim
         order.append("similarity")
         assert "ocr" not in screen
         state = brain.memory_retrieval.state
-        pending, used, verified = state.pending, set(state.used), dict(brain.verified)
+        pending, used, verified = state.pending, set(state.used), dict(brain._observed_inputs())
         result = recognize(screen)
-        assert state.pending is pending and state.used == used and brain.verified == verified
+        assert (
+            state.pending is pending and state.used == used and brain._observed_inputs() == verified
+        )
         return result
 
     def ocr(page):
@@ -451,7 +453,7 @@ def test_synthetic_phash_memory_jitter_reaches_notebook_without_duplicate_contro
     model.decisions = iter([reply])
     brain._observe()
 
-    assert set(brain.verified) == {"customer", "reference"}
+    assert set(brain._observed_inputs()) == {"customer", "reference"}
     inputs = [element for element in brain.observation.elements if element.role == "edit"]
     assert len(inputs) == 2
     assert all(element.enabled and element.value for element in inputs)
@@ -499,7 +501,7 @@ def test_synthetic_geometry_evidence_alone_does_not_update_model_owned_notebook(
     brain.observation = bind_scene(wire(), blocks, ground_meanings(meanings, markers, blocks))
     brain._remember_model_task_evidence(response)
 
-    assert brain.verified == {}
+    assert brain._observed_inputs() == {}
     assert brain.screen_nodes == {}
     assert not brain.save_issued
     assert model.prompts == [] and relay.actions == []
@@ -642,8 +644,8 @@ def test_synthetic_saved_review_replays_route_without_inventing_current_values(t
     method = compile_method_candidate(method, source_values).model_copy(
         update={"artifact_kind": "warm_compiled"}
     )
-    # Synthetic final observation accepted from cumulative saved-detail evidence,
-    # just like 135: no redundant completion_evidence annotation was emitted.
+    # Synthetic final model completion after cumulative saved-detail review.
+    # The terminal anchor is a user-condition reference, not a copied field reading.
     final_screen = {**source_screen, "ocr": []}
     final_mapping = ScreenMapping(
         screen_kind="dialog",
@@ -655,6 +657,7 @@ def test_synthetic_saved_review_replays_route_without_inventing_current_values(t
                 step_id="verify-detail", observed_result="Both saved fields match", completed=True
             )
         ],
+        completion_evidence=[{"condition_index": 0, "target": "Reference"}],
         fields={
             "Reference": {
                 "role": "text",
@@ -669,21 +672,19 @@ def test_synthetic_saved_review_replays_route_without_inventing_current_values(t
         final_mapping.local_payload(final_screen, source_values),
         method,
         source_values,
-        verified_fields=source_values,
     )
     assert method is not None and method.completion is not None
-    assert all(not item.condition_indexes for item in method.completion.targets)
+    assert all(item.condition_indexes == [0] for item in method.completion.targets)
     atomic_write_json(runtime.library.path, MethodDocument(methods=[method]))
-    brain.save_issued = brain.saved_detail_transition_pending = True
-    brain.saved_detail_transition_step = brain.active_taught_step = "open-detail"
+    brain.save_issued = True
+    brain.active_taught_step = "open-detail"
 
     model.decisions = iter([])
 
     brain._observe()
 
     assert brain.observation.screen_kind == "dialog"
-    assert not brain.model_saved_detail_review and brain.saved_detail_transition_pending
-    assert not brain.verified and not brain.post_save_verified
+    assert not brain._observed_inputs()
     remembered = brain.screen_nodes['["Saved detail"]']["fields"]["customer"]
     assert "last_observation" not in remembered
     assert not brain.completed_taught_steps
@@ -695,8 +696,8 @@ def test_synthetic_saved_review_replays_route_without_inventing_current_values(t
     assert model.prompts == []
     assert brain._verify_node() == "review"
     assert brain.visual_proposal.operation == "complete"
-    assert brain.visual_proposal.completion_evidence == []
-    assert not brain.verified and not brain.post_save_verified
+    assert {item.condition_index for item in brain.visual_proposal.completion_evidence} == {0}
+    assert not brain._observed_inputs()
     assert not brain.completed_taught_steps
     assert brain.visual_proposal.observed_step_results == []
     assert all(
@@ -837,7 +838,7 @@ def test_synthetic_retrieval_executes_and_finishes_current_route_without_model(
 
     brain.screen_scanner.ocr.read = read_current_values
     brain._observe()
-    assert brain.current_screen_path == ["Entry"] and not brain.verified
+    assert brain.current_screen_path == ["Entry"] and not brain._observed_inputs()
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     assert brain._act_node() == "observation"
@@ -867,11 +868,11 @@ def test_synthetic_retrieval_executes_and_finishes_current_route_without_model(
         if e.payload.get("check") == "memory_retrieval_exception"
     ]
     assert model.prompts == [] and exceptions == []
-    assert not brain.verified and not brain.post_save_verified
+    assert not brain._observed_inputs()
     for source, value in brain.values.items():
         field = brain.screen_nodes['["Entry"]']["fields"][source]
         assert field["delivery"]["value"] == value
-        assert field["delivery"]["scope"] == "entry"
+        assert "scope" not in field["delivery"]
         assert "last_observation" not in field
     assert runtime.state.history[-1]["status"] == "provisional"
     assert brain.result is None
@@ -891,7 +892,7 @@ def test_synthetic_retrieval_executes_and_finishes_current_route_without_model(
         assert brain._act_node() == "observation"
         assert relay.actions[-1].root.type == action_type
         assert model.prompts == [] and brain.result is None
-        assert not brain.verified and not brain.post_save_verified
+        assert not brain._observed_inputs()
         if action_type == "scroll":
             assert brain._verify_node() == "review"
             assert model.prompts == []
@@ -900,7 +901,7 @@ def test_synthetic_retrieval_executes_and_finishes_current_route_without_model(
     assert model.prompts == [] and brain.result is None
     assert brain.visual_proposal.save_result == "ready_for_query"
     assert brain.visual_proposal.message_targets
-    assert not brain.verified and not brain.post_save_verified
+    assert not brain._observed_inputs()
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     assert brain._act_node() == "observation"
@@ -909,7 +910,7 @@ def test_synthetic_retrieval_executes_and_finishes_current_route_without_model(
     assert brain._verify_node() == "review"
     assert brain.visual_proposal.operation == "complete"
     assert model.prompts == []
-    assert not brain.verified and not brain.post_save_verified
+    assert not brain._observed_inputs()
     assert all(
         "value" not in field.model_fields_set
         for field in brain.visual_proposal.mapping.fields.values()
@@ -1001,7 +1002,7 @@ def test_synthetic_reentered_node_does_not_reobserve_old_memo_or_skip_current_in
     brain.observation = scanner.bind_mapping(brain.observation.wire, meanings, mapping.fields)
     assert all("value" not in field for field in scanner._catalog.selected_fields.values())
     assert brain.screen_nodes['["Entry"]']["fields"]["customer"]["last_observation"] == previous
-    assert not brain.verified
+    assert set(brain._observed_inputs()) == {"customer"}
     assert all(
         element.value is None for element in brain.observation.elements if element.role == "edit"
     )

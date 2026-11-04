@@ -216,6 +216,35 @@ def matching_contract(brain, screen=None):
     return brain._screen_decision_request(screen, None), services
 
 
+def remember_prior_inputs(brain, sources):
+    """Use the real model-observation commit path for synthetic earlier screen readings."""
+    from brain.graph.screen_mapping import ScreenMapping
+
+    previous = brain.observation
+    brain.observation = SceneObservation(wire=wire(), screen_kind="editor", elements=[])
+    brain.observation_number += 1
+    brain._remember_model_task_evidence(
+        ScreenMatch(
+            screen_kind="editor",
+            procedure_step="task-action",
+            controls=[],
+            mapping=ScreenMapping(
+                screen_path=["Earlier screen"],
+                fields={
+                    source: {
+                        "source": source,
+                        "role": "edit",
+                        "bbox": [10, 20, 60, 15],
+                        "value": brain.values[source],
+                    }
+                    for source in sources
+                },
+            ),
+        )
+    )
+    brain.observation = previous
+
+
 @pytest.mark.parametrize("last_action", ["wheel", "invalid-click"])
 def test_synthetic_fill_then_wheel_crosses_point_binding_or_reports_undispatched_plan(
     tmp_path, record, last_action
@@ -648,8 +677,8 @@ def test_named_current_evidence_is_bound_without_a_second_grounding_call(
     prefix = f"e{brain.observation.obs_id.int}0"
     for evidence in brain.visual_proposal.evidence:
         assert observed[prefix + str(evidence.target)].value == brain.values[evidence.field]
-    assert brain.verified["mbl_no"]["name"] == "Master"
-    assert brain.verified["shipper"]["name"] == "Shipper"
+    assert brain._observed_inputs()["mbl_no"]["label"] == "Master"
+    assert brain._observed_inputs()["shipper"]["label"] == "Shipper"
 
 
 def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(
@@ -679,7 +708,7 @@ def test_task_instruction_exposes_goal_and_capabilities_without_fixed_ui_route(
         if event.payload.get("check") == "user_education_loaded"
     )
     assert education.payload["sha256"] == brain.task_instruction_sha256
-    brain.verified["hbl_no"] = "prior-screen-ref"
+    remember_prior_inputs(brain, {"hbl_no"})
 
     assert brain._plan_node() == "observation"
     brain._observe()
@@ -1066,189 +1095,13 @@ def test_model_only_generic_task_keeps_model_grounded_input_progress(
     brain._observe()
     assert brain._select_node() == "finish"
 
-    assert "hbl_no" in brain.verified
+    assert "hbl_no" in brain._observed_inputs()
     event = next(
         event
         for event in brain.log.read_all()
         if event.payload.get("check") == "model_task_evidence_recorded"
     )
     assert event.payload["fields"] == ["hbl_no"]
-
-
-def test_post_save_model_review_uses_only_persisted_detail_evidence(
-    tmp_path, record, task_instruction
-):
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
-    brain.verified = {field: {"pre_save": field} for field in brain.values}
-    brain.model_saved_detail_review = True
-    brain.post_save_verified = {"hbl_no"}
-
-    request, services = matching_contract(brain)
-    prepared = build_decision_prompt(request, services)
-    notebook = prepared.state["notebook"]
-
-    assert request.verified_fields == {"hbl_no"}
-    assert notebook["verified_inputs"] == ["hbl_no"]
-    assert set(notebook["remaining_inputs"]) == set(brain.values) - {"hbl_no"}
-    assert notebook["workflow_state"]["post_save_detail_review"] is True
-
-
-def test_post_save_query_input_is_not_mistaken_for_a_saved_result_row(
-    tmp_path, record, task_instruction
-):
-    task_response = named_response()
-    task_response.update(
-        {
-            "steps": [],
-            "operation": "stop",
-            "evidence": [{"field": "hbl_no", "target": "Reference"}],
-        }
-    )
-    brain, *_ = setup_brain(tmp_path, record, [task_response], task_instruction=task_instruction)
-    brain.save_issued = True
-
-    brain._observe()
-
-    assert not brain.post_save_query_identity_verified
-
-
-@pytest.mark.parametrize(
-    "role, action_type, intent, keys, opens_detail",
-    [
-        ("cell", "double_click", "navigate", None, True),
-        ("button", "click", "navigate", None, True),
-        ("cell", "key", "navigate", "enter", True),
-        ("cell", "click", "search", None, False),
-        ("cell", "key", "navigate", "tab", False),
-        ("cell", "key", "navigate", "pagedown", False),
-    ],
-    ids=["row", "edit-button", "keyboard-open", "search", "focus-tab", "scroll"],
-)
-def test_post_save_result_transition_starts_detail_review_and_advances_taught_step(
-    tmp_path, record, role, action_type, intent, keys, opens_detail
-):
-    from sawon_interfaces import UIElement
-
-    from brain.graph.schemas import Choice, Decision
-    from brain.graph.transitions import ObservedEffect
-
-    taught = TaskInstruction.model_validate_json(
-        (
-            Path(__file__).resolve().parents[1] / "examples/shipment-user-taught-task.json"
-        ).read_bytes()
-    )
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=taught)
-    brain.save_issued = True
-    brain.active_taught_step = "requery-saved-record"
-    identity = brain.values["hbl_no"]
-    result = UIElement(
-        ref="e1",
-        role=role,
-        name="Open selection" if role == "button" else identity,
-        value="" if role == "button" else identity,
-        enabled=True,
-        bbox=(100, 50, 150, 30),
-    )
-    query = SceneObservation(wire=wire(), screen_kind="query", elements=[result])
-    decision = Decision(
-        screen_kind="query",
-        operation="act",
-        intent=intent,
-        subgoal="open saved result",
-        reason="review the persisted values",
-        action=Choice(type=action_type, ref="e1", keys=keys),
-    )
-    brain.observation = query
-    action = brain._wire_action(decision.action, decision)
-    brain._accept_dispatched_action(
-        action,
-        decision,
-        decision.action,
-    )
-    assert brain.saved_detail_transition_pending is opens_detail
-    if not opens_detail:
-        assert brain.saved_detail_transition_step is None
-        assert not brain.model_saved_detail_review
-        assert not brain.post_save_query_identity_verified
-        assert not brain.post_save_verified
-        return
-
-    # A row selection that stays on the query screen is not a completed transition.
-    brain.observation = SceneObservation(wire=wire(), screen_kind="query", elements=[result])
-    brain._record_action_verification(
-        decision, decision.action, None, True, ObservedEffect.CHANGED, []
-    )
-    assert not brain.model_saved_detail_review
-
-    # A modal (or a model-labelled dialog) and its next action cannot erase the
-    # query-to-detail episode. Its original taught step must also survive.
-    brain.pending = None
-    brain._begin_saved_detail_review(
-        ScreenMatch(screen_kind="dialog", procedure_step="task-action", controls=[])
-    )
-    assert brain.saved_detail_transition_pending
-    brain.observation = SceneObservation(wire=wire(), screen_kind="dialog", elements=[result])
-    decision = decision.model_copy(update={"screen_kind": "dialog", "intent": "navigate"})
-    brain.active_taught_step = "verify-requeried-record"
-    action = brain._wire_action(decision.action, decision)
-    brain._accept_dispatched_action(
-        action,
-        decision,
-        decision.action,
-    )
-    brain.observation = SceneObservation(wire=wire(), screen_kind="editor", elements=[])
-    brain._record_action_verification(
-        decision, decision.action, None, True, ObservedEffect.CHANGED, []
-    )
-    assert brain.saved_detail_transition_pending  # Geometry alone cannot complete education.
-    brain._remember_model_task_evidence(
-        ScreenMatch(
-            screen_kind="editor",
-            procedure_step="task-action",
-            controls=[],
-            observed_step_results=[
-                {
-                    "step_id": "requery-saved-record",
-                    "observed_result": "The saved record detail is open",
-                    "completed": True,
-                }
-            ],
-        )
-    )
-    assert not brain.saved_detail_transition_pending
-    assert brain.saved_detail_transition_step is None
-
-    assert brain.post_save_query_identity_verified
-    assert brain.model_saved_detail_review
-    assert brain.active_taught_step == "verify-requeried-record"
-    assert "requery-saved-record" in brain.completed_taught_steps
-    assert any(
-        event.payload.get("check") == "model_saved_detail_review_started"
-        for event in brain.log.read_all()
-    )
-
-
-def test_complete_post_save_model_evidence_finishes_before_another_decision(
-    tmp_path, record, task_instruction
-):
-    brain, model, relay, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
-    brain.save_issued = True
-    brain.post_save_query_identity_verified = True
-    brain.model_saved_detail_review = True
-    brain.post_save_verified = set(brain.values)
-
-    assert brain._select_node() == "finish"
-
-    assert brain.result is not None and brain.result.status == "success"
-    assert brain.result.reason == "task_completed_with_verified_evidence"
-    assert model.prompts == []
-    assert not hasattr(relay, "actions")
-    event = next(
-        event
-        for event in brain.log.read_all()
-        if event.payload.get("check") == "post_save_model_evidence_complete"
-    )
-    assert event.payload["fields"] == sorted(brain.values)
 
 
 def test_selection_error_does_not_consume_unrelated_phase_failure_budget(
@@ -1264,43 +1117,6 @@ def test_selection_error_does_not_consume_unrelated_phase_failure_budget(
     assert brain._fail("selection_error:KeyError") == "finish"
     assert brain.result is not None
     assert brain.result.reason == "repeated_subgoal_failure:task:decision:selection_error:KeyError"
-
-
-def test_post_save_completion_rejection_names_missing_evidence_and_scope(
-    tmp_path, record, task_instruction
-):
-    from brain.graph.schemas import Decision
-
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
-    brain.observation = SceneObservation(wire=wire(), screen_kind="editor", elements=[])
-    brain.save_issued = True
-    brain.post_save_query_identity_verified = True
-    brain.model_saved_detail_review = True
-    brain.post_save_verified = set(brain.values) - {"description"}
-    decision = Decision(
-        screen_kind="editor",
-        operation="complete",
-        intent="verify",
-        subgoal="verify persisted values",
-        reason="visible persisted values match",
-    )
-    brain.decision = decision
-
-    assert brain._check_complete(decision) == "observation"
-
-    feedback = brain._current_feedback()[-1]
-    assert feedback["missing_fields"] == ["description"]
-    assert "Do not refill or save" in feedback["required_response"]
-    assert feedback["subgoal_key"] == "task:post_save_detail:description"
-    event = brain.log.read_all()[-1]
-    assert event.payload["subgoal_key"] == "task:post_save_detail:description"
-
-    request, services = matching_contract(brain)
-    prepared = build_decision_prompt(request, services)
-    prompted = prepared.state["notebook"]["recent_feedback"][-1]
-    assert prompted["missing_fields"] == ["description"]
-    assert prompted["subgoal_key"] == "task:post_save_detail:description"
-    assert "Do not refill or save" in prompted["required_response"]
 
 
 def test_education_focus_can_revisit_steps_without_inventing_completion(tmp_path, record):
@@ -1350,7 +1166,7 @@ def test_model_only_review_retains_named_text_evidence_without_input_detection(
     )
     brain, model, *_ = setup_brain(tmp_path, record, [data], task_instruction=task_instruction)
     brain._observe()
-    assert "hbl_no" in brain.verified
+    assert "hbl_no" in brain._observed_inputs()
     assert len(model.prompts) == 1
 
 
@@ -1362,9 +1178,9 @@ def test_observed_mismatch_replaces_claim_without_rejecting_repair(
     task_response["fields"]["Reference"]["value"] = visible
     task_response["evidence"] = [{"field": "hbl_no", "target": "Reference"}]
     brain, *_ = setup_brain(tmp_path, record, [task_response], task_instruction=task_instruction)
-    brain.verified["hbl_no"] = {"old": "entry"}
+    remember_prior_inputs(brain, {"hbl_no"})
     brain._observe()
-    assert "hbl_no" not in brain.verified
+    assert "hbl_no" not in brain._observed_inputs()
     assert brain.visual_proposal.evidence == []
     assert brain._select_node() == "review"
     assert brain.action_plan.actions[0].decision.action.source == "hbl_no"
@@ -1374,7 +1190,7 @@ def test_task_capability_allows_save_after_prior_evidence_without_hiding_inputs(
     brain, *_ = setup_brain(tmp_path, record, [])
     brain.phase = "task"
     active = {"description", "hbl_no", "shipper"}
-    brain.verified = {field: f"prior-{field}" for field in active}
+    remember_prior_inputs(brain, active)
     policy = DecisionPolicy(
         ExecutionFacts(
             "task",
@@ -1540,7 +1356,7 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(
     assert second.visual_proposal.observed_step_results == []
     assert second.visual_proposal.mapping.repair_fields == []
     assert second.visual_proposal.evidence == []
-    assert second.verified == {}
+    assert second._observed_inputs() == {}
     assert second._select_node() == "review"
     assert second_model.prompts == []
     hits = [
@@ -1663,10 +1479,7 @@ def test_task_partner_input_compiles_to_current_screen_batch(tmp_path, record):
     )
     brain, _, _, _, _, _ = setup_brain(tmp_path, record, [partner])
     brain.duplicate_clear = True
-    brain.verified = {
-        field: f"ref-{field}"
-        for field in {"hbl_no", "mbl_no", "packages.count", "packages.unit", "pol"}
-    }
+    remember_prior_inputs(brain, {"hbl_no", "mbl_no", "packages.count", "packages.unit", "pol"})
 
     brain._observe()
 
@@ -1796,6 +1609,7 @@ def test_model_may_complete_from_current_evidence_before_the_last_taught_step(tm
         taught_step_id="open-detail",
         completion_evidence=[{"condition_index": 0, "target": "Reference"}],
     )
+    premature["fields"]["Reference"]["value"] = record.fields.hbl_no.value
     brain, model, _, ocr, detector, _ = setup_brain(
         tmp_path,
         record,
@@ -1809,6 +1623,16 @@ def test_model_may_complete_from_current_evidence_before_the_last_taught_step(tm
     assert ocr.calls == detector.calls == 1
     assert brain.visual_proposal.operation == "complete"
     assert brain.visual_proposal.taught_step_id == "open-detail"
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "finish"
+    assert brain.result.status == "success"
+    complete = next(
+        e.payload
+        for e in brain.log.read_all()
+        if e.payload.get("check") == "task_completion_fields"
+    )
+    assert set(complete["conditions"]) == set(instruction.completion_conditions)
+    assert len(model.prompts) == 1
 
 
 # Cleanup audit C4: preserve real refs and batch compilation without intermediate marker strings.
@@ -2102,7 +1926,6 @@ def test_synthetic_mappingless_cache_requires_current_model_observation(tmp_path
         "batch",
         "delivered-input",
         "pending-memory",
-        "saved-detail",
         "method-complete",
         "unmatched-query",
         "cache-complete",
@@ -2184,21 +2007,11 @@ def test_synthetic_bound_method_precedes_review_gates_without_inventing_current_
                             "bbox": [100, 15, 150, 30],
                             "delivery": {
                                 "value": record.fields.hbl_no.value,
-                                "scope": "entry",
                                 "observation_number": 2,
                             },
                         }
                     },
                 }
-            },
-        )
-    elif review == "saved-detail":
-        request = replace(
-            request,
-            workflow_flags={
-                **request.workflow_flags,
-                "save_issued": True,
-                "saved_result_open_pending": True,
             },
         )
     request = replace(
@@ -2273,7 +2086,6 @@ def test_synthetic_unseen_pending_input_does_not_interrupt_structural_navigation
                     "bbox": [100, 15, 150, 30],
                     "delivery": {
                         "value": record.fields.hbl_no.value,
-                        "scope": "entry",
                         "observation_number": 2,
                     },
                 }
@@ -2304,7 +2116,7 @@ def test_synthetic_unseen_pending_input_does_not_interrupt_structural_navigation
 
     assert model.prompts == []
     assert [(step.action, step.point) for step in result.response.steps] == [("click", [280, 30])]
-    assert pending_screen_inputs(nodes, "entry") == {"hbl_no"}
+    assert pending_screen_inputs(nodes) == {"hbl_no"}
     assert json.dumps(nodes, ensure_ascii=False) == original
 
 
@@ -2330,7 +2142,7 @@ def test_empty_action_recovery_preserves_education_and_current_observed_values(
     assert second["task"] == first["task"]
     assert second["taught_procedure_progress"] == first["taught_procedure_progress"]
     assert second["recovery"]["matched_inputs"] == ["hbl_no"]
-    assert "hbl_no" in brain.verified
+    assert "hbl_no" in brain._observed_inputs()
     assert brain.visual_proposal.mapping.fields["Reference"].value == record.fields.hbl_no.value
     assert brain.visual_proposal.steps[0].intent == "navigate"
     assert brain.visual_proposal.mapping.steps[0].target == "Continue"
@@ -2559,7 +2371,7 @@ def test_selected_record_value_is_verified_on_return_to_editor(tmp_path, record)
 
     brain._observe = observe
     assert brain._verify_node() == "review"
-    assert "shipper" in brain.verified
+    assert "shipper" in brain._observed_inputs()
     assert "shipper" not in brain.deferred_field_checks
     assert any(
         event.payload.get("check") == "selected_field_value_matches"
@@ -2625,7 +2437,7 @@ def test_task_prompt_separates_available_pending_and_verified_inputs(tmp_path, r
     )
     brain.phase = "task"
     brain.duplicate_clear = True
-    brain.verified = {field: f"prior-{field}" for field in brain.values if field != "consignee"}
+    remember_prior_inputs(brain, set(brain.values) - {"consignee"})
     if pending:
         brain.decision = Decision(
             screen_kind="editor",
@@ -2650,7 +2462,7 @@ def test_task_prompt_separates_available_pending_and_verified_inputs(tmp_path, r
     assert notebook["remaining_inputs"] == ["consignee"]
     assert notebook["pending_verification_inputs"] == (["consignee"] if pending else [])
     assert set(state["capability"]["input_scope"]) == set(brain.values)
-    assert "consignee" not in brain.verified
+    assert "consignee" not in brain._observed_inputs()
     assert "procedure" not in state
 
 
@@ -2659,7 +2471,6 @@ def test_observe_only_records_policy_scope_and_disabled_target_without_rejecting
     from test_brain import element
 
     from brain.graph.schemas import Choice, Decision
-    from brain.observe import describe
 
     brain, *_ = setup_brain(tmp_path, record, [])
     capability = task_action_contract(
@@ -2692,23 +2503,16 @@ def test_observe_only_records_policy_scope_and_disabled_target_without_rejecting
     # The execution guard still emits diagnostics in current mode; it does not
     # reselect the input or raise an enforce-mode rejection.
     cases = (
-        ("disabled", "Edit", False, None, "target_not_current_or_enabled"),
-        ("non_input", "Button", True, None, "target_not_text_input"),
-        ("wrong_scope", "Cell", True, None, "record_input_scope_mismatch"),
-        ("other_owner", "Edit", True, "mbl_no", "input_surface_claimed_by_other_field"),
+        ("disabled", "Edit", False, "target_not_current_or_enabled"),
+        ("non_input", "Button", True, "target_not_text_input"),
+        ("wrong_scope", "Cell", True, "record_input_scope_mismatch"),
     )
-    for label, role, enabled, owner, rejection in cases:
+    for label, role, enabled, rejection in cases:
         with labeled_case(label):
             target = element("e1", role, name=label, enabled=enabled)
             brain.observation = SceneObservation(
                 wire=wire(), screen_kind="editor", elements=[target]
             )
-            if owner is not None:
-                brain.evidence_ledger.record(
-                    owner,
-                    describe(target, brain.observation.elements),
-                    str(brain.observation.obs_id),
-                )
             proposed = Decision(
                 screen_kind="editor",
                 operation="act",
@@ -2721,18 +2525,12 @@ def test_observe_only_records_policy_scope_and_disabled_target_without_rejecting
             assert brain._guard_action(proposed) is None
             assert brain.log.read_all()[-1].payload == {
                 "check": "guard_observe_only",
-                "guard": "action_surface" if owner is not None else "action",
+                "guard": "action",
                 "would_reject": rejection,
                 "intent": "fill",
                 "action": "set_text",
                 "ref": "e1",
             }
-            if owner is not None:
-                assert brain._last_surface_conflict == {
-                    "surface_owner": owner,
-                    "requested_source": "hbl_no",
-                    "target_ref": "e1",
-                }
 
 
 def test_pending_fields_remain_evidence_context_without_claiming_delivery(tmp_path, record):
@@ -2752,9 +2550,7 @@ def test_pending_fields_remain_evidence_context_without_claiming_delivery(tmp_pa
     )
     brain.phase = "task"
     brain.duplicate_clear = True
-    brain.verified = {
-        field: f"prior-{field}" for field in brain.values if field not in {"hbl_no", "shipper"}
-    }
+    remember_prior_inputs(brain, set(brain.values) - {"hbl_no", "shipper"})
     brain.decision = Decision(
         screen_kind="editor",
         operation="act",
@@ -2776,7 +2572,7 @@ def test_pending_fields_remain_evidence_context_without_claiming_delivery(tmp_pa
     state = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
     assert state["notebook"]["pending_verification_inputs"] == ["hbl_no"]
     assert set(state["notebook"]["remaining_inputs"]) == {"hbl_no", "shipper"}
-    assert "hbl_no" not in brain.verified
+    assert "hbl_no" not in brain._observed_inputs()
     assert "hbl_no" in state["capability"]["input_scope"]
     assert "procedure" not in state
 
@@ -2857,17 +2653,12 @@ def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, depend
     assert result_count.parent_ref is None
 
 
-@pytest.mark.parametrize("verified", [False, True])
-def test_control_cleanup_preserves_current_evidence_regardless_of_prior_verification(
-    tmp_path, record, verified
-):
+def test_control_cleanup_keeps_unbound_current_evidence_for_compilation_error(tmp_path, record):
     from brain.graph.screen_decision import sanitize_unused_controls
     from brain.visual.markers import Marker, ground_meanings
     from brain.visual.scene import SemanticDetection, bind_scene
 
     brain, *_ = setup_brain(tmp_path, record, [])
-    if verified:
-        brain.verified["hbl_no"] = "prior-editor-ref"
     markers = [
         Marker(id=31, bbox=(10, 10, 80, 25), source="omniparser", confidence=1),
         Marker(id=34, bbox=(120, 10, 80, 25), source="omniparser", confidence=1),
@@ -2909,7 +2700,7 @@ def test_control_cleanup_preserves_current_evidence_regardless_of_prior_verifica
     checks = {event.payload.get("check") for event in brain.log.read_all()}
     assert "unbound_action_evidence_omitted" not in checks
     assert "stale_verified_evidence_omitted" not in checks
-    assert ("hbl_no" in brain.verified) is verified
+    assert brain._observed_inputs() == {}
 
 
 def test_education_retrieval_replans_before_any_provisional_action(tmp_path, record):
@@ -3534,12 +3325,12 @@ def test_named_input_then_command_executes_and_observes_once(tmp_path, record, t
     assert sent[0].text == brain.values["hbl_no"]
     assert [a.target.image_point for a in sent] == [(125.0, 28.0), (310.0, 28.0)]
     assert len(model.prompts) == 1
-    assert "hbl_no" not in brain.verified
+    assert "hbl_no" not in brain._observed_inputs()
     assert len(brain.pending["execution"].delivered) == 2
     assert brain._verify_node() == "review"
     assert len(model.prompts) == 2
     assert brain.pending is None
-    assert "hbl_no" not in brain.verified
+    assert "hbl_no" not in brain._observed_inputs()
 
 
 @pytest.mark.parametrize("failure_index", [0, 1], ids=["input-fails", "command-fails"])
@@ -3578,7 +3369,7 @@ def test_named_mixed_plan_failure_records_only_delivered_prefix(tmp_path, record
     assert len(sent) == failure_index + 1
     assert len(model.prompts) == 1
     assert brain.pending is None
-    assert "hbl_no" not in brain.verified
+    assert "hbl_no" not in brain._observed_inputs()
     assert any(e.payload.get("reason") == "relay_action_failed" for e in brain.log.read_all())
 
 
@@ -3615,50 +3406,11 @@ def test_mapping_preserves_review_and_retrieval_purpose_and_ignores_unused_grid(
     assert len(mapping.local_payload({})["steps"]) == 1
 
 
-def test_delivered_value_updates_batch_and_action_memory_without_duplicate_evidence(
-    tmp_path, record
-):
-    from brain.graph.execution import ActionPlan, PlanExecution
-    from brain.graph.schemas import Choice, Decision
-
-    task_response = named_response(screen_kind="editor", evidence=[])
-    task_response["fields"]["Reference"]["value"] = record.fields.hbl_no.value
-    brain, *_ = setup_brain(tmp_path, record, [task_response])
-    decision = Decision(
-        screen_kind="editor",
-        operation="act",
-        intent="fill",
-        subgoal="fill",
-        reason="input",
-        action=Choice(type="set_text", ref="old-frame", source="hbl_no"),
-    )
-    execution = PlanExecution(
-        ActionPlan.single(decision),
-        wire(),
-        delivered=[{"choice": decision.action, "decision": decision}],
-    )
-    brain.pending = {"execution": execution, "before_observation": execution.before}
-    brain._observe()
-    assert "hbl_no" in brain.verified
-    assert brain._verify_screen_batch(execution, brain.observation) == ("review", True)
-    assert not any(
-        e.payload.get("reason") == "screen_fill_evidence_missing" for e in brain.log.read_all()
-    )
-    assert {claim.field for claim in brain.evidence_ledger.history if claim.status == "active"} == {
-        "hbl_no"
-    }
-    assert brain.rolling_context.recent_turns[-1].target_summary == "set_text:hbl_no"
-    target = next(e for e in brain.observation.elements if e.value == brain.values["hbl_no"])
-    assert brain._record_verified_field("hbl_no", target)
-    assert len(brain.evidence_ledger.history) == 1
-
-
 @pytest.mark.parametrize("rejected_next_plan", [False, True], ids=["valid-plan", "rejected-plan"])
-def test_detail_observation_commits_review_before_current_evidence(
+def test_current_observation_survives_rejected_next_plan(
     tmp_path, record, monkeypatch, rejected_next_plan
 ):
-    from brain.graph.schemas import Choice, Decision
-
+    """Synthetic mapping: commit current readings even when its next action cannot compile."""
     task_response = named_response(
         screen_kind="editor",
         steps=[],
@@ -3667,30 +3419,7 @@ def test_detail_observation_commits_review_before_current_evidence(
     )
     task_response["fields"]["Reference"]["value"] = record.fields.hbl_no.value
     brain, model, *_ = setup_brain(tmp_path, record, [task_response])
-    brain.save_issued = True
-    brain.verified = {field: f"entry-{field}" for field in brain.values}
-    decision = Decision(
-        screen_kind="query",
-        operation="act",
-        intent="navigate",
-        subgoal="open",
-        reason="review",
-        action=Choice(type="double_click", ref="old-frame"),
-    )
-    brain.saved_detail_transition_pending = True
-    brain.saved_detail_transition_step = "requery-saved-record"
-    task_response["observed_step_results"] = [
-        {
-            "step_id": "requery-saved-record",
-            "observed_result": "Saved detail is visible",
-            "completed": True,
-        }
-    ]
-    brain.pending = {
-        "before_observation": wire(),
-        "decision": decision,
-        "choice": decision.action,
-    }
+    remember_prior_inputs(brain, set(brain.values) - {"hbl_no"})
     if rejected_next_plan:
 
         def reject(*args, **kwargs):
@@ -3698,33 +3427,27 @@ def test_detail_observation_commits_review_before_current_evidence(
 
         monkeypatch.setattr("brain.graph.screen_decision.validate_or_replan", reject)
     brain._observe()
-    assert brain.model_saved_detail_review
-    assert "hbl_no" in brain.post_save_verified
+
     payload = json.loads(model.prompts[0][len(CONTEXT_MAPPING_RULES) :])
-    assert payload["notebook"]["workflow_state"]["saved_result_open_pending"]
-    assert payload["notebook"]["evidence_scope"] == "saved_detail_candidate"
-    assert payload["notebook"]["verified_inputs"] == []
-    assert "verified_inputs" not in payload["notebook"]["scratchpad"]
-    assert set(payload["execution"]["remaining_inputs"]) == set(brain.values)
-    assert set(brain.verified) == set(brain.values)  # Entry history is not erased.
-    checks = [event.payload.get("check") for event in brain.log.read_all()]
-    assert checks.index("model_saved_detail_review_started") < checks.index(
-        "model_task_evidence_recorded"
+    assert set(payload["notebook"]["verified_inputs"]) == set(brain.values) - {"hbl_no"}
+    assert payload["notebook"]["remaining_inputs"] == ["hbl_no"]
+    assert set(brain._observed_inputs()) == set(brain.values)
+    current = brain._observed_inputs()["hbl_no"]["last_observation"]
+    assert current["value"] == brain.values["hbl_no"]
+    assert current["observation_id"] == str(brain.observation.obs_id)
+    assert any(
+        e.payload.get("check") == "model_task_evidence_recorded"
+        and e.payload["fields"] == ["hbl_no"]
+        for e in brain.log.read_all()
     )
-    brain._begin_saved_detail_review(brain.visual_proposal)
-    assert "hbl_no" in brain.post_save_verified  # Later verification cannot clear it again.
     if rejected_next_plan:
         assert brain.visual_match_candidate is None
-        # Current evidence survives a bad next action; committing it must not
-        # erase that action's validation error or silently authorize execution.
         assert brain.visual_proposal is not None
         assert brain.visual_plan_error is not None
         with pytest.raises(ValueError, match="screen_match_action_surface_mismatch"):
             brain._selection_call("unused", ScreenMatch)
-        assert "hbl_no" in brain.post_save_verified
-        assert "hbl_no" in brain.verified
-        assert brain.model_saved_detail_review
-        assert len(model.prompts) == 1
+        assert brain._observed_inputs()["hbl_no"]["last_observation"] == current
+    assert len(model.prompts) == 1
 
 
 def test_different_exception_stages_do_not_share_a_subgoal_failure(tmp_path, record):

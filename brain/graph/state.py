@@ -15,7 +15,6 @@ from .review import EvidenceReview
 from .saved_evidence import SavedEvidence
 from .schemas import Decision
 from .scratchpad import RollingContextManager
-from .transitions import EvidenceLedger
 from .visual_points import VisualPointBindings
 
 if TYPE_CHECKING:
@@ -70,12 +69,10 @@ class ProgressState:
 
     credential_submissions: dict[str, dict] = field(default_factory=dict)
     rolling_context: RollingContextManager = field(default_factory=RollingContextManager)
-    verified: dict[str, dict] = field(default_factory=dict)
     # One path-indexed tree: discovered fields/controls, observations and acknowledged deliveries.
     # Context Recall projects its hierarchy without exposing historical action coordinates.
     screen_nodes: dict[str, dict] = field(default_factory=dict)
     current_screen_path: list[str] = field(default_factory=list)
-    evidence_ledger: EvidenceLedger = field(default_factory=EvidenceLedger)
     query_value_verified: bool = False
     query_submitted: bool = False
     query_descriptor: dict | None = None
@@ -83,11 +80,6 @@ class ProgressState:
     query_window_handle: int | None = None
     duplicate_clear: bool = False
     save_issued: bool = False
-    post_save_query_identity_verified: bool = False
-    model_saved_detail_review: bool = False
-    saved_detail_transition_pending: bool = False
-    saved_detail_transition_step: str | None = None
-    post_save_verified: set[str] = field(default_factory=set)
     saved_evidence: SavedEvidence = field(default_factory=SavedEvidence)
     saved_bindings: tuple[str, dict[str, str]] | None = None
     saved_row_binding: tuple[str, str] | None = None
@@ -95,8 +87,6 @@ class ProgressState:
     failures: dict[str, int] = field(default_factory=dict)
     phase_failures: dict[str, int] = field(default_factory=dict)
     progress_marks: set[str] = field(default_factory=set)
-    business_revision: int = 0
-    _last_surface_conflict: dict[str, str] | None = None
     feedback: list[dict] = field(default_factory=list)
     result: Result | None = None
     started: float = 0.0

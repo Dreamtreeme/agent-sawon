@@ -1,6 +1,6 @@
 # 상태와 저장소 계약 지도
 
-기준일: 2026-11-02
+기준일: 2026-11-04
 
 이 문서는 런타임 상태와 계층 간 인터페이스의 기준 위치를 한 곳에 모읍니다. 설명과 구현이
 다르면 해당 계약을 소유한 코드와 이 문서를 같은 변경에서 맞춥니다.
@@ -42,8 +42,6 @@ core가 bench 구현에서 직접 import할 수 있는 것은 `sawon_interfaces`
 문맥을 진단 때문에 만들지 않으며 그 판단에는 `match_context_size` 이벤트가 없다.
 `DecisionPromptContext.cache_key`는 같은 문맥에서 한 번 계산한다. `ScreenPatternCache.lookup`
 과 이후 후보 저장은 그 키를 공유하며, 캐시 저장소는 요청 문맥을 다시 해석하지 않는다.
-`ScreenDecisionRequest.evidence_scope`는 그 요청의 workflow flags에서 검토 범위를 한 번
-계산한다. Context Recall과 현재값 검토의 선택은 이 값을 공유하며 별도 진행 플래그를 저장하지 않는다.
 
 `SemanticRequest.page`는 원본 캡처다. `markers.png`와 `markers-refined.png`는 진단 파일로
 분리한다. `_SceneCatalog.key`의 캡처 해시를 관찰·판단·장면 결합이 공유하고 마커 이미지는
@@ -81,7 +79,7 @@ flowchart LR
 ### 입력 메모와 계획 결합
 
 `ScreenMapping.observed_step_results`는 `ObservedStepResult`로 교육 단계 ID, 관찰 결과, 완료
-여부를 담는다. 모델은 현재 관찰과 같은 검토 범위에서 누적한 확인값을 사용자 교육의 완료
+여부를 담는다. 모델은 현재 관찰과 화면 트리에 누적한 읽기를 사용자 교육의 완료
 조건에 대조한다. 숨겨진 필드도 확인 이력을 유지하며, 현재 가시성·행동 좌표는 현재 이미지로 판단한다.
 `ScreenPlan`/`ScreenMatch`가 같은 목록을 전달하고
 `_remember_model_task_evidence()`가 관찰 경로와 별도 선택 경로 모두에서 실행 전에
@@ -99,14 +97,15 @@ flowchart LR
 
 | 상태 | 의미 |
 |---|---|
-| `verified` | 현재 실행에서 확인한 입력과 대상 descriptor |
-| `post_save_verified` | 저장 후 상세 검토에서 확인한 입력 키 |
-| `evidence_ledger` | 입력 표면의 소유권·대체·무효화 이력 |
+| `screen_nodes` | 화면별 명시적 읽기와 실제 입력 전달의 단일 원본 |
+| `completed_taught_steps` | 현재 모델이 결과를 확인한 교육 단계 ID |
 | `pending` | 전달한 행동과 다음 관찰에서 확인할 효과 |
 
 `ExecutionFacts.delivered_field_names`는 화면 노드의 이번 실행 전달 기록에서 파생한다.
-같은 입력 키의 더 늦은 entry 관찰이 있으면 이전 전달은 이 자격에서 제외한다. 관찰 일치는
-verified로 이어지고 불일치는 저장 자격에서 빠지며, 이후 재전달은 다시 자격을 얻는다.
+같은 입력 키의 더 늦은 관찰이 있으면 이전 전달은 이 자격에서 제외한다. `observed_inputs()`는
+최신 관찰값이 이번 입력값과 맞고 최신 전달보다 나중에 읽힌 입력을 원본에서 계산한다.
+별도 verified 사본이나 증거 소유권 원장을 저장하지 않는다. 불일치는 저장 자격에서 빠지며,
+이후 재전달은 다시 자격을 얻는다.
 `verified_field_names`와 함께 저장 행동의 자격을 계산하지만, `remaining_fields`나 최종 완료
 증거에는 합치지 않는다. 모델 문맥에도 `delivered_fields`와 `verified_facts`를 구분해 전달한다.
 
@@ -116,9 +115,9 @@ verified로 이어지고 불일치는 저장 자격에서 빠지며, 이후 재�
 모델 검토 모드에서는 결정론적 SavedEvidence용 필드·선택 행 바인딩을 준비하지 않는다.
 결정론적 경로의 행 연결은 이미 검증된 SceneObservation의 부모 구조와 공용 `ancestors`를
 사용하며 모델 controls에서 별도의 부모 트리를 다시 순회하지 않는다.
-모델 기반 확인의 진전 표시는 필드 키와 `entry`/`saved_detail` 범위를 함께 사용한다. 저장 후
-같은 필드를 처음 확인한 것, 상세 검토 범위 진입, 교육 단계의 첫 완료는 새 진전이며 기존
-실패 횟수를 초기화한다. 같은 범위에서 같은 확인을 반복한 것은 새 진전이 아니다.
+현재값과 일치하는 필드의 첫 관찰과 교육 단계의 첫 완료는 기존 진전 기록으로 실패 횟수를
+초기화한다. 같은 관찰을 반복한 것은 새 진전이 아니다. 저장 상세의 별도 진행 플래그나
+필드 개수 기반 자동 완료는 없다.
 
 ### 화면 노드 선택과 관찰 기억
 
@@ -134,7 +133,7 @@ trace가 없는 편찬물은 저장된 그룹 순서를 유지한다. 교육 단
 선택한 그룹의 화면 경로·필드 연결·행동으로 값 없는 구조 매핑을 만든다. 이번 실행의 누적
 메모는 현재 상황으로 별도 전달하며 그 값을 인출한 매핑에 다시 넣지 않는다.
 다른 그룹의 유사 화면 필드를 섞어 노드를 추정하지 않는다. 구조 매핑도 `remember_screen`을
-거쳐 발견한 필드와 컨트롤을 보존하지만 `last_observation`·verified·교육 완료를 발행하지 않는다.
+거쳐 발견한 필드와 컨트롤을 보존하지만 `last_observation`이나 교육 완료를 발행하지 않는다.
 다음 메서드 행동이 결합되면 조회 입력의 미확인·상세 진입 대기도 모델 호출 조건으로 쓰지 않는다.
 정상 경로는 현재 업무 값으로 이어가고, 미결합·실행 실패에서는 기존 모델로 관찰과 다음 행동을 얻는다.
 모델 복구의 임시 대상 ID가 바뀌어도 원본 행동 그룹의 bbox를 기준으로 같은 행동을 연결한다.
@@ -193,25 +192,25 @@ relay가 확인한 fill만의 검토 유예(`success=None`)에서 범위를 반�
 입력 키·전달 좌표를 수정할 수 없으며, 없는 필드 참조나 이름 충돌은 편찬 오류다. 생략된 목록은
 빈 목록으로 읽는다. 산출물 형식과 인출 경계는 유지하며 과거 산출물은 소급 변경하지 않는다.
 
-`screen_plan_proposed.mapping`은 편찬의 의미 매핑 원본이다. `MethodCompletion`은 완료 화면의
-경로·유사도·크기와 현재 값으로 확인할 대상 및 조건 번호를 저장한다. `condition_indexes`가
-빈 대상은 입력값 검토 대상이며 완료 조건을 새로 만들지 않는다. 편찬 경로가 소진되면 이
-기하·입력 키·조건을 현재 마지막 화면에 결합한다. `completion_receipt`는 활성 경로의 소진과
+`screen_plan_proposed.mapping`은 편찬의 의미 매핑 원본이다. 최종 성공 종료와 같은 관찰의
+수용된 `operation=complete`를 연결하여 완료 화면을 편찬한다. `MethodCompletion`은 완료
+화면의 경로·유사도·크기와 관찰 대상의 기하 및 사용자 조건 번호를 저장한다. 입력 증거와
+완료 조건 대상의 합집합을 보존하며, 상태창·토스트처럼 입력 키가 없는 대상의 `slot`은 null이다.
+입력 키가 있는 대상만 슬롯을 연결한다. 완료 anchor는 입력 필드와 같은 대상일 필요가 없다.
+편찬 경로가 소진되면 이 기하와 조건을 현재 마지막 화면에 결합한다.
+`completion_receipt`는 활성 경로의 소진과
 현재 화면의 일치를 `_matching_route`로 확인한다. 모델의 method ID나 과거 성공 플래그만으로
 이 결과를 만들지 않는다. `Brain`은 이를 모델 응답 스키마로 다시 포장하지 않고 정상 종료하며,
 `method_route_complete`, reviewer=`memory_route`,
 proof_kind=`executed_route_and_matching_terminal_screen`으로 기록한다.
 종료 사유는 `task_completed_with_remembered_route`이며 모델의 필드별 검증과 구분한다.
-verified·post_save_verified·과거 교육 완료 결과를 채우지 않는다.
+현재 값이나 과거 교육 완료 결과를 채우지 않는다.
 새 산출물에는 `field_values`가 없으며 구형 산출물의 해당 키는 로더에서 제거한다. 관찰 순번과
 전달 이력도 편찬하지 않는다. 구형 산출물에 없는 경로·완료 조건을 자동 생성하지 않는다.
-저장 후 누적 검토로 실제 성공한 실행은 마지막 성공 `stop.last_obs_id`와 직전
-`post_save_model_evidence_complete` 기록을 마지막 계획에 연결한다. 편찬 입력의 임시
-`completion.verified_fields`가 모든 업무 입력을 포함하면 조건 번호 없는 마지막 관찰도
-보존한다. 이 확인 집합은 `MethodCompletion`에 저장하지 않는다. 인출은 마지막 화면의
+편찬은 별도의 필드 확인 집합이나 자동 완료 이벤트를 읽지 않는다. 인출은 마지막 화면의
 검토 대상만 복원하며 기억 경로는 이번 실행의 진행과 현재 종료 화면으로 완료를 판정한다.
-탐색·모델 복구의 완료는 현재 모델 관찰과 기존 누적 증거 검증을 유지한다.
-이 확인 기록이 없는 일반 완료 편찬은 기존 완료 조건 주석을 계속 요구한다.
+탐색·복구에서는 현재 모델이 사용자 조건과 누적 관찰을 대조하여 `complete`를 반환하고,
+기존 `evaluate_task_completion`이 사용자 조건과 현재 참조의 실행 계약을 확인한다.
 
 `ProgressState.screen_nodes`는 화면 트리의 단일 상태 저장소이며 경로의 JSON 문자열로
 인덱싱한다. 노드는 path·업무 키별 fields·이름별 controls를 보관하고, 관찰값은 각 필드의
@@ -221,7 +220,7 @@ verified·post_save_verified·과거 교육 완료 결과를 채우지 않는다
 현재 이미지/OCR을 함께 받는다. 코드는 방문한 부모/자식 경로를 만들고 해당 항목만 병합한다.
 기억 연결은 정확한 업무 입력 키를 사용하며 다음 fill 행동, 같은 입력 문자열, 마커/OCR 투영에서
 다시 추론하지 않는다. 명시적 빈 값은 빈칸 관찰로 기록하고 생략된 값은 기존 관찰을 유지한다.
-관찰 ID·순번·증거 범위는 런타임이 붙인다. 이 변경은 모델 호출이나 응답 스키마를 추가하지 않는다.
+관찰 ID·순번은 런타임이 붙인다. 이 변경은 모델 호출이나 응답 스키마를 추가하지 않는다.
 스크롤 뒤 보이지 않는 필드는 삭제하지 않으며 새 관찰 위치는 같은 필드에 갱신한다.
 버튼과 탭도 controls에 기억하지만 열어보지 않은 탭의 자식 내용은 만들지 않는다.
 라벨·role·bbox·관찰 ID는 마지막 관찰 기록이며 bbox는 스크롤을 보정한 절대좌표가 아니다.
@@ -230,29 +229,28 @@ verified·post_save_verified·과거 교육 완료 결과를 채우지 않는다
 알려진 화면은 루트 children 아래 이름별로 연결한다. 경로 없는 관찰은 경로 `[]`인 루트
 fields에만 보존하며 마지막으로 방문한 화면에 넣지 않는다. 필드는 업무 키로 연결하고
 label·role·last_observation·delivery를 노출한다. 전체 트리는 과거 사실이며 현재 가시성
-플래그를 보내지 않는다. 과거 bbox·ref·관찰 ID·관찰 순번은 이 모델용 트리에서 제외한다. 모델은 현재
+플래그를 보내지 않는다. 과거 bbox·ref·관찰 ID는 이 모델용 트리에서 제외하고,
+값과 관찰 순번으로 읽기·전달의 선후 관계를 제공한다. 모델은 현재
 이미지와 OCR에서 현재 노드와 좌표를 다시 연결한다. `previous_screen_path`도 직전 해석이며
 다음 캡처의 정체성이 아니다. 트리는 읽기 전용 투영으로 별도 상태 복사본을 유지하지 않는다.
 
 relay가 입력 전달을 확인하면 `_accept_dispatched_action()`이 해당 노드·필드의 delivery에
-전달값·관찰 ID·기존 관찰 순번·entry/saved_detail 범위를 기록한다. 다음 입력 배치가
+전달값·관찰 ID·기존 관찰 순번을 기록한다. 다음 입력 배치가
 실행돼도 이 이력은 남는다. 실패한 입력은 기록하지 않으며 부분 전달은 성공한 접두부만 기록한다.
-전달 처리 뒤 `notebook.remember()`로 기존 JSON 파일에 저장한다. 후속 관찰에서 같은 노드와
-범위의 읽을 수 있는 값을 얻으면 `last_observation`을 갱신하고 기존 값 비교로 verified를
-갱신한다. delivery의 상태 문자열은 저장하지 않는다. `pending_screen_inputs()`는 관찰값이
-없거나 같은 범위의 관찰 순번이 마지막 전달 당시보다 나중이 아니면 확인 대기로 계산한다.
+전달 대상이 아직 필드 source로 선언되지 않았다면 실제 행동의 source와 대상 메타데이터로
+전달 항목을 만든다. 이 연결은 관찰값을 만들지 않는다. 전달 처리 뒤 `notebook.remember()`로
+기존 JSON 파일에 저장한다. 후속 모델 응답의 명시적 값을 `last_observation`에 반영한다.
+delivery의 상태 문자열은 저장하지 않는다. `pending_screen_inputs()`는 같은 입력 키의
+최신 관찰 순번이 마지막 전달 당시보다 나중이 아니면 확인 대기로 계산한다.
 실제 관찰 회차를 사용하므로 같은 캡처 ID나 같은 값만으로 재확인을 간주하지 않는다.
-전달만으로 verified·저장 성공을 만들지 않는다. `pending_verification_inputs`는 같은 범위의
-노드별 계산 결과를 합친다. 필드별 전달 기록이 없는 경로만 직전 전달 행동을 참고한다.
+전달만으로 확인된 관찰·저장 성공을 만들지 않는다. 필드별 전달 기록이 없는 경로만
+직전 전달 행동을 참고한다.
 `remaining_inputs`는 미확인 목록이지 미입력 목록이 아니다.
 
-`_continues_memory_action()`은 이번 결합의 `pending.origin=reuse`와 `operation=act`로
-입력 검토 유예를 판단한다. `ScreenFieldVerificationRequest.defer_unobserved`는 이 요청에서만
-파생하며 진행 상태에 저장하지 않는다. `verify_screen_fields`는 현재 관찰이 없는 입력만
-`deferred`에 남기고 명시적으로 다른 값은 실패로 유지한다. `_verify_screen_batch`의 효과는
-`True`(확인), `False`(불일치), `None`(검토 유예)이며, 유예를 증거나 캐시 성공으로 승격하지 않는다.
-조회 화면의 검색·Tab·스크롤은 상세 진입 대기를 만들지 않는다. 이동·선택 click/Enter의
-전달은 진입 후보만 만들고, 현재 모델의 교육 단계 완료 관찰이 실제 상세 검토를 시작한다.
+모델 전용 경로는 관찰 응답이 이미 다음 계획을 만들었으므로 순수 입력 배치를 별도로
+재판정하지 않는다. 읽지 않은 값이나 불일치는 원문 메모에 남기고 모델이 다음 행동을 선택한다.
+메서드 효과는 독립 확인이 없으면 `None`이며 기존 `verify_delivery`가 순수 입력 전달만
+provisional 진도로 기록한다. 비모델 경로의 입력 검증과 `SavedEvidence`는 유지한다.
 
 모델 응답은 `fields.source/value`로 입력 증거를 전달한다. 별도 모델용 `evidence` 목록은
 사용하지 않으며 과거 로그/캐시에 남은 이 항목은 읽을 때만 무시한다. 내부 실행 계약의
@@ -277,7 +275,7 @@ relay가 입력 전달을 확인하면 `_accept_dispatched_action()`이 해당 �
 화면 판단의 마지막 `ScreenMapping.fields`가 기억과 증거 갱신의 공통 입력이다.
 필드 안의 `source`는 정확한 업무 키이며 컨트롤은 null을 사용한다. 별도 assignments와
 행동·증거·같은 문자열에서 입력 연결을 역추론하는 경로는 없다. `_remember_model_task_evidence`
-는 같은 읽은 값을 노드에 반영하고 입력 요구와 비교해 verified·증거 원장을 갱신한다.
+는 같은 읽은 값을 노드에 반영한다. 입력 일치 목록은 이 원본을 조회하여 파생한다.
 
 의미 매핑의 실행용 입력 evidence도 `fields.source/value`에서만 파생한다. 응답의 선택적
 `evidence` 목록은 필드 연결을 추가하거나 덮어쓰지 않는다. 입력 record가 있는 실행 경계에서는
@@ -313,8 +311,9 @@ relay가 입력 전달을 확인하면 `_accept_dispatched_action()`이 해당 �
 권위 있는 관찰이며 앞 응답과 필드·연결·증거를 합치지 않는다. 따라서 보완에서 제외한 오탐을
 되살리지 않는다. 이전 턴에서 실제 관찰해 누적한 노드 기억은 계속 유지한다.
 안 보이는 필드의 마지막 관찰은 유지하며 다른 노드의 좌표에서 다시 읽지 않는다. 현재 읽은 값이
-입력 요구와 다르면 기존 verified 무효화는 유지한다. entry/saved_detail 범위를 보존하며 entry
-기억을 저장 후 증거로 승격하지 않는다. `notebook.remember()`가 노드·활성 경로를 JSON에 저장하고
+입력 요구와 다르면 파생된 일치 목록에서 제외하지만 실제 읽은 값은 그대로 보존한다.
+저장 전후의 의미는 화면 경로·전달 행동·관찰 순번과 사용자 조건으로 모델이 판단한다.
+`notebook.remember()`가 노드·활성 경로를 JSON에 저장하고
 `context_recall`이 다음 요청에 전달한다. 모델 경계·생산자는 screen_mapping/scanning/engine와
 screen_memory, 상태 소유자는 state, 소비자는 context_recall/notebook이다. 공개 relay 계약은
 변경하지 않는다. 이 기억은 현재 실행에 속하며 편찬물에 화면 트리를 영구 저장하는 기능은 아니다.
@@ -324,24 +323,17 @@ intent·입력 source와 출발 screen_kind,
 물리 action 종류, 의도한 subgoal을 전달한다. subgoal은 계획의 목적이며 관찰된 성공 사실이
 아니다. 과거 frame ref와 좌표를 현재 행동 대상으로 재노출하지 않는다.
 이 목록은 execution 한 곳에만 전달한다. 고정 성공 플래그, 별도의 검토 대기 플래그,
-예상 verified 목록과 evidence_claims 원장은 모델 문맥에서 제외한다. 내부 실행 상태
-`pending`과 증거 원장의 무효화·소유권 판단은 유지한다. 실제 verified/remaining 목록은
-notebook에 한 번만 제공하며 scratchpad에 복사하지 않는다. 입력 키는 inputs 자체에서 읽는다.
+예상 확인값이나 별도 증거 원장을 모델 문맥에 만들지 않는다. 내부 실행 상태 `pending`은
+유지하며 확인·남은 입력 목록은 원본 관찰과 전달 순서에서 계산해 notebook에 제공한다.
+scratchpad에 이 목록을 복사하지 않는다. 입력 키는 inputs 자체에서 읽는다.
 
-저장 후 상세 화면의 첫 관찰에서는 `scan()`이 해석과 다음 계획을 함께 생성한 뒤
-`_remember_model_task_evidence()`가 필드 기록 전에 `_begin_saved_detail_review(response)`를
-호출한다. 대기 중인 상세 열기 교육 단계에 대해 모델이 `observed_step_results.completed=true`를
-반환하면 검토 범위를 시작한다. `screen_kind`의 `editor`/`dialog` 분류는 이 전환의 조건이 아니다.
-모델은 요청의 메모를 직전 상태로 읽고 현재 관찰과 누적 확인을 합쳐 같은 응답의 `steps`를
-선택한다. 코드는 검토 범위 → 교육 단계 완료 → 현재 필드 증거를 먼저 반영하고 그
-응답의 계획을 Decision/Review/Execution으로 전달한다. 메모 반영 자체로 계획을 버리거나
-모델을 다시 호출하지 않는다. 잘못된 다음 행동의 검증 오류는 지우지 않으며, 그 경우에도
-이미 읽은 화면 증거는 보존한다. 이 계약은 모델의 선택 정확성을 보증하지 않는다.
-상세 재진입은 pending 전환을 소비하지만 누적 검토 증거를 초기화하지 않는다. 교육 단계의
-선택만으로 관찰된 완료를 되돌리거나 완료 단계로 교육 초점을 덮어쓰지 않는다. 앞 단계로 가는
-행동을 거절하는 규칙은 아니며 미완료 교육 단계의 재선택은 유지한다.
-현재 관찰에 결합된 완료·중단 응답이나 충족된 저장 후 증거는 직전 행동의 반복 검사보다 먼저
-Review로 전달한다. 이는 최종 성공을 강제하는 처리가 아니며 기존 업무 완료 검증을 거친다.
+`scan()`은 해석과 다음 계획을 함께 생성한다. `_remember_model_task_evidence()`는 교육 결과와
+명시적 필드 관찰을 먼저 반영한 뒤 같은 응답의 계획을 Decision/Review/Execution으로 전달한다.
+모델은 요청의 메모와 현재 관찰을 합쳐 다음 행동이나 전체 업무의 `complete`를 선택한다.
+메모 반영 자체로 계획을 버리거나 모델을 다시 호출하지 않는다. 잘못된 다음 행동이 거절되어도
+이미 읽은 화면 관찰은 보존한다. 교육 단계 선택은 이미 관찰한 완료를 되돌리지 않는다.
+현재 관찰의 완료·중단 응답은 Review로 전달한다. 종료는 사용자 완료 조건 검증을 거치며,
+코드가 입력 개수나 저장 상세 플래그만으로 모델 계획을 건너뛰어 성공 처리하지 않는다.
 
 `ScreenMatch.from_plan`은 새 계획의 값을 기존 화면 해석보다 우선한다. 전체 ScreenMatch가
 반환되면 controls·화면 종류도 새 응답을 사용한다. 직렬화에서 제외되는 mapping은 명시적으로
@@ -377,7 +369,7 @@ Review로 전달한다. 이는 최종 성공을 강제하는 처리가 아니며
 | 필드 이름·role·bbox·source와 행동 point | `method_from_match`, `compile_memory` → `MethodActionGroup` | `retrieve_screen_memory`, `_restore_structure`, 실행 계획 | 다음 입력 위치와 행동 재사용 |
 | 현재 업무 입력 문자열 | `Brain.values` → `ScreenDecisionRequest.values` | 입력 출처 연결, `ActionWiringRequest.values` | fill에 전달할 문자열. 관찰값으로 사용하지 않음 |
 | 현재 실행의 누적 관찰·전달 | `remember_screen`, `remember_input_delivery` → `ProgressState.screen_nodes` | `context_recall`, notebook | 이력 보존과 현재 모델 판단의 문맥 |
-| 현재 모델이 읽은 값·교육 완료 | `ScreenMapping.fields.value`, `observed_step_results` | `_remember_model_task_evidence`, `remember_screen` | 새 관찰·verified·현재 교육 완료 갱신 |
+| 현재 모델이 읽은 값·교육 완료 | `ScreenMapping.fields.value`, `observed_step_results` | `_remember_model_task_evidence`, `remember_screen` | 원본 관찰·현재 교육 완료 갱신 |
 | 완료 화면과 검토 대상 | `method_completion_from_match` → `MethodCompletion` | `bind_completion_with_context`, `completion_receipt`, engine | 이번 실행의 경로 소진과 현재 완료 화면 일치 확인. 과거 값 검증의 재발행은 하지 않음 |
 
 `MemoryRetrieval._restore_structure`는 `ScreenMapping.fields`에 `value`를 넣지 않습니다.
@@ -391,7 +383,7 @@ Review로 전달한다. 이는 최종 성공을 강제하는 처리가 아니며
 다음 그룹 하나의 기하·입력 키 대응·절차를 반환합니다. 경로가 소진되면 완료 기억을 반환합니다.
 최초 메서드 선택의 최소 거리가 동률이면 기억을 선택하지 않습니다. 서로 다른 그룹의 관찰은
 합치지 않으며, 선택한 그룹 내부의 중복 기하는 같은 role과 공용 `same_control_region`으로 합칩니다.
-이 읽기는 pending·used·verified를 갱신하지 않습니다. 화면이 비슷하다는 사실은 행동 선택이나
+이 읽기는 pending·used나 현재 관찰값을 갱신하지 않습니다. 화면이 비슷하다는 사실은 행동 선택이나
 완료 증거가 아닙니다. `match_pattern`도 같은 다음 그룹을 결합한 뒤 구조 매핑을 공통 실행
 경로에 전달합니다. 입력값은 현재 업무 값으로 공급하며 과거 값과 OCR로 현재 입력 증거를 만들지 않습니다.
 현재 프레임의 marker ID는 새로 배정합니다.

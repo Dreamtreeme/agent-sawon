@@ -348,9 +348,9 @@ def test_current_observation_supersedes_delivered_save_eligibility(
             ["Entry"],
             key,
             value,
+            target={"label": key, "role": "edit", "bbox": [10, 10, 100, 20]},
             observation_id=str(brain.observation.obs_id),
             observation_number=1,
-            scope="entry",
         )
     if current_reading is not None:
         value = brain.values[source] if current_reading == "matching" else "WRONG CURRENT VALUE"
@@ -361,9 +361,9 @@ def test_current_observation_supersedes_delivered_save_eligibility(
             [reading_path],
             source,
             brain.values[source],
+            target={"label": source, "role": "edit", "bbox": [10, 10, 100, 20]},
             observation_id=str(brain.observation.obs_id),
             observation_number=3,
-            scope="entry",
         )
 
     policy = brain._decision_policy()

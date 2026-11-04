@@ -9,7 +9,6 @@ from test_brain import record as record
 from test_screen_decision import named_response, setup_brain
 
 from brain.graph.schemas import Choice, Decision
-from brain.graph.screen_decision import ScreenMatch
 from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
 from brain.task_instruction import TaskInstruction
 
@@ -127,29 +126,24 @@ def test_synthetic_detail_response_commits_evidence_then_executes_without_recall
     brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
     brain.save_issued = True
     brain.active_taught_step = "requery-saved-record"
-    brain.saved_detail_transition_pending = True
-    brain.saved_detail_transition_step = "requery-saved-record"
     brain._observe()
     assert brain.visual_proposal is not None, (
         "retain the plan made from this response's observations"
     )
-    assert brain.post_save_verified == {"hbl_no"}
-    assert brain.model_saved_detail_review
-    assert not brain.saved_detail_transition_pending
+    assert set(brain._observed_inputs()) == {"hbl_no"}
     assert "requery-saved-record" in brain.completed_taught_steps
     assert brain.active_taught_step == "verify-requeried-record"
     assert brain._select_node() == "review"
     assert brain.decision.intent == "select_tab"
     assert len(model.prompts) == 1
     state = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
-    assert state["notebook"]["workflow_state"]["saved_result_open_pending"]
+    assert state["notebook"]["workflow_state"]["save_issued"]
     assert state["taught_procedure_progress"]["focused_step_id"] == "requery-saved-record"
     assert ocr.calls == detector.calls == 1, "reuse the same capture and interpretation"
     sent = []
 
     def fake_act(action):
-        assert brain.post_save_verified == {"hbl_no"}, "commit observations before delivery"
-        assert not brain.saved_detail_transition_pending
+        assert set(brain._observed_inputs()) == {"hbl_no"}, "commit observations before delivery"
         sent.append(action.root)
         return ActionResult(
             action_id=action.root.action_id,
@@ -163,86 +157,6 @@ def test_synthetic_detail_response_commits_evidence_then_executes_without_recall
     assert brain._act_node() == "observation"
     assert [action.target.image_point for action in sent] == [(310, 75)]
     assert len(model.prompts) == 1
-
-
-def test_synthetic_093_reentry_consumes_pending_without_erasing_review(tmp_path, record):
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=taught_task())
-    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
-    brain.save_issued = brain.model_saved_detail_review = True
-    brain.saved_detail_transition_pending = True
-    brain.saved_detail_transition_step = "requery-saved-record"
-    brain.post_save_verified = {"hbl_no", "shipper"}
-    response = ScreenMatch(
-        screen_kind="editor", controls=[], procedure_step="task-action", steps=[]
-    )
-    brain._begin_saved_detail_review(response)
-    assert brain.saved_detail_transition_pending, "screen kind alone does not prove opening"
-    response = ScreenMatch(
-        screen_kind="dialog",
-        controls=[],
-        procedure_step="task-action",
-        steps=[],
-        observed_step_results=[
-            {
-                "step_id": "requery-saved-record",
-                "observed_result": "Saved detail reopened.",
-                "completed": True,
-            }
-        ],
-    )
-    brain._begin_saved_detail_review(response)
-    assert not brain.saved_detail_transition_pending
-    assert brain.saved_detail_transition_step is None
-    assert brain.post_save_verified == {"hbl_no", "shipper"}
-
-
-def test_synthetic_field_read_counts_once_per_entry_and_saved_detail_scope(tmp_path, record):
-    # Synthetic replies reuse the same value; reopening saved detail is a different
-    # business observation, while rereading it in that scope is not fresh progress.
-    field = {
-        "source": "hbl_no",
-        "role": "edit",
-        "bbox": [100, 15, 150, 30],
-        "value": record.fields.hbl_no.value,
-    }
-    reading = named_response(
-        screen_kind="dialog", fields={"Reference": field}, steps=[], operation="stop"
-    )
-    opened = named_response(
-        screen_kind="editor",
-        fields={},
-        steps=[],
-        operation="stop",
-        observed_step_results=[
-            {
-                "step_id": "requery-saved-record",
-                "observed_result": "Saved detail open; contents will be read next.",
-                "completed": True,
-            }
-        ],
-    )
-    brain, model, *_ = setup_brain(
-        tmp_path,
-        record,
-        [reading, reading, opened, reading, reading],
-        task_instruction=taught_task(),
-    )
-    brain.settings = brain.settings.model_copy(update={"visual_model_only_review": True})
-    brain._observe()
-    entry_revision = brain.business_revision
-    brain._observe()
-    assert brain.business_revision == entry_revision, "entry reread must not reset failure history"
-    brain.save_issued = True
-    brain.saved_detail_transition_pending = True
-    brain.saved_detail_transition_step = "requery-saved-record"
-    brain._observe()
-    detail_revision = brain.business_revision
-    brain._observe()
-    assert brain.post_save_verified == {"hbl_no"}
-    assert brain.business_revision == detail_revision + 1, "saved reading is new evidence"
-    brain._observe()
-    assert brain.business_revision == detail_revision + 1, "detail reread is not new evidence"
-    assert len(model.prompts) == 5
 
 
 def test_synthetic_completed_step_selection_does_not_rewind_education_focus(tmp_path, record):

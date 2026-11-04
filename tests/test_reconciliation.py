@@ -68,8 +68,7 @@ def test_matching_visible_fill_is_removed_before_dispatch(tmp_path, record):
     reconciled = brain._reconcile_action_plan(ActionPlan.single(decision))
 
     assert not reconciled.actions
-    assert "hbl_no" in brain.verified
-    assert brain.business_revision == 1
+    assert "hbl_no" in brain._observed_inputs()
     assert any(
         event.payload.get("check") == "observed_actions_already_satisfied"
         for event in brain.log.read_all()

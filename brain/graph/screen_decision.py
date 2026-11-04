@@ -332,16 +332,6 @@ class ScreenDecisionRequest:
     screen_nodes: Mapping[str, dict] = field(default_factory=dict)
     current_screen_path: list[str] = field(default_factory=list)
 
-    @cached_property
-    def evidence_scope(self) -> str:
-        return (
-            "saved_detail"
-            if self.workflow_flags.get("post_save_detail_review")
-            else "saved_detail_candidate"
-            if self.workflow_flags.get("saved_result_open_pending")
-            else "entry"
-        )
-
 
 @dataclass(frozen=True)
 class ScreenDecisionServices:
@@ -1360,8 +1350,7 @@ def select_screen_response(
     # Exploration's unread-value checks apply only when that route cannot bind;
     # they must not turn normal memory execution into repeated model decisions.
     current_review = method_proposal is None and bool(
-        request.workflow_flags.get("saved_result_open_pending")
-        or any(
+        any(
             item.get("screen") == "query"
             and item["source"] in request.values
             and item["source"] not in request.verified_fields

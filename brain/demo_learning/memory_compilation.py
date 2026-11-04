@@ -433,10 +433,6 @@ def read_memory_candidates(
                 exclude_unset=True
             )
         completion = {"screen": final_screen, "response": final_response}
-        if final_stop is not None and final_stop[0] > plan["seq"]:
-            review = events[final_stop[0] - 1].get("payload", {})
-            if review.get("check") == "post_save_model_evidence_complete" and review.get("ok"):
-                completion["verified_fields"] = review.get("fields", [])
         break
     return {
         "source_case": str(case_dir.resolve()),
@@ -776,7 +772,6 @@ def compile_memory(
                 completion["response"],
                 method,
                 source["values"],
-                verified_fields=completion.get("verified_fields", ()),
             )
             or method
         )

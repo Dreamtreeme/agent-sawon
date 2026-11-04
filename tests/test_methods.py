@@ -499,6 +499,36 @@ def test_completion_recipe_binds_review_structure_without_copying_prior_readings
     assert "ORDER-B" not in stored
 
 
+def test_synthetic_completion_keeps_user_condition_anchor_without_an_input_source(tmp_path):
+    # Synthetic replies cover both a separate status anchor and a status-only completion.
+    # An input-key binding is not required to remember where the model saw task completion.
+    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
+    for label, evidence in (
+        ("separate-status", [{"field": "customer", "target": 10}]),
+        ("status-only", []),
+    ):
+        response = completion_response()
+        response["evidence"] = evidence
+        response["completion_evidence"] = [{"condition_index": 0, "target": 11}]
+        method = method_completion_from_match(
+            completion_scene(), response, learned(), {"customer": "New customer B"}
+        )
+        assert method is not None and method.completion is not None, label
+        condition_target = method.completion.targets[-1]
+        assert condition_target.slot is None, label
+        assert condition_target.condition_indexes == [0], label
+        assert condition_target.target.bbox is not None, label
+        restored = LearnedMethod.model_validate_json(method.model_dump_json())
+        bound = library.bind_completion_with_context(
+            restored, {}, completion_scene(ids=100), {"customer": "Current input"}
+        )
+        assert bound is not None and bound["operation"] == "complete", label
+        assert len(bound["completion_evidence"]) == 1, label
+        assert "evidence" not in bound and "observed_step_results" not in bound, label
+        response["completion_evidence"] = []
+        assert method_completion_from_match(completion_scene(), response, learned()) is None, label
+
+
 def test_coordinate_method_keeps_each_action_point_and_ignores_numbered_catalog(tmp_path):
     screen = {"image_size": [400, 200], "screen_phash": 123, "ocr": [], "markers": []}
     reply = {

@@ -179,7 +179,7 @@ def test_successful_input_delivery_separates_unrelated_phase_failures(tmp_path, 
     assert brain.pending is not None
 
     assert brain.phase_failures["task"] == 0
-    assert not brain.verified  # delivery is not semantic/business verification
+    assert not brain._observed_inputs()  # delivery is not semantic/business verification
 
 
 @pytest.mark.parametrize("failure", ["duplicate_ref", "process_change", "move"])
@@ -225,7 +225,7 @@ def test_invalid_plan_and_mid_batch_geometry_change_stop_remaining_inputs(
         assert outcome == "observation"
         assert brain.pending is not None
         return
-    assert not brain.verified and not relay.saved
+    assert not brain._observed_inputs() and not relay.saved
     transitions = [
         e.payload["transition"]
         for e in brain.log.read_all()
@@ -271,7 +271,7 @@ def test_shared_executor_checks_whole_plan_step_budget_before_delivery(
     if delivered:
         assert outcome == "observation"
         assert brain.pending is not None
-        assert not brain.verified
+        assert not brain._observed_inputs()
         assert brain._verify_node() == "review"
         assert perception.action_counts == [0, 11]
     else:
@@ -358,157 +358,83 @@ def test_login_plan_sends_two_credentials_and_click_before_any_reread(tmp_path, 
     outcome = brain._verify_node()
     assert perception.action_counts == [0, 3]
     assert outcome == ("review" if accept else "observation")
-    assert not brain.save_issued and not brain.verified
+    assert not brain.save_issued and not brain._observed_inputs()
     assert "fixture-secret-901" not in (tmp_path / "run_log.jsonl").read_text()
     assert all("fixture-secret-901" not in prompt for prompt in model.prompts)
 
 
-@pytest.mark.parametrize(
-    "reading, method_origin, effect",
-    [
-        pytest.param("matching", None, True, id="current-matching-value"),
-        pytest.param("omitted", "reuse", None, id="memory-defers-unobserved-value"),
-        pytest.param("mismatch", "reuse", False, id="memory-keeps-current-mismatch"),
-        pytest.param("omitted", "adaptation", False, id="adaptation-requires-observation"),
-    ],
-)
-def test_model_only_batch_distinguishes_observed_evidence_from_memory_deferral(
-    tmp_path, record, reading, method_origin, effect
+def test_synthetic_model_observation_preserves_next_plan_without_batch_coverage_gate(
+    tmp_path, record
 ):
-    from test_methods import learned
-
-    from brain.graph.execution import ActionPlan, PlanExecution
-    from brain.graph.schemas import Choice, Decision
-    from brain.graph.screen_decision import ScreenMatch
+    """Existing fake supplies omitted, conflicting, then matching readings after a real fill."""
+    from brain.graph.screen_mapping import ScreenMapping
     from brain.task_instruction import TaskInstruction
 
+    source = "hbl_no"
+    target = 20
+    expected = values_for(record)[source]
+    initial = screen_plan(record)
+    initial["steps"] = initial["steps"][:1]
+    initial["mapping"] = ScreenMapping(
+        screen_path=["Shipment", "Entry"],
+        fields={
+            "Reference": {"source": source, "role": "edit", "bbox": [200, 10, 8, 20], "value": ""}
+        },
+    ).model_dump(exclude_unset=True)
+    responses = [initial]
+    for reading in (None, "WRONG CURRENT VALUE", expected):
+        field = {"source": source, "role": "edit", "bbox": [200, 10, 8, 20]}
+        if reading is not None:
+            field["value"] = reading
+        responses.append(
+            {
+                "screen_kind": "editor",
+                "procedure_step": "task-action",
+                "controls": [],
+                "mapping": {
+                    "screen_path": ["Shipment", "Entry"],
+                    "fields": {"Reference": field},
+                },
+                "steps": [{"target": target, "action": "key", "keys": "tab", "intent": "navigate"}],
+            }
+        )
     relay = ChangingPixelsRelay(record)
     relay.mode = "editor"
-    brain, _, _ = make_brain(tmp_path, record, relay, [])
+    brain, _, model = make_brain(tmp_path, record, relay, responses)
     brain.task_instruction = TaskInstruction(
         name="Enter shipment",
         objective="Enter the supplied shipment.",
         completion_conditions=["The shipment is saved."],
     )
     brain.phase = "task"
-    scene = brain._observe()
-    source = "hbl_no"
-    target = 19
-    prefix = "e" + str(scene.obs_id.int) + "0"
-    original = next(element for element in scene.elements if element.role.casefold() == "edit")
-    current = scene.model_copy(
-        update={
-            "elements": [
-                original.model_copy(
-                    update={"ref": prefix + str(target), "value": brain.values[source]}
-                )
-                if element is original
-                else element
-                for element in scene.elements
-            ]
-        }
-    )
-    from brain.graph.screen_mapping import ScreenMapping
+    brain._observe()
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    assert brain._act_node() == "observation"
+    execution = brain.pending["execution"]
+    field = brain.screen_nodes[json.dumps(["Shipment", "Entry"])]["fields"][source]
+    delivery = dict(field["delivery"])
+    assert delivery["value"] == expected
+    assert field["last_observation"]["value"] == ""
+    assert source not in brain._observed_inputs(), "delivery is not an observed value"
 
-    field = {
-        "source": source,
-        "role": original.role.casefold(),
-        "bbox": list(original.bbox),
-    }
-    if reading != "omitted":
-        field["value"] = brain.values[source] if reading == "matching" else "WRONG CURRENT VALUE"
-    proposal = ScreenMatch(
-        mapping=ScreenMapping(fields={original.name: field}),
-        screen_kind="editor",
-        procedure_step="task-action",
-        controls=[],
-        operation="act",
-        evidence=[{"field": source, "target": target}] if reading == "matching" else [],
-        steps=[
-            {
-                "target": target,
-                "action": "click",
-                "intent": "select_tab",
-                "point": [10, 10],
-            }
-        ],
-    )
-    fill = Decision(
-        screen_kind="editor",
-        operation="act",
-        intent="fill",
-        subgoal="task-action",
-        reason="fill",
-        action=Choice(type="set_text", ref=original.ref, source=source),
-    )
-    boundary = fill.model_copy(
-        update={"intent": "navigate", "action": Choice(type="key", ref=original.ref, keys="tab")}
-    )
-    plan = ActionPlan.single(fill)
-    execution = PlanExecution(plan, scene)
-    execution.delivered = [
-        {"choice": fill.action, "decision": fill, "descriptor": {}},
-        {"choice": boundary.action, "decision": boundary, "descriptor": {}},
-    ]
-
-    def observe_with_proposal(wire):
-        brain.visual_proposal = proposal
-        return current
-
-    brain.screen_scanner.scan = observe_with_proposal
-    assert brain._observe() is current
-    if method_origin is not None:
-        method = learned()
-        brain.memory_retrieval.state.pending = {
-            "origin": method_origin,
-            # This fixture's adaptation is the current fake model reply, not a replay suffix.
-            "recovery_response": method_origin == "adaptation",
-            "method": method,
-            "group_id": method.action_groups[0].id,
-        }
-    claims = brain.evidence_ledger.history
-    assert len(claims) == (1 if reading == "matching" else 0)
-
-    assert brain._verify_screen_batch(execution, current) == ("review", effect)
-    assert brain.evidence_ledger.history == claims
-    recorded = [
-        event
-        for event in brain.log.read_all()
-        if event.payload.get("check") == "model_task_evidence_recorded"
-    ]
-    assert len(recorded) == (1 if reading == "matching" else 0)
-    assert (source in brain.verified) is (reading == "matching")
-    event = next(
-        event
-        for event in reversed(brain.log.read_all())
-        if event.payload.get("check") == "screen_fill_values"
-    )
-    assert event.payload["reviewer"] == "screen_model"
-    assert event.payload["delegated"] == [source]
-    assert event.payload["matched"] == ([source] if effect is True else [])
-    assert event.payload["deferred"] == ([source] if effect is None else [])
-    assert event.payload["mismatched"] == ([source] if effect is False else [])
-    assert event.payload["ok"] is effect
-    assert execution.matched_refs == ({original.ref} if effect is True else set())
-    failures = [
-        event.payload
-        for event in brain.log.read_all()
-        if event.payload.get("reason") == "screen_fill_evidence_missing"
-    ]
-    assert bool(failures) is (effect is False)
-    assert not brain.post_save_verified
-    if method_origin == "reuse" and effect is False:
-        assert brain.visual_proposal is None
-        assert brain.memory_retrieval.recovery_required
-    else:
+    for label, expected_reading in (
+        ("omitted", ""),
+        ("mismatch", "WRONG CURRENT VALUE"),
+        ("matching", expected),
+    ):
+        current = brain._observe()
+        proposal = brain.visual_proposal
+        field = brain.screen_nodes[json.dumps(["Shipment", "Entry"])]["fields"][source]
+        assert field["last_observation"]["value"] == expected_reading, label
+        assert field["delivery"] == delivery, label
+        assert (source in brain._observed_inputs()) is (label == "matching"), label
+        assert brain._verify_screen_batch(execution, current) == ("review", None), label
         assert brain.visual_proposal is proposal
-    turns = brain.rolling_context.recent_turns
-    assert len(turns) == (1 if effect is True else 0)
-    if effect is True:
-        assert turns[0].target_summary == "set_text:hbl_no"
-        assert turns[0].observed_effect == "input_value_matches"
-        assert turns[0].success
-    memo = brain.rolling_context.export_prompt_context(current_goal=brain.goal)
-    assert memo["scratchpad"]["completed_milestones"] == (
-        ["검증 완료: hbl_no"] if effect is True else []
+        assert brain.failures == {}, label
+    assert len(model.prompts) == 4
+    assert not any(
+        event.payload.get("check") == "screen_fill_values"
+        or event.payload.get("reason") == "screen_fill_evidence_missing"
+        for event in brain.log.read_all()
     )

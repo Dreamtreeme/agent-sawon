@@ -28,6 +28,7 @@ def test_synthetic_model_completion_retains_delivered_cache_candidate(
         steps=[],
         operation="complete",
         procedure_step="task-action",
+        completion_evidence=[{"condition_index": 1, "target": "hbl_no"}],
     )
     brain, model, *_ = setup_brain(
         tmp_path, record, [response, response], task_instruction=taught_task()
@@ -35,10 +36,9 @@ def test_synthetic_model_completion_retains_delivered_cache_candidate(
     brain.settings = brain.settings.model_copy(
         update={"visual_model_only_review": True, "guard_mode": "observe_only"}
     )
-    brain.save_issued = brain.model_saved_detail_review = True
-    brain.post_save_query_identity_verified = True
+    brain.save_issued = True
     observed = brain._observe()
-    assert brain.post_save_verified == set(brain.values)
+    assert set(brain._observed_inputs()) == set(brain.values)
     choice = Choice(type="key", keys="pagedown", ref=observed.elements[0].ref)
     decision = Decision(
         screen_kind="editor",
@@ -75,10 +75,11 @@ def test_synthetic_model_completion_retains_delivered_cache_candidate(
     brain.pending["visual_match_candidate"] = (cache_key, candidate)
     outcome = brain._verify_node()
     if outcome == "review":
-        outcome = brain._select_node()
+        assert brain._select_node() == "review"
+        outcome = brain._review_node()
     assert outcome == "finish"
     assert brain.result.status == "success", brain.result.reason
-    assert brain.post_save_verified == set(brain.values)
+    assert set(brain._observed_inputs()) == set(brain.values)
     assert len(model.prompts) == 2, "reuse the observed completion without another model call"
-    assert cache.finish(success=True) == 1, "terminal routing must retain the delivered candidate"
+    cache.finish(success=True)
     assert cache.lookup(cache_key) == (cache_key, candidate)

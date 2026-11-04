@@ -19,7 +19,6 @@ from test_screen_decision import named_response, setup_brain
 from brain.cache import ScreenPatternCache
 from brain.cache.methods import MethodLibrary
 from brain.demo_learning.memory_compilation import MemoryCandidate, compile_memory
-from brain.graph.execution import ActionPlan, PlanExecution
 from brain.graph.schemas import Choice, Decision
 from brain.graph.screen_memory import pending_screen_inputs
 from brain.graph.transitions import ObservedEffect
@@ -178,7 +177,7 @@ def test_synthetic_screen_nodes_isolate_tabs_and_refresh_current_fields(
     assert (
         observed_inputs(brain, main["screen_path"])["hbl_no"]["value"] == record.fields.hbl_no.value
     )
-    assert "hbl_no" in brain.verified
+    assert "hbl_no" in brain._observed_inputs()
     # Returning to Basic and scrolling must replace the old field position, not revive it.
     current = [b.model_copy(update={"text": "OTHER FIELD"}) if b.id == 9 else b for b in blocks]
     current.append(
@@ -189,13 +188,13 @@ def test_synthetic_screen_nodes_isolate_tabs_and_refresh_current_fields(
     node = brain.screen_nodes[basic_key]
     assert node["fields"]["hbl_no"]["bbox"] == [100, 65, 150, 30]
     assert node["fields"]["hbl_no"]["last_observation"]["value"] == record.fields.hbl_no.value
-    assert "hbl_no" in brain.verified
+    assert "hbl_no" in brain._observed_inputs()
     inputs = [e for e in brain.observation.elements if e.role == "edit"]
     assert len(inputs) == 1 and inputs[0].bbox[1] == 65
     current[-1] = current[-1].model_copy(update={"text": "CHANGED-REFERENCE"})
     brain._observe()
     assert node["fields"]["hbl_no"]["last_observation"]["value"] == "CHANGED-REFERENCE"
-    assert "hbl_no" not in brain.verified
+    assert "hbl_no" not in brain._observed_inputs()
     last_seen = deepcopy(node)
     brain._observe()
     assert brain.screen_nodes[basic_key]["fields"] == last_seen["fields"]
@@ -267,8 +266,11 @@ def test_synthetic_model_memory_delta_is_not_reinterpreted_from_ocr(tmp_path, re
         "fields"
     ]["hbl_no"]
     assert memory["last_observation"]["value"] == record.fields.hbl_no.value
-    assert "hbl_no" in brain.verified
-    assert brain.evidence_ledger.owner(brain.verified["hbl_no"]) == "hbl_no"
+    assert "hbl_no" in brain._observed_inputs()
+    assert (
+        brain._observed_inputs()["hbl_no"]["last_observation"]["value"]
+        == record.fields.hbl_no.value
+    )
     assert brain.visual_proposal.model_dump() == plan_before
     assert len(model.prompts) == 1
     assert not any(event.kind == "act" for event in brain.log.read_all())
@@ -291,7 +293,7 @@ def test_synthetic_memory_uses_explicit_model_bindings_and_preserves_unseen_valu
             }
         },
     )
-    node = remember_screen(nodes, mapping, values, "frame-1", observation_number=1, scope="entry")
+    node = remember_screen(nodes, mapping, values, "frame-1", observation_number=1)
     assert node["fields"]["reference"]["last_observation"]["value"] == "READ"
     # Hidden/omitted readings do not clear a fact; an explicit blank does.
     for label, fields, expected in [
@@ -308,7 +310,7 @@ def test_synthetic_memory_uses_explicit_model_bindings_and_preserves_unseen_valu
         ),
     ]:
         update = mapping.model_copy(update={"fields": ScreenMapping(fields=fields).fields})
-        remember_screen(nodes, update, values, label, observation_number=2, scope="entry")
+        remember_screen(nodes, update, values, label, observation_number=2)
         assert node["fields"]["reference"]["last_observation"]["value"] == expected, label
     # Neither a fill plan nor an equal literal value creates an observed binding.
     unmapped = ScreenMapping(
@@ -331,12 +333,10 @@ def test_synthetic_memory_uses_explicit_model_bindings_and_preserves_unseen_valu
             }
         ],
     )
-    other = remember_screen(
-        nodes, unmapped, values, "frame-3", observation_number=3, scope="saved_detail"
-    )
+    other = remember_screen(nodes, unmapped, values, "frame-3", observation_number=3)
     assert other["fields"] == {}
     assert "Ref" in other["controls"]
-    assert node["fields"]["reference"]["last_observation"]["scope"] == "entry"
+    assert node["fields"]["reference"]["last_observation"]["value"] == ""
 
 
 def test_synthetic_116_screen_tree_keeps_delivered_inputs_across_scrolls(tmp_path, record):
@@ -405,7 +405,7 @@ def test_synthetic_116_screen_tree_keeps_delivered_inputs_across_scrolls(tmp_pat
         persisted = json.loads((tmp_path / "task-notebook.json").read_text(encoding="utf-8"))
         entries = persisted["screen_nodes"][json.dumps(["Registration", "Details"])]["fields"]
         assert entries["hbl_no"]["delivery"]["value"] == record.fields.hbl_no.value, label
-        assert "hbl_no" in pending_screen_inputs(brain.screen_nodes, "entry"), label
+        assert "hbl_no" in pending_screen_inputs(brain.screen_nodes), label
         assert brain._verify_node() == "review", label
 
     assert [a.type for a in sent] == ["set_text", "scroll", "set_text"]
@@ -421,8 +421,8 @@ def test_synthetic_116_screen_tree_keeps_delivered_inputs_across_scrolls(tmp_pat
     assert set(notebook["pending_verification_inputs"]) == {"hbl_no", "mbl_no"}
     assert "bbox" not in json.dumps(notebook["screen_tree"])
     assert "screen_nodes" not in notebook  # Do not also expose the old flat coordinate memory.
-    assert "hbl_no" not in brain.verified  # Delivery is not visual confirmation.
-    assert "mbl_no" in brain.verified
+    assert "hbl_no" not in brain._observed_inputs()  # Delivery is not visual confirmation.
+    assert "mbl_no" in brain._observed_inputs()
     # The response has now been applied: the old delivered batch cannot keep MBL pending.
     from brain.graph.context_recall import recall_context
 
@@ -434,15 +434,17 @@ def test_synthetic_116_screen_tree_keeps_delivered_inputs_across_scrolls(tmp_pat
     brain.pending = None
     brain._observe()
     node = brain.screen_nodes[json.dumps(["Registration", "Details"])]
-    assert "hbl_no" not in pending_screen_inputs(brain.screen_nodes, "entry")
+    assert "hbl_no" not in pending_screen_inputs(brain.screen_nodes)
     assert node["fields"]["hbl_no"]["last_observation"]["value"] == record.fields.hbl_no.value
     assert node["fields"]["hbl_no"]["bbox"] == [100, 65, 150, 30]
     assert node["fields"]["mbl_no"]["last_observation"]["value"] == record.fields.mbl_no.value
-    assert {"hbl_no", "mbl_no"} <= brain.verified.keys()
+    assert {"hbl_no", "mbl_no"} <= brain._observed_inputs().keys()
     assert len(model.prompts) == 4  # Tree maintenance introduces no extra model calls.
 
 
-def test_synthetic_screen_tree_partial_delivery_and_saved_review_scope(tmp_path, record):
+def test_synthetic_screen_tree_keeps_only_acknowledged_delivery_then_current_reading(
+    tmp_path, record
+):
     # Fake relay rejects the second input. Only acknowledged delivery may enter the tree.
     from sawon_interfaces import ActionResult
 
@@ -452,16 +454,23 @@ def test_synthetic_screen_tree_partial_delivery_and_saved_review_scope(tmp_path,
         screen_kind="editor",
         screen_path=["Registration"],
         fields={
-            "Reference": {"source": "hbl_no", "role": "edit", "bbox": [100, 15, 150, 30]},
+            "Reference": {"role": "edit", "bbox": [100, 15, 150, 30]},
             "Master": {"source": "mbl_no", "role": "edit", "bbox": [100, 65, 150, 30]},
         },
         steps=[
-            {"target": "Reference", "action": "fill", "intent": "fill", "point": [175, 30]},
+            {
+                "target": "Reference",
+                "action": "fill",
+                "intent": "fill",
+                "source": "hbl_no",
+                "point": [175, 30],
+            },
             {"target": "Master", "action": "fill", "intent": "fill", "point": [175, 80]},
         ],
     )
     mismatch = deepcopy(data)
     mismatch.update(steps=[], operation="stop")
+    mismatch["fields"]["Reference"]["source"] = "hbl_no"
     mismatch["fields"]["Reference"]["value"] = "WRONG-REFERENCE"
     brain, _, relay, *_ = setup_brain(tmp_path, record, [data, mismatch])
     brain.settings = brain.settings.model_copy(
@@ -484,9 +493,9 @@ def test_synthetic_screen_tree_partial_delivery_and_saved_review_scope(tmp_path,
     assert brain._review_node() == "execution"
     brain._act_node()
     node = brain.screen_nodes[json.dumps(["Registration"])]
-    assert "hbl_no" in pending_screen_inputs(brain.screen_nodes, "entry")
+    assert "hbl_no" in pending_screen_inputs(brain.screen_nodes)
     assert "delivery" not in node["fields"]["mbl_no"]
-    assert not brain.verified
+    assert not brain._observed_inputs()
     assert "observed_inputs" not in json.loads(
         (tmp_path / "task-notebook.json").read_text(encoding="utf-8")
     )
@@ -499,20 +508,14 @@ def test_synthetic_screen_tree_partial_delivery_and_saved_review_scope(tmp_path,
 
     assert recalled()["pending_verification_inputs"] == ["hbl_no"]
     brain.save_issued = True
-    brain.saved_detail_transition_pending = True
-    assert recalled()["evidence_scope"] == "saved_detail_candidate"
-    assert recalled()["pending_verification_inputs"] == []
-    brain.model_saved_detail_review = True
-    assert recalled()["evidence_scope"] == "saved_detail"
-    assert recalled()["pending_verification_inputs"] == []
-    brain.model_saved_detail_review = brain.saved_detail_transition_pending = False
+    assert recalled()["pending_verification_inputs"] == ["hbl_no"]
     brain._observe()
-    assert "hbl_no" not in pending_screen_inputs(brain.screen_nodes, "entry")
+    assert "hbl_no" not in pending_screen_inputs(brain.screen_nodes)
     assert node["fields"]["hbl_no"]["last_observation"]["value"] == "WRONG-REFERENCE"
-    assert "hbl_no" not in brain.verified
+    assert "hbl_no" not in brain._observed_inputs()
 
 
-def test_synthetic_input_receipt_order_and_screen_scope_replace_status_flags():
+def test_synthetic_input_receipt_order_survives_identical_capture_ids():
     # Synthetic memory facts. Identical capture IDs/values cannot prove a later reread.
     from brain.graph.screen_memory import recall_screen_tree, remember_input_delivery
 
@@ -523,44 +526,36 @@ def test_synthetic_input_receipt_order_and_screen_scope_replace_status_flags():
         "role": "edit",
         "last_observation": {
             "value": "SAME-VALUE",
-            "scope": "entry",
             "observation_id": "same-capture",
             "observation_number": 1,
         },
     }
     nodes = {key: {"path": path, "fields": {"reference": entry}, "controls": {}}}
-    for read_number, scope, pending in [
-        (1, "entry", True),
-        (2, "entry", False),
-        (2, "saved_detail", True),
-    ]:
+    for read_number, pending in [(1, True), (2, False)]:
         remember_input_delivery(
             nodes,
             path,
             "reference",
             "SAME-VALUE",
+            target={"label": "Reference", "role": "edit", "bbox": [10, 10, 40, 20]},
             observation_id="same-capture",
             observation_number=1,
-            scope="entry",
         )
-        entry["last_observation"].update(observation_number=read_number, scope=scope)
-        assert pending_screen_inputs(nodes, "entry") == ({"reference"} if pending else set()), (
-            read_number,
-            scope,
-        )
-    # Another node may use the same source without replacing this node's pending delivery.
+        entry["last_observation"]["observation_number"] = read_number
+        assert pending_screen_inputs(nodes) == ({"reference"} if pending else set()), (read_number,)
+    # Nodes preserve their own facts; a later source observation answers an older delivery.
     other_path = ["Registration", "Additional"]
     other = deepcopy(nodes[key])
     other["path"] = other_path
-    other["fields"]["reference"]["last_observation"].update(scope="entry")
+    other["fields"]["reference"]["last_observation"]["observation_number"] = 3
     nodes[json.dumps(other_path)] = other
-    assert pending_screen_inputs(nodes, "entry") == {"reference"}
+    assert pending_screen_inputs(nodes) == set()
     tree = recall_screen_tree(nodes)
     tabs = tree["children"]["Registration"]["children"]
-    assert tabs["Basic"]["fields"]["reference"]["last_observation"]["scope"] == "saved_detail"
-    assert tabs["Additional"]["fields"]["reference"]["last_observation"]["scope"] == "entry"
+    assert tabs["Basic"]["fields"]["reference"]["last_observation"]["observation_number"] == 2
+    assert tabs["Additional"]["fields"]["reference"]["last_observation"]["observation_number"] == 3
     assert "status" not in json.dumps(tree)
-    assert "observation_number" not in json.dumps(tree)
+    assert "observation_id" not in json.dumps(tree)
 
 
 def prepare_worker(path, record, responses):
@@ -581,8 +576,6 @@ def prepare_worker(path, record, responses):
     )
     # Identical run-local input state; never copied from a previous cold run.
     brain.save_issued = True
-    brain.saved_detail_transition_pending = True
-    brain.saved_detail_transition_step = "requery-saved-record"
     brain.rolling_context.record_turn(
         turn_index=0,
         intent="search",
@@ -596,34 +589,18 @@ def prepare_worker(path, record, responses):
 
 
 def semantic_memory(brain):
-    # Frame IDs and evidence receipt revisions differ legitimately on reread.
-    # Do not discard values, bindings,
-    # action history or the lifetime of pending detail review from the comparison.
+    # Rereads may have different frame IDs/numbers; compare the actual source facts,
+    # current geometry and action history rather than removed secondary ledgers.
     return {
-        "verified": sorted(brain.verified),
-        "evidence": [
-            {"field": claim.field}
-            for claim in sorted(brain.evidence_ledger.history, key=lambda item: item.field)
-            if claim.status == "active"
-        ],
+        "verified": sorted(brain._observed_inputs()),
         # Compiled targets use the input key as a display name. Compare the
         # actual source -> value AND geometry binding, not alias spelling.
         "visible_values": {
-            source: [
-                (element.value, element.bbox)
-                for element in brain.observation.elements
-                if describe(element, brain.observation.elements) == descriptor
-            ]
-            for source, descriptor in brain.verified.items()
+            source: [(field["last_observation"]["value"], tuple(field["bbox"]))]
+            for source, field in brain._observed_inputs().items()
         },
         "recent_actions": [turn.model_dump() for turn in brain.rolling_context.recent_turns],
         "milestones": brain.rolling_context.completed_milestones,
-        "pending_detail": (
-            brain.saved_detail_transition_pending,
-            brain.saved_detail_transition_step,
-            brain.model_saved_detail_review,
-            sorted(brain.post_save_verified),
-        ),
     }
 
 
@@ -640,7 +617,7 @@ def run_route(path, record, route):
         responses = [initial, next_action_only]
     cache_path = path / "cache.json"
     compiled = None
-    if route in {"model-to-pattern-cache", "compiled-memory-structure-recovery"}:
+    if route == "compiled-memory-structure-recovery":
         if route == "compiled-memory-structure-recovery":
             training = deepcopy(raw)
             training["steps"] = [
@@ -694,9 +671,7 @@ def run_route(path, record, route):
         # a named mapping. That missing structure, not pending review, needs recovery.
         responses = [raw]
     brain, model = prepare_worker(path / "current", record, responses)
-    if route == "model-to-pattern-cache":
-        brain.visual_match_cache = ScreenPatternCache(cache_path, enabled=True)
-    elif compiled is not None:
+    if compiled is not None:
         brain.method_library = MethodLibrary(path / "compiled.json", enabled=True)
         brain.method_library.upsert(compiled)
     brain._observe()
@@ -717,16 +692,7 @@ def run_route(path, record, route):
     assert observed_inputs(brain).get("hbl_no", {}).get("value") == record.fields.hbl_no.value, (
         route
     )
-    if route == "model-to-pattern-cache":
-        assert len(model.prompts) == 1
-        assert not any(
-            e.payload.get("check") in {"method_bound", "visual_match_cache"}
-            for e in brain.log.read_all()
-        )
-        assert any(
-            e.payload.get("reason") == "current_values_not_observed" for e in brain.log.read_all()
-        )
-    elif route == "compiled-memory-structure-recovery":
+    if route == "compiled-memory-structure-recovery":
         assert len(model.prompts) == 1
         assert any(e.payload.get("check") == "method_bound" for e in brain.log.read_all())
         assert [
@@ -738,12 +704,11 @@ def run_route(path, record, route):
         "hbl_no": [(record.fields.hbl_no.value, (100, 15, 150, 30))]
     }, route
     assert set(observed["verified"]) == {"hbl_no"}, route
-    assert observed["pending_detail"] == (True, "requery-saved-record", False, []), route
     assert len(observed["recent_actions"]) == 1, route
     target = next(
         e
         for e in brain.observation.elements
-        if describe(e, brain.observation.elements) == brain.verified["hbl_no"]
+        if e.bbox == tuple(brain._observed_inputs()["hbl_no"]["bbox"])
     )
     decision = Decision(
         screen_kind="dialog",
@@ -754,42 +719,31 @@ def run_route(path, record, route):
         action=Choice(type="set_text", ref=target.ref, source="hbl_no"),
     )
     choice = decision.action
-    if route == "field-batch":
-        execution = PlanExecution(
-            ActionPlan.single(decision),
-            brain.observation,
-            delivered=[{"choice": choice, "decision": decision}],
-        )
-        assert brain._verify_screen_batch(execution, brain.observation) == ("review", True)
-        assert execution.matched_refs == {target.ref}
-    else:
-        facts = []
-        outcome, _, effect = brain._verify_text_input(
-            {
-                "descriptor": describe(target, brain.observation.elements),
-                "before_observation": brain.observation,
-            },
-            brain.observation,
-            choice,
-            decision,
-            facts,
-            ObservedEffect.NO_CHANGE,
-        )
-        assert outcome is None, route
-        brain._record_action_verification(decision, choice, None, None, effect, facts)
+    facts = []
+    outcome, _, effect = brain._verify_text_input(
+        {
+            "descriptor": describe(target, brain.observation.elements),
+            "before_observation": brain.observation,
+        },
+        brain.observation,
+        choice,
+        decision,
+        facts,
+        ObservedEffect.NO_CHANGE,
+    )
+    assert outcome is None, route
+    brain._record_action_verification(decision, choice, None, None, effect, facts)
     expected_calls = 2 if route in {"empty-action-recovery", "identical-capture"} else 1
     assert len(model.prompts) == expected_calls, route
     events = brain.log.read_all()
     checks = [event.payload.get("check") for event in events]
     required_check = {
-        "single-action": "input_value_matches",
-        "field-batch": "screen_fill_values",
         "empty-action-recovery": "missing_match_actions_completed",
         "identical-capture": "similar_form_reused",
-        "model-to-pattern-cache": "input_value_matches",
-        "compiled-memory-structure-recovery": "input_value_matches",
-    }[route]
-    assert checks.count(required_check) == 1, (route, checks)
+    }.get(route)
+    if required_check is not None:
+        assert checks.count(required_check) == 1, (route, checks)
+    assert "screen_fill_values" not in checks and "input_value_matches" not in checks
     return semantic_memory(brain)
 
 
@@ -797,10 +751,8 @@ def run_route(path, record, route):
     "route",
     [
         "single-action",
-        "field-batch",
         "empty-action-recovery",
         "identical-capture",
-        "model-to-pattern-cache",
         "compiled-memory-structure-recovery",
     ],
 )

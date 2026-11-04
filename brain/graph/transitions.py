@@ -1,7 +1,5 @@
 """Run-local delivered actions and observed effects, separate from business completion."""
 
-import hashlib
-import json
 from enum import StrEnum
 from typing import Literal
 
@@ -41,85 +39,6 @@ def expected_effect(decision: Decision) -> "ExpectedEffect":
         "save": ExpectedEffect.SAVE_ACKNOWLEDGEMENT,
         "confirm_save": ExpectedEffect.SAVE_ACKNOWLEDGEMENT,
     }.get(decision.intent, ExpectedEffect.OBSERVATION_ONLY)
-
-
-class EvidenceClaim(BaseModel):
-    """One model-grounded fact with an explicit lifecycle."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    field: str = Field(min_length=1)
-    surface_key: str = Field(min_length=64, max_length=64)
-    observation_id: str = Field(min_length=1)
-    revision: int = Field(ge=1)
-    status: Literal["active", "superseded"] = "active"
-    reason: str | None = None
-
-
-class EvidenceLedger:
-    """Keep model evidence durable without treating it as immutable truth."""
-
-    def __init__(self) -> None:
-        self._claims: list[EvidenceClaim] = []
-        self._active: dict[str, EvidenceClaim] = {}
-
-    @staticmethod
-    def surface_key(descriptor: dict) -> str:
-        canonical = json.dumps(
-            descriptor, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-    def record(self, field: str, descriptor: dict, observation_id: str) -> None:
-        """Update one business fact; similar screen descriptors cannot erase other facts."""
-
-        surface_key = self.surface_key(descriptor)
-        current = self._active.get(field)
-        if (
-            current is not None
-            and current.observation_id == observation_id
-            and current.surface_key == surface_key
-        ):
-            return
-        self.invalidate(field, "newer_observation")
-        claim = EvidenceClaim(
-            field=field,
-            surface_key=surface_key,
-            observation_id=observation_id,
-            revision=len(self._claims) + 1,
-        )
-        self._claims.append(claim)
-        self._active[field] = claim
-        return
-
-    def invalidate(self, field: str, reason: str) -> bool:
-        claim = self._active.pop(field, None)
-        if claim is None:
-            return False
-        replacement = claim.model_copy(update={"status": "superseded", "reason": reason})
-        self._claims[claim.revision - 1] = replacement
-        return True
-
-    def invalidate_surface(self, descriptor: dict, reason: str) -> tuple[str, ...]:
-        surface_key = self.surface_key(descriptor)
-        invalidated = []
-        for field, claim in tuple(self._active.items()):
-            if claim.surface_key == surface_key and self.invalidate(field, reason):
-                invalidated.append(field)
-        return tuple(sorted(invalidated))
-
-    def owner(self, descriptor: dict) -> str | None:
-        """Return the active field that already owns this observed surface."""
-
-        surface_key = self.surface_key(descriptor)
-        return next(
-            (field for field, claim in self._active.items() if claim.surface_key == surface_key),
-            None,
-        )
-
-    @property
-    def history(self) -> tuple[EvidenceClaim, ...]:
-        return tuple(self._claims)
 
 
 class ExpectedEffect(StrEnum):

@@ -24,7 +24,12 @@ from brain.graph.memory_retrieval import (
 )
 from brain.graph.save_review import SaveReviewResponse, validate_save_review
 from brain.graph.screen_decision import ScreenMatch, compile_match
-from brain.graph.screen_mapping import ScreenMapping, mapping_prompt
+from brain.graph.screen_mapping import (
+    NamedCompletionEvidence,
+    ScreenField,
+    ScreenMapping,
+    mapping_prompt,
+)
 from brain.task_instruction import TaskInstruction
 from brain.visual.frame import frame_input
 from brain.visual.scene import Detection, VisualControl, bind_scene
@@ -687,12 +692,13 @@ def test_synthetic_completion_survives_recorded_trace_compilation_without_old_va
             "operation": "complete",
             "steps": [],
             "fields": {
-                "Reference": mapping.fields["Reference"].model_copy(update={"value": "HBL-001"})
+                "Reference": mapping.fields["Reference"].model_copy(update={"value": "HBL-001"}),
+                "Saved": ScreenField(role="text", bbox=[400, 200, 100, 30], value="Saved"),
             },
         }
     )
     raw = final.model_dump()
-    raw["completion_evidence"] = [{"condition_index": 0, "target": "Reference"}]
+    raw["completion_evidence"] = [{"condition_index": 0, "target": "Saved"}]
     final = ScreenMapping.model_validate(raw)
     final_payload = final.local_payload(screen("Shipment editor"))
     events = [json.loads(line) for line in (case / "run_log.jsonl").read_text().splitlines()]
@@ -721,19 +727,50 @@ def test_synthetic_completion_survives_recorded_trace_compilation_without_old_va
     assert restored.completion.screen_path == ["Saved record"]
     assert restored.completion.targets[0].target.bbox == (150, 280, 180, 40)
     assert restored.completion.targets[0].slot == "hbl_no"
-    assert restored.completion.targets[0].condition_indexes == [0]
+    assert restored.completion.targets[0].condition_indexes == []
+    assert restored.completion.targets[1].slot is None
+    assert restored.completion.targets[1].condition_indexes == [0]
     assert "field_values" not in restored.completion.model_dump()
     assert "HBL-001" not in restored.model_dump_json()
+    library = MethodLibrary(tmp_path / "terminal.json", enabled=True)
+    library.upsert(restored)
+    runtime = MemoryRetrieval(
+        RetrievalContext(
+            task=TaskInstruction.model_validate(loaded_source["task"]),
+            task_sha256=loaded_source["task_sha256"],
+            inputs={"hbl_no": "HBL-002"},
+            credentials={},
+            observation_id=None,
+        ),
+        RetrievalState(
+            active_method_id=restored.id,
+            used={(restored.id, group.id) for group in restored.action_groups},
+        ),
+        library,
+        case_dir=tmp_path,
+        log=RunLog(tmp_path, case_id="synthetic-terminal", agent_id="test"),
+    )
+    current = loaded_source["completion"]["screen"]
+    remembered = runtime.retrieve_screen_memory(current)
+    assert {field["name"]: field["source"] for field in remembered["fields"]} == {
+        "Reference": "hbl_no",
+        "Saved": None,
+    }
+    bound = runtime.match_pattern(current)
+    assert bound is not None and bound.operation == "complete"
+    assert bound.mapping.fields["Saved"].source is None
+    assert all("value" not in field.model_fields_set for field in bound.mapping.fields.values())
 
 
-def test_synthetic_accumulated_completion_uses_only_final_verified_observation(tmp_path):
-    # Synthetic 135-shaped trace using existing fakes, not a live ERP recording.
+def test_synthetic_completion_requires_final_model_condition_evidence(tmp_path):
+    # Synthetic successful trace using existing fakes, not a live ERP recording.
     case, cache_path, _, mapping, match, _ = create_successful_case(tmp_path)
     final = mapping.model_copy(
         update={
             "screen_path": ["Saved record"],
             "operation": "complete",
             "steps": [],
+            "completion_evidence": [NamedCompletionEvidence(condition_index=0, target="Reference")],
             "fields": {
                 "Reference": mapping.fields["Reference"].model_copy(update={"value": "HBL-001"})
             },
@@ -751,23 +788,19 @@ def test_synthetic_accumulated_completion_uses_only_final_verified_observation(t
             "mapping": final.model_dump(),
         }
     }
-    for label, last_obs_id, verified_fields, accepted in (
-        ("accepted-final-observation", "obs-1", ["hbl_no"], True),
-        ("different-final-observation", "different", ["hbl_no"], False),
-        ("incomplete-review", "obs-1", [], False),
-        ("later-action-on-same-frame", "obs-1", ["hbl_no"], False),
+    for label, last_obs_id, accepted in (
+        ("accepted-final-observation", "obs-1", True),
+        ("different-final-observation", "different", False),
+        ("missing-user-condition", "obs-1", False),
+        ("later-action-on-same-frame", "obs-1", False),
     ):
+        plan = json.loads(json.dumps(final_plan))
+        if label == "missing-user-condition":
+            plan["payload"]["response"]["completion_evidence"] = []
+            plan["payload"]["mapping"]["completion_evidence"] = []
         events = [
             *original,
-            final_plan,
-            {
-                "kind": "verify",
-                "payload": {
-                    "check": "post_save_model_evidence_complete",
-                    "ok": True,
-                    "fields": verified_fields,
-                },
-            },
+            plan,
             {"kind": "stop", "payload": {"status": "success", "last_obs_id": last_obs_id}},
             {"kind": "verify", "payload": {"check": "method_candidate_promotion"}},
         ]
@@ -791,7 +824,7 @@ def test_synthetic_accumulated_completion_uses_only_final_verified_observation(t
         )
         assert (method.completion is not None) == accepted, label
         if accepted:
-            assert method.completion.targets[0].condition_indexes == [], label
+            assert method.completion.targets[0].condition_indexes == [0], label
             assert method.completion.targets[0].slot == "hbl_no", label
             assert method.completion.targets[0].target.bbox == (150, 280, 180, 40), label
             assert "field_values" not in method.completion.model_dump(), label

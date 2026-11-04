@@ -7,7 +7,6 @@ from test_brain import record as record
 from test_screen_decision import fixture, named_response, setup_brain
 
 from brain.graph.schemas import Choice, Decision
-from brain.graph.screen_decision import ScreenMatch
 from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
 from brain.task_instruction import TaskInstruction
 from brain.visual.markers import build_markers
@@ -72,8 +71,6 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
     brain, model, *_ = setup_brain(tmp_path, record, [combined])
     brain.phase = "task"
     brain.duplicate_clear = True
-    basics = {"hbl_no", "mbl_no", "packages.count", "packages.unit", "pol"}
-    brain.verified = {field: f"ref-{field}" for field in basics}
     brain.decision = Decision(
         screen_kind="partner",
         operation="act",
@@ -108,14 +105,15 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
             "subgoal": "select-shipper",
         }
     ]
-    assert "shipper" not in brain.verified
+    assert "shipper" not in brain._observed_inputs()
     assert state["execution"]["last_delivered_actions"][0]["intent"] == "select_option"
     assert "awaiting_visual_result_review" not in state["notebook"]
     assert "pending_actions" not in state["execution"]
     assert "pending_actions" not in state["notebook"]
     assert "pending_verification" not in state["notebook"]
     assert "anticipated_verified_inputs" not in state["notebook"]
-    assert "shipper" not in state["execution"]["remaining_inputs"]
+    assert "shipper" in state["execution"]["remaining_inputs"]
+    assert state["execution"]["conditional"] is True
     assert "shipper" in state["notebook"]["remaining_inputs"]
     assert "shipper" not in state["notebook"]["verified_inputs"]
     assert not {"duplicate_clear", "query_value_verified", "query_submitted"} & set(
@@ -150,33 +148,3 @@ def test_pending_login_proposes_post_authentication_work_without_resubmitting_cr
     assert "login" not in proposed["allowed_intents"]
     assert "Use the user task description" in proposed["guidance"]
     assert brain._decision_policy().facts.available_credential_sources
-
-
-def test_opening_saved_detail_scopes_request_without_erasing_entry_on_failed_navigation(
-    tmp_path, record
-):
-    brain, *_ = setup_brain(tmp_path, record, [])
-    brain.save_issued = True
-    entry = {field: f"entry-{field}" for field in brain.values}
-    brain.verified = dict(entry)
-    brain.saved_detail_transition_pending = True
-    brain.pending = {
-        "decision": Decision(
-            screen_kind="query",
-            operation="act",
-            intent="navigate",
-            subgoal="open",
-            reason="open saved detail",
-            action=Choice(type="double_click", ref="row"),
-        ),
-    }
-    request = brain._screen_decision_request({}, None)
-    assert not request.verified_fields
-    assert not request.policy.facts.verified_field_names
-    assert set(request.execution_contract["remaining_inputs"]) == set(brain.values)
-    brain._begin_saved_detail_review(
-        ScreenMatch(screen_kind="query", procedure_step="task-action", controls=[])
-    )
-    assert not brain.model_saved_detail_review
-    assert brain.verified == entry
-    assert not brain.post_save_verified

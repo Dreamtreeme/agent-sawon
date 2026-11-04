@@ -37,10 +37,10 @@ def remember(brain: Brain) -> dict:
         {
             "inputs_path": "record.json",
             "proposed_capability": brain.procedure_step,
-            "verified_inputs": sorted(brain.verified),
+            "verified_inputs": sorted(brain._observed_inputs()),
             "screen_nodes": brain.screen_nodes,
             "current_screen_path": brain.current_screen_path,
-            "remaining_inputs": sorted(set(brain.values) - set(brain.verified)),
+            "remaining_inputs": sorted(set(brain.values) - set(brain._observed_inputs())),
         }
     )
     if brain.memory_retrieval.enabled:

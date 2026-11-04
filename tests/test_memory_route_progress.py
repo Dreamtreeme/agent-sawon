@@ -3,7 +3,6 @@
 from copy import deepcopy
 
 import pytest
-from PIL import Image
 from test_memory_retrieval import setup, synthetic_ordered_route, synthetic_recovery_graph
 
 from brain.cache.methods import MethodAction, MethodDocument, MethodTarget
@@ -83,11 +82,8 @@ def test_synthetic_noncurrent_or_nonadvancing_cursor_does_not_skip_work(tmp_path
     assert not any(item.get("resumed_group_ids") for item in runtime.state.history)
 
 
-@pytest.mark.parametrize("failure_stage", ["delivery", "verification"])
-def test_actual_failure_calls_model_once_before_resuming_route(
-    tmp_path, monkeypatch, failure_stage
-):
-    brain, model, relay = setup(tmp_path, fail_second=failure_stage == "delivery")
+def test_actual_delivery_failure_calls_model_once_before_resuming_route(tmp_path):
+    brain, model, relay = setup(tmp_path, fail_second=True)
     runtime = brain.memory_retrieval
     method = runtime.library.methods()[0]
     first = method.action_groups[0].model_copy(
@@ -107,45 +103,21 @@ def test_actual_failure_calls_model_once_before_resuming_route(
     )
     method = method.model_copy(update={"action_groups": [first, second]})
     atomic_write_json(runtime.library.path, MethodDocument(methods=[method]))
-    if failure_stage == "verification":
-        capture = relay.screenshot
-        changed_capture = False
-
-        def changed_frame(observed, path):
-            capture(observed, path)
-            if changed_capture:
-                image = Image.new("RGB", (400, 200), "white")
-                image.paste("black", (170, 30, 370, 170))
-                image.save(path)
-            return path
-
-        monkeypatch.setattr(relay, "screenshot", changed_frame)
-
     brain._observe()
     assert model.prompts == []
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     assert brain._act_node() == "observation"
-    if failure_stage == "delivery":
-        assert relay.entered == [brain.values["customer"]]
-        assert runtime.recovery_required
-        assert runtime.state.history[-1]["status"] == "interrupted"
-        assert not runtime.state.used
-        brain._observe()
-    else:
-        assert relay.entered == list(brain.values.values())
-        changed_capture = True
-        assert brain._verify_node() == "review"
-        assert runtime.state.history[-1]["status"] == "failed"
-        assert runtime.state.pending["action_progress"]["group_id"] == first.id
-        assert runtime.state.pending["replaced_edge"] == (method.id, first.id)
+    assert relay.entered == [brain.values["customer"]]
+    assert runtime.recovery_required
+    assert runtime.state.history[-1]["status"] == "interrupted"
+    assert not runtime.state.used
+    brain._observe()
     assert len(model.prompts) == 1
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     assert brain._act_node() == "observation"
     assert not runtime.recovery_required
-    if failure_stage == "verification":
-        changed_capture = False
     assert brain._verify_node() == "review"
     assert len(model.prompts) == 1
     assert runtime.state.pending["group_id"] == second.id

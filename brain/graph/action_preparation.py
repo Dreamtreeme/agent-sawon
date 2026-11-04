@@ -21,12 +21,6 @@ from .visual_points import is_wheel_scroll
 TEXT_INPUT_ROLES = frozenset({"edit", "combobox", "dataitem", "cell"})
 
 
-class ActionSurfaceConflict(GuardStop):
-    def __init__(self, *, owner: str, source: str | None, ref: str | None) -> None:
-        super().__init__("input_surface_claimed_by_other_field")
-        self.owner, self.source, self.ref = owner, source, ref
-
-
 @dataclass(frozen=True)
 class ActionGuardRequest:
     observation: Observation
@@ -34,7 +28,6 @@ class ActionGuardRequest:
     policy: DecisionPolicy
     phase: str
     input_surface_allowed: bool = True
-    surface_owner: str | None = None
     query_matches: bool = True
 
 
@@ -63,12 +56,6 @@ def validate_action_guard(request: ActionGuardRequest) -> None:
     if decision.intent == "fill" and (request.phase == "task" or decision.screen_kind == "editor"):
         if not request.input_surface_allowed:
             raise GuardStop("record_input_scope_mismatch")
-        if request.surface_owner is not None and request.surface_owner != choice.source:
-            raise ActionSurfaceConflict(
-                owner=request.surface_owner,
-                source=choice.source,
-                ref=choice.ref,
-            )
     if (
         request.phase != "task"
         and decision.intent == "search"

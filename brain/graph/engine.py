@@ -54,7 +54,6 @@ from sawon_runtime.visual import OcrEngine, RenderedPage
 from .action_preparation import (
     TEXT_INPUT_ROLES,
     ActionGuardRequest,
-    ActionSurfaceConflict,
     ActionWiringRequest,
     ActionWiringServices,
     validate_action_guard,
@@ -99,7 +98,7 @@ from .screen_batch import (
     verify_screen_fields,
 )
 from .screen_mapping import ScreenMapping, ScreenMappingWire, observation_prompt
-from .screen_memory import remember_input_delivery, remember_screen
+from .screen_memory import observed_inputs, remember_input_delivery, remember_screen
 from .selection import (
     SelectionRequest,
     SelectionServices,
@@ -186,10 +185,8 @@ class Brain:
     steps = state_property("lifecycle", "steps")
     credential_submissions = progress_property("credential_submissions")
     rolling_context = progress_property("rolling_context")
-    verified = progress_property("verified")
     screen_nodes = progress_property("screen_nodes")
     current_screen_path = progress_property("current_screen_path")
-    evidence_ledger = progress_property("evidence_ledger")
     query_value_verified = progress_property("query_value_verified")
     query_submitted = progress_property("query_submitted")
     query_descriptor = progress_property("query_descriptor")
@@ -197,11 +194,6 @@ class Brain:
     query_window_handle = progress_property("query_window_handle")
     duplicate_clear = progress_property("duplicate_clear")
     save_issued = progress_property("save_issued")
-    post_save_query_identity_verified = progress_property("post_save_query_identity_verified")
-    model_saved_detail_review = progress_property("model_saved_detail_review")
-    saved_detail_transition_pending = progress_property("saved_detail_transition_pending")
-    saved_detail_transition_step = progress_property("saved_detail_transition_step")
-    post_save_verified = progress_property("post_save_verified")
     saved_evidence = progress_property("saved_evidence")
     saved_bindings = progress_property("saved_bindings")
     saved_row_binding = progress_property("saved_row_binding")
@@ -209,8 +201,6 @@ class Brain:
     failures = progress_property("failures")
     phase_failures = progress_property("phase_failures")
     progress_marks = progress_property("progress_marks")
-    business_revision = progress_property("business_revision")
-    _last_surface_conflict = progress_property("_last_surface_conflict")
     feedback = progress_property("feedback")
     result = progress_property("result")
     started = progress_property("started")
@@ -343,23 +333,7 @@ class Brain:
 
         assert self.task_instruction is not None
         assert self.task_instruction_sha256 is not None
-        opening_saved_detail = bool(
-            self.settings.visual_model_only_review
-            and self.save_issued
-            and self.saved_detail_transition_pending
-            and not self.model_saved_detail_review
-        )
-        model_verified = (
-            set()
-            if opening_saved_detail
-            else set(self.post_save_verified)
-            if self.model_saved_detail_review
-            else set(self.verified)
-        )
         policy = self._decision_policy()
-        policy = DecisionPolicy(
-            replace(policy.facts, verified_field_names=tuple(sorted(model_verified)))
-        )
         saved_record_review = (
             self.saved_evidence.snapshot(self.values) if self.saved_evidence.session_id else None
         )
@@ -368,7 +342,9 @@ class Brain:
         )
         pending_execution = None if self.pending is None else self.pending.get("execution")
         post_action_review = bool(
-            pending_execution is not None and pending_execution.plan.verification == "fields"
+            not self.settings.visual_model_only_review
+            and pending_execution is not None
+            and pending_execution.plan.verification == "fields"
         )
         context_layers = self.rolling_context.export_prompt_context(
             current_goal=self.goal,
@@ -378,7 +354,7 @@ class Brain:
             page=page,
             phase=self.phase,
             values=self.values,
-            verified_fields=frozenset(model_verified),
+            verified_fields=frozenset(self._observed_inputs()),
             screen_nodes=self.screen_nodes,
             current_screen_path=self.current_screen_path,
             execution_contract=contract,
@@ -389,9 +365,6 @@ class Brain:
                 "query_value_verified": self.query_value_verified,
                 "query_submitted": self.query_submitted,
                 "save_issued": self.save_issued,
-                "post_save_query_identity_verified": self.post_save_query_identity_verified,
-                "post_save_detail_review": self.model_saved_detail_review,
-                "saved_result_open_pending": self.saved_detail_transition_pending,
             },
             context_layers=context_layers,
             recent_feedback=tuple(
@@ -949,18 +922,15 @@ class Brain:
         selection_failure = reason.startswith(
             ("selection_error:", "verification_error:", "action_error:")
         )
-        if reason == "post_save_model_evidence_incomplete":
-            key = self.phase + ":" + self._exploration_goal_key()
-        else:
-            key = (
-                self.phase
-                + ":"
-                + (
-                    (decision.action.source or decision.intent)
-                    if decision and decision.action
-                    else "decision"
-                )
+        key = (
+            self.phase
+            + ":"
+            + (
+                (decision.action.source or decision.intent)
+                if decision and decision.action
+                else "decision"
             )
+        )
         if reason.startswith(("selection_error:", "verification_error:", "action_error:")):
             key += ":" + reason
         self.failures[key] = self.failures.get(key, 0) + 1
@@ -1008,26 +978,11 @@ class Brain:
                 "once, using CURRENT cells in the SAME query row. If missing columns are "
                 "hidden, choose observed navigation and reobserve. Never infer missing refs."
             )
-        elif reason == "post_save_model_evidence_incomplete":
-            feedback["missing_fields"] = sorted(set(self.values) - self.post_save_verified)
-            feedback["required_response"] = (
-                "Completion was NOT accepted because persisted evidence is still missing for "
-                "missing_fields. Use observed navigation or tabs to expose those saved values, "
-                "then provide CURRENT evidence for them. Do not refill or save the record again."
-            )
         elif reason == "record_input_scope_mismatch":
             feedback["required_response"] = (
                 "No record input was sent. The selected input surface does not match the "
                 "user-taught surface for this source (standalone input by default; table cell "
                 "when explicitly taught). Keep verified fields and locate the taught target."
-            )
-        elif reason == "input_surface_claimed_by_other_field":
-            feedback.update(self._last_surface_conflict or {})
-            feedback["required_response"] = (
-                "No input was sent. The proposed surface is already current evidence for a "
-                "different task input. Keep that evidence and choose a different grounded "
-                "writable extent for requested_source, or use grounded key/navigation/scroll "
-                "to expose or focus the missing input before rereading the screen."
             )
         elif reason == "save_rejected":
             feedback["required_response"] = (
@@ -1100,7 +1055,6 @@ class Brain:
                     for key, count in self.failures.items()
                     if not key.startswith(self.phase + ":")
                 }
-                self.business_revision += 1
 
     def _retry_input_target_selection(self, reason: str) -> WorkerNode:
         """Retry only a rejected model choice, before any action was dispatched."""
@@ -1518,7 +1472,7 @@ class Brain:
         for node in self.screen_nodes.values():
             for source, field in node["fields"].items():
                 observed = field.get("last_observation")
-                if observed is not None and observed["scope"] == "entry":
+                if observed is not None:
                     last_observed[source] = max(
                         last_observed.get(source, -1), observed["observation_number"]
                     )
@@ -1527,7 +1481,7 @@ class Brain:
                 self._workflow_facts(),
                 field_names=tuple(sorted(self.values)),
                 # Delivered values permit the save action, not completion.
-                verified_field_names=tuple(sorted(self.verified)),
+                verified_field_names=tuple(sorted(self._observed_inputs())),
                 delivered_field_names=tuple(
                     sorted(
                         {
@@ -1536,7 +1490,6 @@ class Brain:
                             for source, field in node["fields"].items()
                             if source in self.values
                             and (delivery := field.get("delivery"))
-                            and delivery["scope"] == "entry"
                             and delivery["value"] == self.values[source]
                             # A later reading supersedes delivery, including a
                             # mismatch observed in another node for this source.
@@ -1553,6 +1506,9 @@ class Brain:
                 ),
             )
         )
+
+    def _observed_inputs(self) -> dict[str, dict]:
+        return observed_inputs(self.screen_nodes, self.values)
 
     def _current_feedback(self) -> list[dict]:
         """비대한 피드백 목록을 설정된 크기(기본 3개)로 축소하여 프롬프트 비대화 방지."""
@@ -1574,19 +1530,6 @@ class Brain:
                 copy.pop("validation_errors", None)
             result.append(copy)
         return result
-
-    def _exploration_goal_key(self) -> str:
-        if self.task_instruction is None:
-            return f"{self.phase}:{self._decision_policy().current_step}"
-        if self.save_issued:
-            if self.model_saved_detail_review:
-                remaining = sorted(set(self.values) - self.post_save_verified)
-                return "post_save_detail:" + ",".join(remaining)
-            if self.post_save_query_identity_verified:
-                return "post_save:open_detail"
-            return "post_save:requery_identity"
-        remaining = sorted(set(self.values) - set(self.verified))
-        return "inputs:" + ",".join(remaining) if remaining else "completion"
 
     def _submitted_credentials(self) -> list[str]:
         observation = self.observation
@@ -1629,8 +1572,8 @@ class Brain:
                     if self.phase == "final_query"
                     else None,
                     "final_required_fields": context["final_required_fields"],
-                    "verified_fields": sorted(self.verified),
-                    "remaining_fields": sorted(set(self.values) - set(self.verified)),
+                    "verified_fields": sorted(self._observed_inputs()),
+                    "remaining_fields": sorted(set(self.values) - set(self._observed_inputs())),
                     "duplicate_clear": self.duplicate_clear,
                     "save_issued": self.save_issued,
                     "query_value_verified": self.query_value_verified,
@@ -1691,21 +1634,6 @@ class Brain:
     def _select_node(self) -> WorkerNode:
         if self.steps >= self.settings.max_steps:
             return self._finish("stopped", "max_steps")
-        if self._post_save_model_evidence_complete():
-            self.action_plan = None
-            self.visual_proposal = None
-            self.visual_match_candidate = None
-            self.execution_authorized = False
-            self.log.append(
-                "verify",
-                payload={
-                    "ok": True,
-                    "check": "post_save_model_evidence_complete",
-                    "fields": sorted(self.post_save_verified),
-                    "identity_field": self.identity_input_key,
-                },
-            )
-            return self._finish("success", "task_completed_with_verified_evidence")
         if (
             self.phase == "task"
             and self.observation is not None
@@ -1833,7 +1761,6 @@ class Brain:
                 "action_not_allowed_by_state",
                 "navigation_no_progress",
                 "record_input_scope_mismatch",
-                "input_surface_claimed_by_other_field",
             }:
                 return self._fail(str(exc))
             if duplicate_checkpoint and str(exc) in {
@@ -1898,39 +1825,37 @@ class Brain:
 
     def _invalidate_editor_evidence(self) -> None:
         assert self.observation is not None
-        # Visible changes invalidate older proof; hidden fields retain evidence
-        # across tab switches, then all fields are checked in the final query.
-        for field, descriptor in list(self.verified.items()):
-            matches = matching_elements(self.observation, descriptor)
-            if len(matches) > 1 or (
-                matches
-                and (
-                    observed_input_surface(matches[0], self.observation)
-                    not in self._input_surfaces(field)
-                    or not field_matches(field, matches[0].value, self.values)
-                )
-            ):
-                del self.verified[field]
-                self.evidence_ledger.invalidate(field, "visible_evidence_changed")
+        for source, field in self._observed_inputs().items():
+            descriptor = field.get("descriptor")
+            matches = matching_elements(self.observation, descriptor) if descriptor else []
+            if len(matches) == 1:
+                self._record_input_observation(source, matches[0])
+            elif matches:
+                field["last_observation"] = {
+                    "value": None,
+                    "observation_id": str(self.observation.obs_id),
+                    "observation_number": self.observation_number,
+                }
 
-    def _record_model_evidence(self, field: str, descriptor: dict, value: str | None) -> None:
-        """Record model evidence while preserving one owner per semantic surface."""
-
+    def _record_input_observation(self, source: str, element: UIElement) -> None:
         assert self.observation is not None
-        self.evidence_ledger.record(field, descriptor, str(self.observation.obs_id))
-        self.verified[field] = descriptor
-        if (
-            self.save_issued
-            and self.observation.screen_kind == "query"
-            and field == self.identity_input_key
-            and descriptor["role"].casefold() not in {"edit", "combobox"}
-            and field_matches(field, value or descriptor["name"], self.values)
-        ):
-            self.post_save_query_identity_verified = True
-        if self.model_saved_detail_review:
-            self.post_save_verified.add(field)
-        scope = "saved_detail" if self.model_saved_detail_review else "entry"
-        self._record_progress(f"field:{scope}:{field}")
+        path = list(self.current_screen_path)
+        node = self.screen_nodes.setdefault(
+            json.dumps(path, ensure_ascii=False), {"path": path, "fields": {}, "controls": {}}
+        )
+        entry = node["fields"].setdefault(source, {})
+        entry.update(
+            label=element.name,
+            role=element.role,
+            bbox=list(element.bbox),
+            observation_id=str(self.observation.obs_id),
+            descriptor=describe(element, self.observation.elements),
+        )
+        entry["last_observation"] = {
+            "value": element.value,
+            "observation_id": str(self.observation.obs_id),
+            "observation_number": self.observation_number,
+        }
 
     def _input_surfaces(self, source: str | None) -> set[str]:
         if self.task_instruction is not None and source in self.values:
@@ -1942,22 +1867,20 @@ class Brain:
         surface_allowed = observed_input_surface(element, self.observation) in self._input_surfaces(
             source
         )
-        if not surface_allowed or not field_matches(source, element.value, self.values):
+        if not surface_allowed:
             return False
-        if self.task_instruction is not None and self.settings.visual_model_only_review:
-            self._record_model_evidence(
-                source, describe(element, self.observation.elements), element.value
-            )
-            return True
-        self.verified[source] = describe(element, self.observation.elements)
+        self._record_input_observation(source, element)
+        if not field_matches(source, element.value, self.values):
+            return False
         self._record_progress("field:" + source)
         return True
 
     def _collect_editor_evidence(self, decision: Decision) -> None:
+        if self.task_instruction is not None and self.settings.visual_model_only_review:
+            return  # The model's explicit readings were committed by remember_screen.
         assert self.observation is not None
         by_ref = {item.ref: item for item in self.observation.elements}
-        if not (self.task_instruction is not None and self.settings.visual_model_only_review):
-            self._invalidate_editor_evidence()
+        self._invalidate_editor_evidence()
         for evidence in decision.evidence:
             item = by_ref.get(evidence.ref)
             if item is not None and item.role.casefold() in TEXT_INPUT_ROLES:
@@ -1966,14 +1889,12 @@ class Brain:
     def _remember_model_task_evidence(self, response) -> None:
         """Persist observed taught completions and field evidence before execution.
 
-        The model owns visual reading and semantic binding. Observed values use
-        the same comparison as no-op input elimination, before batch review.
-        Missing fields preserve memory; visible mismatches replace stale claims.
+        The model owns visual reading and semantic binding. Missing fields preserve
+        memory; explicit values replace the previous reading in their screen node.
         Reading a field does not make its surface writable or finish the task.
         """
         if self.task_instruction is None or not self.settings.visual_model_only_review:
             return
-        self._begin_saved_detail_review(response)
         for result in response.observed_step_results:
             if result.completed:
                 self._complete_taught_procedure_step(result.step_id)
@@ -1989,7 +1910,6 @@ class Brain:
             self.values,
             str(self.observation.obs_id),
             observation_number=self.observation_number,
-            scope="saved_detail" if self.model_saved_detail_review else "entry",
         )
         self.log.append(
             "verify",
@@ -2000,21 +1920,12 @@ class Brain:
                 "source": "model_mapping",
             },
         )
-        for name, field in mapping.fields.items():
+        for field in mapping.fields.values():
             source = field.source
             if source not in self.values or "value" not in field.model_fields_set:
                 continue
-            if not field_matches(source, field.value, self.values):
-                self.verified.pop(source, None)
-                self.post_save_verified.discard(source)
-                self.evidence_ledger.invalidate(source, "current_observed_value_differs")
-                continue
-            # The descriptor and reading have the same owner as the screen-tree fact.
-            self._record_model_evidence(
-                source,
-                {"role": field.role, "name": name, "label": name, "context": []},
-                field.value,
-            )
+            if field_matches(source, field.value, self.values):
+                self._record_progress("field:" + source)
             recorded.append(source)
         if recorded:
             self.log.append(
@@ -2048,9 +1959,6 @@ class Brain:
             if fill_target
             else True
         )
-        surface_owner = None
-        if fill_target and self.phase == "task" and choice.source is not None:
-            surface_owner = self.evidence_ledger.owner(describe(target, self.observation.elements))
         try:
             validate_action_guard(
                 ActionGuardRequest(
@@ -2059,7 +1967,6 @@ class Brain:
                     policy=policy or self._decision_policy(),
                     phase=self.phase,
                     input_surface_allowed=surface_allowed,
-                    surface_owner=surface_owner,
                     query_matches=(
                         self._current_query_matches()
                         if self.phase != "task"
@@ -2068,25 +1975,6 @@ class Brain:
                         else True
                     ),
                 )
-            )
-        except ActionSurfaceConflict as error:
-            self._last_surface_conflict = {
-                "surface_owner": error.owner,
-                "requested_source": error.source,
-                "target_ref": error.ref,
-            }
-            if self.settings.guard_mode == "enforce":
-                raise GuardStop(str(error)) from error
-            self.log.append(
-                "verify",
-                payload={
-                    "check": "guard_observe_only",
-                    "guard": "action_surface",
-                    "would_reject": str(error),
-                    "intent": decision.intent,
-                    "action": choice.type if choice is not None else None,
-                    "ref": choice.ref if choice is not None else None,
-                },
             )
         except GuardStop as error:
             if self.settings.guard_mode == "enforce":
@@ -2235,47 +2123,9 @@ class Brain:
                     self.deferred_field_checks[evidence.field] = describe(
                         target, self.observation.elements
                     )
-        if (
-            self.phase == "task"
-            and self.save_issued
-            and decision.screen_kind == "query"
-            and decision.intent in {"navigate", "select_option"}
-            and (
-                choice.type in {"click", "double_click"}
-                or (choice.type == "key" and choice.keys == "enter")
-            )
-        ):
-            # This is a transition candidate, not proof of opening or identity.
-            # The next observed editor starts review for row, button and keyboard
-            # routes alike; a query that remains visible does not start it.
-            self.saved_detail_transition_pending = True
-            if self.visual_proposal is not None and self.visual_proposal.taught_step_id:
-                self.saved_detail_transition_step = self.visual_proposal.taught_step_id
-            else:
-                self.saved_detail_transition_step = self.active_taught_step
         if choice.type in {"set_text", "type_text"}:
             target = next(item for item in self.observation.elements if item.ref == choice.ref)
             pending["descriptor"] = describe(target, self.observation.elements)
-            if self.task_instruction is not None and self.settings.visual_model_only_review:
-                invalidated = set(
-                    self.evidence_ledger.invalidate_surface(
-                        pending["descriptor"], "input_delivered_to_surface"
-                    )
-                )
-                if choice.source is not None:
-                    if self.evidence_ledger.invalidate(choice.source, "input_requires_reread"):
-                        invalidated.add(choice.source)
-                for field in invalidated:
-                    self.verified.pop(field, None)
-                if invalidated:
-                    self.log.append(
-                        "verify",
-                        payload={
-                            "check": "model_task_evidence_superseded",
-                            "fields": sorted(invalidated),
-                            "reason": "input_delivered_to_surface",
-                        },
-                    )
             if choice.source in self.values:
                 if self.settings.visual_model_only_review:
                     remember_input_delivery(
@@ -2283,9 +2133,14 @@ class Brain:
                         self.current_screen_path,
                         choice.source,
                         self.values[choice.source],
+                        target={
+                            "label": target.name,
+                            "role": target.role,
+                            "bbox": list(target.bbox),
+                            "observation_id": str(self.observation.obs_id),
+                        },
                         observation_id=str(self.observation.obs_id),
                         observation_number=self.observation_number,
-                        scope="saved_detail" if self.model_saved_detail_review else "entry",
                     )
                 # A successful relay return proves delivery, not business correctness.
                 # It still separates unrelated failures while semantic reread remains
@@ -2297,17 +2152,8 @@ class Brain:
             and decision.screen_kind == "query"
         ):
             self.query_submitted = True
-        if self.phase == "task" and self.save_issued and decision.intent == "search":
-            self.post_save_query_identity_verified = False
-            self.model_saved_detail_review = False
-            self.post_save_verified.clear()
         if decision.intent == "save":
             self.save_issued = True
-            self.saved_detail_transition_pending = False
-            self.saved_detail_transition_step = None
-            self.post_save_query_identity_verified = False
-            self.model_saved_detail_review = False
-            self.post_save_verified.clear()
             self.phase = "save_result"
             self.query_submitted = self.query_value_verified = False
             self.query_descriptor = None
@@ -2340,7 +2186,6 @@ class Brain:
             )
             if str(exc) in {
                 "record_input_scope_mismatch",
-                "input_surface_claimed_by_other_field",
             }:
                 return self._fail(str(exc))
             return self._finish("stopped", str(exc))
@@ -2523,13 +2368,8 @@ class Brain:
     ) -> tuple[WorkerNode | None, Observation, ObservedEffect]:
         if choice.type not in {"set_text", "type_text"}:
             return None, observation, observed_effect
-        if choice.source in self.values and self._continues_memory_action():
-            # A bound next action needs no invented reading of the delivered input.
-            # Current values will be reviewed at the business-result boundary.
-            self.log.append(
-                "verify",
-                payload={"check": "input_review_deferred", "source": choice.source},
-            )
+        if choice.source in self.values and self.settings.visual_model_only_review:
+            # The current model observation owns the outcome and the next plan.
             return None, observation, ObservedEffect.UNKNOWN
         descriptor = pending["descriptor"]
         element = delivered_input_element(
@@ -2676,51 +2516,6 @@ class Brain:
         for fact in new_facts:
             self.rolling_context.mark_milestone(f"검증 완료: {fact}")
 
-    def _begin_saved_detail_review(self, response) -> None:
-        """Consume an observed transition; initialize its review ledger only once."""
-        if not (
-            self.phase == "task"
-            and self.save_issued
-            and self.settings.visual_model_only_review
-            and self.saved_detail_transition_pending
-            and any(
-                result.step_id == self.saved_detail_transition_step and result.completed
-                for result in response.observed_step_results
-            )
-        ):
-            return
-        self.saved_detail_transition_pending = False
-        self.saved_detail_transition_step = None
-        if self.model_saved_detail_review:
-            return
-        # Entry evidence cannot satisfy persisted detail review. Reentry, unlike
-        # starting this scope, must not erase previously reviewed fields.
-        self.post_save_query_identity_verified = True
-        self.model_saved_detail_review = True
-        self.post_save_verified.clear()
-        self._record_progress("scope:saved_detail")
-        self.log.append(
-            "verify",
-            payload={
-                "ok": True,
-                "check": "model_saved_detail_review_started",
-                "obs_id": str(self.observation.obs_id) if self.observation else None,
-            },
-        )
-
-    def _post_save_model_evidence_complete(self) -> bool:
-        """Return whether one post-save detail episode covers every task input."""
-
-        return bool(
-            self.phase == "task"
-            and self.task_instruction is not None
-            and self.settings.visual_model_only_review
-            and self.save_issued
-            and self.post_save_query_identity_verified
-            and self.model_saved_detail_review
-            and set(self.values) <= self.post_save_verified
-        )
-
     def _log_verification_transition(
         self,
         pending: PendingAction,
@@ -2752,27 +2547,16 @@ class Brain:
                 log_transition(self.log, delivered)
         log_transition(self.log, pending, observation, observed_effect, tuple(new_facts))
 
-    def _continues_memory_action(self) -> bool:
-        pending = self.memory_retrieval.state.pending
-        return bool(
-            self.settings.visual_model_only_review
-            and pending is not None
-            and pending["origin"] == "reuse"
-            and self.visual_proposal is not None
-            and self.visual_proposal.operation == "act"
-        )
-
     def _verify_screen_batch(
         self, execution: PlanExecution, observation: Observation
     ) -> tuple[WorkerNode, bool | None]:
+        if self.settings.visual_model_only_review:
+            return "review", None  # Delivered inputs are not independently observed values.
         result = verify_screen_fields(
             ScreenFieldVerificationRequest(
                 execution=execution,
                 observation=observation,
-                model_only_review=self.settings.visual_model_only_review,
-                verified_fields=frozenset(self.verified),
                 visual_proposal=self.visual_proposal,
-                defer_unobserved=self._continues_memory_action(),
             ),
             ScreenFieldVerificationServices(
                 input_surfaces=self._input_surfaces,
@@ -2792,15 +2576,8 @@ class Brain:
                     True,
                     [delivered["choice"].source],
                 )
-        for source in result.clear_verified:
-            self.verified.pop(source, None)
         self.log.append("verify", payload={**result.payload, "obs_id": str(observation.obs_id)})
         self.feedback.append(result.payload)
-        if result.clear_visual_proposal:
-            # Post-action evidence belongs to the delivered batch only.  The next
-            # decision is planned from the updated notebook.
-            self.visual_proposal = None
-            self.visual_match_candidate = None
         if result.failed_decision is not None:
             self.decision = result.failed_decision
         if result.failure_reason is not None:
@@ -2808,7 +2585,7 @@ class Brain:
             if outcome == "finish":
                 return outcome, False
             return "review", False
-        return "review", None if result.payload.get("deferred") else True
+        return "review", True
 
     def _capture_action_effect(self, observation: Observation) -> None:
         """Publish local capture facts before semantics plans; no business verdict here."""
@@ -2866,13 +2643,8 @@ class Brain:
             if (
                 self.phase == "task"
                 and self.settings.visual_model_only_review
-                and (
-                    self._post_save_model_evidence_complete()
-                    or (
-                        self._current_plan_ready(observation)
-                        and self.visual_proposal.operation in {"complete", "stop"}
-                    )
-                )
+                and self._current_plan_ready(observation)
+                and self.visual_proposal.operation in {"complete", "stop"}
             ):
                 # Observation has already committed the current result. Let Review
                 # handle it before retry counters for the previous action can stop it.
@@ -2999,15 +2771,8 @@ class Brain:
         elif review.result == "rejected":
             self.phase = "task" if self.task_instruction is not None else "enter"
             self.save_issued = False
-            self.saved_detail_transition_pending = False
-            self.saved_detail_transition_step = None
-            self.post_save_query_identity_verified = False
-            self.model_saved_detail_review = False
-            self.post_save_verified.clear()
             self.query_submitted = self.query_value_verified = False
             self.query_descriptor = self.query_window_handle = None
-            for source in review.repair_fields:
-                self.verified.pop(source, None)
             if not review.repair_fields:
                 return self._finish("stopped", "save_rejected_without_record_repair")
             outcome = self._fail("save_rejected")
@@ -3072,10 +2837,6 @@ class Brain:
             assert self.task_instruction is not None
             if outcome := self._complete_remembered_route():
                 return outcome
-            if self.model_saved_detail_review:
-                missing = set(self.values) - self.post_save_verified
-                if missing:
-                    return self._fail("post_save_model_evidence_incomplete")
             try:
                 result = evaluate_task_completion(
                     self.observation,

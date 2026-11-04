@@ -183,11 +183,19 @@ def execution_context(request: ExecutionContextRequest) -> dict:
                 and effect_source in facts.field_names
             ):
                 pending_fields.add(effect_source)
-            anticipated_fields = set(facts.verified_field_names) | pending_fields
-            if anticipated_fields != set(facts.verified_field_names):
+            if facts.phase == "task":
                 facts = replace(
                     facts,
-                    verified_field_names=tuple(sorted(anticipated_fields)),
+                    delivered_field_names=tuple(
+                        sorted(set(facts.delivered_field_names) | pending_fields)
+                    ),
+                )
+            else:
+                facts = replace(
+                    facts,
+                    verified_field_names=tuple(
+                        sorted(set(facts.verified_field_names) | pending_fields)
+                    ),
                 )
         if last is not None and last.intent == "login":
             # A pending login batch is evaluated against the freshly observed

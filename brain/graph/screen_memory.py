@@ -6,6 +6,8 @@ import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+from brain.observe.values import field_matches
+
 if TYPE_CHECKING:
     from .screen_mapping import ScreenMapping
 
@@ -17,7 +19,6 @@ def remember_screen(
     observation_id: str,
     *,
     observation_number: int,
-    scope: str,
 ) -> dict:
     """Apply the model's current node, bindings and readings as a memory delta.
 
@@ -47,7 +48,6 @@ def remember_screen(
                 "value": field.value,
                 "observation_id": observation_id,
                 "observation_number": observation_number,
-                "scope": scope,
             }
     return node
 
@@ -58,17 +58,19 @@ def remember_input_delivery(
     source: str,
     value: str,
     *,
+    target: dict,
     observation_id: str,
     observation_number: int,
-    scope: str,
 ) -> None:
     """Retain acknowledged input separately from observed values and business success."""
-    node = nodes.get(json.dumps(path, ensure_ascii=False))
-    if node is None or source not in node["fields"]:
-        return
-    node["fields"][source]["delivery"] = {
+    node = nodes.setdefault(
+        json.dumps(path, ensure_ascii=False), {"path": list(path), "fields": {}, "controls": {}}
+    )
+    entry = node["fields"].setdefault(source, {})
+    entry.update(target)
+    node["controls"].pop(target["label"], None)
+    entry["delivery"] = {
         "value": value,
-        "scope": scope,
         "observation_id": observation_id,
         "observation_number": observation_number,
     }
@@ -91,11 +93,12 @@ def recall_screen_tree(nodes: Mapping[str, dict]) -> dict:
             observed = field.get("last_observation")
             if observed is not None:
                 entry["last_observation"] = {
-                    "value": observed["value"],
-                    "scope": observed["scope"],
+                    key: observed[key] for key in ("value", "observation_number")
                 }
             if "delivery" in field:
-                entry["delivery"] = {key: field["delivery"][key] for key in ("value", "scope")}
+                entry["delivery"] = {
+                    key: field["delivery"][key] for key in ("value", "observation_number")
+                }
             branch["fields"][source] = entry
         branch["controls"] = {
             name: {"role": field["role"]} for name, field in node.get("controls", {}).items()
@@ -103,17 +106,41 @@ def recall_screen_tree(nodes: Mapping[str, dict]) -> dict:
     return tree
 
 
-def pending_screen_inputs(nodes: Mapping[str, dict], scope: str) -> set[str]:
-    """Inputs delivered in this evidence scope, still awaiting an observation of their node."""
+def _latest_inputs(nodes: Mapping[str, dict], fact: str) -> dict[str, dict]:
+    latest = {}
+    for node in nodes.values():
+        for source, field in node["fields"].items():
+            if fact in field and (
+                source not in latest
+                or field[fact]["observation_number"] >= latest[source][fact]["observation_number"]
+            ):
+                latest[source] = field
+    return latest
+
+
+def observed_inputs(nodes: Mapping[str, dict], values: Mapping[str, str]) -> dict[str, dict]:
+    """Read matching observations; a newer delivery is not a new observation."""
+    deliveries = _latest_inputs(nodes, "delivery")
+    return {
+        source: field
+        for source, field in _latest_inputs(nodes, "last_observation").items()
+        if source in values
+        and field_matches(source, field["last_observation"]["value"], values)
+        and (
+            source not in deliveries
+            or field["last_observation"]["observation_number"]
+            > deliveries[source]["delivery"]["observation_number"]
+        )
+    }
+
+
+def pending_screen_inputs(nodes: Mapping[str, dict]) -> set[str]:
+    """Read delivered inputs that have no later observation of that source."""
+    observations = _latest_inputs(nodes, "last_observation")
     return {
         source
-        for node in nodes.values()
-        for source, field in node["fields"].items()
-        if (delivery := field.get("delivery"))
-        and delivery["scope"] == scope
-        and (
-            (observed := field.get("last_observation")) is None
-            or observed["scope"] != scope
-            or observed["observation_number"] <= delivery["observation_number"]
-        )
+        for source, field in _latest_inputs(nodes, "delivery").items()
+        if source not in observations
+        or observations[source]["last_observation"]["observation_number"]
+        <= field["delivery"]["observation_number"]
     }

@@ -17,12 +17,11 @@ def recall_context(request: ScreenDecisionRequest, *, projected_screen: dict | N
     """Restore current history, evidence and unfinished work without changing state."""
     contract = request.execution_contract
     required = request.required_verification
-    evidence_scope = request.evidence_scope
     recorded_deliveries = {
         source
         for node in request.screen_nodes.values()
         for source, field in node["fields"].items()
-        if field.get("delivery", {}).get("scope") == evidence_scope
+        if "delivery" in field
     }
     pending_verification_fields = sorted(
         {
@@ -32,7 +31,7 @@ def recall_context(request: ScreenDecisionRequest, *, projected_screen: dict | N
             and item["source"] in request.values
             and item["source"] not in recorded_deliveries
         }
-        | pending_screen_inputs(request.screen_nodes, evidence_scope)
+        | pending_screen_inputs(request.screen_nodes)
     )
     # Generic input keys are reusable across screens. Keep action eligibility
     # broad while exposing a separate, model-owned coverage ledger. Calling
@@ -58,7 +57,6 @@ def recall_context(request: ScreenDecisionRequest, *, projected_screen: dict | N
         notebook.update(
             {
                 "verified_inputs": sorted(request.verified_fields),
-                "evidence_scope": evidence_scope,
                 "remaining_inputs": remaining_inputs,
                 "pending_verification_inputs": pending_verification_fields,
                 MODEL_INPUTS_NAME: record,

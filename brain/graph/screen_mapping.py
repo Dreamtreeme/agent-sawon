@@ -104,7 +104,7 @@ class ScreenMapping(BaseModel):
         default_factory=list,
         description=(
             "Evaluate focused/delivered taught steps using current observations and accumulated "
-            "verified evidence in the same review scope"
+            "observations in the screen tree"
         ),
     )
     steps: list[
@@ -358,16 +358,16 @@ this view; other nodes are historical context, not visible fields. Return all cu
 readable business fields with their source keys, including fields not used by the next action.
 Prior geometry is a hint, never a current observation. Reground fields on the current image.
 An empty screen_path means unidentified and must not select the previous node implicitly.
-Verified readings in this run's current evidence scope remain valid when fields move offscreen.
+Readings in this run's screen tree remain available when fields move offscreen.
 Use the current image to identify the node and action geometry, not to erase those readings.
 screen_tree.children organizes visited screens and their children. Root fields have no identified
 screen and must not be assigned to a known node. All tree entries are history, not current
 visibility or action coordinates. Get visible targets from this image; navigate to hidden targets.
 Each field's last_observation is what was read; delivery is what was successfully sent there.
-pending_verification_inputs lists delivered inputs with no later reading in this evidence scope,
+pending_verification_inputs lists delivered inputs with no later reading of that source,
 even after scrolling or other inputs. Do not treat these as never entered. Correct from evidence.
 remaining_inputs means not yet verified, not necessarily blank or not entered. Use the tree's
-delivery and observation together. Entry facts do not prove saved_detail completion.
+delivery and observation together. An entry-form reading alone does not prove persistence.
 Retrieved procedures describe learned actions, not actions already completed in this run.
 Combine them with this run's inputs, notebook and visible evidence to choose the next action.
 If a required visible control is missing from the candidates, return needs_refinement=true
@@ -408,9 +408,10 @@ execution.last_action_observation describes structural movement after the delive
 changed=false is no structural movement, not necessarily task failure (focus may be intended).
 Interpret it together with current values and choose the remaining work in this response.
 Complete only from the user's required saved/requeried evidence.
-Combine current observations with prior verified inputs in the same evidence scope. Do not
-revisit hidden fields only to reconfirm them; new conflicting readings or a new review scope
-require verification. Scrolling alone does not start a new review scope.
+Use current observations, prior readings and delivered actions to judge the user's completion
+conditions. An earlier form reading is not a saved-record observation; use the screen path,
+action history and observation numbers to distinguish them. Do not revisit hidden fields only
+to repeat an established reading. Investigate new conflicting evidence.
 The notebook and focused taught step describe progress BEFORE this screenshot is interpreted.
 last_delivered_actions were successfully executed, not actions to execute again.
 In this ONE response, use screen_kind, fields.value and fields.source to report what is
@@ -424,16 +425,10 @@ first group still needed. Earlier groups are bypassed route steps, not actions r
 delivered or completed taught steps. Use the supplied group actions and expected results to
 identify this position; leave resume_group_id null when the position is unknown.
 Before choosing steps, return observed_step_results for the focused step and any delivered step
-whose result is now established. In observed_result, combine same-scope verified memory with new
+whose result is now established. In observed_result, combine the screen tree with new
 readings and non-input status relevant to the taught completion condition. Set completed from
 that evidence, not delivery alone; all confirmed fields need not be visible at once.
 Then choose steps for the remaining work using these results and prior memory in this same response.
-If saved_result_open_pending is true, judge from the delivered requery action and this screenshot
-whether the saved detail opened. If so, mark that taught step completed in observed_step_results
-and review the saved values here. screen_kind describes appearance, not requery success.
-For saved_detail_candidate, verified_inputs is empty for the new review, not a claim that
-the record is blank. Entry evidence remains historical; inspect current saved values without typing.
-If it remains a query screen, opening has not succeeded; choose a suitable next action.
 Query results are observations, not terminal workflow phases. After reading no matching record,
 choose the next action taught by the user; after finding a record, follow their duplicate policy.
 Use operation=act with the next action, complete only for the whole task, or stop if unable to

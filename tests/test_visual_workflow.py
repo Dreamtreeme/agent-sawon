@@ -114,7 +114,7 @@ def test_relay_error_code_allowlist_rejects_untrusted_text():
 
 
 def test_caret_recheck_failure_rules_are_local_and_independent(tmp_path, monkeypatch, record):
-    """The three deterministic rejection branches do not need a full 18-action replay."""
+    """The supported non-model reviewer retains its three caret-recheck failure branches."""
     choice = Choice(type="set_text", ref="e20", source="hbl_no")
     decision = Decision.model_validate(
         {
@@ -154,7 +154,9 @@ def test_caret_recheck_failure_rules_are_local_and_independent(tmp_path, monkeyp
             goal="Save for approval",
             relay=relay,
             model=ScriptedModel(log, []),
-            settings=current_settings(case_dir, visual_input_blur_recheck=enabled),
+            settings=current_settings(
+                case_dir, visual_model_only_review=False, visual_input_blur_recheck=enabled
+            ),
             case_dir=case_dir,
             run_log=log,
             visual_ocr=object(),

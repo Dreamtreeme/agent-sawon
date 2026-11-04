@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
 from math import log
@@ -109,7 +109,7 @@ class MethodActionGroup(BaseModel):
 
 class MethodCompletionTarget(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    slot: str
+    slot: str | None = None
     target: MethodTarget
     condition_indexes: list[int] = Field(default_factory=list)
 
@@ -638,8 +638,6 @@ def method_completion_from_match(
     response: dict | ScreenMapping,
     method: LearnedMethod,
     values: Mapping[str, str] | None = None,
-    *,
-    verified_fields: Collection[str] = (),
 ) -> LearnedMethod | None:
     """Compile the geometry and source bindings used by the model's final review."""
 
@@ -671,10 +669,7 @@ def method_completion_from_match(
     if response.get("operation") != "complete" or response.get("steps"):
         return None
     completion_evidence = response.get("completion_evidence", [])
-    # The compiler may supply the fields from the actual final accumulated review.
-    # This admits its last observation, not a reusable success flag for the next run.
-    accumulated_review = bool(values) and set(values) <= set(verified_fields)
-    if not evidence or (not completion_evidence and not accumulated_review):
+    if not completion_evidence:
         return None
     markers = {item["id"]: item for item in screen.get("markers", [])}
     blocks = {item["id"]: item for item in screen.get("ocr", [])}
@@ -687,12 +682,13 @@ def method_completion_from_match(
     conditions: dict[int | str, list[int]] = {}
     for item in completion_evidence:
         conditions.setdefault(item["target"], []).append(item["condition_index"])
+    sources = {item["target"]: item["field"] for item in evidence}
     targets = []
-    for index, item in enumerate(evidence, start=1):
-        marker = markers.get(item["target"])
-        control = controls.get(item["target"])
-        condition_indexes = conditions.get(item["target"], [])
-        selected = selected_fields.get(str(item["target"]))
+    for index, name in enumerate(dict.fromkeys([*sources, *conditions]), start=1):
+        marker = markers.get(name)
+        control = controls.get(name)
+        condition_indexes = conditions.get(name, [])
+        selected = selected_fields.get(str(name))
         if control is None or (marker is None and selected is None):
             return None
         if selected and (mapping is not None or screen.get("screen_path")):
@@ -714,13 +710,11 @@ def method_completion_from_match(
             return None
         targets.append(
             MethodCompletionTarget(
-                slot=by_source[item["field"]],
+                slot=by_source[sources[name]] if name in sources else None,
                 target=target,
                 condition_indexes=list(dict.fromkeys(condition_indexes)),
             )
         )
-    if not accumulated_review and not any(item.condition_indexes for item in targets):
-        return None
     completion = MethodCompletion(
         purpose=response.get("purpose", "")[:160],
         taught_step_id=response.get("taught_step_id"),
@@ -1117,7 +1111,7 @@ class MethodLibrary:
         )
         for item in method.completion.targets:
             source = sources.get(item.slot)
-            if source is None or source not in values:
+            if item.slot is not None and (source is None or source not in values):
                 return None
             bound = (
                 coordinates.get(item.target.name)

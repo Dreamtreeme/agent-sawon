@@ -189,10 +189,7 @@ def prepare_screen_fill(scene: Observation, plan: ScreenFillPlan) -> ActionPlan:
 class ScreenFieldVerificationRequest:
     execution: PlanExecution
     observation: Observation
-    model_only_review: bool
-    verified_fields: frozenset[str]
     visual_proposal: Any | None
-    defer_unobserved: bool = False
 
 
 @dataclass(frozen=True)
@@ -205,10 +202,8 @@ class ScreenFieldVerificationServices:
 class ScreenFieldVerificationResult:
     payload: dict
     matched_refs: tuple[str, ...]
-    clear_verified: tuple[str, ...]
     failed_decision: Decision | None = None
     failure_reason: str | None = None
-    clear_visual_proposal: bool = False
 
 
 def verify_screen_fields(
@@ -221,49 +216,6 @@ def verify_screen_fields(
     delivered_fields = [
         delivered for delivered in execution.delivered if delivered["choice"].source is not None
     ]
-    if request.model_only_review:
-        matched, mismatched, deferred = [], [], []
-        mapping = getattr(request.visual_proposal, "mapping", None)
-        observed_sources = (
-            {item.source for item in mapping.fields.values() if "value" in item.model_fields_set}
-            if mapping is not None
-            else set()
-        )
-        for delivered in delivered_fields:
-            source = delivered["choice"].source
-            if source in request.verified_fields:
-                matched.append(source)
-            elif request.defer_unobserved and source not in observed_sources:
-                deferred.append(source)
-            else:
-                mismatched.append(source)
-        payload = {
-            "check": "screen_fill_values",
-            "ok": False if mismatched else None if deferred else True,
-            "matched": matched,
-            "mismatched": mismatched,
-            "delegated": [delivered["choice"].source for delivered in delivered_fields],
-            "deferred": deferred,
-            "reviewer": "screen_model",
-        }
-        return ScreenFieldVerificationResult(
-            payload=payload,
-            matched_refs=tuple(
-                delivered["choice"].ref
-                for delivered in delivered_fields
-                if delivered["choice"].source in request.verified_fields
-            ),
-            clear_verified=(),
-            failure_reason="screen_fill_evidence_missing" if mismatched else None,
-            clear_visual_proposal=not bool(
-                request.visual_proposal is not None
-                and (
-                    getattr(request.visual_proposal, "steps", None)
-                    or getattr(request.visual_proposal, "operation", None) == "complete"
-                )
-            ),
-        )
-
     matched, matched_refs, mismatched, mismatched_refs = [], [], [], []
     source_counts = Counter(item["choice"].source for item in delivered_fields)
     explicit_evidence = {}
@@ -314,7 +266,6 @@ def verify_screen_fields(
     return ScreenFieldVerificationResult(
         payload=payload,
         matched_refs=tuple(matched_refs),
-        clear_verified=tuple(mismatched),
         failed_decision=failed_decision,
         failure_reason="screen_fill_value_mismatch" if mismatched else None,
     )
