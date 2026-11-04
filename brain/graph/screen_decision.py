@@ -322,7 +322,6 @@ class ScreenDecisionRequest:
     context_layers: dict
     recent_feedback: tuple[dict, ...]
     available_credentials: tuple[str, ...]
-    failed_transitions: tuple[dict, ...]
     saved_record_review: dict | None
     taught_procedure_progress: dict
     task_instruction: TaskInstruction

@@ -243,8 +243,6 @@ def test_generic_task_save_enters_shared_save_review(tmp_path, record):
         wire_action,
         proposed,
         proposed.action,
-        progress_scope="task:task-action:0",
-        point_refined=False,
     )
 
     assert brain.save_issued

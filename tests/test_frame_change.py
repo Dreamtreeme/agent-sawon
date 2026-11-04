@@ -16,9 +16,8 @@ from brain.graph.transitions import (
     ActionTransition,
     ExpectedEffect,
     ObservedEffect,
-    exploration_failure_key,
 )
-from brain.observe.progress import compare_navigation, navigation_state, navigation_target
+from brain.observe.progress import compare_navigation
 from brain.visual.frame_change import compare_frames
 from brain.visual.scene import SceneObservation
 
@@ -33,6 +32,35 @@ def synthetic_form():
         cv2.rectangle(image, (250, y - 25), (800, y + 5), 170, 1)
         cv2.putText(image, str(rng.integers(10000, 99999)), (265, y), 0, 0.7, 20, 1)
     return image
+
+
+def test_synthetic_semantic_fallback_ignores_refs_but_reports_changed_contents(tmp_path):
+    """No-image injected observations keep a semantic effect comparison."""
+    before = SceneObservation(
+        wire=wire(),
+        elements=[
+            element("e1", "Group", name="First"),
+            element("e2", "Group", name="Second"),
+            element("e3", "Edit", name="Count", value="4", parent="e1"),
+        ],
+    )
+    variants = {
+        "value": {"value": "5"},
+        "name": {"name": "Unit"},
+        "label": {"label_hint": "Packages"},
+        "enabled": {"enabled": False},
+        "hierarchy": {"parent_ref": "e2"},
+        "incidental-focus-and-ref": {"focused": True, "ref": "e99", "bbox": (1, 1, 50, 20)},
+    }
+    for label, update in variants.items():
+        after = before.model_copy(
+            update={
+                "elements": [*before.elements[:2], before.elements[2].model_copy(update=update)]
+            }
+        )
+        result = compare_navigation(before, after, tmp_path)
+        assert result["method"] == "semantic", label
+        assert result["changed"] is (label != "incidental-focus-and-ref"), label
 
 
 def save_capture(case_dir, scene, image):
@@ -75,8 +103,6 @@ def test_synthetic_orb_effect_drives_verify_without_phash_equality(
         "before_observation": before,
         "choice": decision.action,
         "decision": decision,
-        "source_window_handle": 1,
-        "source_navigation_state": navigation_state(before),
         "transition": ActionTransition(
             action_id=str(uuid4()),
             before_obs_id=str(before.obs_id),
@@ -99,7 +125,7 @@ def test_synthetic_orb_effect_drives_verify_without_phash_equality(
     route = brain._verify_node()
     expected = {"focus": False, "scroll": True, "missing": None}[change]
     assert verified == [expected], change
-    assert route == ("observation" if change == "focus" else "review"), change
+    assert route == "review", change
     events = [event.payload for event in brain.log.read_all()]
     comparison = next(e for e in events if e.get("check") == "screen_structure_comparison")
     assert comparison["changed"] is expected
@@ -191,13 +217,6 @@ def test_synthetic_capture_feedback_precedes_model_and_preserves_alternative(
         "before_observation": before,
         "choice": decision.action,
         "decision": decision,
-        "source_window_handle": 1,
-        "source_navigation_state": navigation_state(before),
-        "source_screen_path": ["Synthetic", "Main"],
-        "click_target": navigation_target(before.elements[0], before),
-        "exploration_action_key": "click:label",
-        "exploration_goal_key": brain._exploration_goal_key(),
-        "exploration_action": {"type": "click", "target": {"name": "Label"}},
         "transition": ActionTransition(
             action_id="synthetic-focus",
             before_obs_id=str(before.obs_id),
@@ -205,13 +224,6 @@ def test_synthetic_capture_feedback_precedes_model_and_preserves_alternative(
             expected_effect=ExpectedEffect.NAVIGATION_CHANGE,
         ),
     }
-    # Old code would terminate before allowing the newly proposed wheel action.
-    failure_key = "task:explore:" + exploration_failure_key(
-        brain.pending["source_navigation_state"],
-        brain.pending["exploration_goal_key"],
-        brain.pending["exploration_action_key"],
-    )
-    brain.failures[failure_key] = brain.settings.max_subgoal_failures
 
     def screenshot(observation, path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -228,24 +240,14 @@ def test_synthetic_capture_feedback_precedes_model_and_preserves_alternative(
 
     monkeypatch.setattr(relay, "screenshot", screenshot)
     monkeypatch.setattr(ocr, "read", read_after_comparison)
-    assert brain._verify_node() == ("review" if next_action == "scroll" else "finish")
-    if next_action == "scroll":
-        assert brain.result is None and brain.visual_proposal.steps[0].keys == "pagedown"
-    else:
-        assert brain.result.reason.startswith("repeated_subgoal_failure:")
+    assert brain._verify_node() == "review"
+    assert brain.result is None
+    assert brain.visual_proposal.steps[0].keys == ("pagedown" if next_action == "scroll" else None)
     assert len(model.prompts) == 1
     request = json.loads(model.prompts[0][len(CONTEXT_MAPPING_RULES) :])
     assert request["execution"]["last_action_observation"]["changed"] is False
-    history = request["notebook"]["failed_transitions"]
-    assert len(history) == 1 and history[0]["outcome"] == "no_change"
-    assert history[0]["action"]["screen_path"] == ["Synthetic", "Main"]
-    assert history[0]["scope"] == "historical_observation"
-    assert navigation_state(before) != navigation_state(brain.observation)
-    assert brain._failed_exploration_transitions() == history
     events = brain.log.read_all()
     comparisons = [e for e in events if e.payload.get("check") == "screen_structure_comparison"]
     calls = [e for e in events if e.kind == "model_call"]
     assert len(comparisons) == 1 and comparisons[0].seq < calls[0].seq
-    assert brain.failures[failure_key] == brain.settings.max_subgoal_failures + (
-        next_action == "same"
-    )
+    assert brain.failures == {}

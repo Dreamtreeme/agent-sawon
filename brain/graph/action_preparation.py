@@ -36,7 +36,6 @@ class ActionGuardRequest:
     input_surface_allowed: bool = True
     surface_owner: str | None = None
     query_matches: bool = True
-    exploration_blocked: bool = False
 
 
 def validate_action_guard(request: ActionGuardRequest) -> None:
@@ -77,8 +76,6 @@ def validate_action_guard(request: ActionGuardRequest) -> None:
         and not request.query_matches
     ):
         raise GuardStop("query_value_changed")
-    if request.exploration_blocked:
-        raise GuardStop("navigation_no_progress")
 
 
 @dataclass(frozen=True)
@@ -89,7 +86,6 @@ class ActionWiringRequest:
     credentials: Mapping[str, str | None]
     values: Mapping[str, str]
     planned_point: tuple[float, float] | None = None
-    refined_point: tuple[float, float] | None = None
     fresh_observation: Observation | None = None
     max_phash_distance: int = 16
     screen_batch: bool = False
@@ -176,8 +172,6 @@ def _log_visual_renewal(
 
 
 def _visual_evidence_prefix(request: ActionWiringRequest, *, same_content: bool) -> str:
-    if request.refined_point is not None:
-        return "image_refined:"
     if request.planned_point is not None:
         return "image_planned:"
     return "ocr_visual:" if same_content else "ocr_rebound:"
@@ -191,7 +185,7 @@ def _fresh_visual_target(
     choice = request.choice
     target = next(item for item in scene.elements if item.ref == choice.ref)
     x, y, width, height = target.bbox
-    old_point = request.refined_point or request.planned_point or (x + width / 2, y + height / 2)
+    old_point = request.planned_point or (x + width / 2, y + height / 2)
     fresh = request.fresh_observation or services.relay.observe()
     previous = scene.wire
     old_shot, new_shot = previous.screenshot, fresh.screenshot

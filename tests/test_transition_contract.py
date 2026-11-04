@@ -7,7 +7,6 @@ from pydantic import ValidationError
 from brain.graph.transitions import (
     ActionTransition,
     ExpectedEffect,
-    NavigationHistory,
     ObservedEffect,
 )
 
@@ -86,65 +85,3 @@ def test_completed_transition_requires_checked_observation():
 def test_protected_input_cannot_claim_value_verification():
     with pytest.raises(ValidationError):
         pending_transition().complete("observation-2", ObservedEffect.INPUT_VALUE_MATCHES)
-
-
-def test_cycle_detects_abab_and_allows_alternative_progress():
-    history = NavigationHistory()
-    assert not history.observe("A", "B", "enter:1")
-    assert not history.observe("B", "A", "enter:1")
-    assert history.observe("A", "B", "enter:1")
-    assert history.observe("B", "A", "enter:1")
-    assert not history.observe("A", "C", "enter:1")
-    assert history.states == ("A", "B", "A", "B", "A", "C")
-
-
-def test_no_op_actions_do_not_hide_navigation_cycle():
-    history = NavigationHistory()
-    assert not history.observe("A", "B", "enter:1")
-    assert not history.observe("B", "B", "enter:1")
-    assert not history.observe("B", "A", "enter:1")
-    assert not history.observe("A", "A", "enter:1")
-    assert history.observe("A", "B", "enter:1")
-
-
-def test_longer_cycle_is_detected():
-    history = NavigationHistory()
-    for before, after in [("A", "B"), ("B", "C"), ("C", "A"), ("A", "B")]:
-        assert not history.observe(before, after, "enter:1")
-    assert history.observe("B", "C", "enter:1")
-
-
-def test_changed_checkpoint_resets_cycle_scope():
-    history = NavigationHistory()
-    assert not history.observe("A", "B", "enter:1")
-    assert not history.observe("B", "A", "enter:1")
-    assert not history.observe("A", "B", "enter:2")
-    assert history.states == ("A", "B")
-
-
-def test_checkpoint_change_resets_even_during_no_op():
-    history = NavigationHistory()
-    history.observe("A", "B", "enter:1")
-    history.observe("B", "A", "enter:1")
-    assert not history.observe("A", "A", "enter:2")
-    assert not history.observe("A", "B", "enter:2")
-
-
-def test_unrecorded_semantic_state_is_preserved_without_erasing_history():
-    history = NavigationHistory()
-    assert not history.observe("A", "B", "enter:1")
-    assert history.observe("A", "B", "enter:1")
-
-
-def test_run_history_is_bounded_and_not_shared():
-    history = NavigationHistory(max_states=8)
-    for index in range(30):
-        assert not history.observe(str(index), str(index + 1), "enter:1")
-    assert history.states == tuple(str(index) for index in range(23, 31))
-    assert NavigationHistory().states == ()
-
-
-@pytest.mark.parametrize("max_states", [3, 65])
-def test_cycle_history_has_finite_useful_bounds(max_states):
-    with pytest.raises(ValueError):
-        NavigationHistory(max_states=max_states)

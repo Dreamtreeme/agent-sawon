@@ -4,63 +4,15 @@ import hashlib
 import json
 from pathlib import Path
 
-from sawon_interfaces import Observation, UIElement
+from sawon_interfaces import Observation
 
 from brain.visual.frame_change import compare_frames
 
 from .summary import ancestors
-from .values import compact_normalize
-
-
-def navigation_target(element: UIElement, observation: Observation) -> dict:
-    """Identify a control semantically, keeping window chrome ancestry distinct."""
-    return {
-        "role": element.role,
-        "name": element.name,
-        "label": element.label_hint,
-        "context": [
-            {"role": parent.role, "name": parent.name, "label": parent.label_hint}
-            for parent in ancestors(element, observation.elements)
-        ],
-    }
-
-
-def semantic_target_key(target: dict) -> str:
-    """Return a stable key when OCR spacing or duplicate label hints fluctuate."""
-    return json.dumps(
-        {
-            "role": compact_normalize(target.get("role")),
-            "name": compact_normalize(target.get("name")),
-            "context": [
-                {
-                    "role": compact_normalize(parent.get("role")),
-                    "name": compact_normalize(parent.get("name")),
-                }
-                for parent in target.get("context", [])
-            ],
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-    )
 
 
 def navigation_state(observation: Observation) -> str:
-    """Identify a history bucket, not an action effect or screen-node identity."""
-    capture_phash = getattr(observation, "capture_phash", None)
-    if capture_phash is not None:
-        # Model-selected fields can change between plans on identical pixels.
-        # Those interpretation edits are not a navigation effect.
-        return hashlib.sha256(
-            json.dumps(
-                {
-                    "image": capture_phash,
-                    "window": observation.active_window.handle
-                    if observation.active_window
-                    else None,
-                },
-                sort_keys=True,
-            ).encode()
-        ).hexdigest()
+    """Fingerprint injected semantic observations that have no captured image."""
     nodes = []
     for element in observation.elements:
         nodes.append(

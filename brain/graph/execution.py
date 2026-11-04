@@ -30,25 +30,14 @@ class PendingAction(TypedDict):
     before_observation: Observation
     choice: Choice
     decision: Decision
-    source_window_handle: int
-    source_navigation_state: str
-    source_screen_path: NotRequired[list[str]]
     structure_observation: NotRequired[dict]
     transition: ActionTransition
     descriptor: NotRequired[dict]
-    navigation_target: NotRequired[dict]
-    click_target: NotRequired[dict]
-    progress_scope: NotRequired[str]
     blur_recheck: NotRequired[bool]
     execution: NotRequired[PlanExecution]
     login_plan_descriptors: NotRequired[list[dict]]
-    point_refined: NotRequired[bool]
-    delivered_point: NotRequired[tuple[float, float]]
     effect_source: NotRequired[FieldName]
     visual_match_candidate: NotRequired[tuple[str, dict[str, Any]]]
-    exploration_action_key: NotRequired[str]
-    exploration_goal_key: NotRequired[str]
-    exploration_action: NotRequired[dict]
 
 
 @dataclass(frozen=True)
@@ -99,8 +88,6 @@ def log_transition(
 class PreparedAction:
     planned: PlannedAction
     wire: Action
-    progress_scope: str
-    point_refined: bool
 
 
 @dataclass(frozen=True)

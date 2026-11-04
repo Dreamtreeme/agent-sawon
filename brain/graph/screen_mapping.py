@@ -407,8 +407,6 @@ for an offscreen field: the same capture cannot reveal content outside the viewp
 execution.last_action_observation describes structural movement after the delivered action:
 changed=false is no structural movement, not necessarily task failure (focus may be intended).
 Interpret it together with current values and choose the remaining work in this response.
-notebook.failed_transitions is historical action/result context with its original screen and goal,
-not a blanket prohibition in this view. Avoid repeating an ineffective action in the same situation.
 Complete only from the user's required saved/requeried evidence.
 Combine current observations with prior verified inputs in the same evidence scope. Do not
 revisit hidden fields only to reconfirm them; new conflicting readings or a new review scope

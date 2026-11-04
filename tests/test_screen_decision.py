@@ -1164,8 +1164,6 @@ def test_post_save_result_transition_starts_detail_review_and_advances_taught_st
         action,
         decision,
         decision.action,
-        progress_scope="task:requery-saved-record:0",
-        point_refined=False,
     )
     assert brain.saved_detail_transition_pending is opens_detail
     if not opens_detail:
@@ -1197,8 +1195,6 @@ def test_post_save_result_transition_starts_detail_review_and_advances_taught_st
         action,
         decision,
         decision.action,
-        progress_scope="task:requery-saved-record:1",
-        point_refined=False,
     )
     brain.observation = SceneObservation(wire=wire(), screen_kind="editor", elements=[])
     brain._record_action_verification(
@@ -1255,22 +1251,6 @@ def test_complete_post_save_model_evidence_finishes_before_another_decision(
     assert event.payload["fields"] == sorted(brain.values)
 
 
-def test_post_save_exploration_failures_are_scoped_by_review_stage(
-    tmp_path, record, task_instruction
-):
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
-    brain.save_issued = True
-
-    assert brain._exploration_goal_key() == "post_save:requery_identity"
-    brain.post_save_query_identity_verified = True
-    assert brain._exploration_goal_key() == "post_save:open_detail"
-    brain.model_saved_detail_review = True
-    brain.post_save_verified = {"hbl_no"}
-    assert brain._exploration_goal_key() == "post_save_detail:" + ",".join(
-        sorted(set(brain.values) - {"hbl_no"})
-    )
-
-
 def test_selection_error_does_not_consume_unrelated_phase_failure_budget(
     tmp_path, record, task_instruction
 ):
@@ -1284,17 +1264,6 @@ def test_selection_error_does_not_consume_unrelated_phase_failure_budget(
     assert brain._fail("selection_error:KeyError") == "finish"
     assert brain.result is not None
     assert brain.result.reason == "repeated_subgoal_failure:task:decision:selection_error:KeyError"
-
-
-def test_semantic_target_failure_uses_exploration_action_scope(tmp_path, record, task_instruction):
-    brain, *_ = setup_brain(tmp_path, record, [], task_instruction=task_instruction)
-    brain.phase = "task"
-    brain._last_exploration_failure_key = "click:additional-tab"
-
-    assert brain._fail("semantic_target_repeated") == "observation"
-
-    assert brain.feedback[-1]["subgoal_key"] == "task:explore:click:additional-tab"
-    assert brain.phase_failures["task"] == 0
 
 
 def test_post_save_completion_rejection_names_missing_evidence_and_scope(
@@ -2553,7 +2522,6 @@ def test_selected_record_value_is_verified_on_return_to_editor(tmp_path, record)
     from test_brain import element
 
     from brain.graph.schemas import Choice, Decision
-    from brain.observe.progress import navigation_state, navigation_target
     from brain.observe.summary import describe
 
     brain, *_ = setup_brain(tmp_path, record, [])
@@ -2582,10 +2550,6 @@ def test_selected_record_value_is_verified_on_return_to_editor(tmp_path, record)
         "before_observation": partner,
         "choice": decision.action,
         "decision": decision,
-        "source_window_handle": partner.active_window.handle,
-        "source_navigation_state": navigation_state(partner),
-        "progress_scope": f"task:task:{brain.business_revision}",
-        "click_target": navigation_target(select, partner),
         "effect_source": "shipper",
     }
 

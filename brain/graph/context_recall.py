@@ -59,7 +59,6 @@ def recall_context(request: ScreenDecisionRequest, *, projected_screen: dict | N
             {
                 "verified_inputs": sorted(request.verified_fields),
                 "evidence_scope": evidence_scope,
-                "failed_transitions": list(request.failed_transitions),
                 "remaining_inputs": remaining_inputs,
                 "pending_verification_inputs": pending_verification_fields,
                 MODEL_INPUTS_NAME: record,

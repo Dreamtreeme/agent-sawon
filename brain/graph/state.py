@@ -8,7 +8,6 @@ from uuid import UUID
 
 from sawon_interfaces import Observation
 
-from .click_refinement import ClickRefinement
 from .execution import ActionPlan, PendingAction
 from .memory_retrieval import RetrievalState
 from .reconciliation import ReconciledObservation
@@ -16,7 +15,7 @@ from .review import EvidenceReview
 from .saved_evidence import SavedEvidence
 from .schemas import Decision
 from .scratchpad import RollingContextManager
-from .transitions import EvidenceLedger, ExplorationLedger, NavigationHistory
+from .transitions import EvidenceLedger
 from .visual_points import VisualPointBindings
 
 if TYPE_CHECKING:
@@ -92,16 +91,11 @@ class ProgressState:
     saved_evidence: SavedEvidence = field(default_factory=SavedEvidence)
     saved_bindings: tuple[str, dict[str, str]] | None = None
     saved_row_binding: tuple[str, str] | None = None
-    click_refinement: ClickRefinement = field(default_factory=ClickRefinement)
     visual_points: VisualPointBindings = field(default_factory=VisualPointBindings)
     failures: dict[str, int] = field(default_factory=dict)
     phase_failures: dict[str, int] = field(default_factory=dict)
     progress_marks: set[str] = field(default_factory=set)
     business_revision: int = 0
-    navigation_history: NavigationHistory = field(default_factory=NavigationHistory)
-    unproductive_navigation: dict[str, list[dict]] = field(default_factory=dict)
-    exploration: ExplorationLedger = field(default_factory=ExplorationLedger)
-    _last_exploration_failure_key: str | None = None
     _last_surface_conflict: dict[str, str] | None = None
     feedback: list[dict] = field(default_factory=list)
     result: Result | None = None
@@ -144,9 +138,7 @@ class WorkerState(TypedDict):
     methods: RetrievalState
 
 
-def create_worker_state(
-    *, rolling_buffer_size: int = 3, navigation_history_size: int = 8
-) -> WorkerState:
+def create_worker_state(*, rolling_buffer_size: int = 3) -> WorkerState:
     """초기 런타임 상태 생성."""
     return {
         "observation": {
@@ -157,7 +149,6 @@ def create_worker_state(
         "methods": RetrievalState(),
         "progress": ProgressState(
             rolling_context=RollingContextManager(rolling_buffer_size),
-            navigation_history=NavigationHistory(navigation_history_size),
         ),
         "decision": {"current": None, "action_plan": None, "task_plan": []},
         "execution": {"pending": None, "authorized": False},

@@ -491,8 +491,7 @@ OCR은 pHash 거리와 관계없이 매 캡처에서 다시 실행한다. 따라
 `PendingAction.before_observation`의 캡처를 비교한다. `PendingAction.structure_observation`에
 두 obs ID와 비교 결과를 저장하고, `execution.last_action_observation`으로 모델에게 먼저
 전달한다. 같은 obs ID의 재해석은 비교·로그를 중복 생성하지 않는다. 이후 `_verify_node`는
-저장된 결과를 사용한다. 기존 `navigation_state`는
-이력 묶음의 키로만 사용하며 그 지문의 불일치를 행동 효과로 사용하지 않는다.
+저장된 결과를 사용한다. `navigation_state`는 캡처 없는 주입 관찰의 의미 비교에만 사용한다.
 
 ORB는 긴 변 최대 960px, 특징점 최대 1,200개, Hamming 최근접 비율 0.75를 사용한다.
 대응점 20개 이상에서 3px 넘게 이동한 비율이 0.15보다 크거나 대응점 커버리지가 0.5보다
@@ -507,15 +506,12 @@ after obs ID와 독립적으로 확인한 사실을 보존한다. 별도 사실�
 `success=None`을 전달하고 해당 행동을 성공한 캐시로 승격하지 않는다.
 입력 검증·저장 결과·완료 검토와 pHash 기반 기억 인출·좌표 재결합 계약은 바꾸지 않는다.
 
-`ExplorationLedger.recent_context`는 원래 화면·목표·행동·결과를 포함한 제한된 최근 이력을
-`historical_observation`으로 전달한다. 관찰 대기 중이라는 이유로 비우거나 pHash 완전일치로
-숨기지 않는다. 이 이력은 현재 화면 전체의 행동 금지 목록이 아니다. 구조 무변화는 모델 호출
-전에 기록하지만 업무 실패나 종료를 그 시점에 확정하지 않는다. 현재 모델 계획이 이전과 다른
-행동 또는 완료·중단 검토라면 Review로 전달한다. 같은 행동을 다시 제안하면 기존 반복 제한을
-적용하며, 현재 계획이 없을 때는 기존 좌표 보완·재관찰 경로를 유지한다. 유효하게 보완된 좌표는
-원래 클릭의 실패 이력만으로 차단하지 않는다.
+관찰은 직전 행동의 구조 변화와 현재 화면을 모델에게 함께 전달한다. 다음 행동은 그 관찰에서
+생성된 모델 계획을 사용한다. 무변화·같은 대상 재선택·과거 화면으로의 복귀를 별도 실패
+분류기로 거절하거나 좌표 보완 모델을 다시 호출하지 않는다. 전달 사실과 구조 변화는
+`ActionTransition`과 최근 행동 이력에 남기며, 변화가 없거나 미확인이라는 결과를 성공으로
+바꾸지 않는다. 기억 실행은 이 관찰 결과를 `verify_delivery`로 계속 전달받는다.
 
-`PendingAction.source_screen_path`는 행동 당시 노드 경로이며 실패 이력의 출처로만 사용한다.
 모델 응답의 steps는 action으로 구분되는 세 형식이다. `NamedAction`은 fill/click/double_click과
 대상·point·선택적 입력 source를, `NamedKeyAction`은 key와 실제 키보드 keys를,
 `NamedScrollAction`은 scroll과 direction(up/down)을 표현한다. 클릭에는 keys/direction이 없고,

@@ -1,14 +1,7 @@
-"""Run-local action effects and bounded navigation-cycle evidence.
-
-Delivery is never proof of authentication, saving, or task completion. This
-contract records observation identities and known fact names, never input values
-or descriptions copied from controls. Navigation callers supply semantic hashes
-and a checkpoint token that changes only with the phase or new business facts.
-"""
+"""Run-local delivered actions and observed effects, separate from business completion."""
 
 import hashlib
 import json
-from collections import deque
 from enum import StrEnum
 from typing import Literal
 
@@ -129,74 +122,6 @@ class EvidenceLedger:
         return tuple(self._claims)
 
 
-class ExplorationAttempt(BaseModel):
-    """A semantic state transition that produced no useful route."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    state_key: str = Field(min_length=1)
-    goal_key: str = Field(min_length=1)
-    action_key: str = Field(min_length=1)
-    action: dict
-    outcome: Literal["no_change", "cycle"]
-
-
-def exploration_failure_key(state_key: str, goal_key: str, action_key: str) -> str:
-    """Use the ledger's screen, goal and action identity for retry accounting too."""
-    return json.dumps([state_key, goal_key, action_key], ensure_ascii=False, separators=(",", ":"))
-
-
-def exploration_action_key(
-    action_type: str,
-    *,
-    keys: str | None = None,
-    source: str | None = None,
-    target_key: str | None = None,
-) -> str:
-    """Identify the attempted transition, excluding incidental focus anchors."""
-
-    if action_type == "key":
-        return "key:" + (keys or "")
-    if action_type in {"set_text", "type_text"}:
-        return f"{action_type}:source:{source or ''}"
-    if action_type == "wait":
-        return "wait"
-    return f"{action_type}:target:{target_key or ''}"
-
-
-class ExplorationLedger:
-    """Bounded run-local memory of failed goal-directed transitions."""
-
-    def __init__(self, limit: int = 64) -> None:
-        self._attempts: deque[ExplorationAttempt] = deque(maxlen=limit)
-
-    def record(self, attempt: ExplorationAttempt) -> None:
-        if attempt not in self._attempts:
-            self._attempts.append(attempt)
-
-    def recent_context(self, limit: int) -> list[dict]:
-        """Expose bounded history with provenance, even during a pending observation."""
-        return [
-            {**item.model_dump(), "scope": "historical_observation"}
-            for item in list(self._attempts)[-limit:]
-        ]
-
-    def failed(self, state_key: str, goal_key: str, action_key: str) -> bool:
-        return any(
-            item.state_key == state_key
-            and item.goal_key == goal_key
-            and item.action_key == action_key
-            for item in self._attempts
-        )
-
-    def prompt_context(self, state_key: str, goal_key: str) -> list[dict]:
-        return [
-            {"action_key": item.action_key, "action": item.action, "outcome": item.outcome}
-            for item in self._attempts
-            if item.state_key == state_key and item.goal_key == goal_key
-        ]
-
-
 class ExpectedEffect(StrEnum):
     INPUT_VALUE_MATCHES = "input_value_matches"
     PROTECTED_INPUT_REREAD = "protected_input_reread"
@@ -264,44 +189,4 @@ class ActionTransition(BaseModel):
                 "observed_effect": observed_effect,
                 "new_facts": new_facts,
             }
-        )
-
-
-class NavigationHistory:
-    """Detect repeated changed-state paths within one business checkpoint.
-
-    A single return A-B-A is legitimate. A repeated suffix such as A-B-A-B or
-    A-B-C-A-B-C is a cycle. No-op actions do not erase history, and neither does
-    an unrecorded intermediate semantic state. New business evidence resets the
-    scope through ``checkpoint_token``; the caller must not use screenshot IDs
-    or mere navigation changes as that token.
-
-    Detection is not latched: an alternative state is permitted, while another
-    repeated suffix is reported so the caller can apply its existing limit.
-    """
-
-    def __init__(self, max_states: int = 12) -> None:
-        if not 4 <= max_states <= 64:
-            raise ValueError("Navigation history must retain between 4 and 64 states")
-        self._states: deque[str] = deque(maxlen=max_states)
-        self._checkpoint_token: str | None = None
-
-    @property
-    def states(self) -> tuple[str, ...]:
-        """Expose a bounded immutable snapshot for run-local diagnostics."""
-        return tuple(self._states)
-
-    def observe(self, before_state: str, after_state: str, checkpoint_token: str) -> bool:
-        if checkpoint_token != self._checkpoint_token:
-            self._states.clear()
-            self._checkpoint_token = checkpoint_token
-        if before_state == after_state:
-            return False
-        if not self._states or self._states[-1] != before_state:
-            self._states.append(before_state)
-        self._states.append(after_state)
-        states = tuple(self._states)
-        return any(
-            states[-2 * width : -width] == states[-width:]
-            for width in range(2, len(states) // 2 + 1)
         )

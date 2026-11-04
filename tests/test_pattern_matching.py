@@ -60,9 +60,9 @@ def test_visual_match_cache_key_ignores_run_metadata_but_keeps_action_context():
             "inputs": {"hbl_no": "SEED-A", "shipper": "A"},
             "verified_inputs": ["hbl_no"],
             "recent_turns": [{"target_summary": "click:e-run-a"}],
-            "failed_transitions": [{"action_key": "click:target:row"}],
             "workflow_state": {"save_issued": True},
         },
+        "execution": {"last_delivered_actions": [{"intent": "navigate", "action": "click"}]},
     }
     second = {
         "screen": {
@@ -74,13 +74,13 @@ def test_visual_match_cache_key_ignores_run_metadata_but_keeps_action_context():
             "inputs": {"hbl_no": "SEED-B", "shipper": "B"},
             "verified_inputs": ["hbl_no"],
             "recent_turns": [{"target_summary": "click:e-run-b"}],
-            "failed_transitions": [{"action_key": "click:target:row"}],
             "workflow_state": {"save_issued": True},
         },
+        "execution": {"last_delivered_actions": [{"intent": "navigate", "action": "click"}]},
     }
 
     assert screen_pattern_key(first) == screen_pattern_key(second)
-    second["notebook"]["failed_transitions"] = [{"action_key": "double_click:target:row"}]
+    second["execution"]["last_delivered_actions"][0]["action"] = "double_click"
     assert screen_pattern_key(first) != screen_pattern_key(second)
 
 
