@@ -2126,6 +2126,11 @@ class Brain:
         if choice.type in {"set_text", "type_text"}:
             target = next(item for item in self.observation.elements if item.ref == choice.ref)
             pending["descriptor"] = describe(target, self.observation.elements)
+            if choice.source in self.credentials:
+                self.credential_submissions[choice.source] = {
+                    "window_handle": self.observation.active_window.handle,
+                    "descriptor": pending["descriptor"],
+                }
             if choice.source in self.values:
                 if self.settings.visual_model_only_review:
                     remember_input_delivery(
@@ -2230,8 +2235,23 @@ class Brain:
             return "review"
         if self.steps + len(plan.actions) - 1 > self.settings.max_steps:
             raise GuardStop("max_steps")
+        policy = self._decision_policy()
         for action in plan.actions:
-            self._guard_action(action.decision, action.policy)
+            self._guard_action(action.decision, policy)
+            choice = action.decision.action
+            if choice is not None and choice.type in {"set_text", "type_text"}:
+                fact = (
+                    "submitted_credentials"
+                    if choice.source in self.credentials
+                    else "delivered_field_names"
+                )
+                if choice.source in self.credentials or choice.source in self.values:
+                    policy = DecisionPolicy(
+                        replace(
+                            policy.facts,
+                            **{fact: tuple(sorted({*getattr(policy.facts, fact), choice.source}))},
+                        )
+                    )
         if plan.audit:
             self.log.append(
                 "select", payload={"obs_id": str(self.observation.obs_id), **plan.audit}
@@ -2278,17 +2298,19 @@ class Brain:
                 raise result.error
             return self._fail("action_error:" + type(result.error).__name__)
         self.pending = {**execution.delivered[-1], "execution": execution}
-        if plan.verification == "login":
+        if self.pending["decision"].intent == "login":
             scene = execution.before
             by_ref = {item.ref: item for item in scene.elements}
             self.pending["login_plan_descriptors"] = [
-                describe(by_ref[item.decision.action.ref], scene.elements) for item in plan.actions
+                describe(by_ref[ref], scene.elements)
+                for ref in dict.fromkeys(
+                    item["choice"].ref
+                    for item in execution.delivered
+                    if item["choice"].source in self.credentials
+                    or item["decision"].intent == "login"
+                )
+                if ref in by_ref
             ]
-            for delivered in execution.delivered[:-1]:
-                self.credential_submissions[delivered["choice"].source] = {
-                    "window_handle": scene.active_window.handle,
-                    "descriptor": delivered["descriptor"],
-                }
         return "observation"
 
     def _blur_visual_input(self, element: UIElement, decision: Decision) -> WorkerNode | None:
@@ -2436,11 +2458,6 @@ class Brain:
                 "descriptor": descriptor,
             },
         )
-        if result.credential_submitted:
-            self.credential_submissions[source] = {
-                "window_handle": observation.active_window.handle,
-                "descriptor": descriptor,
-            }
         return None, observation, observed_effect
 
     def _begin_saved_query_proof(self, pending: PendingAction, decision: Decision) -> None:

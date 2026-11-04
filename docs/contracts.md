@@ -1,6 +1,6 @@
 # 상태와 저장소 계약 지도
 
-기준일: 2026-11-04
+기준일: 2026-11-05
 
 이 문서는 런타임 상태와 계층 간 인터페이스의 기준 위치를 한 곳에 모읍니다. 설명과 구현이
 다르면 해당 계약을 소유한 코드와 이 문서를 같은 변경에서 맞춥니다.
@@ -15,6 +15,7 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | `WorkerState`와 하위 상태 | `brain/graph/state.py` | `brain/graph/workflow.py`, `engine.py`, graph 노드 | 한 실행 안의 관찰·판단·검토·실행·진행 상태 |
 | 그래프 라우팅 | `brain/graph/workflow.py` | LangGraph | `lifecycle.route`를 다음 책임 노드 또는 `finish`로 연결 |
 | `ExecutionRequest`/`ExecutionResult` | `brain/graph/execution.py` | `engine.py`, relay adapter | 준비된 행동 전달과 relay가 확인한 결과. 업무 성공을 판정하지 않음 |
+| `ActionPlan`과 화면 입력 계획 | `brain/graph/execution.py`, `screen_batch.py` | `screen_decision`, `selection`, `engine` | 로그인과 일반 행동을 같은 순서 실행기로 전달. `ScreenFillPlan`은 입력과 현재 화면의 후속 행동을 함께 표현 |
 | 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `screen_decision`, `memory_retrieval` | 의미 이름·bbox·입력 key·행동 point의 모델 경계 |
 | 현재 화면 모델 입력 | `brain/visual/frame.py`의 `frame_input` | `context_recall`, 화면 판단, 관찰 녹화기 | 현재 OCR·후보 영역·포함 텍스트를 한 번 투영. 내부 마커 번호를 모델 계약에 노출하지 않음 |
 | 교육 단계 관찰 결과 | `brain/task_instruction.py`의 `ObservedStepResult` | `screen_mapping`, `screen_decision`, `cache/methods`, engine | 현재 모델 응답의 교육 완료를 실행 상태에 반영. 편찬물의 과거 결과는 현재 응답으로 복원하지 않음 |
@@ -75,6 +76,15 @@ flowchart LR
 노드는 같은 실행의 `WorkerState`를 받아 자기 책임 영역과 `lifecycle.route`를 갱신하고 같은
 상태를 반환합니다. `ExecutionResult`의 전달 성공은 업무 완료가 아닙니다. 후속 관찰과 검토가
 입력 효과, 저장 결과와 사용자 완료 조건을 확인합니다.
+
+로그인도 일반 행동과 같은 `ActionPlan`으로 실행한다. 모델·화면 캐시·기억에서 받은 준비 클릭,
+credential 입력, 키보드와 제출 행동의 순서를 보존하며 별도 로그인 계획으로 변환하지 않는다.
+계획 전체의 사전 검사에서는 앞선 credential 입력이 성공할 때 성립할 사실을 로컬로 계산한다.
+이 예상 사실을 실제 상태에 쓰지 않는다. 실제 `credential_submissions`는 공통 전달 수용 경계에서
+relay가 확인한 credential 쓰기만 한 번 기록하며, 중간 실패 이후의 행동은 전달하지 않는다.
+마지막 전달의 intent가 login이면 입력 대상과 제출 대상의 descriptor로 다음 관찰을 검토한다.
+입력 전달은 인증 성공을 뜻하지 않는다. `ScreenFillPlan`을 직접 요청하는 경로도 같은 실행기를
+사용하며, 입력만 있는 일반 필드 계획의 배치 전달·검토는 유지한다.
 
 ### 입력 메모와 계획 결합
 

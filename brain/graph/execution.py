@@ -17,7 +17,6 @@ from sawon_interfaces import Action, ActionBatch, ActionResult, Observation
 from brain.relay import Relay
 from sawon_runtime.storage import RunLog
 
-from .policy import DecisionPolicy
 from .schemas import Choice, Decision, FieldName
 from .transitions import ActionTransition, ObservedEffect, TransitionFact
 
@@ -43,14 +42,13 @@ class PendingAction(TypedDict):
 @dataclass(frozen=True)
 class PlannedAction:
     decision: Decision
-    policy: DecisionPolicy | None = None
     effect_source: FieldName | None = None
 
 
 @dataclass(frozen=True)
 class ActionPlan:
     actions: tuple[PlannedAction, ...]
-    verification: Literal["single", "login", "fields"] = "single"
+    verification: Literal["single", "fields"] = "single"
     audit: dict = field(default_factory=dict)
 
     @classmethod

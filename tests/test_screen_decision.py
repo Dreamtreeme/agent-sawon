@@ -19,7 +19,7 @@ from brain.cache import ScreenPatternCache, screen_pattern_key
 from brain.graph.engine import Brain
 from brain.graph.policy import DecisionPolicy, ExecutionFacts
 from brain.graph.schemas import DecisionResponse
-from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
+from brain.graph.screen_batch import ScreenFillPlan
 from brain.graph.screen_decision import (
     ActionCapability,
     ScreenDecisionServices,
@@ -1666,10 +1666,15 @@ def test_login_and_record_arrays_compile_to_existing_batches(tmp_path, record):
             {"target": 3, "action": "click", "intent": "login", "point": [1, 1]},
         ],
     )
-    plan = compile_match(login, scene, LoginScreenPlan)
-    assert len(plan.fields) == 2 and plan.login_ref == prefix + "3"
-    with pytest.raises(ValueError, match="invalid_login_batch"):
-        compile_match(login.model_copy(update={"steps": login.steps[:-1]}), scene, LoginScreenPlan)
+    plan = compile_screen_action_plan(login, scene)
+    assert [item.decision.action.ref for item in plan.actions] == [
+        prefix + str(i) for i in (1, 2, 3)
+    ]
+    inputs_only = compile_screen_action_plan(
+        login.model_copy(update={"steps": login.steps[:-1]}), scene
+    )
+    assert len(inputs_only.actions) == 2
+    assert all(item.decision.intent == "credential" for item in inputs_only.actions)
     fields = ScreenMatch(
         screen_kind="editor",
         controls=[],

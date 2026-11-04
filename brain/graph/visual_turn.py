@@ -2,17 +2,15 @@
 
 from pydantic import BaseModel
 
-from .screen_batch import LoginScreenPlan, ScreenFillPlan
+from .screen_batch import ScreenFillPlan
 
 
 def adapt_proposal(proposal: dict, schema: type[BaseModel]) -> BaseModel:
     """Use the same post-verification schema as ordinary model selection."""
     if "fields" in proposal and not proposal["fields"] and proposal.get("next_decision"):
         proposal = proposal["next_decision"]
-    if schema in {LoginScreenPlan, ScreenFillPlan} and "decision" in proposal:
+    if schema is ScreenFillPlan and "decision" in proposal:
         proposal = {"fields": [], "next_decision": proposal}
-        if schema is LoginScreenPlan:
-            proposal["login_ref"] = None
     elif "decision" in schema.model_fields and "next_decision" in proposal:
         if proposal.get("fields"):
             raise ValueError("visual_proposal_fields_still_pending")

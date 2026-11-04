@@ -1,5 +1,6 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
+ScreenFillPlan now carries credential inputs and an optional action; LoginScreenPlan is removed.
 ScreenMatch/ScreenPlan add a current-model route resumption group (2026-11-02).
 ScreenMatch/ScreenPlan preserve table state, named parents and focus in observations (2026-11-02).
 ScreenMatch/ScreenPlan describe accumulated screen-tree observations (2026-11-04).
@@ -26,7 +27,7 @@ import pytest
 
 from brain.graph.save_review import SaveReviewResponse
 from brain.graph.schemas import Decision, DecisionResponse, WireActDecision
-from brain.graph.screen_batch import LoginScreenPlan, ScreenFillPlan
+from brain.graph.screen_batch import ScreenFillPlan
 from brain.graph.screen_decision import (
     ActionCapability,
     MatchAction,
@@ -137,11 +138,7 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
         ),
         (
             ScreenFillPlan,
-            "004a77860a409bb8b21629b8e3b7b64cd57416e18d27221f85efb4dc680b5ef6",
-        ),
-        (
-            LoginScreenPlan,
-            "f56f74598e1597dccdd3db9b8c42d84787878deab8afc63dfb993c1d4a95a01b",
+            "70458ea40977368a8738b30c4097f5eb3190ab2d9b6e3a5ebcbe7c22c0adedde",
         ),
         (
             ActionTransition,

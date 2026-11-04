@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass, replace
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import Any
 
 from pydantic import Field, model_validator
 from sawon_interfaces import Observation
@@ -14,31 +14,28 @@ from brain.observe.evidence import matching_delivered_input
 from brain.visual.scene import SceneObservation
 
 from .execution import ActionPlan, GuardStop, PlanExecution, PlannedAction
-from .policy import DecisionPolicy
 from .schemas import Choice, Decision, DecisionResponse, FieldName, StrictModel
 
 SCREEN_FILL_GUIDANCE = """
-SCREEN INPUT MODE overrides the single-action instruction for field entry.
-Any non-login business screen may have field assignments when it visibly contains
-directly editable inputs. On screens without such inputs, return an empty fields list
-and the appropriate next_decision instead.
-Plan ALL currently visible, directly editable remaining record fields in one fields
-list, ordered for execution. Each entry maps a CURRENT ref to a record source;
+SCREEN INPUT MODE supports ordered current-screen inputs and an optional next action.
+Plan ALL currently visible, directly editable inputs in fields, ordered for execution.
+Each entry maps a CURRENT ref to a supplied record or opaque credential source;
 never supply literal values or invented coordinates. Each target ref occurs once;
 one source may supply several distinct fields when the task requires it.
 The runtime fills every planned field without OCR/model calls between inputs,
-then moves focus once and rereads the whole screen to verify the assignments.
+then executes next_decision when it is a grounded CURRENT-screen action.
+For login, put the remaining credential inputs in fields and the login button or
+Enter command in next_decision. Credential delivery is not authentication.
+When inputs are not followed by another action, next_decision is null.
+On screens without input assignments, return fields=[] and the appropriate next_decision.
 Only include fields whose input does not open a dialog, change tabs or navigate.
-Sources are exactly the keys in the supplied task input record. Never use cells inside
+Sources are supplied input keys or available credential sources. Never use cells inside
 a table/list/row as substitutes for similarly named record-level fields.
 If remaining fields are absent from the current form, use observed tabs/navigation.
 For fields requiring lookup/dialog/selection, first fill other directly editable
 fields; handle that boundary in the next plan after verification.
-When fields is nonempty, next_decision must be null. When no remaining visible
-direct input is available, fields is empty and next_decision contains the ordinary
-allowed decision (navigation/tab/lookup/save/stop etc.). Do not fall back to a
-single text fill: put all visible direct inputs in fields instead.
-Save is a separate decision after the runtime has verified all required fields.
+Do not guess actions revealed only after navigation. Complete or stop may be selected
+only without input assignments; they are results to review, not actions after writing.
 """
 
 
@@ -49,114 +46,24 @@ class ScreenField(StrictModel):
 
 class ScreenFillPlan(StrictModel):
     purpose: str = Field(default="", max_length=160)
-    fields: list[ScreenField] = Field(max_length=100)
-    next_decision: DecisionResponse | None
+    fields: list[ScreenField] = Field(
+        max_length=100,
+        description="Ordered visible input assignments, including opaque credentials.",
+    )
+    next_decision: DecisionResponse | None = Field(
+        description="Optional observed action after inputs; without inputs, an action or result."
+    )
 
     @model_validator(mode="after")
     def one_path(self) -> ScreenFillPlan:
-        if bool(self.fields) == (self.next_decision is not None):
-            raise ValueError("choose screen fields or next decision")
+        if not self.fields and self.next_decision is None:
+            raise ValueError("screen inputs or next decision required")
         if len({item.ref for item in self.fields}) != len(self.fields):
             raise ValueError("duplicate screen assignment")
-        if self.next_decision is not None:
-            decision = self.next_decision.to_decision()
-            if decision.intent == "fill" and decision.action is not None:
-                raise ValueError("put direct field inputs in the screen plan")
+        if self.fields and self.next_decision is not None:
+            if self.next_decision.to_decision().action is None:
+                raise ValueError("screen inputs require an executable next decision")
         return self
-
-
-LOGIN_GUIDANCE = """
-LOGIN SCREEN MODE overrides the single-action credential instructions.
-On a login screen, plan ALL remaining available credential inputs and the login
-button together: fields contains source/ref mappings and login_ref is the current
-login command. The runtime supplies opaque credential values, executes the inputs
-then clicks login without intermediate OCR/model calls, and observes the result once.
-Do not include credential values in your answer. Input delivery is not authentication.
-If no login form is visible, fields=[], login_ref=null, and next_decision contains
-the ordinary allowed query/navigation/stop decision. Do not return a single
-credential or login action in next_decision; those belong to the login screen plan.
-When fields and login_ref are supplied, next_decision=null.
-"""
-
-
-class CredentialField(StrictModel):
-    source: Literal["credential.username", "credential.password"]
-    ref: str = Field(min_length=1)
-
-
-class LoginScreenPlan(StrictModel):
-    fields: list[CredentialField] = Field(max_length=2)
-    login_ref: str | None
-    next_decision: DecisionResponse | None
-
-    @model_validator(mode="after")
-    def one_path(self) -> LoginScreenPlan:
-        if self.fields:
-            if not self.login_ref or self.next_decision is not None:
-                raise ValueError("credential plan requires login command")
-            for key in ("source", "ref"):
-                if len({getattr(f, key) for f in self.fields}) != len(self.fields):
-                    raise ValueError("duplicate credential assignment")
-            if self.login_ref in {f.ref for f in self.fields}:
-                raise ValueError("login command cannot be an input")
-        elif self.login_ref is not None or self.next_decision is None:
-            raise ValueError("choose login plan or ordinary next decision")
-        elif self.next_decision.to_decision().intent in {"credential", "login"}:
-            raise ValueError("credentials and login belong in one plan")
-        return self
-
-
-def prepare_login_plan(
-    scene: Observation, plan: LoginScreenPlan, policy: DecisionPolicy
-) -> ActionPlan:
-    if not isinstance(scene, SceneObservation):
-        raise GuardStop("login_plan_requires_visual_scene")
-    sources = {f.source for f in plan.fields}
-    if sources != set(policy.facts.remaining_credentials):
-        raise GuardStop("login_plan_missing_credentials")
-    actions = [
-        PlannedAction(
-            Decision(
-                screen_kind="login",
-                operation="act",
-                intent="credential",
-                subgoal="Log in",
-                reason="Execute observed credential plan",
-                action=Choice(type="set_text", ref=f.ref, source=f.source),
-            )
-        )
-        for f in plan.fields
-    ]
-    # Preflight the final command against the facts successful input delivery
-    # will establish. Runtime still stops immediately if any input is rejected.
-    after_delivery = DecisionPolicy(
-        replace(
-            policy.facts,
-            submitted_credentials=tuple(sorted(set(policy.facts.submitted_credentials) | sources)),
-        )
-    )
-    actions.append(
-        PlannedAction(
-            Decision(
-                screen_kind="login",
-                operation="act",
-                intent="login",
-                subgoal="Log in",
-                reason="Submit the completed credential plan",
-                action=Choice(type="click", ref=plan.login_ref),
-            ),
-            after_delivery,
-        )
-    )
-    return ActionPlan(
-        tuple(actions),
-        "login",
-        {
-            "check": "login_screen_plan",
-            "assignments": [f.model_dump() for f in plan.fields],
-            "login_ref": plan.login_ref,
-        },
-    )
 
 
 def prepare_screen_fill(scene: Observation, plan: ScreenFillPlan) -> ActionPlan:
@@ -167,7 +74,7 @@ def prepare_screen_fill(scene: Observation, plan: ScreenFillPlan) -> ActionPlan:
             Decision(
                 screen_kind=scene.screen_kind,
                 operation="act",
-                intent="fill",
+                intent="credential" if f.source.startswith("credential.") else "fill",
                 subgoal=plan.purpose or "Fill visible screen",
                 reason="Execute the current screen field plan",
                 action=Choice(type="set_text", ref=f.ref, source=f.source),
@@ -175,9 +82,11 @@ def prepare_screen_fill(scene: Observation, plan: ScreenFillPlan) -> ActionPlan:
         )
         for f in plan.fields
     ]
+    if plan.next_decision is not None:
+        actions.append(PlannedAction(plan.next_decision.to_decision()))
     return ActionPlan(
         tuple(actions),
-        "fields",
+        "fields" if all(item.decision.intent == "fill" for item in actions) else "single",
         {
             "check": "screen_fill_plan",
             "assignments": [f.model_dump() for f in plan.fields],

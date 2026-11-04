@@ -15,11 +15,8 @@ from .policy import DecisionPolicy
 from .save_review import SaveReviewResponse
 from .schemas import Decision
 from .screen_batch import (
-    LOGIN_GUIDANCE,
     SCREEN_FILL_GUIDANCE,
-    LoginScreenPlan,
     ScreenFillPlan,
-    prepare_login_plan,
     prepare_screen_fill,
 )
 
@@ -61,9 +58,6 @@ def selection_schema(request: SelectionRequest) -> type[BaseModel]:
         and not request.query_submitted
         and request.policy.facts.remaining_credentials
     )
-    if login_batch:
-        return LoginScreenPlan
-
     screen_fill = bool(
         request.visual_screen_fill
         and isinstance(scene, SceneObservation)
@@ -73,7 +67,7 @@ def selection_schema(request: SelectionRequest) -> type[BaseModel]:
         and (request.phase == "task" or request.duplicate_clear)
         and request.policy.facts.remaining_fields
     )
-    return ScreenFillPlan if screen_fill else request.policy.response_schema()
+    return ScreenFillPlan if login_batch or screen_fill else request.policy.response_schema()
 
 
 def select_candidate(
@@ -81,12 +75,8 @@ def select_candidate(
     schema: type[BaseModel],
     services: SelectionServices,
 ) -> SelectionResult:
-    if schema in {SaveReviewResponse, LoginScreenPlan, ScreenFillPlan}:
-        guidance = (
-            LOGIN_GUIDANCE
-            if schema is LoginScreenPlan
-            else (SCREEN_FILL_GUIDANCE if schema is ScreenFillPlan else "")
-        )
+    if schema in {SaveReviewResponse, ScreenFillPlan}:
+        guidance = SCREEN_FILL_GUIDANCE if schema is ScreenFillPlan else ""
         selected = services.selection_call(request.prompt + guidance, schema)
     else:
         selected = services.choose_decision(request.prompt, schema)
@@ -94,12 +84,6 @@ def select_candidate(
         return SelectionResult(action_plan=selected)
     if schema is SaveReviewResponse:
         return SelectionResult(save_review=selected)
-    if schema is LoginScreenPlan:
-        if selected.fields:
-            return SelectionResult(
-                action_plan=prepare_login_plan(request.observation, selected, request.policy)
-            )
-        return SelectionResult(decision=selected.next_decision.to_decision())
     if schema is ScreenFillPlan:
         if selected.fields:
             return SelectionResult(action_plan=prepare_screen_fill(request.observation, selected))

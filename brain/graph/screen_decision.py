@@ -736,7 +736,6 @@ def bind_selection_effect(
 _REPLANNABLE_MATCH_ERRORS = {
     "screen_match_action_outside_procedure",
     "screen_match_field_outside_procedure_scope",
-    "screen_match_login_batch_incomplete",
     "screen_match_completion_decision_required",
     "screen_match_model_point_required",
     "screen_match_step_not_executable",
@@ -752,27 +751,10 @@ _REPLANNABLE_MATCH_ERRORS = {
 # repair their structure instead of failing later in compile_match and paying
 # for a fresh full-screen decision on the same pixels.
 _EXECUTOR_CONTRACT_ERRORS = {
-    "screen_match_login_batch_incomplete",
     "screen_match_completion_decision_required",
     "screen_match_model_point_required",
     "screen_match_step_not_executable",
 }
-
-
-def _is_login_batch(steps: list[MatchAction]) -> bool:
-    """Return whether steps form the single login boundary accepted by the executor."""
-
-    return (
-        len(steps) >= 2
-        and steps[-1].intent == "login"
-        and steps[-1].action == "click"
-        and all(
-            action.intent == "credential"
-            and action.action == "fill"
-            and (action.source or "").startswith("credential.")
-            for action in steps[:-1]
-        )
-    )
 
 
 def _validate_taught_step(response: ScreenMatch, request: ScreenDecisionRequest) -> None:
@@ -892,19 +874,6 @@ def _validate_completion_annotations(
     return response
 
 
-def _validate_login_boundary(response: ScreenMatch, request: ScreenDecisionRequest) -> None:
-    if any(action.intent == "credential" for action in response.steps) and not _is_login_batch(
-        response.steps
-    ):
-        raise ValueError("screen_match_login_batch_incomplete")
-    if not _is_login_batch(response.steps):
-        return
-    expected = set(request.policy.facts.remaining_credentials)
-    planned = {action.source for action in response.steps[:-1] if action.source is not None}
-    if expected and planned != expected:
-        raise ValueError("screen_match_login_batch_incomplete")
-
-
 def _validate_step_contract(
     response: ScreenMatch, request: ScreenDecisionRequest, services: ScreenDecisionServices
 ) -> None:
@@ -997,7 +966,6 @@ def validate_match_plan(
             _validate_taught_step(response, request)
             response = _validate_completion_annotations(response, request, services)
             _validate_saved_row_navigation_target(response, request)
-            _validate_login_boundary(response, request)
             _validate_action_boundary(response, capability, request)
         else:
             checks = (
@@ -1010,7 +978,6 @@ def validate_match_plan(
                     "saved_row_navigation_target",
                     lambda: _validate_saved_row_navigation_target(response, request),
                 ),
-                ("login_boundary", lambda: _validate_login_boundary(response, request)),
                 (
                     "action_boundary",
                     lambda: _validate_action_boundary(response, capability, request),
@@ -2017,20 +1984,10 @@ def compile_match(response: ScreenMatch, observation, schema, *, log: RunLog | N
         }
 
     fills = [s for s in response.steps if s.action == "fill"]
-    credentials = [s for s in fills if (s.source or "").startswith("credential.")]
     if response.operation != "act" and response.steps:
         raise ValueError("screen_match_proof_with_actions")
     if schema is DecisionResponse and len(response.steps) <= 1:
         data = decision(response.steps[0] if response.steps else None)
-    elif credentials:
-        if len(credentials) != len(fills) or not _is_login_batch(response.steps):
-            raise ValueError("screen_match_invalid_login_batch")
-        command = response.steps[-1]
-        data = {
-            "fields": [{"source": s.source, "ref": ref(s.target)} for s in fills],
-            "login_ref": ref(command.target),
-            "next_decision": None,
-        }
     elif (
         fills
         and all(s.intent == "fill" for s in fills)
@@ -2093,8 +2050,8 @@ def compile_screen_action_plan(response: ScreenMatch, observation):
 
     if response.operation != "act" or not response.steps:
         return None
-    if _is_login_batch(response.steps) or all(step.action == "fill" for step in response.steps):
-        # Retain the existing credential and direct-field verification/transport paths.
+    if all(step.action == "fill" and step.intent == "fill" for step in response.steps):
+        # Pure business fills retain their batch transport and field verification.
         return None
     if len(response.steps) == 1 and response.steps[0].intent != "select_option":
         return None

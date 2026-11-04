@@ -96,6 +96,92 @@ class CountingScanner(SyntheticScanner):
         )
 
 
+class SyntheticLoginRelay(ChangingPixelsRelay):
+    """Current synthetic controls, with no desktop or provider access."""
+
+    def __init__(self, record, *, accept=True, reject_password=False):
+        super().__init__(record)
+        self.mode = "login"
+        self.user = self.password = ""
+        self.accept = accept
+        self.reject_password = reject_password
+
+    def observe(self):
+        from test_brain import element
+
+        wire = super().observe()
+        if self.mode == "login":
+            self.items.extend(
+                [
+                    element("e14", "Edit", name="Account", value=self.user, parent="e0").model_copy(
+                        update={"bbox": (140, 10, 8, 20)}
+                    ),
+                    element("e15", "Button", name="Sign in", parent="e0").model_copy(
+                        update={"bbox": (150, 10, 8, 20)}
+                    ),
+                ]
+            )
+        digest = hashlib.sha1(
+            json.dumps([wire.screen_hash, self.user, bool(self.password)]).encode()
+        )
+        self.current = wire.model_copy(update={"screen_hash": digest.hexdigest()})
+        return self.current
+
+    def act(self, action):
+        item = action.root
+        x, _ = item.target.image_point
+        if item.type == "set_text":
+            if x == 144:
+                self.user = item.text
+            elif x == 84:
+                if self.reject_password:
+                    return ActionResult(
+                        action_id=item.action_id,
+                        ok=False,
+                        error="focus_not_confirmed",
+                        duration_ms=1,
+                    )
+                self.password = item.text
+        submit = (item.type == "click" and x == 154) or (
+            item.type == "key" and item.keys == "enter"
+        )
+        if submit and self.accept:
+            assert self.user == "fixture-user" and self.password == "fixture-secret-901"
+            self.mode = "query"
+        return super().act(action)
+
+
+def synthetic_login_plan(shape):
+    """Reproduce the observed 3/5-action and keyboard login shapes using existing fakes."""
+    user = {"source": "credential.username", "target": 14, "action": "fill", "intent": "credential"}
+    password = {
+        "source": "credential.password",
+        "target": 8,
+        "action": "fill",
+        "intent": "credential",
+    }
+    submit = {"target": 15, "action": "click", "intent": "login", "point": [154, 20]}
+    if shape == "focus_five":
+        # The real five-action reply contains two focus clicks, normalized to navigate.
+        steps = [
+            {"target": 14, "action": "click", "intent": "navigate", "point": [144, 20]},
+            user,
+            {"target": 8, "action": "click", "intent": "navigate", "point": [84, 20]},
+            password,
+            submit,
+        ]
+    elif shape == "keyboard":
+        steps = [
+            user,
+            {"target": 14, "action": "key", "keys": "tab", "intent": "navigate"},
+            password,
+            {"target": 8, "action": "key", "keys": "enter", "intent": "login"},
+        ]
+    else:
+        steps = [user, password, submit]
+    return {"screen_kind": "login", "procedure_step": "task-action", "controls": [], "steps": steps}
+
+
 def screen_plan(record):
     return {
         "screen_kind": "editor",
@@ -108,7 +194,7 @@ def screen_plan(record):
     }
 
 
-def make_brain(tmp_path, record, relay, responses):
+def make_brain(tmp_path, record, relay, responses, *, screen_matching=True):
     log = RunLog(tmp_path, case_id=record.case_id, agent_id="screen-test")
     model = ScriptedModel(log, responses)
     brain = Brain(
@@ -116,12 +202,12 @@ def make_brain(tmp_path, record, relay, responses):
         goal="Save for approval",
         relay=relay,
         model=model,
-        settings=current_settings(tmp_path),
+        settings=current_settings(tmp_path, screen_matching=screen_matching),
         case_dir=tmp_path,
         run_log=log,
         visual_ocr=object(),
     )
-    perception = CountingScanner(relay, brain, len(responses))
+    perception = CountingScanner(relay, brain, len(responses) if screen_matching else 0)
     brain.screen_scanner = perception
     return brain, perception, model
 
@@ -279,68 +365,15 @@ def test_shared_executor_checks_whole_plan_step_budget_before_delivery(
         assert brain.result.reason == "max_steps"
 
 
+@pytest.mark.parametrize("shape", ["three", "focus_five", "keyboard"])
 @pytest.mark.parametrize("accept", [True, False])
-def test_login_plan_sends_two_credentials_and_click_before_any_reread(tmp_path, record, accept):
-    from test_brain import element
-
-    class LoginVisual(ChangingPixelsRelay):
-        user = ""
-        password = ""
-
-        def observe(self):
-            wire = super().observe()
-            if self.mode == "login":
-                self.items.extend(
-                    [
-                        element(
-                            "e14", "Edit", name="Account", value=self.user, parent="e0"
-                        ).model_copy(update={"bbox": (140, 10, 8, 20)}),
-                        element("e15", "Button", name="Sign in", parent="e0").model_copy(
-                            update={"bbox": (150, 10, 8, 20)}
-                        ),
-                    ]
-                )
-            digest = hashlib.sha1(
-                json.dumps([wire.screen_hash, self.user, bool(self.password)]).encode()
-            )
-            self.current = wire.model_copy(update={"screen_hash": digest.hexdigest()})
-            return self.current
-
-        def act(self, action):
-            x, _ = action.root.target.image_point
-            if action.root.type == "set_text":
-                if x == 144:
-                    self.user = action.root.text
-                elif x == 84:
-                    self.password = action.root.text
-            if x == 154 and action.root.type == "click" and accept:
-                assert self.user == "fixture-user" and self.password == "fixture-secret-901"
-                self.mode = "query"
-            return super().act(action)
-
-    relay = LoginVisual(record)
-    relay.mode = "login"
-    plan = {
-        "screen_kind": "login",
-        "procedure_step": "task-action",
-        "controls": [],
-        "steps": [
-            {
-                "source": "credential.username",
-                "target": 14,
-                "action": "fill",
-                "intent": "credential",
-            },
-            {
-                "source": "credential.password",
-                "target": 8,
-                "action": "fill",
-                "intent": "credential",
-            },
-            {"target": 15, "action": "click", "intent": "login", "point": [154, 20]},
-        ],
-    }
+def test_synthetic_login_uses_ordered_common_plan_before_one_reread(
+    tmp_path, record, shape, accept
+):
+    relay = SyntheticLoginRelay(record, accept=accept)
+    plan = synthetic_login_plan(shape)
     brain, perception, model = make_brain(tmp_path, record, relay, [plan])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "enforce"})
     brain.credentials = {
         "credential.username": "fixture-user",
         "credential.password": "fixture-secret-901",
@@ -353,14 +386,97 @@ def test_login_plan_sends_two_credentials_and_click_before_any_reread(tmp_path, 
     assert brain._act_node() == "observation"
     assert brain.pending is not None
     assert perception.action_counts == [0]
-    assert [a.root.type for a in relay.actions] == ["set_text", "set_text", "click"]
+    expected_types = {
+        "three": ["set_text", "set_text", "click"],
+        "focus_five": ["click", "set_text", "click", "set_text", "click"],
+        "keyboard": ["set_text", "key", "set_text", "key"],
+    }[shape]
+    assert [a.root.type for a in relay.actions] == expected_types
+    assert set(brain.credential_submissions) == set(brain.credentials)
+    assert len(brain.pending["login_plan_descriptors"]) == (2 if shape == "keyboard" else 3)
     assert len(model.prompts) == 1
     outcome = brain._verify_node()
-    assert perception.action_counts == [0, 3]
+    assert perception.action_counts == [0, len(expected_types)]
     assert outcome == ("review" if accept else "observation")
     assert not brain.save_issued and not brain._observed_inputs()
     assert "fixture-secret-901" not in (tmp_path / "run_log.jsonl").read_text()
     assert all("fixture-secret-901" not in prompt for prompt in model.prompts)
+
+
+def test_synthetic_login_failed_password_keeps_only_acknowledged_credential(tmp_path, record):
+    relay = SyntheticLoginRelay(record, reject_password=True)
+    brain, perception, _ = make_brain(tmp_path, record, relay, [synthetic_login_plan("three")])
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "enforce"})
+    brain.credentials = {
+        "credential.username": "fixture-user",
+        "credential.password": "fixture-secret-901",
+    }
+    brain._observe()
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    assert not brain.credential_submissions
+
+    assert brain._act_node() == "observation"
+
+    assert [action.root.type for action in relay.actions] == ["set_text"]
+    assert set(brain.credential_submissions) == {"credential.username"}
+    assert relay.mode == "login" and relay.password == ""
+    assert brain.pending is None and perception.action_counts == [0]
+    brain._observe()
+    assert brain._decision_policy().facts.remaining_credentials == ("credential.password",)
+
+
+def test_synthetic_typed_provider_login_uses_the_same_common_executor(tmp_path, record):
+    """Exercise the actual nonmatching selection route, not a ScreenMatch adapter."""
+    from brain.graph.screen_batch import ScreenFillPlan
+    from brain.graph.screen_decision import compile_screen_action_plan
+
+    relay = SyntheticLoginRelay(record)
+    brain, perception, model = make_brain(tmp_path, record, relay, [], screen_matching=False)
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "enforce"})
+    brain.credentials = {
+        "credential.username": "fixture-user",
+        "credential.password": "fixture-secret-901",
+    }
+    brain._observe()
+    prefix = "e" + str(brain.observation.obs_id.int) + "0"
+    typed = {
+        "fields": [
+            {"source": "credential.username", "ref": prefix + "14"},
+            {"source": "credential.password", "ref": prefix + "8"},
+        ],
+        "next_decision": {
+            "decision": {
+                "screen_kind": "login",
+                "operation": "act",
+                "intent": "login",
+                "subgoal": "Submit current login",
+                "reason": "The visible button submits the form",
+                "action": {"type": "click", "ref": prefix + "15"},
+            }
+        },
+    }
+    ScreenFillPlan.model_validate(typed)
+    model.decisions = iter([typed])
+    expected = compile_screen_action_plan(
+        ScreenMatch.model_validate(synthetic_login_plan("three")), brain.observation
+    )
+    assert brain._select_node() == "review"
+    actual = brain.action_plan
+    assert [item.decision.action for item in actual.actions] == [
+        item.decision.action for item in expected.actions
+    ]
+    assert [item.decision.intent for item in actual.actions] == [
+        item.decision.intent for item in expected.actions
+    ]
+    assert actual.verification == expected.verification == "single"
+    assert brain._review_node() == "execution"
+    assert brain._act_node() == "observation"
+    assert [action.root.type for action in relay.actions] == ["set_text", "set_text", "click"]
+    assert set(brain.credential_submissions) == set(brain.credentials)
+    assert len(model.prompts) == 1 and perception.action_counts == [0]
+    assert brain._verify_node() == "review"
+    assert perception.action_counts == [0, 3]
 
 
 def test_synthetic_model_observation_preserves_next_plan_without_batch_coverage_gate(

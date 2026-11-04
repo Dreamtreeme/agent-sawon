@@ -68,7 +68,6 @@ class InputValueResult:
     progress: str | None = None
     verify_field: str | None = None
     query_verified: bool = False
-    credential_submitted: bool = False
     new_facts: tuple[TransitionFact, ...] = ()
 
 
@@ -78,7 +77,6 @@ def evaluate_input_value(request: InputValueRequest) -> InputValueResult:
         return InputValueResult(
             check="protected_input_reread",
             observed_effect=ObservedEffect.PROTECTED_INPUT_REREAD,
-            credential_submitted=True,
             new_facts=("credential.password_submitted",),
         )
     if source == "credential.username":
@@ -88,7 +86,6 @@ def evaluate_input_value(request: InputValueRequest) -> InputValueResult:
             check="input_value_matches",
             observed_effect=ObservedEffect.INPUT_VALUE_MATCHES,
             progress=source,
-            credential_submitted=True,
             new_facts=("credential.username_submitted",),
         )
     if not field_matches(source, request.element.value, request.values):
