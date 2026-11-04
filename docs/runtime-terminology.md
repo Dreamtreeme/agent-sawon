@@ -32,12 +32,11 @@ flowchart TD
     MEM --> STRUCTURE[필드 구조·입력 키·행동 인출]
     STRUCTURE --> STATE[현재 실행 계약·문맥 원천 확보]
     SCAN --> STATE
-    STATE --> NEED{조회 입력 확인·상세 진입 대기}
-    NEED -->|없음| PAT[Pattern Matching: 현재 상황에 메서드 결합]
-    NEED -->|있음| CTX[Context Recall: 모델용 현재 문맥 조립]
+    STATE --> PAT[Pattern Matching: 현재 상황에 메서드 결합]
     PAT -->|행동 결합 성공| BIND
-    PAT -->|판정 후보·입력 후 미결합| CTX
+    PAT -->|경로 소진·완료 화면 일치| FINISH[기억 경로 완료]
     PAT -->|미결합·예외| CTX
+    CTX[Context Recall: 모델용 현재 문맥 조립]
     CTX --> DEC[현재 검토는 모델·그 외는 캐시 또는 모델]
     DEC -->|needs_refinement| SCAN
     DEC --> BIND[장면 결합·현재 관찰이 있는 항목만 증거 갱신]
@@ -48,12 +47,11 @@ flowchart TD
 
 `ScreenScanner.scan` → `_resolve` → `Brain._detect_visual` → `decide_screen` 순서다.
 `decide_screen`은 `build_decision_prompt`에서 실행 계약과 문맥 원천을 확보한 다음
-`select_screen_response`에서 조회 입력 확인·상세 진입 대기를 확인하고, 그 외에는
-`match_screen_pattern`으로 기존 계획을 찾는다. 다음 메서드 행동이 결합되면 입력 후 확인
-대기만으로 모델을 호출하지 않는다. 현재 판정 후보, 입력 후 미결합이나 복구에서는
-`DecisionPromptContext.state`가 `recall_context`를 한 번 호출한다. 현재 값·완료 검토는 기존
-`ScreenMatch` 모델 호출 하나로 관찰과 다음 행동을 함께 얻는다. 그 외에는 캐시·모델이 문맥을
-사용한다. 화면 투영·메서드 문맥은 결합 전 시점으로 유지한다.
+`select_screen_response`는 먼저 `match_screen_pattern`으로 기존 경로를 찾는다.
+정상 기억 경로에는 탐색의 미확인 입력·상세 진입·모델 완료 검토 조건을 적용하지 않는다.
+미결합이나 실행 실패 때 `DecisionPromptContext.state`가 `recall_context`를 한 번 호출하고
+기존 `ScreenMatch`로 현재 관찰과 다음 행동을 얻는다. 실행 실패 메서드는 모델 복구를 수용하기
+전까지 화면 캐시로 우회하지 않는다. 화면 투영·메서드 문맥은 결합 전 시점으로 유지한다.
 두 경로 모두 `ground_meanings` → `bind_scene` →
 `_remember_model_task_evidence`로 이어진다.
 
@@ -78,11 +76,13 @@ flowchart TD
   `screen_tree`의 이력으로 보존하고, 새 관찰 ID·순번이나 verified를 만들어내는 데 쓰지 않는다.
 - 다음 메서드의 `act`가 결합되면 입력 후에도 저장된 행동을 모델 없이 이어간다. 입력 문자열은
   현재 업무 값에서 가져온다. 미관찰 입력의 확인은 유예하고 relay 전달 진도만 반영한다.
-  조회 입력 확인, 저장 후 상세 진입, 최종 완료 후보, 입력 후 메서드 미결합은 기존 화면 모델이
-  현재 관찰과 다음 행동을 함께 판단한다. 같은 필드의 재등장만으로 검토를 강제하지 않는다.
+  조회 입력 확인 대기와 상세 진입 대기도 정상 메서드 행동을 막지 않는다. 메서드 미결합은
+  기존 화면 모델이 현재 관찰과 다음 행동을 함께 판단한다.
   미결합·실행 검증 실패도 모델 복구 사유다. 입력 후 화면 캐시로 현재 검토를 대체하지 않는다.
-- 최종 완료 기억은 검토 대상과 조건을 연결하는 후보이다. 실제 성공은 현재 실행의 저장·재조회
-  상태와 모델이 확인한 누적 증거로 판정하며 과거 성공·관찰값을 복원하지 않는다.
+- `completion_receipt`는 이번 실행의 활성 경로가 소진되고 현재 완료 화면이 일치하는지
+  기존 경로 선택 함수로 확인한다. 이를 `method_route_complete`로 기록하고 정상 종료한다.
+  필드별 값을 모델이 확인했다는 뜻은 아니며 verified·과거 관찰값·교육 완료를 복원하지 않는다.
+  탐색·복구 모델의 완료는 기존 관찰 증거 검증을 유지한다.
 - 경로 진행은 원본 전달·검토된 같은 행동의 대체·현재 모델 복구 응답으로 확인한 연속 선두
   그룹의 재개 이력으로 결정한다. 과거 기억의 완료 결과나 전역 교육 완료 집합은 실행 자격이 아니다.
   `resumed_group_ids`는 `method_route_resumed`에 기록하고 `used`에 가짜 전달을 추가하지 않는다.

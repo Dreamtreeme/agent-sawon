@@ -640,8 +640,8 @@ def run_route(path, record, route):
         responses = [initial, next_action_only]
     cache_path = path / "cache.json"
     compiled = None
-    if route in {"model-to-pattern-cache", "model-to-compiled-memory"}:
-        if route == "model-to-compiled-memory":
+    if route in {"model-to-pattern-cache", "compiled-memory-structure-recovery"}:
+        if route == "compiled-memory-structure-recovery":
             training = deepcopy(raw)
             training["steps"] = [
                 {
@@ -659,7 +659,7 @@ def run_route(path, record, route):
         assert cold.visual_match_candidate is not None
         cold.visual_match_cache.stage(*cold.visual_match_candidate)
         assert cold.visual_match_cache.finish(success=True) == 1
-        if route == "model-to-compiled-memory":
+        if route == "compiled-memory-structure-recovery":
             screen = cold.screen_scanner.planning_context()[0].screen
             candidate = MemoryCandidate(
                 "c000",
@@ -690,8 +690,8 @@ def run_route(path, record, route):
                 },
                 method_id="synthetic-warm",
             )
-        # Retrieval supplies structure; this pending saved-detail review must read
-        # the current frame even when a successful historical response is cached.
+        # This synthetic compiled source has no screen_path, so it cannot restore
+        # a named mapping. That missing structure, not pending review, needs recovery.
         responses = [raw]
     brain, model = prepare_worker(path / "current", record, responses)
     if route == "model-to-pattern-cache":
@@ -717,7 +717,7 @@ def run_route(path, record, route):
     assert observed_inputs(brain).get("hbl_no", {}).get("value") == record.fields.hbl_no.value, (
         route
     )
-    if route in {"model-to-pattern-cache", "model-to-compiled-memory"}:
+    if route == "model-to-pattern-cache":
         assert len(model.prompts) == 1
         assert not any(
             e.payload.get("check") in {"method_bound", "visual_match_cache"}
@@ -726,6 +726,14 @@ def run_route(path, record, route):
         assert any(
             e.payload.get("reason") == "current_values_not_observed" for e in brain.log.read_all()
         )
+    elif route == "compiled-memory-structure-recovery":
+        assert len(model.prompts) == 1
+        assert any(e.payload.get("check") == "method_bound" for e in brain.log.read_all())
+        assert [
+            e.payload["reason"]
+            for e in brain.log.read_all()
+            if e.payload.get("check") == "memory_retrieval_exception"
+        ] == ["missing_screen_memory"]
     assert observed["visible_values"] == {
         "hbl_no": [(record.fields.hbl_no.value, (100, 15, 150, 30))]
     }, route
@@ -779,7 +787,7 @@ def run_route(path, record, route):
         "empty-action-recovery": "missing_match_actions_completed",
         "identical-capture": "similar_form_reused",
         "model-to-pattern-cache": "input_value_matches",
-        "model-to-compiled-memory": "input_value_matches",
+        "compiled-memory-structure-recovery": "input_value_matches",
     }[route]
     assert checks.count(required_check) == 1, (route, checks)
     return semantic_memory(brain)
@@ -793,7 +801,7 @@ def run_route(path, record, route):
         "empty-action-recovery",
         "identical-capture",
         "model-to-pattern-cache",
-        "model-to-compiled-memory",
+        "compiled-memory-structure-recovery",
     ],
 )
 def test_synthetic_same_facts_reach_same_memory(tmp_path, record, route):

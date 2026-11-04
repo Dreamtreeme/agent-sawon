@@ -290,9 +290,14 @@ class MemoryRetriever(Protocol):
 
     enabled: bool
 
+    @property
+    def recovery_required(self) -> bool: ...
+
     def prompt_context(self) -> dict: ...
 
     def match_pattern(self, screen: dict) -> ScreenMatch | None: ...
+
+    def completion_receipt(self, screen: dict) -> dict | None: ...
 
     def remember(
         self, screen: dict, response: ScreenMatch, *, allow_recovery: bool = True
@@ -881,7 +886,11 @@ def _validate_completion_annotations(
 ) -> ScreenMatch:
     if any(item.field not in request.values for item in response.evidence):
         raise ValueError("screen_match_unknown_task_field")
-    if response.operation == "complete" and not response.completion_evidence:
+    if (
+        response.operation == "complete"
+        and not response.completion_evidence
+        and services.memory_retrieval.completion_receipt(request.screen) is None
+    ):
         raise ValueError("screen_match_task_completion_evidence_required")
     if response.operation != "complete" and response.completion_evidence:
         services.log.append(
@@ -1327,6 +1336,7 @@ def match_screen_pattern(
         services.cache.lookup(prepared.cache_key)
         if method_proposal is None
         and services.cache.enabled
+        and not services.memory_retrieval.recovery_required
         and request.phase != "save_result"
         and not request.post_action_review
         else None
@@ -1344,7 +1354,13 @@ def select_screen_response(
     """Resolve method, cache, grounded-plan and model sources in priority order."""
 
     screen, page = request.screen, request.page
-    current_review = bool(
+    method_proposal, cache_hit = match_screen_pattern(
+        request, services, prepared, allow_method=allow_method
+    )
+    # A bound route already supplies the next action or its terminal outcome.
+    # Exploration's unread-value checks apply only when that route cannot bind;
+    # they must not turn normal memory execution into repeated model decisions.
+    current_review = method_proposal is None and bool(
         request.workflow_flags.get("saved_result_open_pending")
         or any(
             item.get("screen") == "query"
@@ -1352,26 +1368,13 @@ def select_screen_response(
             and item["source"] not in request.verified_fields
             for item in request.required_verification
         )
+        or (cache_hit is not None and cache_hit[1].get("operation", "act") != "act")
+        or request.post_action_review
+        or request.phase == "save_result"
     )
     if current_review:
-        method_proposal, cache_hit = None, None
-    else:
-        method_proposal, cache_hit = match_screen_pattern(
-            request, services, prepared, allow_method=allow_method
-        )
-        current_review = bool(
-            (method_proposal is not None and method_proposal.operation != "act")
-            or (cache_hit is not None and cache_hit[1].get("operation", "act") != "act")
-            or (
-                method_proposal is None
-                and (request.post_action_review or request.phase == "save_result")
-            )
-        )
-        if current_review:
-            method_proposal, cache_hit = None, None
-    if current_review:
-        # Stored structure chooses actions, never supplies readings for this run.
-        # One current mapping also plans the next action after reading the result.
+        cache_hit = None
+        # With no bound route, obtain current readings and a recovery action.
         services.log.append(
             "verify",
             payload={

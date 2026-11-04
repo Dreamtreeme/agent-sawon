@@ -2135,13 +2135,14 @@ def test_synthetic_mappingless_cache_requires_current_model_observation(tmp_path
         "pending-memory",
         "saved-detail",
         "method-complete",
+        "unmatched-query",
         "cache-complete",
         "cache-duplicate-clear",
         "cache-duplicate-found",
         "cache-stop",
     ],
 )
-def test_synthetic_structure_retrieval_reviews_only_decisions_needing_current_values(
+def test_synthetic_bound_method_precedes_review_gates_without_inventing_current_values(
     tmp_path, record, review
 ):
     # Synthetic stored method/cache and fake model; selection and prompt assembly are real.
@@ -2171,11 +2172,20 @@ def test_synthetic_structure_retrieval_reviews_only_decisions_needing_current_va
             },
         }
     )
+    if review == "method-complete":
+        mapping = ScreenMapping.model_validate(
+            {
+                **mapping.model_dump(exclude_unset=True),
+                "operation": "complete",
+                "steps": [],
+                "completion_evidence": [{"condition_index": 0, "target": "Reference"}],
+            }
+        )
     method = ScreenMatch.model_validate(mapping.local_payload(request.screen, request.values))
     method = method.model_copy(update={"mapping": mapping})
     if review == "batch":
         request = replace(request, post_action_review=True)
-    elif review == "delivered-input":
+    elif review in {"delivered-input", "unmatched-query"}:
         request = replace(
             request,
             required_verification=(
@@ -2222,12 +2232,17 @@ def test_synthetic_structure_retrieval_reviews_only_decisions_needing_current_va
                 "saved_result_open_pending": True,
             },
         )
-    elif review == "method-complete":
-        method = method.model_copy(update={"operation": "complete", "steps": []})
-    request = replace(request, grounded_interpretation=method.interpretation())
-    services.memory_retrieval.match_pattern = lambda _screen: (
-        None if review.startswith("cache-") else method
+    request = replace(
+        request,
+        grounded_interpretation=None if review == "unmatched-query" else method.interpretation(),
     )
+    bound_screens = []
+
+    def bind_method(screen):
+        bound_screens.append(screen)
+        return None if review.startswith("cache-") or review == "unmatched-query" else method
+
+    services.memory_retrieval.match_pattern = bind_method
     services = replace(
         services, cache=ScreenPatternCache(tmp_path / "review-cache.json", enabled=True)
     )
@@ -2240,23 +2255,27 @@ def test_synthetic_structure_retrieval_reviews_only_decisions_needing_current_va
         stale = stale.model_copy(
             update={"operation": review.removeprefix("cache-").replace("-", "_"), "steps": []}
         )
-    services.cache.stage(
-        screen_pattern_key(prepared.state),
-        {**stale.model_dump(mode="json"), "mapping": stale.mapping.model_dump(mode="json")},
-    )
-    assert services.cache.finish(success=True) == 1
+    if review != "unmatched-query":
+        services.cache.stage(
+            screen_pattern_key(prepared.state),
+            {**stale.model_dump(mode="json"), "mapping": stale.mapping.model_dump(mode="json")},
+        )
+        assert services.cache.finish(success=True) == 1
 
     result = decide_screen(request, services)
 
-    assert [(step.action, step.point) for step in result.response.steps] == [("click", [280, 30])]
+    expected_steps = [] if review == "method-complete" else [("click", [280, 30])]
+    assert [(step.action, step.point) for step in result.response.steps] == expected_steps
+    assert bound_screens == [request.screen]
     assert not any(e.payload.get("check") == "visual_match_cache" for e in brain.log.read_all())
     exceptions = [
         e.payload["reason"]
         for e in brain.log.read_all()
         if e.payload.get("check") == "memory_retrieval_exception"
     ]
-    if review in {"batch", "pending-memory"}:
+    if not review.startswith("cache-") and review != "unmatched-query":
         assert model.prompts == []
+        assert result.response.operation == ("complete" if review == "method-complete" else "act")
         assert "value" not in result.response.mapping.fields["Reference"].model_fields_set
         assert result.response.evidence == []
         assert result.response.observed_step_results == []

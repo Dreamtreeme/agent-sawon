@@ -375,6 +375,8 @@ def test_login_plan_sends_two_credentials_and_click_before_any_reread(tmp_path, 
 def test_model_only_batch_distinguishes_observed_evidence_from_memory_deferral(
     tmp_path, record, reading, method_origin, effect
 ):
+    from test_methods import learned
+
     from brain.graph.execution import ActionPlan, PlanExecution
     from brain.graph.schemas import Choice, Decision
     from brain.graph.screen_decision import ScreenMatch
@@ -456,7 +458,14 @@ def test_model_only_batch_distinguishes_observed_evidence_from_memory_deferral(
     brain.screen_scanner.scan = observe_with_proposal
     assert brain._observe() is current
     if method_origin is not None:
-        brain.memory_retrieval.state.pending = {"origin": method_origin}
+        method = learned()
+        brain.memory_retrieval.state.pending = {
+            "origin": method_origin,
+            # This fixture's adaptation is the current fake model reply, not a replay suffix.
+            "recovery_response": method_origin == "adaptation",
+            "method": method,
+            "group_id": method.action_groups[0].id,
+        }
     claims = brain.evidence_ledger.history
     assert len(claims) == (1 if reading == "matching" else 0)
 
@@ -488,7 +497,11 @@ def test_model_only_batch_distinguishes_observed_evidence_from_memory_deferral(
     ]
     assert bool(failures) is (effect is False)
     assert not brain.post_save_verified
-    assert brain.visual_proposal is proposal
+    if method_origin == "reuse" and effect is False:
+        assert brain.visual_proposal is None
+        assert brain.memory_retrieval.recovery_required
+    else:
+        assert brain.visual_proposal is proposal
     turns = brain.rolling_context.recent_turns
     assert len(turns) == (1 if effect is True else 0)
     if effect is True:

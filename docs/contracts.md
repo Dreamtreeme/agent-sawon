@@ -135,8 +135,8 @@ trace가 없는 편찬물은 저장된 그룹 순서를 유지한다. 교육 단
 메모는 현재 상황으로 별도 전달하며 그 값을 인출한 매핑에 다시 넣지 않는다.
 다른 그룹의 유사 화면 필드를 섞어 노드를 추정하지 않는다. 구조 매핑도 `remember_screen`을
 거쳐 발견한 필드와 컨트롤을 보존하지만 `last_observation`·verified·교육 완료를 발행하지 않는다.
-다음 메서드 행동이 결합되면 입력 후 확인만을 위한 호출은 미루고 행동을 이어간다. 조회 입력 확인,
-상세 진입·최종 판정 또는 미결합에서는 기존 모델 판단으로 관찰과 다음 행동을 얻는다.
+다음 메서드 행동이 결합되면 조회 입력의 미확인·상세 진입 대기도 모델 호출 조건으로 쓰지 않는다.
+정상 경로는 현재 업무 값으로 이어가고, 미결합·실행 실패에서는 기존 모델로 관찰과 다음 행동을 얻는다.
 모델 복구의 임시 대상 ID가 바뀌어도 원본 행동 그룹의 bbox를 기준으로 같은 행동을 연결한다.
 같은 창 크기에서 남은 원본 행동의 순서·종류·입력 키·키 조합을 비교한다. 클릭·입력은 원본
 point 또는 target bbox를 비교하지만, 휠 스크롤은 방향만 연결하고 필드 bbox에 위치를 귀속하지
@@ -165,6 +165,17 @@ relay가 확인한 fill만의 검토 유예(`success=None`)에서 범위를 반�
 새 모델 응답을 수용하면 다시 결합할 수 있다. 거절 전에 만들었던 임시 계획이 없어도 복구
 행동을 고정된 다음 그룹과 비교하여, 실제 전달·효과 검토 후 `replaced_edge`로 연결한다.
 
+`Brain._fail`은 `suspend_failed_execution`에 실패를 전달한다. 실패한 전달의 진도와 미리
+결합된 재사용 계획을 무효화하고 해당 메서드를 차단한다. `recovery_required`는 활성 메서드의
+차단 여부에서 파생하며 별도 상태로 저장하지 않는다. 이때 화면 캐시를 우회해 현재 모델로
+복구한다. 실패 이력은 유지하고 모델 응답 수용 후 경로를 재개한다. 단순 `success=False`나
+무변화 관찰만으로는 중지하지 않으며 실제 `_fail`이 발생했을 때 적용한다.
+관찰이 모델 복구 계획을 먼저 준비한 뒤 이전 행동 검토가 실패하면, 실패한 진도로 되돌린 후
+같은 응답을 다시 결합하여 `action_progress`를 계산한다. 추가 모델 호출은 하지 않는다.
+현재 pending의 `recovery_response`는 실제 수용한 모델 응답의 출처이며 편찬물에 저장하지 않는다.
+화면 캐시와 재생한 남은 행동은 이 출처를 갖지 않으므로 실패 시 폐기한다. 보존한 모델 복구는
+출처를 유지하며, 그 행동이 모두 전달된 때에만 앞선 실패로 설정된 경로 차단을 해제한다.
+
 편찬에서 연속된 후보를 제거하면 첫 제거 후보의 행동 전 관찰이 다음 유지 행동의 진입
 관찰이 된다. 유지 행동의 좌표·대상 기하는 원본 프레임에서 해석하고, 화면 경로·해시·필드 구조·
 관찰 완료 기록·저장 메시지는 진입 관찰에서 가져온다. 서로 다른 프레임의 마커 ID를 합치지
@@ -185,14 +196,21 @@ relay가 확인한 fill만의 검토 유예(`success=None`)에서 범위를 반�
 `screen_plan_proposed.mapping`은 편찬의 의미 매핑 원본이다. `MethodCompletion`은 완료 화면의
 경로·유사도·크기와 현재 값으로 확인할 대상 및 조건 번호를 저장한다. `condition_indexes`가
 빈 대상은 입력값 검토 대상이며 완료 조건을 새로 만들지 않는다. 편찬 경로가 소진되면 이
-기하·입력 키·조건을 최종 검토 후보로 결합하고 현재 모델 검토와 기존 업무 완료 검증을 거친다.
+기하·입력 키·조건을 현재 마지막 화면에 결합한다. `completion_receipt`는 활성 경로의 소진과
+현재 화면의 일치를 `_matching_route`로 확인한다. 모델의 method ID나 과거 성공 플래그만으로
+이 결과를 만들지 않는다. `Brain`은 이를 모델 응답 스키마로 다시 포장하지 않고 정상 종료하며,
+`method_route_complete`, reviewer=`memory_route`,
+proof_kind=`executed_route_and_matching_terminal_screen`으로 기록한다.
+종료 사유는 `task_completed_with_remembered_route`이며 모델의 필드별 검증과 구분한다.
+verified·post_save_verified·과거 교육 완료 결과를 채우지 않는다.
 새 산출물에는 `field_values`가 없으며 구형 산출물의 해당 키는 로더에서 제거한다. 관찰 순번과
 전달 이력도 편찬하지 않는다. 구형 산출물에 없는 경로·완료 조건을 자동 생성하지 않는다.
 저장 후 누적 검토로 실제 성공한 실행은 마지막 성공 `stop.last_obs_id`와 직전
 `post_save_model_evidence_complete` 기록을 마지막 계획에 연결한다. 편찬 입력의 임시
 `completion.verified_fields`가 모든 업무 입력을 포함하면 조건 번호 없는 마지막 관찰도
 보존한다. 이 확인 집합은 `MethodCompletion`에 저장하지 않는다. 인출은 마지막 화면의
-검토 대상만 복원하며 전체 성공은 현재 실행의 저장·재조회 상태와 모델이 확인한 누적 증거로 판정한다.
+검토 대상만 복원하며 기억 경로는 이번 실행의 진행과 현재 종료 화면으로 완료를 판정한다.
+탐색·모델 복구의 완료는 현재 모델 관찰과 기존 누적 증거 검증을 유지한다.
 이 확인 기록이 없는 일반 완료 편찬은 기존 완료 조건 주석을 계속 요구한다.
 
 `ProgressState.screen_nodes`는 화면 트리의 단일 상태 저장소이며 경로의 JSON 문자열로
@@ -360,7 +378,7 @@ Review로 전달한다. 이는 최종 성공을 강제하는 처리가 아니며
 | 현재 업무 입력 문자열 | `Brain.values` → `ScreenDecisionRequest.values` | 입력 출처 연결, `ActionWiringRequest.values` | fill에 전달할 문자열. 관찰값으로 사용하지 않음 |
 | 현재 실행의 누적 관찰·전달 | `remember_screen`, `remember_input_delivery` → `ProgressState.screen_nodes` | `context_recall`, notebook | 이력 보존과 현재 모델 판단의 문맥 |
 | 현재 모델이 읽은 값·교육 완료 | `ScreenMapping.fields.value`, `observed_step_results` | `_remember_model_task_evidence`, `remember_screen` | 새 관찰·verified·현재 교육 완료 갱신 |
-| 완료 검토 대상과 조건 | `method_completion_from_match` → `MethodCompletion` | `bind_completion_with_context`, `screen_decision` | 현재 검토 후보 구성. 과거 성공의 재발행은 하지 않음 |
+| 완료 화면과 검토 대상 | `method_completion_from_match` → `MethodCompletion` | `bind_completion_with_context`, `completion_receipt`, engine | 이번 실행의 경로 소진과 현재 완료 화면 일치 확인. 과거 값 검증의 재발행은 하지 않음 |
 
 `MemoryRetrieval._restore_structure`는 `ScreenMapping.fields`에 `value`를 넣지 않습니다.
 `ScreenField.value`의 Python 기본값은 빈 문자열이지만 `model_fields_set`에는 값이 없고,
@@ -388,10 +406,10 @@ OCR 일치로 인출된 증거를 만들던 `MethodLibrary.bind_visible_value_ev
 클릭 point는 유지합니다. 이 ID는 현재 장면 결합용이며 메서드의 영구 업무 key가 아닙니다.
 `ScreenScanner._apply_field_values`는 구조 매핑에 값이 없으면 현재 요소 값도 미확인으로 둡니다.
 
-`select_screen_response`는 조회 입력 확인·저장 후 상세 진입·최종 판정 후보에서 기존
-`ScreenMatch` 호출로 현재 관찰과 다음 행동을 함께 얻습니다. 그 외에 다음 메서드 행동이
-결합되면 입력 후에도 구조만 결합하여 모델 없이 이어갑니다. 미확인 전달은 문맥에 남기며
-같은 필드의 재등장만으로 호출하지 않습니다. 입력 후 메서드 미결합은 현재 모델로 검토합니다.
+`select_screen_response`는 메서드 결합을 먼저 수행합니다. 정상 경로의 조회 입력·상세 진입·
+완료는 탐색용 미확인 입력 조건 때문에 모델로 넘기지 않습니다. 미확인 전달은 문맥에 남기며
+현재 관찰값으로 바꾸지 않습니다. 경로·필수 구조·저장 결과가 결합되지 않거나 실행이 실패하면
+기존 `ScreenMatch`로 현재 관찰과 다음 행동을 함께 얻습니다.
 화면 캐시가 매핑을 재사용할 때도 과거 value·교육 완료·저장 결과·완료
 주석과 수정 대상 목록을 제거합니다. 캐시는 `operation="act"`인 행동 계획만 재사용하며,
 중복 조회 결과·완료·중단 판정은 현재 모델이 맡습니다. 입력 후 검토에서는 캐시를 건너뜁니다.

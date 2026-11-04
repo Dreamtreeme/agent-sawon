@@ -1101,7 +1101,7 @@ class MethodLibrary:
         screen: dict,
         values: dict[str, str],
     ) -> dict | None:
-        """Bind final-review targets and conditions; current values require a fresh review."""
+        """Bind the learned terminal frame without claiming current field readings."""
 
         if method.completion is None:
             return None

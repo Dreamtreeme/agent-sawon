@@ -936,6 +936,24 @@ class Brain:
 
     def _fail(self, reason: str, *, validation_errors: list[dict] | None = None) -> WorkerNode:
         decision = self.decision
+        retrieval = self.memory_retrieval
+        model_recovery = bool(
+            retrieval.state.unverified is not None
+            and retrieval.state.pending is not None
+            and retrieval.state.pending.get("recovery_response", False)
+            and self.observation is not None
+            and self._current_plan_ready(self.observation)
+        )
+        if retrieval.suspend_failed_execution(reason=reason):
+            self.visual_proposal = None
+            self.visual_match_candidate = None
+        elif model_recovery:
+            # Observation prepared this repair before the failed edge was rolled
+            # back. Rebind its progress to that edge without another model call.
+            request, _ = self.screen_scanner.planning_context()
+            retrieval.remember(request.screen, self.visual_proposal, allow_recovery=False)
+            if retrieval.state.pending is not None:
+                retrieval.state.pending["recovery_response"] = True
         record_rejection(
             self.log,
             "engine.retry",
@@ -1423,7 +1441,7 @@ class Brain:
             self.review = EvidenceReview(
                 obs_id=str(self.observation.obs_id),
                 status="not_due",
-                reason="task_completion_requires_current_model_evidence",
+                reason="task_completion_pending",
             )
         elif self._workflow_facts().final_query_workflow_ready:
             identity_field = self.identity_input_key
@@ -1758,6 +1776,16 @@ class Brain:
                 },
             )
             return self._finish("success", "task_completed_with_verified_evidence")
+        if (
+            self.phase == "task"
+            and self.observation is not None
+            and self._current_plan_ready(self.observation)
+            and self.visual_proposal.operation == "complete"
+        ):
+            # A remembered terminal frame has route proof, not a fresh model's
+            # field annotations. Keep it outside the model response schema.
+            if outcome := self._complete_remembered_route():
+                return outcome
         self.steps += 1
         duplicate_checkpoint = self._duplicate_checkpoint_pending()
         final_query_pending = (
@@ -3330,10 +3358,43 @@ class Brain:
         )
         return self._finish("success", "saved_and_verified_awaiting_approval")
 
+    def _complete_remembered_route(self) -> WorkerNode | None:
+        """Accept an executed learned route at its current matching terminal screen."""
+        assert self.observation is not None
+        if not (
+            self.settings.screen_matching
+            and isinstance(self.observation, SceneObservation)
+            and self.memory_retrieval.state.active_method_id is not None
+        ):
+            return None
+        try:
+            request, _ = self.screen_scanner.planning_context()
+        except ValueError as error:
+            if str(error) != "visual_interpretation_unavailable":
+                raise
+            return None
+        receipt = self.memory_retrieval.completion_receipt(request.screen)
+        if receipt is None:
+            return None
+        self.log.append(
+            "verify",
+            payload={
+                "ok": True,
+                "check": "method_route_complete",
+                "reviewer": "memory_route",
+                "proof_kind": "executed_route_and_matching_terminal_screen",
+                "obs_id": str(self.observation.obs_id),
+                **receipt,
+            },
+        )
+        return self._finish("success", "task_completed_with_remembered_route")
+
     def _check_complete(self, decision: Decision) -> WorkerNode:
         assert self.observation is not None
         if self.phase == "task":
             assert self.task_instruction is not None
+            if outcome := self._complete_remembered_route():
+                return outcome
             if self.model_saved_detail_review:
                 missing = set(self.values) - self.post_save_verified
                 if missing:

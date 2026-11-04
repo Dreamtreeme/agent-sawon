@@ -88,4 +88,4 @@ def test_model_only_task_keeps_post_save_review_with_the_screen_model(tmp_path, 
     assert brain._apply_save_review(review) is None
     assert brain.phase == "task"
     assert brain.saved_evidence.session_id is None
-    assert brain._current_review().reason == "task_completion_requires_current_model_evidence"
+    assert brain._current_review().reason == "task_completion_pending"

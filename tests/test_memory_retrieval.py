@@ -579,7 +579,7 @@ def test_synthetic_missing_layout_uses_model_coordinates_at_executor(tmp_path, o
     assert "business-entry" not in brain.memory_retrieval.state.blocked_method_ids
 
 
-def test_synthetic_saved_review_requires_current_model_values_after_structure_retrieval(tmp_path):
+def test_synthetic_saved_review_replays_route_without_inventing_current_values(tmp_path):
     # Synthetic successful source and fake desktop; real compile/bind/graph/memo/execution paths.
     brain, model, relay = setup(tmp_path)
     brain.task_instruction = brain.task_instruction.model_copy(
@@ -677,42 +677,51 @@ def test_synthetic_saved_review_requires_current_model_values_after_structure_re
     brain.save_issued = brain.saved_detail_transition_pending = True
     brain.saved_detail_transition_step = brain.active_taught_step = "open-detail"
 
-    # Fake current replies use this run's data, never the successful source's values.
-    current_mapping = mapping.model_dump(exclude_unset=True)
-    current_mapping["fields"]["Customer"]["value"] = brain.values["customer"]
-    current_mapping["observed_step_results"][0]["observed_result"] = "Current detail opened"
-    model.decisions = iter([current_mapping, final_mapping.model_dump(exclude_unset=True)])
+    model.decisions = iter([])
 
     brain._observe()
 
     assert brain.observation.screen_kind == "dialog"
-    assert brain.model_saved_detail_review and not brain.saved_detail_transition_pending
-    assert brain.post_save_verified == {"customer"}
-    remembered = brain.screen_nodes['["Saved detail"]']["fields"]["customer"]["last_observation"]
-    assert remembered["value"] == brain.values["customer"] == "New customer B"
-    assert remembered["scope"] == "saved_detail"
-    assert brain.completed_taught_steps == {"open-detail"}
+    assert not brain.model_saved_detail_review and brain.saved_detail_transition_pending
+    assert not brain.verified and not brain.post_save_verified
+    remembered = brain.screen_nodes['["Saved detail"]']["fields"]["customer"]
+    assert "last_observation" not in remembered
+    assert not brain.completed_taught_steps
     assert brain.active_taught_step == "verify-detail"
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     assert brain._act_node() == "observation"
     assert [action.root.target.image_point for action in relay.actions] == [(340, 155)]
-    assert len(model.prompts) == 1
+    assert model.prompts == []
     assert brain._verify_node() == "review"
     assert brain.visual_proposal.operation == "complete"
     assert brain.visual_proposal.completion_evidence == []
-    assert brain.post_save_verified == {"customer", "reference"}
-    assert brain.completed_taught_steps == {"open-detail", "verify-detail"}
+    assert not brain.verified and not brain.post_save_verified
+    assert not brain.completed_taught_steps
+    assert brain.visual_proposal.observed_step_results == []
+    assert all(
+        "value" not in field.model_fields_set
+        for field in brain.visual_proposal.mapping.fields.values()
+    )
     assert brain._select_node() == "finish"
-    assert brain.result.status == "success" and len(model.prompts) == 2
+    assert brain.result.status == "success" and model.prompts == []
+    assert brain.result.reason == "task_completed_with_remembered_route"
     events = brain.log.read_all()
     assert any(event.payload.get("check") == "screen_similarity" for event in events)
-    assert any(event.payload.get("reason") == "current_values_not_observed" for event in events)
+    assert not any(event.payload.get("check") == "memory_retrieval_exception" for event in events)
+    receipt = next(
+        event.payload for event in events if event.payload.get("check") == "method_route_complete"
+    )
+    assert receipt["method_id"] == method.id
+    assert receipt["delivered_group_ids"] == [method.action_groups[0].id]
+    assert receipt["proof_kind"] == "executed_route_and_matching_terminal_screen"
 
 
 @pytest.mark.parametrize("corrupt_ocr", [False, True], ids=["readable-ocr", "corrupted-ocr"])
-def test_synthetic_retrieval_inputs_new_values_then_model_confirms_not_ocr(tmp_path, corrupt_ocr):
-    # Synthetic OCR, capture and provider reply; real observation/decision/executor/memory code.
+def test_synthetic_retrieval_executes_and_finishes_current_route_without_model(
+    tmp_path, corrupt_ocr
+):
+    # Synthetic OCR/capture; real observation/decision/executor/memory and completion code.
     brain, model, relay = setup(tmp_path)
     brain.settings = brain.settings.model_copy(update={"guard_mode": "enforce"})
     runtime = brain.memory_retrieval
@@ -770,28 +779,43 @@ def test_synthetic_retrieval_inputs_new_values_then_model_confirms_not_ocr(tmp_p
         },
         completion_evidence=[dict(condition_index=0, target=first.targets[0].name)],
     )
-    method = method.model_copy(update={"action_groups": [first, second, third]})
-    method = method_completion_from_match(
-        final_screen, final_mapping.local_payload(final_screen), method, brain.values
-    )
-    assert method.completion is not None
-    atomic_write_json(runtime.library.path, MethodDocument(methods=[method]))
     save_review = ScreenMapping(
         screen_kind="query",
         screen_path=["Saved records"],
         save_result="ready_for_query",
         message_targets=["Save result"],
         fields={
-            "Save result": dict(role="text", bbox=[10, 20, 200, 30], value="Saved"),
+            "Save result": dict(role="text", bbox=[10, 155, 200, 25], value="Saved"),
             "Open saved record": dict(role="button", bbox=list(button.bbox)),
         },
         steps=[
             dict(target="Open saved record", action="click", intent="navigate", point=button.point)
         ],
     )
-    model.decisions = iter(
-        [save_review.model_dump(exclude_unset=True), final_mapping.model_dump(exclude_unset=True)]
+    saved_message = OcrBlock(id=300, text="Saved", bbox=(10, 155, 200, 25), confidence=1)
+    saved_screen = {**final_screen, "ocr": [saved_message.model_dump(mode="json")]}
+    saved_method = method_from_match(
+        saved_screen,
+        save_review.local_payload(saved_screen, brain.values),
+        method_id=method.id,
+        purpose=method.purpose,
+        slots=method.slots,
+        task_objective=method.task_objective,
+        task_contract_sha256=method.task_contract_sha256,
+        values=brain.values,
     )
+    assert saved_method is not None
+    fourth = saved_method.action_groups[0].model_copy(
+        update={"id": "open-saved-detail", "trace_index": 3, "predecessor_group_ids": [third.id]}
+    )
+    assert fourth.save_result == "ready_for_query" and fourth.message_targets
+    method = method.model_copy(update={"action_groups": [first, second, third, fourth]})
+    method = method_completion_from_match(
+        final_screen, final_mapping.local_payload(final_screen), method, brain.values
+    )
+    assert method.completion is not None
+    atomic_write_json(runtime.library.path, MethodDocument(methods=[method]))
+    model.decisions = iter([])
     labels = brain.screen_scanner.ocr.read(None)
 
     def read_current_values(page):
@@ -799,6 +823,7 @@ def test_synthetic_retrieval_inputs_new_values_then_model_confirms_not_ocr(tmp_p
             return labels
         return [
             *labels,
+            *([saved_message] if len(relay.actions) == 4 else []),
             *[
                 OcrBlock(
                     id=200 + i,
@@ -872,7 +897,9 @@ def test_synthetic_retrieval_inputs_new_values_then_model_confirms_not_ocr(tmp_p
             assert model.prompts == []
     assert len(relay.actions) == 4 and brain.save_issued
     assert brain._verify_node() == "review"
-    assert len(model.prompts) == 1 and brain.result is None
+    assert model.prompts == [] and brain.result is None
+    assert brain.visual_proposal.save_result == "ready_for_query"
+    assert brain.visual_proposal.message_targets
     assert not brain.verified and not brain.post_save_verified
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
@@ -881,12 +908,15 @@ def test_synthetic_retrieval_inputs_new_values_then_model_confirms_not_ocr(tmp_p
     assert brain.result is None
     assert brain._verify_node() == "review"
     assert brain.visual_proposal.operation == "complete"
-    assert brain.visual_proposal.mapping.fields[first.targets[0].name].value == "New customer B"
-    assert len(model.prompts) == 2
-    assert set(brain.verified) == {"customer", "reference"}
-    assert (
-        brain.screen_nodes['["Entry"]']["fields"]["reference"]["last_observation"]["value"]
-        == "ORDER-B"
+    assert model.prompts == []
+    assert not brain.verified and not brain.post_save_verified
+    assert all(
+        "value" not in field.model_fields_set
+        for field in brain.visual_proposal.mapping.fields.values()
+    )
+    assert all(
+        "last_observation" not in brain.screen_nodes['["Entry"]']["fields"][source]
+        for source in brain.values
     )
     final_plan = next(
         e
@@ -895,9 +925,17 @@ def test_synthetic_retrieval_inputs_new_values_then_model_confirms_not_ocr(tmp_p
     )
     assert final_plan.payload["mapping"]["screen_path"] == ["Entry"]
     assert final_plan.payload["mapping"]["completion_evidence"][0]["condition_index"] == 0
-    assert brain._select_node() == "review"
-    assert brain._review_node() == "finish"
-    assert brain.result.status == "success" and len(model.prompts) == 2
+    assert brain._select_node() == "finish"
+    assert brain.result.status == "success" and model.prompts == []
+    assert brain.result.reason == "task_completed_with_remembered_route"
+    receipt = next(
+        event.payload
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "method_route_complete"
+    )
+    assert receipt["route_group_ids"] == [first.id, second.id, third.id, fourth.id]
+    assert receipt["delivered_group_ids"] == receipt["route_group_ids"]
+    assert receipt["resumed_group_ids"] == []
 
 
 def test_synthetic_reentered_node_does_not_reobserve_old_memo_or_skip_current_input(tmp_path):

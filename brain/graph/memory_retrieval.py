@@ -99,6 +99,47 @@ class MemoryRetrieval:
         self.enabled = library.enabled
         self.promotion_path = promotion_path
 
+    @property
+    def recovery_required(self) -> bool:
+        return self.state.active_method_id in self.state.blocked_method_ids
+
+    def suspend_failed_execution(self, *, reason: str) -> bool:
+        """Suspend an actual failed edge, preserving an already selected model recovery.
+
+        The observation can prepare the next replay before the previous action's
+        verification fails. That speculative replay must not survive the failure.
+        A missing/unchanged effect alone does not enter this failure boundary.
+        """
+        pending = self.state.pending
+        delivered = self.state.unverified
+        failed = delivered or pending
+        if failed is None:
+            return False
+        method, group_id = failed["method"], failed["group_id"]
+        self.state.active_method_id = method.id
+        self.state.blocked_method_ids.add(method.id)
+        if delivered is not None:
+            # Delivery remains in history, but a failed effect cannot advance
+            # the route or produce a terminal receipt without model recovery.
+            self.state.used.discard((method.id, group_id))
+            delivered["failure_reason"] = reason
+        discard_replay = pending is not None and not pending.get("recovery_response", False)
+        if delivered is not None and discard_replay:
+            self.state.pending = None
+        # Before/partial delivery, retain pending until delivered(False) records
+        # the interrupted attempt. It must never consume the entire group.
+        self.log.append(
+            "verify",
+            payload={
+                "check": "method_execution_suspended",
+                "method_id": method.id,
+                "group_id": group_id,
+                "reason": reason,
+                "discarded_replay": discard_replay,
+            },
+        )
+        return discard_replay
+
     def _matches_current_task(self, method: LearnedMethod) -> bool:
         """Keep learned execution inside one exact user-education contract."""
 
@@ -249,6 +290,45 @@ class MemoryRetrieval:
         nearest = min(distance for distance, _, _ in matches)
         matches = [match for match in matches if match[0] == nearest]
         return matches[0] if len(matches) == 1 else None
+
+    def completion_receipt(self, screen: dict) -> dict | None:
+        """Describe this run's exhausted route and its matching terminal frame.
+
+        Route completion is independent of field-value review. A model-supplied
+        method ID or a remembered success alone cannot establish this receipt.
+        """
+        if not self.enabled or self.state.active_method_id is None:
+            return None
+        match = self._matching_route(screen)
+        if match is None:
+            return None
+        distance, method, terminal = match
+        if method.id != self.state.active_method_id or not isinstance(terminal, MethodCompletion):
+            return None
+        history = [item for item in self.state.history if item.get("method_id") == method.id]
+        return {
+            "method_id": method.id,
+            "task_contract_sha256": method.task_contract_sha256,
+            "artifact_kind": method.artifact_kind,
+            "revision": method.revision,
+            "route_group_ids": [group.id for group in self._ordered_groups(method)],
+            "delivered_group_ids": list(
+                dict.fromkeys(
+                    item["group_id"]
+                    for item in history
+                    if item.get("group_id") and item.get("status") in {"delivered", "provisional"}
+                )
+            ),
+            "resumed_group_ids": list(
+                dict.fromkeys(
+                    group_id for item in history for group_id in item.get("resumed_group_ids", [])
+                )
+            ),
+            "screen_path": list(terminal.screen_path),
+            "screen_phash": screen.get("screen_phash"),
+            "distance": distance,
+            "terminal_targets": [item.target.name for item in terminal.targets],
+        }
 
     def _resume_from_model(self, method: LearnedMethod, response: ScreenMatch) -> None:
         """An accepted recovery observation may finish a prefix of the current route."""
@@ -803,6 +883,7 @@ class MemoryRetrieval:
                 "method": method,
                 "group_id": method.action_groups[0].id,
                 "origin": "adaptation" if previous else "learned",
+                "recovery_response": allow_recovery,
                 "taught_step_id": response.taught_step_id,
                 "replaced_edge": replaced_edge,
                 "action_progress": action_progress,
@@ -840,6 +921,9 @@ class MemoryRetrieval:
             self.state.used.add((method.id, group_id))
             self.state.active_method_id = method.id
             if pending["origin"] != "reuse":
+                # A prior effect can fail after this model recovery was selected.
+                if pending.get("recovery_response", False):
+                    self.state.blocked_method_ids.discard(method.id)
                 transitions = (
                     [event["observation_id"]] if event["observation_id"] is not None else []
                 )
@@ -867,6 +951,9 @@ class MemoryRetrieval:
             return
         method = delivered["method"]
         group_id = delivered["group_id"]
+        failure_reason = delivered.get("failure_reason")
+        if failure_reason is not None:
+            success = False
         group = next((item for item in method.action_groups if item.id == group_id), None)
         input_delivery = bool(
             group is not None and group.actions and all(a.action == "fill" for a in group.actions)
@@ -927,7 +1014,11 @@ class MemoryRetrieval:
             )
             return
         history_index = delivered["history_index"]
-        if group is not None and any(action.action == "fill" for action in group.actions):
+        if (
+            failure_reason is None
+            and group is not None
+            and any(action.action == "fill" for action in group.actions)
+        ):
             # Pixel rereads can miss a just-delivered value. Keep the batch
             # provisional; whole-task success is the later business proof that
             # decides whether it is promoted.
@@ -948,10 +1039,12 @@ class MemoryRetrieval:
         # A failed learned candidate is discarded. A failed replay edge remains
         # consumed for this run so the graph can try its next verified branch
         # instead of selecting the same no-op forever.
-        if delivered["origin"] != "reuse":
+        if delivered["origin"] != "reuse" or failure_reason is not None:
             self.state.used.discard((method.id, group_id))
         if history_index < len(self.state.history):
-            self.state.history[history_index]["status"] = "unproductive"
+            self.state.history[history_index]["status"] = (
+                "failed" if failure_reason is not None else "unproductive"
+            )
         if delivered["origin"] != "reuse":
             candidate = self.state.staged.get(method.id)
             if candidate is not None:
@@ -969,6 +1062,7 @@ class MemoryRetrieval:
                 "method_id": method.id,
                 "group_id": group_id,
                 "success": False,
+                **({"reason": failure_reason} if failure_reason is not None else {}),
             },
         )
         atomic_write_json(self.case_dir / "method-progress.json", self.context())
