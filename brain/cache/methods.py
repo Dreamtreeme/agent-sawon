@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from brain.graph.screen_mapping import ScreenMapping
 from brain.observe.values import field_matches, normalize
 from brain.task_instruction import ObservedStepResult
-from brain.visual.action_rebind import hash_distance
+from brain.visual.action_rebind import hash_distance, relative_point
 from brain.visual.markers import marker_role_allowed
 from brain.visual.scene import (
     ControlMeaning,
@@ -261,8 +261,6 @@ def compile_method_candidate(
                         target.model_copy(
                             update={"anchor_texts": [redact(text) for text in target.anchor_texts]}
                         )
-                        if target.name in group.message_targets
-                        else target
                         for target in group.targets
                     ],
                 }
@@ -355,6 +353,7 @@ class BoundMethod:
     method_id: str
     group_id: str
     response: dict[str, Any]
+    fields: dict[str, dict]
 
 
 def _relation(target: list | tuple, anchor: list | tuple) -> str:
@@ -456,6 +455,7 @@ def action_group_from_match(
         controls = {item["id"]: item for item in response.get("controls", [])}
         steps = response.get("steps", [])
     markers = {item["id"]: item for item in screen.get("markers", [])}
+    blocks = {item["id"]: item for item in screen.get("ocr", [])}
     if not steps or response.get("operation", "act") != "act":
         return None
     if slots is None:
@@ -476,11 +476,26 @@ def action_group_from_match(
                 return None
             x, y, width, height = marker["bbox"] if marker else bbox
             point = [x + width / 2, y + height / 2]
+        anchors = (
+            [
+                block
+                for block in blocks.values()
+                if block["text"].strip() and contains(bbox, block["bbox"])
+            ]
+            if bbox is not None and response.get("save_result") not in {None, "unknown"}
+            else []
+        )
         return MethodTarget(
             name=selected.get("name") or default_name,
             role=control["role"],
             point=tuple(point),
             bbox=tuple(bbox or [int(point[0]), int(point[1]), 1, 1]),
+            anchor_texts=[block["text"] for block in anchors],
+            relation="inside" if anchors else None,
+            marker_source=(marker.get("source") if marker else "model_selected")
+            if anchors
+            else None,
+            anchor_geometry=_anchor_geometry(bbox, anchors) if anchors else None,
         )
 
     for step in steps:
@@ -752,8 +767,8 @@ def _candidate_score(box: list | tuple, anchors: list[dict], relation: str) -> f
 
 
 def _bind_target(target: MethodTarget, screen: dict) -> tuple[dict, list[int]] | None:
-    if target.point is not None:
-        return None  # Group-level image match is required; coordinates alone are not value proof.
+    if target.point is not None or not target.anchor_texts or target.relation is None:
+        return None
     matches = []
     for text in target.anchor_texts:
         found = [b for b in screen["ocr"] if normalize(b["text"]) == normalize(text)]
@@ -877,27 +892,40 @@ def _coordinate_bindings(
 
 
 def _bind_save_review(
-    group: MethodActionGroup, controls: dict[int, dict], bound: dict, screen: dict, values: dict
-) -> dict:
-    """Reuse the learned classification only with its messages on this frame."""
+    group: MethodActionGroup, screen: dict, values: dict
+) -> tuple[dict, dict] | None:
+    """Bind the expected messages and gesture targets to this frame's OCR geometry."""
     if group.save_result in {None, "unknown"} or not group.message_targets:
-        return {}
-    targets = {target.name: target for target in group.targets}
+        return None
+    if tuple(screen.get("image_size", ())) != group.image_size:
+        return None
+    targets, bound = {}, {}
+    current_screen = {
+        **screen,
+        "markers": [marker for marker in screen.get("markers", []) if marker["source"] == "ocr"],
+    }
+    for target in group.targets:
+        texts = list(target.anchor_texts)
+        for source, value in values.items():
+            texts = [text.replace("{" + source + "}", str(value)) for text in texts]
+        target = target.model_copy(update={"anchor_texts": texts, "point": None})
+        current = _bind_target(target, current_screen)
+        if current is None:
+            return None
+        targets[target.name], bound[target.name] = target, current
     blocks = {block["id"]: block["text"] for block in screen.get("ocr", [])}
     message_ids = []
     for name in group.message_targets:
         target = targets.get(name)
         if target is None or not target.anchor_texts:
-            return {}
+            return None
         marker, _ = bound[name]
-        observed = " ".join(blocks[i] for i in controls[marker["id"]]["text_ids"])
+        observed = " ".join(blocks[i] for i in _marker_text_ids(marker, screen, target.role))
         expected = " ".join(target.anchor_texts)
-        for source, value in values.items():
-            expected = expected.replace("{" + source + "}", str(value))
         if not observed.strip() or normalize(observed) != normalize(expected):
-            return {}
+            return None
         message_ids.append(marker["id"])
-    return {
+    return bound, {
         "save_result": group.save_result,
         "message_targets": message_ids,
         "repair_fields": group.repair_fields,
@@ -1017,7 +1045,28 @@ class MethodLibrary:
                 if group.screen_path
                 else group.targets
             )
-            bound = _coordinate_bindings(group, screen, self.max_phash_distance, targets=targets)
+            review = {}
+            if group.save_result not in {None, "unknown"}:
+                current = _bind_save_review(
+                    group,
+                    screen,
+                    {
+                        **values,
+                        **{
+                            slot.source_key: values[sources[slot.name]]
+                            for slot in method.slots
+                            if sources[slot.name] in values
+                        },
+                    },
+                )
+                if current is None:
+                    continue
+                bound, review = current
+                targets = group.targets
+            else:
+                bound = _coordinate_bindings(
+                    group, screen, self.max_phash_distance, targets=targets
+                )
             if bound is None:
                 continue
             if len({bound[target.name][0]["id"] for target in group.targets}) != len(group.targets):
@@ -1033,7 +1082,13 @@ class MethodLibrary:
                     break
                 target = next(item for item in group.targets if item.name == action.target)
                 chosen = action.point or target.point
-                point = list(chosen) if chosen is not None else None
+                point = (
+                    list(relative_point(target.bbox or marker["bbox"], marker["bbox"], chosen))
+                    if review
+                    else list(chosen)
+                    if chosen is not None
+                    else None
+                )
                 if point is None:
                     break
                 steps.append(
@@ -1048,15 +1103,19 @@ class MethodLibrary:
                 )
             else:
                 field_sources = group_input_sources(method, group, slot_map)
+                fields = {}
                 for target in targets:
                     marker, _ = bound[target.name]
+                    fields[target.name] = {
+                        "role": target.role,
+                        "bbox": list(marker["bbox"]),
+                        "source": field_sources.get(target.name),
+                    }
                     _register_bound_target(screen, target, marker)
                     if group.screen_path:
                         screen["selected_fields"][str(marker["id"])] = {
                             "name": target.name,
-                            "role": target.role,
-                            "bbox": list(target.bbox),
-                            "source": field_sources.get(target.name),
+                            **fields[target.name],
                         }
                 return BoundMethod(
                     method.id,
@@ -1070,21 +1129,9 @@ class MethodLibrary:
                         "steps": steps,
                         "operation": "act",
                         "expected_result": group.expected_result,
-                        **_bind_save_review(
-                            group,
-                            controls,
-                            bound,
-                            screen,
-                            {
-                                **values,
-                                **{
-                                    slot.source_key: values[sources[slot.name]]
-                                    for slot in method.slots
-                                    if sources[slot.name] in values
-                                },
-                            },
-                        ),
+                        **review,
                     },
+                    fields,
                 )
         return None
 

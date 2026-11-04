@@ -82,7 +82,7 @@ def _matching_text(blocks: list[OcrBlock], anchors: set[str]) -> list[OcrBlock]:
     ]
 
 
-def _relative_point(
+def relative_point(
     old_box: tuple[float, float, float, float],
     new_box: tuple[int, int, int, int],
     point: tuple[float, float] | None,
@@ -124,7 +124,7 @@ def rebind_action_target(
             raise ValueError("visual_target_anchor_ambiguous")
         box = text_matches[0].bbox
         return ActionTargetBinding(
-            _relative_point(target.bbox, box, planned_point), box, "ocr_text_anchor", distance
+            relative_point(target.bbox, box, planned_point), box, "ocr_text_anchor", distance
         )
 
     if len(text_matches) != 1:
@@ -169,5 +169,5 @@ def rebind_action_target(
         raise ValueError("visual_input_control_ambiguous")
     box = candidates[0][1].bbox
     return ActionTargetBinding(
-        _relative_point(target.bbox, box, planned_point), box, "ocr_label_local_control", distance
+        relative_point(target.bbox, box, planned_point), box, "ocr_label_local_control", distance
     )

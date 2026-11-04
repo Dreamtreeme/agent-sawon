@@ -27,7 +27,7 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | 재탐색 요청 | `ScreenMapping.needs_refinement` → `ScreenPlan`/`ScreenMatch` → `SemanticDetection` | `ScreenScanner._resolve` | 필요한 보이는 컨트롤이 없으면 동일 캡처·OCR로 탐색 재진입. provider 스키마에도 존재 |
 | pHash 유사 캡처의 화면 해석 | `SemanticRequest` / `_SceneCatalog` | `Brain._detect_visual` → `screen_decision` | 로컬 탐지 기하는 재사용하고 OCR은 현재 프레임에서 다시 실행. 현재 문맥·판단은 공통 순서로 수행 |
 | 로컬 컨트롤 탐지 | `ControlDetector`, `OmniParserDetector` → `DetectorSession` | `ScreenScanner` | 이미지·보완 영역·탐지 설정을 전달. OCR과 탐지 결과의 병합은 scanner가 소유하며 워커에 OCR 박스를 전달하지 않음 |
-| 관찰 경로 선택 | `ScreenScanner.scan` / `MemoryRetrieval.retrieve_screen_memory` | `_SceneCatalog`, `screen_decision` | 캡처 직후 유사도 확인 → 메모리 기하 또는 탐지. 행동 선택은 아직 하지 않음 |
+| 관찰 경로 선택 | `ScreenScanner.scan` / `MemoryRetrieval.retrieve_screen_memory` | `_SceneCatalog`, `screen_decision` | 캡처·현재 OCR → 다음 기억 결합 → 메모리 기하 또는 탐지. 행동 선택은 아직 하지 않음 |
 | 시각 공용 자료형 | `sawon_runtime/visual.py` | OCR·탐지·pipeline | 렌더 페이지와 OCR block 계약 |
 | 공개 record/action/observation/event | `../agent-sawon-bench/interfaces/sawon_interfaces/contracts.py` | core와 bench | 두 저장소가 공유하는 버전 있는 Pydantic 계약 |
 | 공개 스키마 export | `../agent-sawon-bench/interfaces/sawon_interfaces/export_schemas.py` | 외부 소비자·검사 | `sawon_interfaces` JSON Schema 생성 |
@@ -392,8 +392,10 @@ scratchpad에 이 목록을 복사하지 않는다. 입력 키는 inputs 자체�
 읽어 값을 복원하지 않습니다. 현재 실행의 메모는 `ScreenDecisionRequest.screen_nodes`를 통해
 모델 문맥으로 전달하며 관찰 번호·ID를 갱신한 새 증거로 재발행하지 않습니다.
 
-`MemoryRetrieval.retrieve_screen_memory`는 위 경로 선택 규칙과 기존 viewport·pHash 조건으로
-다음 그룹 하나의 기하·입력 키 대응·절차를 반환합니다. 경로가 소진되면 완료 기억을 반환합니다.
+`MemoryRetrieval.retrieve_screen_memory`는 위 경로 선택 규칙으로 다음 그룹 하나의 기하·입력 키
+대응·절차를 반환합니다. 일반 그룹과 최초 메서드 선택은 viewport·pHash 조건을 사용하고,
+활성 메서드의 다음 저장 결과 그룹은 아래 현재 메시지·대상 결합 계약을 사용합니다.
+경로가 소진되면 완료 기억을 반환합니다.
 최초 메서드 선택의 최소 거리가 동률이면 기억을 선택하지 않습니다. 서로 다른 그룹의 관찰은
 합치지 않으며, 선택한 그룹 내부의 중복 기하는 같은 role과 공용 `same_control_region`으로 합칩니다.
 이 읽기는 pending·used나 현재 관찰값을 갱신하지 않습니다. 화면이 비슷하다는 사실은 행동 선택이나
@@ -426,8 +428,14 @@ OCR 일치로 인출된 증거를 만들던 `MethodLibrary.bind_visible_value_ev
 `anchor_texts`에 메시지 위치와 텍스트를 보관합니다. 입력값 부분은 입력 key 자리표시자로
 바꿉니다. 생산자는 `method_from_match`이며 런타임 학습과 편찬 CLI가 이 함수를 공유합니다.
 
-소비자는 `MethodLibrary.bind_with_context`입니다. 기존 viewport·pHash 조건을 통과한 뒤 현재
-메시지를 입력값이 치환된 텍스트와 정규화 비교하여 저장 결과를 재결합합니다.
+소비자는 `MethodLibrary.bind_with_context`입니다. 활성 메서드의 다음 저장 결과 그룹은 현재
+OCR 메시지를 입력값이 치환된 텍스트와 정규화 비교하고, 실행 대상의 실제 OCR 앵커·상대 기하로
+현재 위치를 결합합니다. `action_group_from_match`가 메시지와 행동 대상의 앵커를 기존
+`MethodTarget` 필드에 보존합니다. 모델이 만든 의미 이름을 실제 버튼 문구로 추정하지 않습니다.
+현재 대상에 저장된 클릭의 상대 위치를 적용하며, 인출과 행동 준비는 같은 결합 결과의 현재
+기하를 사용합니다. 과거 `observed_fields` bbox로 현재 결합을 덮어쓰지 않습니다.
+이 저장 결과 계약은 전체 이미지 pHash 거리를 요구하지 않으며, 일반 그룹과 최초 메서드 선택의
+viewport·pHash 기준은 유지합니다. 관계없는 관찰 필드는 저장 결과 결합의 필수 대상이 아닙니다.
 `screen_decision`은 재결합된 결과와 메시지가 있는 메서드를 `save_result` 단계에서도 선택합니다.
 `compile_match`와 `SaveReviewResponse`의 기존 변환·검증은 유지합니다. 이 결과는 다음 행동을
 위한 저장 화면 해석이며 작업 전체 성공 선언이 아닙니다.
@@ -436,7 +444,8 @@ OCR 일치로 인출된 증거를 만들던 `MethodLibrary.bind_visible_value_ev
 
 새 필드가 없는 이전 메서드는 기본값 `None` / 빈 목록으로 읽습니다. 메시지가 없거나 현재
 내용이 다르면 저장 결과를 재사용하지 않고 `save_result` 단계의 현재 모델 검토로 넘깁니다.
-이전 산출물에 없던 메시지는 자동 복원하지 않으므로 새 저장 결과 재사용에는 재편찬이 필요합니다.
+이전 산출물에 없던 메시지·행동 대상 앵커는 자동 복원하지 않으므로 새 저장 결과 재사용에는
+원본 OCR·모델 매핑·저장된 편찬 응답을 사용하는 재편찬이 필요합니다. 원본 산출물은 보존합니다.
 이 저장 결과 전달은 공개 인터페이스와 행동 응답의 필드·제약을 바꾸지 않습니다.
 편찬 응답 타입의 이름 변경은 [화면 처리 용어](runtime-terminology.md)에 별도로 기록합니다.
 

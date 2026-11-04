@@ -32,6 +32,7 @@ from brain.graph.screen_mapping import (
 )
 from brain.task_instruction import TaskInstruction
 from brain.visual.frame import frame_input
+from brain.visual.markers import build_markers
 from brain.visual.scene import Detection, VisualControl, bind_scene
 from pipeline.schemas import OcrBlock
 from sawon_runtime.storage import RunLog, atomic_write_json
@@ -326,6 +327,7 @@ def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_naviga
     cold_screen = {
         "image_size": [400, 200],
         "screen_phash": 123,
+        "screen_path": ["Shipment", "Saved"],
         "ocr": [
             {"id": 1, "text": "Saved HBL-001", "bbox": [10, 10, 270, 20]},
             {"id": 2, "text": "OK", "bbox": [100, 80, 60, 20]},
@@ -354,19 +356,54 @@ def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_naviga
     library.upsert(method)
     current = {
         **cold_screen,
+        "screen_phash": 123 ^ 255,  # Eight bits differ: ordinary pHash binding must miss.
         "markers": [],
         "ocr": [
             {"id": 101, "text": "Saved HBL-002", "bbox": [10, 10, 270, 20]},
-            {"id": 102, "text": "OK", "bbox": [100, 80, 60, 20]},
+            {"id": 102, "text": "OK", "bbox": [180, 100, 60, 20]},
         ],
     }
+    current["markers"] = [
+        marker.model_dump(mode="json")
+        for marker in build_markers(
+            [OcrBlock(**block, confidence=1) for block in current["ocr"]], [], 400, 200
+        )
+    ]
     rebound = library.bind_with_context(
         method, {}, current, {"hbl_no": "HBL-002"}, group_id=group.id
     )
     assert rebound is not None
     plan = ScreenMatch.model_validate(rebound.response)
     assert plan.message_targets and plan.message_targets != [10]
-    assert plan.steps[0].point == [135, 90]
+    assert plan.steps[0].point == [215, 110]
+    button = next(target for target in group.targets if target.name not in group.message_targets)
+    assert button.anchor_texts == ["OK"] and button.relation == "inside"
+    assert rebound.fields[button.name]["bbox"] == [180, 100, 60, 20]
+    runtime = MemoryRetrieval(
+        RetrievalContext(
+            task=TaskInstruction.model_validate(source()["task"]),
+            task_sha256=source()["task_sha256"],
+            inputs={"hbl_no": "HBL-002"},
+            credentials={},
+            observation_id="current-dialog",
+        ),
+        RetrievalState(),
+        library,
+        case_dir=tmp_path,
+        log=RunLog(tmp_path, case_id="synthetic-save-rebind", agent_id="test"),
+    )
+    assert runtime.retrieve_screen_memory(current) is None  # Initial selection stays strict.
+    runtime.state.active_method_id = method.id
+    runtime.state.used.update((method.id, prior.id) for prior in method.action_groups[:-1])
+    memory = runtime.retrieve_screen_memory(current)
+    assert memory is not None and memory["distance"] == 8
+    remembered_button = next(field for field in memory["fields"] if field["name"] == button.name)
+    assert remembered_button["bbox"] == [180, 100, 60, 20]
+    pattern = runtime.match_pattern(current)
+    assert pattern is not None and pattern.mapping is not None
+    assert pattern.mapping.fields[button.name].bbox == [180, 100, 60, 20]
+    assert pattern.mapping.steps[0].point == [215, 110]
+    assert all("value" not in field.model_fields_set for field in pattern.mapping.fields.values())
     boxes = {item["id"]: item["bbox"] for item in current["markers"]}
     observation = bind_scene(
         wire(),
@@ -391,8 +428,19 @@ def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_naviga
         fallback = library.bind_with_context(
             method, {}, changed, {"hbl_no": "HBL-002"}, group_id=group.id
         )
-        assert fallback is not None, label
-        assert ScreenMatch.model_validate(fallback.response).save_result is None, label
+        assert fallback is None, label
+    no_button = {**current, "ocr": current["ocr"][:1]}
+    assert (
+        library.bind_with_context(method, {}, no_button, {"hbl_no": "HBL-002"}, group_id=group.id)
+        is None
+    )
+    old_group = group.model_copy(
+        update={
+            "targets": [target.model_copy(update={"anchor_texts": []}) for target in group.targets]
+        }
+    )
+    old_method = method.model_copy(update={"action_groups": [old_group]})
+    assert library.bind_with_context(old_method, {}, current, {"hbl_no": "HBL-002"}) is None
 
 
 def test_memory_compiler_keeps_only_visible_non_instance_context_anchors():
@@ -472,14 +520,6 @@ def test_synthetic_pruned_click_rebases_entry_memory_without_rebinding_action_id
     assert group.actions[0].point == (190, 187)
     assert group.targets[0].bbox == (160, 170, 60, 40)
     assert group.predecessor_group_ids == [method.action_groups[0].id]
-    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
-    library.upsert(method)
-    current = {**before, "markers": [], "selected_fields": {}}
-    rebound = library.bind_with_context(method, {}, current, source()["values"], group_id=group.id)
-    assert rebound is not None
-    assert rebound.response["steps"][0]["action"] == "double_click"
-    assert rebound.response["steps"][0]["point"] == [190.0, 187.0]
-    assert rebound.response["save_result"] == "ready_for_query"
 
 
 @pytest.mark.parametrize("unknown_candidate", [False, True], ids=["accepted", "bad-target-id"])

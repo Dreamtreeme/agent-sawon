@@ -23,7 +23,7 @@ from brain.cache.methods import (
     screen_similarity_distance,
 )
 from brain.task_instruction import TaskInstruction
-from brain.visual.scene import same_control_region
+from brain.visual.action_rebind import hash_distance
 from brain.vocabulary import SCROLL_DIRECTION_KEYS
 from sawon_runtime.storage import RunLog, atomic_write_json
 
@@ -282,7 +282,23 @@ class MemoryRetrieval:
             entry = remaining[0] if remaining else method.completion
             if entry is None:
                 continue
-            distance = screen_similarity_distance(entry, screen, self.library.max_phash_distance)
+            if (
+                method.id == self.state.active_method_id
+                and isinstance(entry, MethodActionGroup)
+                and entry.save_result not in {None, "unknown"}
+                and entry.message_targets
+                and screen.get("ocr")
+                and entry.screen_phash is not None
+                and screen.get("screen_phash") is not None
+                and tuple(screen.get("image_size", ())) == entry.image_size
+            ):
+                # The selected route already identifies this expected result group.
+                # Its common binder must validate current messages and gesture geometry.
+                distance = hash_distance(entry.screen_phash, screen["screen_phash"])
+            else:
+                distance = screen_similarity_distance(
+                    entry, screen, self.library.max_phash_distance
+                )
             if distance is not None:
                 matches.append((distance, method, entry))
         if not matches:
@@ -470,34 +486,32 @@ class MemoryRetrieval:
             }
             targets = [item.target for item in group.targets]
             group_id, predecessors, steps = None, [], []
-        else:
-            field_sources = group_input_sources(method, group, bindings)
-            targets = [*group.observed_fields, *group.targets]
-            group_id, predecessors = group.id, group.predecessor_group_ids
-            steps = [
-                {
-                    **action.model_dump(mode="json", exclude={"slot"}),
-                    "source": field_sources.get(action.target),
-                }
-                for action in group.actions[self._action_offset(method.id, group.id) :]
-            ]
-        fields = []
-        for target in targets:
-            if target.bbox is None:
-                continue
-            if any(
-                item["role"] == target.role and same_control_region(item["bbox"], target.bbox)
-                for item in fields
-            ):
-                continue
-            fields.append(
+            fields = [
                 {
                     "name": target.name,
                     "role": target.role,
                     "bbox": list(target.bbox),
                     "source": field_sources.get(target.name),
                 }
+                for target in targets
+                if target.bbox is not None
+            ]
+        else:
+            bound = self.library.bind_with_context(
+                method, bindings, screen, self._binding_values(), group_id=group.id
             )
+            if bound is None:
+                return None
+            fields = [{"name": name, **field} for name, field in bound.fields.items()]
+            group_id, predecessors = group.id, group.predecessor_group_ids
+            names = {
+                control["id"]: control["visual_description"]
+                for control in bound.response["controls"]
+            }
+            steps = [
+                {**step, "target": names[step["target"]]}
+                for step in bound.response["steps"][self._action_offset(method.id, group.id) :]
+            ]
         if not fields:
             return None
         return {
@@ -608,17 +622,7 @@ class MemoryRetrieval:
             }
         )
         if group.screen_path:
-            field_sources = group_input_sources(method, group, mapping)
-            fields = {
-                target.name: {
-                    "role": target.role,
-                    "bbox": list(target.bbox),
-                    "source": field_sources.get(target.name),
-                }
-                for target in [*group.observed_fields, *group.targets]
-                if target.bbox is not None
-            }
-            response = self._restore_structure(screen, response, group.screen_path, fields)
+            response = self._restore_structure(screen, response, group.screen_path, bound.fields)
         self.state.purpose = response.purpose
         self.state.bindings[method.id] = mapping
         self.state.active_method_id = method.id

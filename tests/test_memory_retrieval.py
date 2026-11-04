@@ -66,7 +66,7 @@ def test_compiled_only_library_does_not_replay_raw_model_trace(tmp_path):
 
 
 @pytest.mark.parametrize("similar", [True, False], ids=["memory", "scanning"])
-def test_synthetic_similarity_routes_before_ocr_and_shared_context(tmp_path, similar, monkeypatch):
+def test_synthetic_current_ocr_precedes_memory_and_shared_context(tmp_path, similar, monkeypatch):
     # Synthetic capture/OCR/model responses; actual scanner, memory and context functions.
     brain, model, _ = setup(tmp_path, changed_label=True)
     if not similar:
@@ -90,7 +90,7 @@ def test_synthetic_similarity_routes_before_ocr_and_shared_context(tmp_path, sim
 
     def recognition(screen):
         order.append("similarity")
-        assert "ocr" not in screen
+        assert screen["ocr"] and screen["markers"]
         state = brain.memory_retrieval.state
         pending, used, verified = state.pending, set(state.used), dict(brain._observed_inputs())
         result = recognize(screen)
@@ -144,8 +144,8 @@ def test_synthetic_similarity_routes_before_ocr_and_shared_context(tmp_path, sim
     brain._observe()
 
     assert order == [
-        "similarity",
         "current_values",
+        "similarity",
         *([] if similar else ["scanning"]),
         "pattern_matching",
         "context_recall",  # This fixture needs model recovery after pattern selection.
@@ -793,7 +793,11 @@ def test_synthetic_retrieval_executes_and_finishes_current_route_without_model(
         ],
     )
     saved_message = OcrBlock(id=300, text="Saved", bbox=(10, 155, 200, 25), confidence=1)
-    saved_screen = {**final_screen, "ocr": [saved_message.model_dump(mode="json")]}
+    saved_button = OcrBlock(id=301, text="Open record", bbox=button.bbox, confidence=1)
+    saved_screen = {
+        **final_screen,
+        "ocr": [item.model_dump(mode="json") for item in (saved_message, saved_button)],
+    }
     saved_method = method_from_match(
         saved_screen,
         save_review.local_payload(saved_screen, brain.values),
@@ -823,7 +827,7 @@ def test_synthetic_retrieval_executes_and_finishes_current_route_without_model(
             return labels
         return [
             *labels,
-            *([saved_message] if len(relay.actions) == 4 else []),
+            *([saved_message, saved_button] if len(relay.actions) == 4 else []),
             *[
                 OcrBlock(
                     id=200 + i,

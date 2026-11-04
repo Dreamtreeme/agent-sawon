@@ -1,6 +1,6 @@
 # 화면 처리 개념과 실행 순서
 
-기준일: 2026-11-04
+기준일: 2026-11-05
 
 Memory Retrieval은 **과거에 배운 업무 방법**을 가져온다. Context Recall은 **이번 실행의
 현재 상황**을 복원한다. 두 역할은 서로를 대체하지 않는다. 기억을 찾은 경우와 새로 탐색한
@@ -10,7 +10,7 @@ Memory Retrieval은 **과거에 배운 업무 방법**을 가져온다. Context 
 
 | 단계 | 질문 | 입력 → 출력 | 코드 |
 |---|---|---|---|
-| 화면 유사도 | 이 화면을 경험했는가? | 현재 캡처·업무 식별 → 가까운 기억 또는 미일치 | `ScreenScanner.scan`, `screen_similarity_distance` |
+| 화면 유사도·기억 결합 | 배운 다음 행동을 현재 화면에 연결할 수 있는가? | 캡처·현재 OCR·업무 식별 → 다음 기억 또는 미일치 | `ScreenScanner.scan`, `MemoryRetrieval._matching_route`, `MethodLibrary.bind_with_context` |
 | Memory Retrieval | 이 업무를 어떻게 처리했는가? | 일치한 기억 → 필드 이름·bbox·입력 key·행동 좌표·학습한 절차 | `MemoryRetrieval.retrieve_screen_memory`, `_restore_structure` |
 | Scanning | 현재 무엇이 보이는가? | 캡처 → OCR 텍스트·OmniParser 후보 영역 | `ScreenScanner._build_catalog` |
 | Context Recall | 이번 실행은 어디까지 왔는가? | 현재 상태 → 메모·이력·완료/미완료 입력·진행 중 행동·교육 위치 | `context_recall.recall_context` |
@@ -26,9 +26,10 @@ Context Recall에는 모델 호출·행동 선택·상태 변경이 없다. 모�
 
 ```mermaid
 flowchart TD
-    CAP[현재 캡처] --> SIM{화면 유사도}
+    CAP[현재 캡처] --> TEXT[현재 OCR]
+    TEXT --> SIM{다음 기억 결합}
     SIM -->|일치| MEM[Memory Retrieval: 업무 지식 인출]
-    SIM -->|미일치| SCAN[Scanning: OCR·OmniParser]
+    SIM -->|미일치| SCAN[Scanning: OmniParser 후보 탐색]
     MEM --> STRUCTURE[필드 구조·입력 키·행동 인출]
     STRUCTURE --> STATE[현재 실행 계약·문맥 원천 확보]
     SCAN --> STATE
@@ -62,11 +63,14 @@ flowchart TD
 
 ## 기억과 탐색의 연결 계약
 
-- 유사도는 기존 viewport·`methods.max_phash_distance` 조건을 사용한다. 같은 교육 digest·
+- 일반 그룹 유사도는 기존 viewport·`methods.max_phash_distance` 조건을 사용한다. 같은 교육 digest·
   목표의 메서드에서 다음 진입 화면을 비교하고, 선택한 메서드는 실행 중 유지한다.
   기억 인출과 행동 결합은 같은 함수로 남은 첫 그룹만 선택한다. 편찬 trace 순서를 교육 순서로
   재정렬하지 않으며, 경로가 소진되면 완료 기억을 선택한다. 다른 그룹의 관찰을 합치지 않는다.
   선택한 그룹 내부의 기하 중복은 같은 role·공용 영역 판정으로 합치며 bbox 완전일치를 요구하지 않는다.
+- 활성 메서드의 다음 저장 결과 그룹은 현재 OCR 메시지와 행동 대상의 실제 앵커·상대 기하로
+  결합한다. 인출과 Pattern Matching은 같은 현재 결합 결과를 사용한다. 전체 이미지의 업무 값
+  글자 차이로 재판단하지 않으며, 대상 결합 실패는 기존 모델 경로로 보낸다.
 - `retrieve_screen_memory`는 이름·bbox·role뿐 아니라 현재 슬롯에 연결한 `source`와
   `procedure`를 반환한다. 행동 후보가 선택되지 않아도 이 정보는 모델에 전달된다.
   인출만으로 `pending`, `used`나 현재 관찰을 갱신하지 않는다.

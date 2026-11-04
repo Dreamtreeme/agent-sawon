@@ -1,6 +1,6 @@
 # 현재 시각 경로
 
-기준일: 2026-11-02. 현재 운영 기준은 [`docs/current-runtime.md`](../../docs/current-runtime.md),
+기준일: 2026-11-05. 현재 운영 기준은 [`docs/current-runtime.md`](../../docs/current-runtime.md),
 그래프와 공개 계약은 [`docs/contracts.md`](../../docs/contracts.md)를 따릅니다. 이전 시각 경로의
 2026-10-18 상세 실험 기록은 [날짜별 로컬 아카이브](../../docs/archive/README.md)에 보존합니다.
 
@@ -14,9 +14,10 @@
 | 업무 화면 매핑 | 사용자 교육, notebook, 스크린샷, text/control bbox | 의미 이름, 입력 key, 행동 point의 `ScreenMapping` | 의미 이름은 현재 화면 계약, point는 현재 캡처 |
 | 편찬된 기억 | 성공 trace, OCR anchor, pHash | 현재 화면에 재결합한 행동 | 교육 digest와 화면 유사도 범위 |
 
-캡처 직후 기존 viewport·pHash 조건으로 기억을 검색합니다. 일치하면 필드 bbox·입력 키·절차를
-인출하여 OmniParser를 생략하고, 미일치하면 OmniParser로 bbox를 찾습니다. 현재 문자열은
-두 경로 모두 새 `scan()`마다 OCR로 읽습니다. 캡처가 같아도 OCR을 생략하지 않습니다.
+캡처의 현재 OCR을 먼저 읽고 기억을 검색합니다. 일반 그룹은 viewport·pHash 조건을 사용하고,
+활성 메서드의 다음 저장 결과 그룹은 현재 메시지와 행동 대상의 OCR 앵커·상대 기하를 결합합니다.
+일치하면 현재 필드 bbox·입력 키·절차를 인출하여 OmniParser를 생략하고, 미일치하면
+OmniParser로 bbox를 찾습니다. 캡처가 같아도 OCR을 생략하지 않습니다.
 같은 관찰을 다시 판단하는 `rematch()`와 보완 탐지는 이미 읽은 OCR을 사용하며, 현재 문맥 회상,
 패턴 매칭, 화면 판단은 같은 순서로 실행합니다.
 관찰과 업무 판단은 같은 ScreenMapping으로 의미 이름과 bbox를 선택합니다.
@@ -34,8 +35,8 @@ Florence-2의 기능 캡션은 빈 입력칸을 `Maximize`, `Center` 등으로 �
 과거 기록과 내부 장면의 숫자 참조는 유지하지만 모델 번호용 별도 codec은 없습니다.
 
 따라서 OCR/OmniParser 번호가 다음 캡처에서 바뀌어도 notebook과 업무 입력의 의미 key가 번호에
-묶이지 않습니다. 기억 재사용은 성공 좌표를 viewport와 pHash로 검증해 재사용하고, 재결합 실패 시
-현재 화면 모델 경로로 돌아갑니다.
+묶이지 않습니다. 일반 기억은 성공 좌표를 viewport와 pHash로 확인하고, 저장 결과 그룹은 현재
+메시지와 클릭 대상을 연결해 현재 좌표로 실행합니다. 재결합 실패 시 현재 화면 모델 경로로 돌아갑니다.
 
 ## 행동 point와 안전 경계
 

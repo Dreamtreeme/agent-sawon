@@ -1,6 +1,6 @@
 # 현재 코드 실행 흐름
 
-기준일: 2026-11-04. 모델·비용·제거된 동작은 [현행 런타임 기준](current-runtime.md),
+기준일: 2026-11-05. 모델·비용·제거된 동작은 [현행 런타임 기준](current-runtime.md),
 상태와 저장소 경계는 [계약 지도](contracts.md)를 함께 따릅니다.
 
 ## 서류에서 화면 작업까지
@@ -40,7 +40,8 @@ flowchart TD
 반환합니다. 라우팅은 선형 단계 번호가 아니라 현재 책임의 결과에 따라 네 노드 또는 `finish`로
 이동합니다.
 
-- **Observation**: relay 캡처 직후 화면 유사도를 확인합니다. 일치한 기억에서 필드 기하를
+- **Observation**: relay 캡처와 현재 OCR 뒤 다음 기억을 결합합니다. 일반 그룹은 화면 유사도,
+  활성 메서드의 다음 저장 결과 그룹은 현재 메시지·대상을 사용합니다. 결합된 필드 기하를
   인출하거나 OmniParser로 탐색합니다. GPU OCR은 현재 문자열을 관찰 자료로 제공하며,
   기억 인출은 필드 구조·입력 키·행동만 재사용하고 과거 확인값을 현재 값으로 발행하지 않습니다. 직전 행동이 있으면
   새 관찰에서 전달 효과를 확인합니다. 구조·위치 변화는 `compare_navigation` →
@@ -62,14 +63,15 @@ flowchart TD
 
 ## 화면 의미 경로
 
-화면 유사도를 먼저 확인하고 관찰 원천을 분기합니다. 함수와 데이터 계약은
+현재 OCR로 다음 기억의 결합 가능성을 확인하고 탐지 필요 여부를 나눕니다. 함수와 데이터 계약은
 [용어와 코드 대응](runtime-terminology.md)을 참고합니다.
 
 ```mermaid
 flowchart TD
-    CAP[현재 캡처] --> SIM{편찬 경로의 다음 진입 화면과 유사도}
+    CAP[현재 캡처] --> TEXT[현재 OCR]
+    TEXT --> SIM{편찬 경로의 다음 그룹 결합}
     SIM -->|일치| MEM[Memory Retrieval: 업무 지식 인출]
-    SIM -->|미일치| SCAN[Scanning: OCR·OmniParser]
+    SIM -->|미일치| SCAN[Scanning: OmniParser 후보 탐색]
     MEM --> STRUCTURE[필드 구조·입력 키·행동 인출]
     STRUCTURE --> STATE[현재 상태·실행 계약과 문맥 원천 확보]
     SCAN --> STATE

@@ -142,12 +142,6 @@ class ScreenScanner:
             width=shot.width,
             height=shot.height,
         )
-        identity = {"image_size": [page.width, page.height], "screen_phash": cache_key[0]}
-        memory = (
-            self.retrieve_screen_memory(identity)
-            if self.retrieve_screen_memory is not None
-            else None
-        )
         blocks = self.ocr.read(page)
         for secret in self.secrets:
             if secret:
@@ -165,6 +159,21 @@ class ScreenScanner:
                 "ocr_ms": ocr_ms,
                 "blocks": [block.model_dump(mode="json") for block in blocks],
             },
+        )
+        ocr_markers = build_markers(
+            blocks, [], page.width, page.height, settings=self.merge_settings
+        )
+        memory = (
+            self.retrieve_screen_memory(
+                {
+                    "image_size": [page.width, page.height],
+                    "screen_phash": cache_key[0],
+                    "ocr": [block.model_dump(mode="json") for block in blocks],
+                    "markers": [marker.model_dump(mode="json") for marker in ocr_markers],
+                }
+            )
+            if self.retrieve_screen_memory is not None
+            else None
         )
         # Compare with the original cached capture, not a chain of similar frames.
         distance, previous = min(
@@ -199,6 +208,7 @@ class ScreenScanner:
                 None,
                 ocr_ms,
                 reused_boxes=previous.boxes,
+                ocr_markers=ocr_markers,
             )
             catalog.reused = True
             self.log.append(
@@ -213,10 +223,14 @@ class ScreenScanner:
                 },
             )
             return self._resolve(wire, catalog, ocr_ms=ocr_ms, detector_ms=detector_ms)
-        catalog, detector_ms = self._build_catalog(page, cache_key, blocks, memory, ocr_ms)
+        catalog, detector_ms = self._build_catalog(
+            page, cache_key, blocks, memory, ocr_ms, ocr_markers=ocr_markers
+        )
         return self._resolve(wire, catalog, ocr_ms=ocr_ms, detector_ms=detector_ms)
 
-    def _build_catalog(self, page, cache_key, blocks, memory, ocr_ms=0.0, *, reused_boxes=None):
+    def _build_catalog(
+        self, page, cache_key, blocks, memory, ocr_ms=0.0, *, reused_boxes=None, ocr_markers=None
+    ):
         """Two observation sources feed the same context-recall and grounding path."""
         folder = page.image_path.parent
         local_started = perf_counter()
@@ -243,8 +257,10 @@ class ScreenScanner:
                 "source": geometry_source,
             },
         )
-        markers = build_markers(
-            blocks, boxes, page.width, page.height, settings=self.merge_settings
+        markers = (
+            list(ocr_markers)
+            if memory is not None and ocr_markers is not None
+            else build_markers(blocks, boxes, page.width, page.height, settings=self.merge_settings)
         )
         selected_fields = {}
         if memory is not None:
