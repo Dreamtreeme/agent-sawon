@@ -23,7 +23,8 @@ def remember_screen(
     """Apply the model's current node, bindings and readings as a memory delta.
 
     Do not infer observations from the next action, matching input values or OCR
-    handles. Omitted fields preserve discoveries from earlier viewports.
+    handles. Omitted fields preserve discoveries from earlier viewports. Partial
+    taught outcomes remain available even before the whole step is completed.
     """
     screen_path = mapping.screen_path
     # The root holds observations with no identified screen, never the previous screen's facts.
@@ -41,7 +42,10 @@ def remember_screen(
             # Buttons/tabs are remembered as discoveries, not invented child screens.
             entry = node["controls"].setdefault(name, {})
         entry.update(
-            label=name, role=field.role, bbox=list(field.bbox), observation_id=observation_id
+            label=entry.get("label", name),
+            role=field.role,
+            bbox=list(field.bbox),
+            observation_id=observation_id,
         )
         if field.source in values and "value" in field.model_fields_set:
             entry["last_observation"] = {
@@ -49,6 +53,16 @@ def remember_screen(
                 "observation_id": observation_id,
                 "observation_number": observation_number,
             }
+    for result in mapping.observed_step_results:
+        history = node.setdefault("observed_step_results", {}).setdefault(result.step_id, [])
+        fact = {
+            "observed_result": result.observed_result,
+            "completed": result.completed,
+            "observation_id": observation_id,
+            "observation_number": observation_number,
+        }
+        if fact not in history:
+            history.append(fact)
     return node
 
 
@@ -67,7 +81,7 @@ def remember_input_delivery(
         json.dumps(path, ensure_ascii=False), {"path": list(path), "fields": {}, "controls": {}}
     )
     entry = node["fields"].setdefault(source, {})
-    entry.update(target)
+    entry.update(target, label=entry.get("label", target["label"]))
     node["controls"].pop(target["label"], None)
     entry["delivery"] = {
         "value": value,
@@ -103,6 +117,17 @@ def recall_screen_tree(nodes: Mapping[str, dict]) -> dict:
         branch["controls"] = {
             name: {"role": field["role"]} for name, field in node.get("controls", {}).items()
         }
+        if "observed_step_results" in node:
+            branch["observed_step_results"] = {
+                step_id: [
+                    {
+                        key: result[key]
+                        for key in ("observed_result", "completed", "observation_number")
+                    }
+                    for result in history
+                ]
+                for step_id, history in node["observed_step_results"].items()
+            }
     return tree
 
 

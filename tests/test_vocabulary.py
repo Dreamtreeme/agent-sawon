@@ -1,5 +1,6 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
+ScreenMatch/ScreenPlan distinguish action decisions from observation-only schemas (2026-11-05).
 ScreenFillPlan now carries credential inputs and an optional action; LoginScreenPlan is removed.
 ScreenMatch/ScreenPlan add a current-model route resumption group (2026-11-02).
 ScreenMatch/ScreenPlan preserve table state, named parents and focus in observations (2026-11-02).
@@ -121,8 +122,8 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
             TargetedMatchAction,
             "010d16ae1c205f2e97b7661173dd1ff9f35ba34aa17a3d6b0a4165447c6f755c",
         ),
-        (ScreenPlan, "4f981e6cf3c80960c847e52a8843ee2672407526c3f3c65d0de7f30a61ff8bf6"),
-        (ScreenMatch, "4f981e6cf3c80960c847e52a8843ee2672407526c3f3c65d0de7f30a61ff8bf6"),
+        (ScreenPlan, "b620fc27f054645a3f7c8206a8fec6ac96b525c2c5a7a81a30247f2d709d0a56"),
+        (ScreenMatch, "b620fc27f054645a3f7c8206a8fec6ac96b525c2c5a7a81a30247f2d709d0a56"),
         (Decision, "0dd9a48fb753c30ea6f54d65c1272bfc631435abedc33d3864e138bf412f5bf0"),
         (
             WireActDecision,

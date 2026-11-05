@@ -276,6 +276,108 @@ def test_synthetic_model_memory_delta_is_not_reinterpreted_from_ocr(tmp_path, re
     assert not any(event.kind == "act" for event in brain.log.read_all())
 
 
+def test_synthetic_saved_detail_partial_result_is_recalled_with_prior_readings(tmp_path, record):
+    # Synthetic reduction of live 404 -> 433, using the existing fake model/relay.
+    # No assertion here claims how a live model will use the recalled partial result.
+    from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
+    from brain.task_instruction import TaughtProcedureStep
+
+    first = observed_response(record)
+    first["screen_path"] = ["Query", "Saved detail"]
+    first["observed_step_results"] = [
+        {
+            "step_id": "verify-detail",
+            "observed_result": "Requeried reference matches; weight is offscreen.",
+            "completed": False,
+        }
+    ]
+    second = deepcopy(first)
+    second["fields"].pop("Reference")
+    second["fields"]["Weight"] = {
+        "role": "edit",
+        "source": "gross_weight_kg",
+        "bbox": [100, 15, 150, 30],
+        "value": "1250.5",
+    }
+    second["observed_step_results"] = [
+        {
+            "step_id": "verify-detail",
+            "observed_result": "Requeried weight matches; reference is now offscreen.",
+            "completed": False,
+        }
+    ]
+    final = deepcopy(second)
+    final["observed_step_results"] = [
+        {
+            "step_id": "verify-detail",
+            "observed_result": "Prior reference and weight readings establish saved values match.",
+            "completed": True,
+        }
+    ]
+    brain, model = prepare_worker(tmp_path / "partial-result", record, [first, second, final])
+    brain.task_instruction = brain.task_instruction.model_copy(
+        update={
+            "procedure": [
+                TaughtProcedureStep(
+                    id="verify-detail", instruction="Review saved detail", completion="Values match"
+                )
+            ]
+        }
+    )
+    brain.active_taught_step = "verify-detail"
+    brain._observe()
+    node = brain.screen_nodes[json.dumps(first["screen_path"])]
+    assert node["observed_step_results"]["verify-detail"] == [
+        {
+            "observed_result": first["observed_step_results"][0]["observed_result"],
+            "completed": False,
+            "observation_id": str(brain.observation.obs_id),
+            "observation_number": 1,
+        }
+    ]
+    assert brain.completed_taught_steps == set()
+
+    brain._observe()
+    supplied = json.loads(model.prompts[1][len(CONTEXT_MAPPING_RULES) :])
+    recalled = supplied["notebook"]["screen_tree"]["children"]["Query"]["children"]["Saved detail"]
+    assert recalled["observed_step_results"] == {
+        "verify-detail": [
+            {
+                "observed_result": first["observed_step_results"][0]["observed_result"],
+                "completed": False,
+                "observation_number": 1,
+            }
+        ]
+    }
+    assert recalled["fields"]["hbl_no"]["last_observation"]["value"] == record.fields.hbl_no.value
+    assert node["observed_step_results"]["verify-detail"][1] == {
+        "observed_result": second["observed_step_results"][0]["observed_result"],
+        "completed": False,
+        "observation_id": str(brain.observation.obs_id),
+        "observation_number": 2,
+    }
+    # Compilation may reuse the same response in this observation; retain it only once.
+    brain._remember_model_task_evidence(brain.visual_proposal)
+    assert len(node["observed_step_results"]["verify-detail"]) == 2
+    assert brain.completed_taught_steps == set()
+    brain._observe()
+    supplied = json.loads(model.prompts[2][len(CONTEXT_MAPPING_RULES) :])
+    recalled = supplied["notebook"]["screen_tree"]["children"]["Query"]["children"]["Saved detail"]
+    assert recalled["observed_step_results"]["verify-detail"] == [
+        {
+            "observed_result": response["observed_step_results"][0]["observed_result"],
+            "completed": False,
+            "observation_number": number,
+        }
+        for number, response in enumerate((first, second), start=1)
+    ]
+    assert recalled["fields"]["hbl_no"]["last_observation"]["value"] == record.fields.hbl_no.value
+    assert recalled["fields"]["gross_weight_kg"]["last_observation"]["value"] == "1250.5"
+    assert node["observed_step_results"]["verify-detail"][2]["completed"] is True
+    assert brain.completed_taught_steps == {"verify-detail"}
+    assert not any(event.kind == "act" for event in brain.log.read_all())
+
+
 def test_synthetic_memory_uses_explicit_model_bindings_and_preserves_unseen_values():
     from brain.graph.screen_mapping import ScreenMapping
     from brain.graph.screen_memory import remember_screen
@@ -300,7 +402,7 @@ def test_synthetic_memory_uses_explicit_model_bindings_and_preserves_unseen_valu
         ("offscreen", {}, "READ"),
         (
             "unread",
-            {"Ref": {"source": "reference", "role": "text", "bbox": [10, 10, 40, 20]}},
+            {"Renamed Ref": {"source": "reference", "role": "edit", "bbox": [10, 25, 40, 20]}},
             "READ",
         ),
         (
@@ -312,6 +414,10 @@ def test_synthetic_memory_uses_explicit_model_bindings_and_preserves_unseen_valu
         update = mapping.model_copy(update={"fields": ScreenMapping(fields=fields).fields})
         remember_screen(nodes, update, values, label, observation_number=2)
         assert node["fields"]["reference"]["last_observation"]["value"] == expected, label
+        assert node["fields"]["reference"]["label"] == "Ref", label
+        if label == "unread":
+            assert node["fields"]["reference"]["role"] == "edit"
+            assert node["fields"]["reference"]["bbox"] == [10, 25, 40, 20]
     # Neither a fill plan nor an equal literal value creates an observed binding.
     unmapped = ScreenMapping(
         screen_path=["Other"],
@@ -337,6 +443,19 @@ def test_synthetic_memory_uses_explicit_model_bindings_and_preserves_unseen_valu
     assert other["fields"] == {}
     assert "Ref" in other["controls"]
     assert node["fields"]["reference"]["last_observation"]["value"] == ""
+    # Reusing an input source in another screen must retain that screen's own label.
+    remember_screen(
+        nodes,
+        ScreenMapping(
+            screen_path=["Other"],
+            fields={"Other Ref": {**unmapped.fields["Ref"].model_dump(), "source": "reference"}},
+        ),
+        values,
+        "frame-4",
+        observation_number=4,
+    )
+    assert other["fields"]["reference"]["label"] == "Other Ref"
+    assert node["fields"]["reference"]["label"] == "Ref"
 
 
 def test_synthetic_116_screen_tree_keeps_delivered_inputs_across_scrolls(tmp_path, record):
@@ -537,12 +656,13 @@ def test_synthetic_input_receipt_order_survives_identical_capture_ids():
             path,
             "reference",
             "SAME-VALUE",
-            target={"label": "Reference", "role": "edit", "bbox": [10, 10, 40, 20]},
+            target={"label": "Renamed reference", "role": "edit", "bbox": [10, 10, 40, 20]},
             observation_id="same-capture",
             observation_number=1,
         )
         entry["last_observation"]["observation_number"] = read_number
         assert pending_screen_inputs(nodes) == ({"reference"} if pending else set()), (read_number,)
+        assert entry["label"] == "Reference", (read_number,)
     # Nodes preserve their own facts; a later source observation answers an older delivery.
     other_path = ["Registration", "Additional"]
     other = deepcopy(nodes[key])

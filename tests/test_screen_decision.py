@@ -3211,7 +3211,7 @@ def test_semantic_mapping_uses_explicit_result_names_for_completion():
     assert {item.target for item in response.completion_evidence} == {response.row}
 
 
-def test_semantic_mapping_never_retargets_actions_from_a_descriptive_fragment():
+def test_semantic_mapping_uses_declared_name_at_unique_current_point():
     from brain.graph.screen_mapping import ScreenMapping
 
     mapping = ScreenMapping.model_validate(
@@ -3239,12 +3239,20 @@ def test_semantic_mapping_never_retargets_actions_from_a_descriptive_fragment():
         }
     )
 
-    with pytest.raises(KeyError, match="Save Completion Close"):
-        mapping.local_payload({})
-    mapping.steps[0].target = "Save Completion Close Button"
     response = ScreenMatch.model_validate(mapping.local_payload({}))
+    assert (
+        next(
+            control.visual_description
+            for control in response.controls
+            if control.id == response.steps[0].target
+        )
+        == "Save Completion Close Button"
+    )
     assert response.steps[0].target != response.grid
     assert response.grid is None  # An act plan does not consume result-grid metadata.
+    mapping.fields["Overlapping control"] = mapping.fields["Save Completion Close Button"]
+    with pytest.raises(KeyError, match="Save Completion Close"):
+        mapping.local_payload({})  # A point shared by two controls cannot choose their names.
 
 
 @pytest.mark.parametrize("separate", [False, True], ids=["combined", "reused-observation"])
@@ -3281,14 +3289,78 @@ def test_named_fields_replace_number_recovery_for_mixed_targets(tmp_path, record
     assert len(model.prompts) == len(replies)
 
 
-def test_named_missing_target_defers_plan_without_number_grounding_retry(tmp_path, record):
+def test_named_action_reuses_declared_name_without_replanning(tmp_path, record):
     data = named_response()
     data["steps"][0]["target"] = "Missing field"
     brain, model, *_ = setup_brain(tmp_path, record, [data])
     brain._observe()
-    assert brain.visual_plan_error == "screen_match_action_target_undeclared"
+    assert brain.visual_plan_error is None
+    assert brain._select_node() == "review"
+    action = brain.action_plan.actions[0].decision.action
+    assert action.source == "hbl_no"
+    assert next(item.name for item in brain.observation.elements if item.ref == action.ref) == (
+        "Reference"
+    )
     assert len(model.prompts) == 1
     assert not any(e.kind == "act" for e in brain.log.read_all())
+
+
+def test_same_node_reuses_first_input_name_with_current_geometry(tmp_path, record):
+    first = named_response(screen_path=["Editor"])
+    second = named_response(
+        screen_path=["Editor"],
+        fields={
+            "Renamed reference": {"source": "hbl_no", "role": "edit", "bbox": [100, 100, 150, 30]}
+        },
+        steps=[
+            {
+                "target": "Renamed reference",
+                "action": "fill",
+                "intent": "fill",
+                "source": "hbl_no",
+                "point": [125, 115],
+            }
+        ],
+    )
+    brain, model, *_ = setup_brain(tmp_path, record, [first, second])
+    brain._observe()
+    brain.visual_proposal = None
+    assert brain._select_node() == "review"
+    selected = brain.screen_scanner._catalog.selected_fields.values()
+    assert [(field["name"], field["bbox"]) for field in selected] == [
+        ("Reference", [100, 100, 150, 30])
+    ]
+    assert len(model.prompts) == 2
+
+
+def test_canonical_name_collisions_preserve_fields_and_repair_references():
+    from brain.graph.screen_mapping import ScreenMapping
+
+    nodes = {
+        json.dumps(["Editor"]): {
+            "fields": {
+                source: {"label": "Reference", "role": "edit"} for source in ("hbl_no", "mbl_no")
+            }
+        }
+    }
+    raw = named_response(
+        screen_path=["Editor"],
+        fields={
+            "House": {"source": "hbl_no", "role": "edit", "bbox": [100, 15, 150, 30]},
+            "Master": {"source": "mbl_no", "role": "edit", "bbox": [100, 90, 150, 30]},
+        },
+        steps=[
+            {"target": "House", "action": "fill", "intent": "fill", "point": [125, 28]},
+            {"target": "Master", "action": "fill", "intent": "fill", "point": [125, 103]},
+        ],
+    )
+    mapping = ScreenMapping.model_validate(raw).reuse_names(nodes)
+    assert list(mapping.fields) == ["House", "Master"]
+    assert [step.target for step in mapping.steps] == ["House", "Master"]
+    del raw["fields"]["Master"]
+    raw.update(steps=raw["steps"][:1], save_result="rejected", repair_fields=["House"])
+    repaired = ScreenMapping.model_validate(raw).reuse_names(nodes).local_payload({})
+    assert repaired["repair_fields"] == ["hbl_no"]
 
 
 @pytest.mark.parametrize("terminal", ["search", "save", "navigate"])
@@ -3483,6 +3555,7 @@ def test_unresolved_annotations_preserve_actions_without_inventing_proof():
     }
     assert ScreenMatch.model_validate(data).mapping is not None
     data["steps"][0]["target"] = "unresolvable executable target"
+    data["steps"][0]["point"] = [399, 199]
     with pytest.raises(KeyError, match="unresolvable executable target"):
         ScreenMatch.model_validate(data).mapping.local_payload({})
 

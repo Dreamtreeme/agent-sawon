@@ -236,15 +236,6 @@ def execution_context(request: ExecutionContextRequest) -> dict:
         "conditional": proposal is not actual,
         "final_required_fields": (sorted(request.values) if request.phase == "final_query" else []),
     }
-    if actual.facts.remaining_credentials:
-        contract["allowed_action_batches"] = [
-            {
-                "kind": "login",
-                "credential_sources": list(actual.facts.remaining_credentials),
-                "final_intent": "login",
-                "atomic_screen_boundary": True,
-            }
-        ]
     contract["remaining_inputs" if actual.facts.phase == "task" else "remaining_fields"] = (
         proposal_prompt["remaining_fields"]
     )

@@ -108,8 +108,12 @@ relay는 단일 행동과 배치에서 같은 물리 입력 함수를 사용하�
 `ScreenPlan`/`ScreenMatch`가 같은 목록을 전달하고
 `_remember_model_task_evidence()`가 관찰 경로와 별도 선택 경로 모두에서 실행 전에
 완료된 항목을 기존 `completed_taught_steps`에 누적한다. 등록된 교육 ID만 반영하며 중복은 무시한다.
-다음 요청의 `taught_procedure_progress.completed_step_ids`에 노출한다. 관찰 설명 원문은
-해당 응답 기록에 보존하며 완료 ID와 별도의 진행 상태 복사본을 만들지 않는다. 행동 선택·전달만으로
+다음 요청의 `taught_procedure_progress.completed_step_ids`에 노출한다. 부분 관찰도
+`screen_nodes`의 노드별 `observed_step_results[step_id]` 목록에 결과·완료값·관찰 ID·순번으로
+누적한다. 동일한 관찰 결과의 중복 반영은 생략하며, 다른 부분 결론은 덮어쓰지 않는다.
+`recall_screen_tree`는 관찰 ID를 제외한 사실 목록을 다음 판단에 전달한다. 이 메모는 이미
+진행된 사실이며 `completed=false`는 단계 전체가 미완료라는 뜻이다. 부분 사실을 무효화하지
+않는다. 명시적인 완료만 기존 완료 ID에 반영한다. 행동 선택·전달만으로
 완료를 추론하거나 전체 업무 성공으로 바꾸지 않는다. 기존 응답은 빈 목록으로 읽는다.
 화면 캐시는 전체 판단 문맥이 일치할 때 행동 구조를 재사용하며 과거 관찰값과 완료 판단은
 현재 응답에서 제거한다. `MethodActionGroup`과 `MethodCompletion`의 `observed_step_results`는
@@ -289,6 +293,9 @@ provisional 진도로 기록한다. 비모델 경로의 입력 검증과 `SavedE
 `mapping_prompt`는 같은 자료를 재사용한다. serializer는 raw screen을 다시 받거나 덮어쓰지 않는다.
 교육 확장과 복구 설명은 문맥에 추가하며, 이전 화면 기억과 인출된 구조는 현재 관찰값과 구분한다.
 모델 경계는 일반 판단·보완·관찰 녹화기 모두 `ScreenMappingWire`/`ScreenMapping`을 사용한다.
+실행 판단의 `ScreenPlan`/`ScreenMatch` provider 스키마는 관찰 전용과 달리 현재 관찰을
+반영한 다음 실행 행동까지 요구한다. 설명문만으로 행동을 대체하지 않는다. 완료·중단과
+교육 조회·재탐지 요청의 빈 행동은 유지하며, 새로운 거절이나 재시도 조건은 추가하지 않는다.
 숫자 마커 응답용 보완·복호화 프로토콜은 사용하지 않는다. `ScreenMatch`와 `SemanticDetection`의
 숫자 참조는 로컬 장면·실행 및 과거 기록을 읽는 내부 계약이다.
 
@@ -308,8 +315,13 @@ provisional 진도로 기록한다. 비모델 경로의 입력 검증과 `SavedE
 `evidence` 목록은 필드 연결을 추가하거나 덮어쓰지 않는다. 입력 record가 있는 실행 경계에서는
 정확한 source와 현재 값을 비교하고, record 없는 변환 단계의 evidence는 읽은 값의 연결일 뿐
 입력 일치나 업무 성공의 판정이 아니다. 값이 같다는 이유로 다른 업무 키를 선택하지 않는다.
-대상 이름은 선언한 필드 이름 또는 그 필드의 유일한 명시적 source로 연결한다. 이름 일부,
-표시 값, 유일한 컨트롤 role로 대상을 추측하지 않는다. 미해결 보조 주석·grid·row는
+같은 화면 노드의 같은 입력 source는 처음 모델이 정한 이름을 유지하고 현재 기하·값을
+갱신한다. `ScreenMapping.reuse_names`는 현재 응답의 입력 연결이 유일하고 이름 충돌이 없을 때
+필드와 그 참조를 기존 이름으로 통일한다. 다른 노드나 미식별 경로의 이름은 승계하지 않는다.
+대상은 선언 이름·유일한 source로 연결한다. 이름이 어긋난 클릭·입력·키 행동은 현재 응답의
+좌표를 포함하는 조작 가능한 선언 영역이 유일하면 그 이름을 사용한다. 과거 좌표·문자열 유사도나
+role만으로 대상을 추측하지 않는다. 스크롤 좌표는 문맥 필드의 영역과 독립이므로 이 연결을
+사용하지 않는다. 미해결 보조 주석·grid·row는
 `unresolved_annotations`에 기록하고 증거로 사용하지 않는다. 미해결 행동 대상은 기존 대상
 조회 오류를 유지한다. 관찰 중 다음 행동의 대상이 미선언이면 실행 steps를 비우고
 `ScreenDecisionResult.plan_error`로 인계하여 현재 필드 관찰을 보존한다. 원문 mapping에는

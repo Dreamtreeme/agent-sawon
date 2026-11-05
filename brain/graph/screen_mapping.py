@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Mapping
 from typing import Annotated, Any, ClassVar, Literal
 
@@ -13,6 +14,7 @@ from brain.task_instruction import ObservedStepResult
 from brain.visual.frame import frame_input
 from brain.visual.scene import contains
 from brain.vocabulary import (
+    ACTION_CONTROL_ROLES,
     SCROLL_DIRECTION_KEYS,
     ControlRole,
     KeyboardInput,
@@ -151,6 +153,52 @@ class ScreenMapping(BaseModel):
             }
         return value
 
+    def reuse_names(self, nodes: Mapping[str, dict]) -> ScreenMapping:
+        """Keep the first name of an unambiguous input in this screen node."""
+        if not self.screen_path:
+            return self
+        known = nodes.get(json.dumps(self.screen_path, ensure_ascii=False), {}).get("fields", {})
+        counts = Counter(field.source for field in self.fields.values())
+        names = {}
+        for name, field in self.fields.items():
+            prior = known.get(field.source, {})
+            canonical = prior.get("label", name)
+            if (
+                field.source
+                and counts[field.source] == 1
+                and canonical != name
+                and canonical not in self.fields
+            ):
+                names[name] = canonical
+        collisions = Counter(names.values())
+        names = {name: canonical for name, canonical in names.items() if collisions[canonical] == 1}
+        if not names:
+            return self
+        return self.model_copy(
+            update={
+                "fields": {
+                    names.get(name, name): field.model_copy(
+                        update={"parent": names.get(field.parent, field.parent)}
+                    )
+                    if field.parent in names
+                    else field
+                    for name, field in self.fields.items()
+                },
+                "steps": [
+                    step.model_copy(update={"target": names.get(step.target, step.target)})
+                    for step in self.steps
+                ],
+                "completion_evidence": [
+                    item.model_copy(update={"target": names.get(item.target, item.target)})
+                    for item in self.completion_evidence
+                ],
+                "message_targets": [names.get(name, name) for name in self.message_targets],
+                "repair_fields": [names.get(name, name) for name in self.repair_fields],
+                "grid": names.get(self.grid, self.grid),
+                "row": names.get(self.row, self.row),
+            }
+        )
+
     def local_payload(self, screen: dict, inputs: Mapping[str, str] | None = None) -> dict:
         """Allocate transient executor references only after the model chose meaning/geometry."""
         # Runtime refs are a projection of this frame, never accumulated model identities.
@@ -158,7 +206,7 @@ class ScreenMapping(BaseModel):
         next_id = max((m["id"] for m in markers), default=0) + 1
         ids = {name: next_id + i for i, name in enumerate(self.fields)}
 
-        def field_name(reference: str) -> str:
+        def field_name(reference: str, step=None) -> str:
             if reference in ids:
                 return reference
             matching_names = [
@@ -166,10 +214,24 @@ class ScreenMapping(BaseModel):
             ]
             if len(matching_names) == 1:
                 return matching_names[0]
+            if step is not None and not isinstance(step, NamedScrollAction):
+                # Use only this response's declared geometry, never a similar
+                # string or an earlier viewport's coordinates, to reuse its name.
+                x, y = step.point
+                matching_names = [
+                    name
+                    for name, field in self.fields.items()
+                    if field.enabled
+                    and field.role in ACTION_CONTROL_ROLES[step.action]
+                    and field.bbox[0] <= x < field.bbox[0] + field.bbox[2]
+                    and field.bbox[1] <= y < field.bbox[1] + field.bbox[3]
+                ]
+                if len(matching_names) == 1:
+                    return matching_names[0]
             raise KeyError(reference)
 
         # Resolve executable targets before mutating the current screen catalog.
-        actions = [(step, field_name(step.target)) for step in self.steps]
+        actions = [(step, field_name(step.target, step)) for step in self.steps]
         # Parent links enrich observation only; an undeclared parent must not erase it.
         parents = {name: ids.get(field.parent) for name, field in self.fields.items()}
         controls = []
@@ -353,6 +415,8 @@ Pattern Matching then binds known procedures to this situation before this actio
 First identify screen_path from the CURRENT image: parent window and active tab/subview.
 Use the same names as notebook.screen_tree when returning to a known view. A scroll stays
 in the same node; another tab selects a sibling. Do not invent contents of unopened tabs.
+The first chosen field name is its canonical name in that node. Reuse the remembered label
+for the same input source, and use that exact name throughout this response's actions.
 Select the node before interpreting fields. Only that node's remembered fields belong to
 this view; other nodes are historical context, not visible fields. Return all currently
 readable business fields with their source keys, including fields not used by the next action.
@@ -364,6 +428,9 @@ screen_tree.children organizes visited screens and their children. Root fields h
 screen and must not be assigned to a known node. All tree entries are history, not current
 visibility or action coordinates. Get visible targets from this image; navigate to hidden targets.
 Each field's last_observation is what was read; delivery is what was successfully sent there.
+Each node's observed_step_results contains facts already established in this run, including
+partial progress when completed=false. Combine those facts with new readings; false means
+the whole taught step still has work, not that its recorded partial observations were undone.
 pending_verification_inputs lists delivered inputs with no later reading of that source,
 even after scrolling or other inputs. Do not treat these as never entered. Correct from evidence.
 remaining_inputs means not yet verified, not necessarily blank or not entered. Use the tree's
@@ -394,7 +461,11 @@ An explicitly empty value records a visible empty field. Omitted fields retain e
 steps contains only work still needed after these observations: never copy an already satisfied
 fill into steps. purpose explains those same steps; it is not a separate executable plan.
 Preserve the taught route and completion conditions. Requested instruction IDs retrieve details.
-Batch ordered work grounded in this screen, including inputs followed by a submit/search command.
+Return executable steps in this response after updating observations. A purpose or a progress
+report alone is not an action. When work remains and no education/scanning request is needed,
+operation=act must include the actual next actions. Batch ordered work grounded in this screen,
+including inputs followed by scroll or a submit/search command. A terminal scroll may reveal
+the next viewport; leave actions on its newly revealed fields for the next observation.
 Do not guess targets or results revealed only after a screen change; observe them in the next turn.
 If inputs are offscreen, use action=scroll with direction=down or up,
 choosing a point inside the current image's scrollable region. The wheel point

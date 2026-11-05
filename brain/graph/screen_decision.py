@@ -148,7 +148,22 @@ class ScreenPlan(MethodChoice):
     @classmethod
     def model_json_schema(cls, *args, **kwargs):
         if kwargs.get("mode", "validation") != "serialization":
-            return compact_provider_schema(ScreenMappingWire.model_json_schema())
+            schema = compact_provider_schema(ScreenMappingWire.model_json_schema())
+            schema["description"] = (
+                "Observe the screen and decide executable next steps, not an observation-only "
+                "report. Combine accumulated progress facts with current readings."
+            )
+            schema["properties"]["steps"]["description"] = (
+                "Ordered executable actions to perform now. For operation=act, include the "
+                "next actions after recording observations; purpose alone does not execute. "
+                "Empty for non-action result operations, requested education details, "
+                "or local scanning."
+            )
+            schema["properties"]["operation"]["description"] = (
+                "Choose act with actual steps for unfinished work, complete when accumulated "
+                "facts establish the user goal, or stop when unable to proceed."
+            )
+            return schema
         return super().model_json_schema(*args, **kwargs)
 
     @model_validator(mode="before")
@@ -1767,15 +1782,16 @@ def decide_screen(
                     mapped = original_call(prompt, schema, page=page)
                     if mapped.mapping is not None:
                         write_decision_artifact(services, "semantic-mapping", mapped.mapping)
+                        mapping = mapped.mapping.reuse_names(request.screen_nodes)
                         plan_error = None
                         try:
-                            payload = mapped.mapping.local_payload(screen, request.values)
+                            payload = mapping.local_payload(screen, request.values)
                         except KeyError:
                             if not defer_plan_errors:
                                 raise
                             # Keep the current observation; reject only its unbound next action.
                             plan_error = "screen_match_action_target_undeclared"
-                            payload = mapped.mapping.model_copy(update={"steps": []}).local_payload(
+                            payload = mapping.model_copy(update={"steps": []}).local_payload(
                                 screen, request.values
                             )
                         if screen.get("unresolved_annotations"):
@@ -1787,7 +1803,7 @@ def decide_screen(
                                 },
                             )
                         response = ScreenMatch.model_validate(payload).model_copy(
-                            update={"mapping": mapped.mapping}
+                            update={"mapping": mapping}
                         )
                         if plan_error is not None:
                             mapping_plan_error = ScreenDecisionResult(
