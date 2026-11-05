@@ -59,7 +59,9 @@ flowchart TD
 - **Review**: 모델 제안과 현재 관찰 근거를 연결하고 다음 route를 정합니다. 현재 설정의
   `guard_mode = "observe_only"`를 존중하며 과거의 엄격한 휴리스틱을 지침만 보고 복원하지 않습니다.
 - **Execution**: 준비된 `ExecutionRequest`를 공통 실행기에 전달하고 `ExecutionResult`를
-  받습니다. relay 전달 성공은 업무 완료가 아니며 다음 Observation/Review가 효과를 판정합니다.
+  받습니다. 현재 장면의 다중 행동은 좌표·값을 한 번 준비해 클릭·입력·스크롤 혼합 배치로
+  전달합니다. 배치 중간에는 캡처하지 않고, 마지막 스크롤 뒤 새 관찰에서 다음 필드를 연결합니다.
+  relay 전달 성공은 업무 완료가 아니며 다음 Observation/Review가 효과를 판정합니다.
 
 ## 화면 의미 경로
 

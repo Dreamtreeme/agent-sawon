@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from uuid import uuid4
 
 import pytest
 from runtime_profile import current_settings
@@ -31,12 +32,22 @@ class BatchedChangingPixelsRelay(ChangingPixelsRelay):
 
     def act_batch(self, batch):
         self.batches.append(batch)
-        results = [self.act(action) for action in batch.actions]
-        post_obs_id = results[-1].post_obs_id
-        results = [result.model_copy(update={"post_obs_id": post_obs_id}) for result in results]
+        results = []
+        for action in batch.actions:
+            result = self.act(action)
+            results.append(result)
+            if not result.ok:
+                break
+        post_obs_id = next((result.post_obs_id for result in reversed(results) if result.ok), None)
+        results = [
+            result.model_copy(update={"post_obs_id": post_obs_id}) if result.ok else result
+            for result in results
+        ]
+        ok = len(results) == len(batch.actions) and all(result.ok for result in results)
         return ActionBatchResult(
             batch_id=batch.batch_id,
-            ok=True,
+            ok=ok,
+            error=None if ok else results[-1].error,
             results=results,
             post_obs_id=post_obs_id,
             duration_ms=sum(result.duration_ms for result in results),
@@ -96,7 +107,7 @@ class CountingScanner(SyntheticScanner):
         )
 
 
-class SyntheticLoginRelay(ChangingPixelsRelay):
+class SyntheticLoginRelay(BatchedChangingPixelsRelay):
     """Current synthetic controls, with no desktop or provider access."""
 
     def __init__(self, record, *, accept=True, reject_password=False):
@@ -210,6 +221,104 @@ def make_brain(tmp_path, record, relay, responses, *, screen_matching=True):
     perception = CountingScanner(relay, brain, len(responses) if screen_matching else 0)
     brain.screen_scanner = perception
     return brain, perception, model
+
+
+def test_synthetic_three_inputs_then_scroll_observes_hidden_fourth_only_after_batch(
+    tmp_path, record
+):
+    """Use synthetic screens with the actual compiler, executor and graph node methods."""
+    from brain.task_instruction import TaskInstruction
+
+    sources = list(values_for(record))[:4]
+
+    class ScrollRelay(BatchedChangingPixelsRelay):
+        lower = False
+
+        def observe(self):
+            wire = super().observe()
+            visible = {"e0", *(self.field_refs[key] for key in sources[3:] if self.lower)}
+            if not self.lower:
+                visible.update(self.field_refs[key] for key in sources[:3])
+            self.items = [item for item in self.items if item.ref in visible]
+            return wire
+
+        def act(self, action):
+            if action.root.type != "scroll":
+                return super().act(action)
+            assert action.root.obs_id == self.current.obs_id
+            assert action.root.target.capture_id == self.current.screenshot.geometry.capture_id
+            assert action.root.wheel_delta == -600
+            assert all(self.inputs[key] == self.values[key] for key in sources[:3])
+            self.actions.append(action)
+            self.lower = True
+            return ActionResult(
+                action_id=action.root.action_id, ok=True, post_obs_id=uuid4(), duration_ms=1
+            )
+
+    relay = ScrollRelay(record)
+    relay.mode = "editor"
+    first = {
+        "screen_kind": "editor",
+        "procedure_step": "task-action",
+        "controls": [],
+        "steps": [
+            {"source": key, "target": index + 20, "action": "fill", "intent": "fill"}
+            for index, key in enumerate(sources[:3])
+        ]
+        + [
+            {
+                "target": 22,
+                "action": "key",
+                "keys": "pagedown",
+                "intent": "navigate",
+                "point": [500, 50],
+            }
+        ],
+    }
+    second = {
+        "screen_kind": "editor",
+        "procedure_step": "task-action",
+        "controls": [],
+        "steps": [{"source": sources[3], "target": 23, "action": "fill", "intent": "fill"}],
+    }
+    brain, perception, model = make_brain(tmp_path, record, relay, [first, second])
+    brain.task_instruction = TaskInstruction(
+        name="Synthetic scroll input",
+        objective="Enter four supplied values.",
+        completion_conditions=["The four input fields show their supplied values."],
+    )
+    brain.phase = "task"
+    brain._observe()
+    assert not any(item.name == "Input 4" for item in brain.observation.elements)
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    before = relay.calls
+
+    assert brain._act_node() == "observation"
+
+    assert len(relay.batches) == 1
+    assert relay.calls == before + 1, "renew once before the batch, never between its actions"
+    assert [action.root.type for action in relay.batches[0].actions] == [
+        "set_text",
+        "set_text",
+        "set_text",
+        "scroll",
+    ]
+    assert relay.batches[0].actions[-1].root.target.image_point == (500, 50)
+    capture = relay.batches[0].actions[0].root.target.capture_id
+    assert {action.root.target.capture_id for action in relay.batches[0].actions} == {capture}
+    assert relay.inputs[sources[3]] == ""
+    assert len(model.prompts) == 1 and perception.action_counts == [0]
+
+    assert brain._verify_node() == "review"
+    assert perception.action_counts == [0, 4]
+    assert any(item.name == "Input 4" for item in brain.observation.elements)
+    assert len(model.prompts) == 2
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    assert brain._act_node() == "observation"
+    assert relay.actions[-1].root.target.capture_id != capture
+    assert all(relay.inputs[key] == relay.values[key] for key in sources)
 
 
 def test_direct_fill_batch_records_delivered_prefix_on_relay_failure(tmp_path, record):
@@ -392,6 +501,8 @@ def test_synthetic_login_uses_ordered_common_plan_before_one_reread(
         "keyboard": ["set_text", "key", "set_text", "key"],
     }[shape]
     assert [a.root.type for a in relay.actions] == expected_types
+    assert len(relay.batches) == 1
+    assert len({a.root.target.capture_id for a in relay.batches[0].actions}) == 1
     assert set(brain.credential_submissions) == set(brain.credentials)
     assert len(brain.pending["login_plan_descriptors"]) == (2 if shape == "keyboard" else 3)
     assert len(model.prompts) == 1

@@ -15,6 +15,7 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | `WorkerState`와 하위 상태 | `brain/graph/state.py` | `brain/graph/workflow.py`, `engine.py`, graph 노드 | 한 실행 안의 관찰·판단·검토·실행·진행 상태 |
 | 그래프 라우팅 | `brain/graph/workflow.py` | LangGraph | `lifecycle.route`를 다음 책임 노드 또는 `finish`로 연결 |
 | `ExecutionRequest`/`ExecutionResult` | `brain/graph/execution.py` | `engine.py`, relay adapter | 준비된 행동 전달과 relay가 확인한 결과. 업무 성공을 판정하지 않음 |
+| `ActionBatch`/`ActionBatchResult` | `../agent-sawon-bench/interfaces/sawon_interfaces/contracts.py` | core `execution.py`, relay `act_batch` | 같은 관찰·캡처에 연결한 시각 행동을 순서대로 전달하고, 한 번의 최종 관찰과 실제 전달 prefix를 반환 |
 | `ActionPlan`과 화면 입력 계획 | `brain/graph/execution.py`, `screen_batch.py` | `screen_decision`, `selection`, `engine` | 로그인과 일반 행동을 같은 순서 실행기로 전달. `ScreenFillPlan`은 입력과 현재 화면의 후속 행동을 함께 표현 |
 | 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `screen_decision`, `memory_retrieval` | 의미 이름·bbox·입력 key·행동 point의 모델 경계 |
 | 현재 화면 모델 입력 | `brain/visual/frame.py`의 `frame_input` | `context_recall`, 화면 판단, 관찰 녹화기 | 현재 OCR·후보 영역·포함 텍스트를 한 번 투영. 내부 마커 번호를 모델 계약에 노출하지 않음 |
@@ -85,6 +86,19 @@ relay가 확인한 credential 쓰기만 한 번 기록하며, 중간 실패 이�
 마지막 전달의 intent가 login이면 입력 대상과 제출 대상의 descriptor로 다음 관찰을 검토한다.
 입력 전달은 인증 성공을 뜻하지 않는다. `ScreenFillPlan`을 직접 요청하는 경로도 같은 실행기를
 사용하며, 입력만 있는 일반 필드 계획의 배치 전달·검토는 유지한다.
+
+현재 장면의 대상 ref를 가진 다중 행동 계획은 검토 방식과 관계없이 `ActionBatch`로 전달한다.
+core는 실행 직전에 캡처를 한 번 갱신하고 모든 좌표·입력값을 준비한 뒤 relay를 호출한다.
+공개 배치는 클릭·더블클릭·입력·대상 있는 키·스크롤을 같은 obs ID와 capture ID로 전달한다.
+클릭 뒤 같은 위치에 입력하는 순서를 표현할 수 있으므로 대상 좌표의 중복을 거절하지 않는다.
+relay는 단일 행동과 배치에서 같은 물리 입력 함수를 사용하며, 배치 중간에는 캡처하지 않고
+마지막에 한 번 안정된 관찰을 얻는다. 창·DPI·포커스·좌표 검사와 실패 시 후속 행동 중단은 유지한다.
+`ExecutionResult`는 실제 확인된 성공 prefix만 작업자 메모에 반영한다.
+
+`입력 3개 → 스크롤`도 한 계획으로 보낼 수 있다. 스크롤은 현재 보이는 영역의 좌표와 방향으로
+실행하며 아직 가려진 다음 필드의 좌표를 요구하지 않는다. 다음 관찰에서 새 필드의 위치를
+연결하고 기존 입력 전달 메모를 유지한다. 다음 화면에서 처음 드러날 대상을 현재 계획에 추측해
+넣지 않는 모델 계약은 유지하며, relay가 화면 의미나 업무 절차를 다시 추론하지 않는다.
 
 ### 입력 메모와 계획 결합
 

@@ -90,8 +90,8 @@ class PreparedAction:
 
 @dataclass(frozen=True)
 class ExecutionRequest:
-    # Lazy preparation renews each sequential action's capture after the previous
-    # action. Direct fill batches prepare against one shared capture instead.
+    # Visual plans prepare all coordinates and values against one shared capture
+    # before delivery. Nonvisual actions retain individual preparation.
     actions: Iterable[PreparedAction]
     batch: bool = False
 

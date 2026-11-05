@@ -2257,12 +2257,11 @@ class Brain:
                 "select", payload={"obs_id": str(self.observation.obs_id), **plan.audit}
             )
         batch = (
-            plan.verification == "fields"
-            and len(plan.actions) > 1
+            len(plan.actions) > 1
             and isinstance(self.observation, SceneObservation)
             and callable(getattr(self.relay, "act_batch", None))
             and all(
-                item.decision.intent == "fill" and item.decision.action.type == "set_text"
+                item.decision.action is not None and item.decision.action.ref is not None
                 for item in plan.actions
             )
         )
