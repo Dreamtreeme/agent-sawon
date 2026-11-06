@@ -800,8 +800,6 @@ def test_model_plan_trusts_model_semantics_within_the_runtime_input_scope(tmp_pa
     capability = ActionCapability(
         actions=["fill"],
         input_scope=["hbl_no", "mbl_no"],
-        goal="Enter both references",
-        completion="Both references match",
     )
 
     def planned(source):
@@ -1204,7 +1202,7 @@ def test_task_capability_allows_save_after_prior_evidence_without_hiding_inputs(
         ],
         "checkpoint": policy.current_step,
     }
-    capability = task_action_contract(brain.phase, brain.task_instruction, contract, active)
+    capability = task_action_contract(brain.phase, contract, active)
     response = ScreenMatch.model_validate(
         {
             "screen_kind": "editor",
@@ -1567,7 +1565,6 @@ def test_stop_is_rejected_when_current_review_has_all_required_evidence(tmp_path
             proposal,
             task_action_contract(
                 brain.phase,
-                brain.task_instruction,
                 request.execution_contract,
                 set(brain.values),
             ),
@@ -2321,8 +2318,6 @@ def test_unique_procedure_field_binds_selection_effect_without_model_echo():
     step = ActionCapability.model_validate(
         {
             "input_scope": ["shipper"],
-            "goal": "Select the matching partner",
-            "completion": "The editor field matches",
             "actions": ["select_option"],
         }
     )
@@ -2413,14 +2408,16 @@ def test_save_matching_receives_same_action_contract_as_validator(tmp_path, reco
         "allowed_intents": {
             result: sorted(intents) for result, intents in SAVE_RESULT_ACTIONS.items()
         },
-        "instructions": SAVE_REVIEW_GUIDANCE,
         "schema_mapping": {
             "result": "save_result",
             "evidence_refs": "message_targets",
             "next_decision": "steps",
         },
     }
-    assert state["save_review"] == state["execution"]["save_review"] == expected
+    assert "save_review" not in state
+    assert state["execution"]["save_review"] == expected
+    assert state["execution"]["guidance"] == SAVE_REVIEW_GUIDANCE
+    assert model.prompts[-1].count("SAVE RESULT REVIEW:") == 1
 
 
 @pytest.mark.parametrize("pending", [False, True])
@@ -2467,6 +2464,9 @@ def test_task_prompt_separates_available_pending_and_verified_inputs(tmp_path, r
     assert notebook["remaining_inputs"] == ["consignee"]
     assert notebook["pending_verification_inputs"] == (["consignee"] if pending else [])
     assert set(state["capability"]["input_scope"]) == set(brain.values)
+    assert not {"goal", "completion"} & state["capability"].keys()
+    assert state["task"]["objective"] == brain.task_instruction.objective
+    assert state["task"]["completion_conditions"] == brain.task_instruction.completion_conditions
     assert "consignee" not in brain._observed_inputs()
     assert "procedure" not in state
 
@@ -2480,7 +2480,6 @@ def test_observe_only_records_policy_scope_and_disabled_target_without_rejecting
     brain, *_ = setup_brain(tmp_path, record, [])
     capability = task_action_contract(
         brain.phase,
-        brain.task_instruction,
         {"allowed_intents": ["navigate"]},
         {"shipper"},
     )
@@ -3026,8 +3025,6 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
     )
     # The final provider prompt keeps current OCR connected to the detector box.
     assert model.prompts[0].startswith("Choose the next screen action")
-    for stage in ("Scanning", "Pattern Matching", "Memory Retrieval"):
-        assert stage in model.prompts[0], stage
     assert '"id_namespace"' not in model.prompts[0]
     prompted_frame = json.loads(model.prompts[0][len(CONTEXT_MAPPING_RULES) :])["screen"]
     assert prompted_frame["text_regions"] == [
@@ -3602,7 +3599,9 @@ def test_query_result_is_remembered_then_next_action_is_selected(tmp_path, recor
     assert brain._review_node() == "execution"
     assert len(model.prompts) == 2
     assert "query_result_observed" in model.prompts[-1]
-    assert "Do not use duplicate_clear/duplicate_found" in model.prompts[-1]
+    assert "do not use duplicate_clear/duplicate_found" in " ".join(
+        model.prompts[-1].lower().split()
+    )
 
 
 @pytest.mark.parametrize(

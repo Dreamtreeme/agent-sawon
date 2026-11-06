@@ -5,9 +5,11 @@ from pathlib import Path
 
 import pytest
 from sawon_interfaces import ActionResult
+from test_brain import FakeRelay
 from test_brain import record as record
 from test_screen_decision import named_response, setup_brain
 
+from brain.graph.execution import ActionPlan, PlanExecution, PlannedAction
 from brain.graph.schemas import Choice, Decision
 from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
 from brain.task_instruction import TaskInstruction
@@ -169,20 +171,47 @@ def test_synthetic_completed_step_selection_does_not_rewind_education_focus(tmp_
     assert brain.active_taught_step == "enter-visible-record"
 
 
-def test_synthetic_pending_context_preserves_action_and_source_screen(tmp_path, record):
+@pytest.mark.parametrize(
+    "choice,expected",
+    [
+        (Choice(type="double_click", ref="e6"), {"action": "double_click", "target": "Row 1"}),
+        (
+            Choice(type="key", ref="e4", keys="pagedown"),
+            {"action": "scroll", "target": "Result table", "direction": "down"},
+        ),
+        (
+            Choice(type="key", ref="e1", keys="tab"),
+            {"action": "key", "target": "Query identifier", "keys": "tab"},
+        ),
+        (Choice(type="click", ref="old-row"), {"action": "click", "target": None}),
+    ],
+    ids=["row-click", "wheel-scroll", "keyboard-key", "unknown-target"],
+)
+def test_synthetic_pending_context_preserves_action_and_source_screen(
+    tmp_path, record, choice, expected
+):
     brain, *_ = setup_brain(tmp_path, record, [])
+    before = FakeRelay(record, duplicate=True).observe()
     decision = Decision(
         screen_kind="query",
         operation="act",
         intent="navigate",
-        subgoal="open saved row",
+        subgoal="Open saved row and verify all fields later",
         reason="review saved values",
-        action=Choice(type="double_click", ref="old-row"),
+        action=choice,
     )
-    brain.pending = {"decision": decision}
+    delivered = {"decision": decision, "choice": choice, "before_observation": before}
+    undelivered = decision.model_copy(update={"action": Choice(type="click", ref="not-delivered")})
+    execution = PlanExecution(
+        plan=ActionPlan((PlannedAction(decision), PlannedAction(undelivered))),
+        before=before,
+        delivered=[delivered],
+    )
+    brain.pending = {**delivered, "execution": execution}
     action = brain._execution_context(anticipate=True)["last_delivered_actions"][0]
-    assert "delivery_status" not in action
-    assert action["screen_kind"] == "query"
-    assert action["action"] == "double_click"
-    assert action["subgoal"] == "open saved row"
+    assert brain._execution_context(anticipate=True)["last_delivered_actions"] == [action]
+    assert action == {"screen_kind": "query", "intent": "navigate", "source": None, **expected}
+    assert "subgoal" not in action
+    assert decision.subgoal == "Open saved row and verify all fields later"
+    assert "not-delivered" not in json.dumps(action)
     assert "old-row" not in json.dumps(action), "ephemeral refs are not current targets"

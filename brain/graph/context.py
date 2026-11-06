@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
+from brain.vocabulary import SCROLL_DIRECTION_KEYS
+
 from .execution import PendingAction
 from .policy import DecisionPolicy
 from .save_review import SAVE_RESULT_ACTIONS, SAVE_REVIEW_GUIDANCE
@@ -76,12 +78,7 @@ DUPLICATE_EVIDENCE_GUIDANCE = (
 def phase_instruction(policy: DecisionPolicy) -> str:
     step = policy.current_step
     if step == "task":
-        return (
-            "Use the user task description as the workflow. Choose only grounded CURRENT-screen "
-            "actions and supplied input keys. No application route is predefined. Verify visible "
-            "input values after entry, observe each screen boundary, and return completion only "
-            "when current evidence supports an applicable user completion condition."
-        )
+        return "Use the user task description as the workflow."
     if step == "save_result":
         return SAVE_REVIEW_GUIDANCE
     if step == "duplicate_result_evidence":
@@ -149,6 +146,43 @@ def phase_instruction(policy: DecisionPolicy) -> str:
         "intent=query_input, action.type=set_text only when the CURRENT observed value "
         "is not already verified. The runtime must observe the matching value before search."
     )
+
+
+def _delivered_actions(pending: PendingAction | None) -> list[dict]:
+    """Project actual deliveries without turning a plan's purpose into history."""
+    if pending is None:
+        return []
+    execution = pending.get("execution")
+    deliveries = execution.delivered if execution is not None else [pending]
+    result = []
+    for delivered in deliveries:
+        decision = delivered.get("decision")
+        if decision is None:
+            continue
+        choice = delivered.get("choice") or decision.action
+        before = delivered.get("before_observation")
+        target = (
+            next((element for element in before.elements if element.ref == choice.ref), None)
+            if before is not None and choice is not None
+            else None
+        )
+        action = {
+            "intent": decision.intent,
+            "source": choice.source if choice else None,
+            "screen_kind": decision.screen_kind,
+            "action": choice.type if choice else None,
+            "target": (target.name or target.label_hint) if target else None,
+        }
+        if choice is not None and choice.type == "key":
+            direction = {key: value for value, key in SCROLL_DIRECTION_KEYS.items()}.get(
+                choice.keys
+            )
+            if direction is not None:
+                action.update(action="scroll", direction=direction)
+            else:
+                action["keys"] = choice.keys
+        result.append(action)
+    return result
 
 
 def execution_context(request: ExecutionContextRequest) -> dict:
@@ -222,17 +256,7 @@ def execution_context(request: ExecutionContextRequest) -> dict:
         "checkpoint": proposal.current_step,
         "allowed_intents": sorted({c["intent"] for c in proposal_prompt["allowed_next_choices"]}),
         "guidance": phase_instruction(proposal),
-        "last_delivered_actions": [
-            {
-                "intent": d.intent,
-                "source": d.action.source if d.action else None,
-                "screen_kind": d.screen_kind,
-                "action": d.action.type if d.action else None,
-                "subgoal": d.subgoal,
-            }
-            for d in decisions
-            if d
-        ],
+        "last_delivered_actions": _delivered_actions(pending),
         "conditional": proposal is not actual,
         "final_required_fields": (sorted(request.values) if request.phase == "final_query" else []),
     }
@@ -283,9 +307,10 @@ def execution_context(request: ExecutionContextRequest) -> dict:
             "A failed verification discards this proposal. These are not completed facts."
         )
     if request.phase == "save_result":
+        if proof is not None:
+            contract["guidance"] += SAVE_REVIEW_GUIDANCE
         contract["save_review"] = {
             "allowed_intents": {k: sorted(v) for k, v in SAVE_RESULT_ACTIONS.items()},
-            "instructions": SAVE_REVIEW_GUIDANCE,
             "schema_mapping": {
                 "result": "save_result",
                 "evidence_refs": "message_targets",

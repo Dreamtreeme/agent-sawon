@@ -105,8 +105,8 @@ def test_screen_schema_removes_anthropic_optional_grammar_branches(contract):
     assert unions == []  # Local complexity check; actual provider acceptance is tested separately.
     if contract is ScreenMatch:
         assert schema["properties"]["steps"]["items"]["type"] == "object"
-        assert "executable" in schema["properties"]["steps"]["description"]
-        assert "observation-only" in schema["description"]
+        assert "execute now" in schema["properties"]["steps"]["description"]
+        assert "task decision" in schema["description"]
         from brain.graph.screen_mapping import ScreenMappingWire
 
         assert schema != anthropic_provider_schema(ScreenMappingWire)

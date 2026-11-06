@@ -1,11 +1,14 @@
 """Screen mapping receives current execution context and verified facts."""
 
 import json
+from copy import deepcopy
 
 import pytest
+from test_brain import FakeRelay, element
 from test_brain import record as record
 from test_screen_decision import fixture, named_response, setup_brain
 
+from brain.graph.memory_retrieval import open_memory_library
 from brain.graph.schemas import Choice, Decision
 from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
 from brain.task_instruction import TaskInstruction
@@ -38,6 +41,14 @@ def test_screen_matching_receives_current_execution_context(tmp_path, record, ph
     )
     matched = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
     assert matched["execution"] == expected
+    if phase == "save_result":
+        assert "instructions" not in matched["execution"]["save_review"]
+        assert matched["execution"]["guidance"].count("SAVE RESULT REVIEW:") == 1
+        proof_context = brain._execution_context(
+            saved_record_review=brain.saved_evidence.snapshot(brain.values)
+        )
+        assert "Verify the saved record using CURRENT query-row" in proof_context["guidance"]
+        assert proof_context["guidance"].count("SAVE RESULT REVIEW:") == 1
 
 
 def test_generic_task_context_has_no_legacy_query_input_gate(tmp_path, record):
@@ -55,7 +66,7 @@ def test_generic_task_context_has_no_legacy_query_input_gate(tmp_path, record):
     assert "query_input" not in context
     assert context["remaining_inputs"] == sorted(brain.values)
     assert "remaining_fields" not in context
-    assert "No application route is predefined" in context["guidance"]
+    assert context["guidance"] == "Use the user task description as the workflow."
 
 
 def test_pending_external_selection_exposes_only_post_verification_steps(tmp_path, record):
@@ -69,17 +80,50 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
         ],
     )
     brain, model, *_ = setup_brain(tmp_path, record, [combined])
+    methods = brain.settings.methods.model_copy(update={"enabled": True})
+    brain.settings = brain.settings.model_copy(update={"methods": methods})
+    brain.method_library = open_memory_library(
+        methods.path,
+        brain.case_dir,
+        enabled=methods.enabled,
+        promotion_path=methods.promotion_path,
+        compiled_only=methods.compiled_only,
+        max_phash_distance=methods.max_phash_distance,
+    )
     brain.phase = "task"
     brain.duplicate_clear = True
+    future_plan = "Select this shipper, then recheck previously observed upper fields."
     brain.decision = Decision(
         screen_kind="partner",
         operation="act",
         intent="select_option",
-        subgoal="select-shipper",
+        subgoal=future_plan,
         reason="select partner",
         action=Choice(type="click", ref="e1"),
     )
-    brain.pending = {"decision": brain.decision, "effect_source": "shipper"}
+    before = (
+        FakeRelay(record)
+        .observe()
+        .model_copy(update={"elements": [element("e1", "Button", name="Select shipper")]})
+    )
+    brain.pending = {
+        "decision": brain.decision,
+        "choice": brain.decision.action,
+        "before_observation": before,
+        "effect_source": "shipper",
+    }
+    brain.feedback.append({"ok": True, "subgoal": future_plan, "check": "action_delivered"})
+    brain.memory_retrieval.state.purpose = future_plan
+    brain.memory_retrieval.state.history.append(
+        {"purpose": future_plan, "status": "delivered", "group_id": "selected-partner"}
+    )
+    original_feedback = deepcopy(brain.feedback)
+    original_history = deepcopy(brain.memory_retrieval.state.history)
+    assert brain.memory_retrieval.prompt_context()["recent_executions"] == [
+        {"status": "delivered", "group_id": "selected-partner"}
+    ]
+    assert brain.memory_retrieval.state.purpose == future_plan, "projection preserves the source"
+    assert brain.memory_retrieval.state.history == original_history
     markers = build_markers(blocks, boxes, 400, 200)
     matched = brain._decide_visual_screen(
         {
@@ -102,8 +146,15 @@ def test_pending_external_selection_exposes_only_post_verification_steps(tmp_pat
             "source": None,
             "screen_kind": "partner",
             "action": "click",
-            "subgoal": "select-shipper",
+            "target": "Select shipper",
         }
+    ]
+    assert future_plan not in json.dumps(state), "future work is not a delivered action fact"
+    assert brain.decision.subgoal == future_plan
+    assert brain.feedback == original_feedback
+    assert brain.memory_retrieval.state.history == original_history
+    assert state["method_memory"]["recent_executions"] == [
+        {"status": "delivered", "group_id": "selected-partner"}
     ]
     assert "shipper" not in brain._observed_inputs()
     assert state["execution"]["last_delivered_actions"][0]["intent"] == "select_option"

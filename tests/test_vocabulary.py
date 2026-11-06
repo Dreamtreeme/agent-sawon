@@ -1,5 +1,6 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
+Capability task text is deduplicated; decision schema descriptions condensed (2026-11-06).
 ScreenMatch/ScreenPlan distinguish action decisions from observation-only schemas (2026-11-05).
 ScreenFillPlan now carries credential inputs and an optional action; LoginScreenPlan is removed.
 ScreenMatch/ScreenPlan add a current-model route resumption group (2026-11-02).
@@ -116,14 +117,14 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
             SemanticDetection,
             "4bb02cfe9fbffb82400d576b99007a631014b3ce54e807dae954cc07a29caa26",
         ),
-        (ActionCapability, "b4169d25a010e0a3e3979cffe29a8c38e73e1c328f52e298d364d32412fc7d06"),
+        (ActionCapability, "81dd3026b6a843cb3dd757bc3556c9b8f255ecb841c2af5e1c9892100655e10c"),
         (MatchAction, "e5247c320d25596a20050602b7627698974052fcb178bff6e158e7f7c16af5ef"),
         (
             TargetedMatchAction,
             "010d16ae1c205f2e97b7661173dd1ff9f35ba34aa17a3d6b0a4165447c6f755c",
         ),
-        (ScreenPlan, "b620fc27f054645a3f7c8206a8fec6ac96b525c2c5a7a81a30247f2d709d0a56"),
-        (ScreenMatch, "b620fc27f054645a3f7c8206a8fec6ac96b525c2c5a7a81a30247f2d709d0a56"),
+        (ScreenPlan, "f0ec3f34df06decfe0435270d611936200f4a7b974b4753640a0dbc6cd7047b6"),
+        (ScreenMatch, "f0ec3f34df06decfe0435270d611936200f4a7b974b4753640a0dbc6cd7047b6"),
         (Decision, "0dd9a48fb753c30ea6f54d65c1272bfc631435abedc33d3864e138bf412f5bf0"),
         (
             WireActDecision,

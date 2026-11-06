@@ -54,8 +54,6 @@ class ActionCapability(BaseModel):
     capability_id: Literal["task-action"] = "task-action"
     input_scope: list[FieldName] = Field(default_factory=list)
     actions: list[ActionCapabilityIntent] = Field(default_factory=list)
-    goal: str = Field(min_length=1, max_length=500)
-    completion: str = Field(min_length=1, max_length=500)
 
     @model_validator(mode="after")
     def valid_field_contract(self):
@@ -149,19 +147,9 @@ class ScreenPlan(MethodChoice):
     def model_json_schema(cls, *args, **kwargs):
         if kwargs.get("mode", "validation") != "serialization":
             schema = compact_provider_schema(ScreenMappingWire.model_json_schema())
-            schema["description"] = (
-                "Observe the screen and decide executable next steps, not an observation-only "
-                "report. Combine accumulated progress facts with current readings."
-            )
+            schema["description"] = "Current screen observations and the next task decision."
             schema["properties"]["steps"]["description"] = (
-                "Ordered executable actions to perform now. For operation=act, include the "
-                "next actions after recording observations; purpose alone does not execute. "
-                "Empty for non-action result operations, requested education details, "
-                "or local scanning."
-            )
-            schema["properties"]["operation"]["description"] = (
-                "Choose act with actual steps for unfinished work, complete when accumulated "
-                "facts establish the user goal, or stop when unable to proceed."
+                "Ordered actions to execute now; empty for results or education/scanning requests."
             )
             return schema
         return super().model_json_schema(*args, **kwargs)
@@ -1155,7 +1143,6 @@ def enforce_taught_input_surfaces(
 
 def task_action_contract(
     phase: str,
-    instruction: TaskInstruction,
     contract: dict,
     active_fields: set[str],
 ) -> ActionCapability:
@@ -1170,8 +1157,6 @@ def task_action_contract(
     return ActionCapability(
         input_scope=sorted(active_fields),
         actions=sorted(actions),
-        goal=instruction.objective[:500],
-        completion="; ".join(instruction.completion_conditions)[:500],
     )
 
 
@@ -1239,9 +1224,7 @@ def build_decision_prompt(
 
     contract = request.execution_contract
     active_fields = set(request.values)
-    capability = task_action_contract(
-        request.phase, request.task_instruction, contract, active_fields
-    )
+    capability = task_action_contract(request.phase, contract, active_fields)
     # Pattern binding can mutate these two sources. Preserve their original
     # snapshot timing so later recovery prompts and cache keys stay unchanged.
     screen = frame_input(request.screen)
@@ -1256,8 +1239,6 @@ def build_decision_prompt(
                 "condition": contract["condition"],
                 "checkpoint": contract["checkpoint"],
             }
-        if "save_review" in contract:
-            state["save_review"] = contract["save_review"]
         if method_memory is not None:
             state["method_memory"] = method_memory
         return state

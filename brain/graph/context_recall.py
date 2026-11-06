@@ -47,7 +47,10 @@ def recall_context(request: ScreenDecisionRequest, *, projected_screen: dict | N
         # 누적 raw feedback 대신 정제된 스크래치패드와 최근 N턴 버퍼를 주입한다.
         "scratchpad": context_layers["scratchpad"],
         "recent_turns": context_layers["recent_turns_buffer"],
-        "recent_feedback": list(request.recent_feedback),
+        "recent_feedback": [
+            {key: value for key, value in feedback.items() if key != "subgoal"}
+            for feedback in request.recent_feedback
+        ],
         "required_verification": required,
         "available_credentials": list(request.available_credentials),
         "screen_tree": recall_screen_tree(request.screen_nodes),

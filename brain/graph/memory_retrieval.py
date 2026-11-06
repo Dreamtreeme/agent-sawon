@@ -458,14 +458,16 @@ class MemoryRetrieval:
             )
         return {
             "methods": methods,
-            "previous_action_purpose": self.state.purpose,
             "active_method_id": self.state.active_method_id,
             "slot_bindings": {
                 method_id: bindings
                 for method_id, bindings in self.state.bindings.items()
                 if any(method["id"] == method_id and method["groups"] for method in methods)
             },
-            "recent_executions": self.state.history[-2:],
+            "recent_executions": [
+                {key: value for key, value in event.items() if key != "purpose"}
+                for event in self.state.history[-2:]
+            ],
         }
 
     def retrieve_screen_memory(self, screen: dict) -> dict | None:
