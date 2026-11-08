@@ -36,7 +36,15 @@ def focus_response(handle):
     }
 
 
-def setup_window_brain(tmp_path, record, responses, *, task_instruction=None, registered_app=None):
+def setup_window_brain(
+    tmp_path,
+    record,
+    responses,
+    *,
+    task_instruction=None,
+    registered_app=None,
+    initial_desktop=False,
+):
     """Reuse the existing fake model/scanner with a synthetic two-window desktop."""
     brain, model, relay, *_ = setup_brain(
         tmp_path, record, responses, task_instruction=task_instruction
@@ -46,17 +54,26 @@ def setup_window_brain(tmp_path, record, responses, *, task_instruction=None, re
         WindowInfo(handle=2, title="Synthetic chat", process="chat.exe"),
     ]
     closed_window = windows.pop() if registered_app is not None else None
-    active = [windows[0]]
+    active = [None if initial_desktop else windows[0]]
+    if initial_desktop:
+        windows.clear()
     sent = []
 
     def observe():
-        relay.current = wire().model_copy(
-            update={
-                "active_window": active[0],
-                "windows": list(windows),
-                "available_apps": [registered_app] if registered_app is not None else [],
-            }
-        )
+        context = {
+            "active_window": active[0],
+            "windows": list(windows),
+            "available_apps": (
+                [AvailableApp(id="synthetic-notes", name="Synthetic notes"), registered_app]
+                if initial_desktop
+                else [registered_app]
+            )
+            if registered_app is not None
+            else [],
+        }
+        if active[0] is None:
+            context.update(screenshot=None, blocked_reason="foreground_not_allowed")
+        relay.current = wire().model_copy(update=context)
         return relay.current
 
     def act(action):
@@ -137,10 +154,14 @@ def test_synthetic_focus_switches_apps_without_geometry_or_extra_model_calls(
     )
 
 
-def test_synthetic_registered_app_open_reaches_relay_and_reobserves_new_window(tmp_path, record):
+@pytest.mark.parametrize("initial_desktop", [False, True], ids=["in-app", "desktop"])
+def test_synthetic_registered_app_open_reaches_relay_and_reobserves_new_window(
+    tmp_path, record, initial_desktop
+):
     """Only the fake relay opens the synthetic closed app; no real app is launched."""
     response = {
         **focus_response(2),
+        "screen_kind": "unknown" if initial_desktop else "menu",
         "steps": [{"action": "open_app", "app_id": "synthetic-chat", "intent": "navigate"}],
     }
     brain, model, relay, sent = setup_window_brain(
@@ -148,7 +169,18 @@ def test_synthetic_registered_app_open_reaches_relay_and_reobserves_new_window(t
         record,
         [response, {**focus_response(2), "operation": "stop", "steps": []}],
         registered_app=AvailableApp(id="synthetic-chat", name="Synthetic chat"),
+        initial_desktop=initial_desktop,
     )
+    brain.settings = brain.settings.model_copy(update={"guard_mode": "enforce"})
+    scan, scanned = brain.screen_scanner.scan, []
+
+    def scan_once(observation):
+        scanned.append(observation)
+        if initial_desktop:
+            assert "visual_match_candidate" not in brain.pending
+        return scan(observation)
+
+    brain.screen_scanner.scan = scan_once
 
     outcome = brain.run()
 
@@ -173,10 +205,85 @@ def test_synthetic_registered_app_open_reaches_relay_and_reobserves_new_window(t
     assert receipts[0]["post_obs_id"] is not None
     contexts = [json.loads(prompt[len(CONTEXT_MAPPING_RULES) :]) for prompt in model.prompts]
     assert len(contexts) == 2
-    assert contexts[0]["screen"]["available_apps"] == [
-        {"id": "synthetic-chat", "name": "Synthetic chat"}
-    ]
-    assert [context["screen"]["active_window"]["handle"] for context in contexts] == [1, 2]
+    apps = [{"id": "synthetic-chat", "name": "Synthetic chat"}]
+    if initial_desktop:
+        apps.insert(0, {"id": "synthetic-notes", "name": "Synthetic notes"})
+        assert contexts[0]["screen"]["active_window"] is None
+        assert contexts[0]["screen"]["windows"] == []
+        assert contexts[0]["screen"]["image_size"] is None
+        assert contexts[0]["screen"]["text_regions"] == []
+        assert contexts[0]["screen"]["control_regions"] == []
+        assert contexts[0]["task"]["objective"] == brain.task_instruction.objective
+        assert contexts[0]["task"]["requirements"] == brain.task_instruction.requirements
+        assert (
+            len(scanned)
+            == brain.screen_scanner.ocr.calls
+            == brain.screen_scanner.detector.calls
+            == 1
+        )
+        assert all(
+            not node["fields"] and not node["controls"] for node in brain.screen_nodes.values()
+        )
+    assert contexts[0]["screen"]["available_apps"] == apps
+    assert contexts[-1]["screen"]["active_window"]["handle"] == 2
+
+
+@pytest.mark.parametrize("action", ["click", "key"], ids=["pointer", "focused-key"])
+def test_synthetic_desktop_never_dispatches_screen_input_without_an_app(tmp_path, record, action):
+    """Synthetic captureless input proposals cannot use the observe-only point path."""
+    response = {
+        **focus_response(2),
+        "fields": {"Button": {"role": "button", "bbox": [10, 20, 80, 25]}},
+        "steps": [
+            {"action": "click", "target": "Button", "point": [20, 30], "intent": "navigate"}
+            if action == "click"
+            else {"action": "key", "keys": "tab", "intent": "navigate"}
+        ],
+    }
+    brain, model, _, sent = setup_window_brain(
+        tmp_path,
+        record,
+        [response],
+        registered_app=AvailableApp(id="synthetic-chat", name="Synthetic chat"),
+        initial_desktop=True,
+    )
+    outcome = brain.run()
+    assert outcome.status != "success"
+    assert sent == []
+    assert brain.screen_scanner.ocr.calls == brain.screen_scanner.detector.calls == 0
+    assert brain.observation.elements == [] and brain.observation.screenshot is None
+    assert not brain.screen_nodes
+
+
+def test_synthetic_desktop_app_selection_does_not_override_other_stop_conditions(tmp_path, record):
+    """Only the initial unpermitted foreground with registered apps can select an app."""
+    for label in ("no-apps", "capture-failure", "later-observation"):
+        brain, model, relay, sent = setup_window_brain(
+            tmp_path / label,
+            record,
+            [],
+            registered_app=AvailableApp(id="synthetic-chat", name="Synthetic chat"),
+            initial_desktop=True,
+        )
+        observe = relay.observe
+
+        def blocked(observe=observe, label=label):
+            observation = observe()
+            return observation.model_copy(
+                update={
+                    "available_apps": [] if label == "no-apps" else observation.available_apps,
+                    "blocked_reason": "capture_unavailable"
+                    if label == "capture-failure"
+                    else observation.blocked_reason,
+                }
+            )
+
+        relay.observe = blocked
+        brain.observation_number = int(label == "later-observation")
+        brain.settings = brain.settings.model_copy(update={"guard_mode": "enforce"})
+        outcome = brain.run()
+        assert outcome.reason == "blocked_foreground", label
+        assert not model.prompts and not sent, label
 
 
 def test_synthetic_unregistered_app_is_rejected_before_dispatch():

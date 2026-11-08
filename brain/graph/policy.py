@@ -158,6 +158,7 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
                 keys=NAVIGATION_KEY_INPUTS,
                 window_actions=True,
             ),
+            _ActionRule("navigate", ("unknown",), window_actions=True),
             _ActionRule("cancel", screens, click_types=("click",), keys=("esc",)),
             _ActionRule("wait", screens, wait=True),
             _ActionRule(
@@ -293,9 +294,15 @@ def _response_schema(
 ) -> type[DecisionResponse]:
     alternatives: list[type[WireModel]] = [WireStopDecision]
     for rule in rules:
+        window_only = rule.window_actions and not (
+            rule.click_types or rule.text_sources or rule.keys or rule.wait
+        )
         alternatives.append(
             create_model(
-                "Policy" + "".join(part.title() for part in rule.intent.split("_")) + "Decision",
+                "Policy"
+                + "".join(part.title() for part in rule.intent.split("_"))
+                + ("Window" if window_only else "")
+                + "Decision",
                 __base__=WireActDecision,
                 screen_kind=(_literal(rule.screens), ...),
                 intent=(_literal((rule.intent,)), ...),

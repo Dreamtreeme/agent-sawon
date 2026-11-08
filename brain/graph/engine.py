@@ -36,6 +36,7 @@ from brain.relay import Relay
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from brain.visual.detector import OmniParserDetector
+from brain.visual.frame import window_context
 from brain.visual.scanning import ScreenScanner, SemanticRequest, VisualGroundingError
 from brain.visual.scene import SceneObservation, SemanticDetection
 from models.accounting import read_model_accounting
@@ -587,6 +588,21 @@ class Brain:
                 compile_match,
                 compile_screen_action_plan,
             )
+
+            if self.observation.active_window is None:
+                response = self._decide_visual_screen(window_context(self.observation), None)
+                atomic_write_json(
+                    self.case_dir
+                    / f"observations/{self.observation_number:04d}-app-selection.json",
+                    response,
+                )
+                if response.operation != "stop" and not (
+                    response.operation == "act"
+                    and len(response.steps) == 1
+                    and response.steps[0].action == "open_app"
+                ):
+                    raise GuardStop("application_selection_required")
+                return compile_match(response, self.observation, schema, log=self.log)
 
             if self.visual_plan_error is not None:
                 error, self.visual_plan_error = self.visual_plan_error, None
@@ -1199,9 +1215,9 @@ class Brain:
 
     def _observe(self) -> Observation:
         observation = redact(self.relay.observe(), self.secrets)
+        self.visual_proposal = None
+        self.visual_plan_error = None
         if not observation.blocked_reason:
-            self.visual_proposal = None
-            self.visual_plan_error = None
             observation = self.screen_scanner.scan(observation)
             self.visual_proposal_obs_id = observation.obs_id
         self.observation = observation
@@ -1224,6 +1240,16 @@ class Brain:
                 "element_count": len(observation.elements),
             },
         )
+        if (
+            self.settings.screen_matching
+            and self.observation_number == 1
+            and observation.blocked_reason == "foreground_not_allowed"
+            and observation.active_window is None
+            and observation.available_apps
+        ):
+            # The user started a task before opening an app. The decision node
+            # can select a registered app without capturing the unrelated foreground.
+            return observation
         if getattr(observation, "blocked_reason", None) and self.settings.guard_mode == "enforce":
             raise GuardStop("blocked_foreground")
         if observation.active_window is None:
@@ -2114,7 +2140,8 @@ class Brain:
         decision: Decision,
         choice: Choice,
     ) -> PendingAction:
-        assert self.observation is not None and self.observation.active_window is not None
+        assert self.observation is not None
+        assert self.observation.active_window is not None or choice.type == "open_app"
         pending: PendingAction = {
             "before_observation": self.observation,
             "choice": choice,

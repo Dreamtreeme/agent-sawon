@@ -20,6 +20,7 @@ from .action_rebind import (
     rebind_action_target,
 )
 from .detector import ControlDetector, DetectorSettings, OmniParserDetector
+from .frame import window_context
 from .markers import Marker, MergeSettings, build_markers, ground_meanings, render_markers
 from .refinement import refinement_regions
 from .scene import (
@@ -459,13 +460,7 @@ class ScreenScanner:
         page, blocks, boxes, markers = catalog.page, catalog.blocks, catalog.boxes, catalog.markers
         path = page.image_path
         folder = path.parent
-        catalog.window_context = {
-            "active_window": wire.active_window.model_dump(mode="json")
-            if wire.active_window
-            else None,
-            "windows": [window.model_dump(mode="json") for window in wire.windows],
-            "available_apps": [app.model_dump(mode="json") for app in wire.available_apps],
-        }
+        catalog.window_context = window_context(wire)
         request = self._semantic_request(
             page,
             markers,

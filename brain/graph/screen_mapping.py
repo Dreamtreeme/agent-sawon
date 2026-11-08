@@ -517,6 +517,9 @@ Batch ordered work grounded in this screen, including input then scroll or submi
 screen.active_window identifies the current capture; screen.windows lists observed windows.
 screen.available_apps lists relay-registered app IDs and names. To open a listed app, return
 one open_app step with its app_id and intent=navigate; never supply a path, URL or command.
+If active_window and image_size are null, no app image has been observed. Use the task and
+available_apps to choose one open_app step, or stop. Keep fields and
+screen_path empty; do not guess screen contents or request OCR refinement before opening an app.
 To switch apps, return one focus_window step with its listed handle and intent=navigate, without
 a target or point. Opening and focusing apps are standalone actions: observe the resulting
 window before planning its controls. Never request a window or app absent from those lists.

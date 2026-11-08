@@ -4,9 +4,25 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from sawon_interfaces import Observation
+
 from brain.vocabulary import SCROLL_DIRECTION_KEYS
 
 from .scene import contains
+
+
+def window_context(observation: Observation) -> dict:
+    """Public app/window metadata; never infer pixels for an unavailable capture."""
+    context = {
+        "active_window": observation.active_window.model_dump(mode="json")
+        if observation.active_window
+        else None,
+        "windows": [window.model_dump(mode="json") for window in observation.windows],
+        "available_apps": [app.model_dump(mode="json") for app in observation.available_apps],
+    }
+    if observation.blocked_reason:
+        context["blocked_reason"] = observation.blocked_reason
+    return context
 
 
 def frame_input(screen: dict) -> dict:
@@ -31,7 +47,7 @@ def frame_input(screen: dict) -> dict:
         "text_regions": [{"text": b["text"], "bbox": b["bbox"]} for b in blocks],
         "control_regions": controls,
     }
-    for key in ("active_window", "windows", "available_apps"):
+    for key in ("active_window", "windows", "available_apps", "blocked_reason"):
         if key in screen:
             result[key] = screen[key]
     if screen.get("memory_fields"):
