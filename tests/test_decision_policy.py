@@ -255,9 +255,9 @@ def test_prompt_lists_the_same_reduced_choices_without_inferring_login_screen():
             (),
             ("invoice.number", "vendor_code"),
             True,
-            False,
+            True,
             ("invoice.number", "vendor_code"),
-            id="already-saved",
+            id="previous-save-issued",
         ),
     ],
 )

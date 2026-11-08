@@ -894,8 +894,11 @@ def test_synthetic_retrieval_executes_and_finishes_current_route_without_model(
     assert len(relay.actions) == 4 and brain.save_issued
     assert brain._verify_node() == "review"
     assert model.prompts == [] and brain.result is None
-    assert brain.visual_proposal.save_result == "ready_for_query"
-    assert brain.visual_proposal.message_targets
+    # Historical method metadata may load, but current tasks use their normal
+    # action/completion path without requiring a save-message review.
+    assert brain.phase == "task"
+    assert brain.visual_proposal.save_result is None
+    assert brain.visual_proposal.message_targets == []
     assert not brain._observed_inputs()
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"

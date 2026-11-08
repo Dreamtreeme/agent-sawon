@@ -191,7 +191,7 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
         ready_to_save = set(facts.field_names) <= (
             set(facts.verified_field_names) | set(facts.delivered_field_names)
         )
-        if ready_to_save and not facts.save_issued:
+        if ready_to_save:
             rules.append(_ActionRule("save", work_screens, click_types=("click",), keys=("enter",)))
         if facts.save_issued:
             rules.append(

@@ -22,7 +22,7 @@ from brain.graph.memory_retrieval import (
     RetrievalState,
     open_memory_library,
 )
-from brain.graph.save_review import SaveReviewResponse, validate_save_review
+from brain.graph.schemas import DecisionResponse
 from brain.graph.screen_decision import ScreenMatch, compile_match
 from brain.graph.screen_mapping import (
     NamedCompletionEvidence,
@@ -322,7 +322,7 @@ def test_synthetic_compilation_preserves_field_structure_without_source_run_read
     assert all("value" not in field.model_fields_set for field in bound.mapping.fields.values())
 
 
-def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_navigation(tmp_path):
+def test_synthetic_compiled_save_action_rebinds_current_message_and_preserves_intent(tmp_path):
     # Synthetic successful cold response; no model or desktop is involved.
     cold_screen = {
         "image_size": [400, 200],
@@ -337,7 +337,7 @@ def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_naviga
             {"id": 20, "source": "omniparser", "bbox": [100, 80, 60, 20], "text_ids": []},
         ],
     }
-    cold_response = response(target=20, intent="navigate", point=(135, 90), taught="inspect")
+    cold_response = response(target=20, intent="confirm_save", point=(135, 90), taught="inspect")
     cold_response.update(screen_kind="dialog", save_result="ready_for_query", message_targets=[10])
     cold_response["controls"].append({"id": 10, "role": "text", "text_ids": [1], "confidence": 1})
     inputs = [
@@ -416,11 +416,12 @@ def test_synthetic_compiled_save_review_rebinds_current_message_and_keeps_naviga
             ],
         ),
     )
-    review = compile_match(plan, observation, SaveReviewResponse)
-    validate_save_review(review, observation)
-    assert review.result == "ready_for_query"
-    assert review.next_decision.to_decision().intent == "navigate"
-    assert set(review.evidence_refs) <= {item.ref for item in observation.elements}
+    decision = compile_match(plan, observation, DecisionResponse).to_decision()
+    assert decision.intent == "confirm_save"
+    assert decision.operation == "act", "Closing a save notice does not complete the task"
+    assert decision.action.type == "click"
+    assert decision.action.ref in {item.ref for item in observation.elements}
+    assert plan.steps[0].point == [215, 110]
 
     # The same geometry must not turn an error or unreadable message into a saved result.
     for label, text in [("different-result", "Save rejected"), ("missing-message", "")]:

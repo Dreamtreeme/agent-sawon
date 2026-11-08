@@ -1,6 +1,5 @@
 """Generic task contracts do not encode one ERP's fields or screen route."""
 
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -135,36 +134,6 @@ def test_task_policy_keeps_runtime_keys_reusable_across_screens():
             }
         ).to_decision()
     )
-
-
-def test_task_save_requires_all_inputs_evidenced_and_is_issued_once():
-    fields = ("invoice.number", "vendor_code")
-    save = DecisionResponse.model_validate(
-        {
-            "decision": {
-                "screen_kind": "editor",
-                "operation": "act",
-                "intent": "save",
-                "subgoal": "Save the completed invoice",
-                "reason": "All supplied inputs are visible and match",
-                "action": {"type": "click", "ref": "save-button"},
-                "evidence": [],
-            }
-        }
-    ).to_decision()
-    unfinished = DecisionPolicy(ExecutionFacts(phase="task", field_names=fields))
-    ready = DecisionPolicy(
-        ExecutionFacts(
-            phase="task",
-            field_names=fields,
-            verified_field_names=fields,
-        )
-    )
-    issued = DecisionPolicy(replace(ready.facts, save_issued=True))
-
-    assert not unfinished.allows(save)
-    assert ready.allows(save)
-    assert not issued.allows(save)
 
 
 def test_task_completion_is_tied_to_user_condition_not_all_input_fields():

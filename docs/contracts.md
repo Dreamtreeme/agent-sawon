@@ -409,9 +409,15 @@ intent·입력 source와 출발 screen_kind,
 scratchpad에 이 목록을 복사하지 않는다. 입력 키는 inputs 자체에서 읽는다.
 
 모델용 `task`가 업무 목표와 완료 조건의 원본이다. `ActionCapability`는 허용 행동과 입력 범위만
-소유하며 목표·완료 문장을 다시 저장하지 않는다. 저장 검토 안내는 `execution.guidance`에 한 번,
-결과별 허용 행동과 필드 대응은 `execution.save_review`에 한 번 전달한다. 최상위에 같은 검토
-객체를 다시 복사하지 않는다. 실제 빈 행동 응답의 보완 요청은 현재 관찰과 누락 사유를 유지한다.
+소유하며 목표·완료 문장을 다시 저장하지 않는다. `TaskInstruction` 업무는 저장 전달 후에도
+`task` 판단을 유지한다. 저장 확인창의 행동과 전체 업무의 `complete`를 같은 화면 판단·검토
+경로에서 처리하며, 현재 관찰과 누적 메모·사용자 완료 조건을 사용한다. `message_targets`나
+별도의 저장 메시지를 완료 필수 증거로 요구하지 않는다. 저장 전달 자체로 성공 처리하지 않는다.
+저장 전달 이력은 이후 저장 행동을 금지하지 않는다. 현재 화면의 오류·수정 필요·완료를 보고
+모델이 재저장 또는 완료를 선택하며 기존 입력 준비 조건은 유지한다.
+교육 없는 고정 `ShipmentRecord` 흐름만 `save_result` 전용 계약을 사용한다. 그 안내와 필드
+대응은 각각 `execution.guidance`, `execution.save_review` 한 곳에 전달한다.
+실제 빈 행동 응답의 보완 요청은 현재 관찰과 누락 사유를 유지한다.
 
 `scan()`은 해석과 다음 계획을 함께 생성한다. `_remember_model_task_evidence()`는 교육 결과와
 명시적 필드 관찰을 먼저 반영한 뒤 같은 응답의 계획을 Decision/Review/Execution으로 전달한다.
@@ -496,8 +502,9 @@ OCR 일치로 인출된 증거를 만들던 `MethodLibrary.bind_visible_value_ev
 같은 실행에서 모델이 앞서 확인한
 필드는 화면 밖으로 나가도 메모에 남으며 현재 검토에서 활용합니다. 별도 기억 확인 모델은 만들지 않습니다.
 
-`MethodActionGroup`의 `save_result`, `message_targets`, `repair_fields`는 모델 판단의 저장 결과를
-보존합니다. `message_targets`에는 `targets`의 이름을 저장하고, 해당 대상의 bbox와
+기존 `MethodActionGroup`의 `save_result`, `message_targets`, `repair_fields`는 저장 결과를
+보존합니다. 새 일반 업무 기록은 `task` 판단에서 이 보조 정보를 제거한 응답을 사용합니다.
+기존 `message_targets`에는 `targets`의 이름을 저장하고, 해당 대상의 bbox와
 `anchor_texts`에 메시지 위치와 텍스트를 보관합니다. 입력값 부분은 입력 key 자리표시자로
 바꿉니다. 생산자는 `method_from_match`이며 런타임 학습과 편찬 CLI가 이 함수를 공유합니다.
 
@@ -509,9 +516,13 @@ OCR 메시지를 입력값이 치환된 텍스트와 정규화 비교하고, 실
 기하를 사용합니다. 과거 `observed_fields` bbox로 현재 결합을 덮어쓰지 않습니다.
 이 저장 결과 계약은 전체 이미지 pHash 거리를 요구하지 않으며, 일반 그룹과 최초 메서드 선택의
 viewport·pHash 기준은 유지합니다. 관계없는 관찰 필드는 저장 결과 결합의 필수 대상이 아닙니다.
-`screen_decision`은 재결합된 결과와 메시지가 있는 메서드를 `save_result` 단계에서도 선택합니다.
-`compile_match`와 `SaveReviewResponse`의 기존 변환·검증은 유지합니다. 이 결과는 다음 행동을
-위한 저장 화면 해석이며 작업 전체 성공 선언이 아닙니다.
+`screen_decision`은 일반 업무의 행동·완료 판단으로 컴파일하며 저장 검토 래퍼나
+`confirm_save`를 `navigate`로 바꾸는 별도 변환을 사용하지 않습니다.
+`SaveReviewResponse`는 화면 매칭을 사용하지 않는 교육 없는 고정 `ShipmentRecord` 흐름에만
+적용합니다. 이 경로는 모델의 전용 응답을 직접 사용합니다.
+일반 `TaskInstruction` 응답의 `save_result`·`message_targets` 보조 정보는 기존 정제 단계에서
+제거하고, 행동과 관찰·완료 증거는 일반 판단 경로에 전달합니다. 기존 편찬물의 저장 메시지
+결합 조건은 재사용 가능성 검사로 유지하며 일반 업무의 완료 조건으로 사용하지 않습니다.
 `compile_match`가 조립한 딕셔너리는 `bind_proposal`에서 원본을 변경하지 않고 현재 장면의
 참조로 결합합니다. 임시 Pydantic 모델을 거치지 않으며, 최종 실행 스키마의 검증은 유지합니다.
 

@@ -487,8 +487,8 @@ Never infer result values from instructions or unobserved screens.
 Use the current image/OCR for the actual control bbox and precise action point: captions identify
 meaning, not necessarily writable locations. Prior geometry is a hint, not current observation.
 Every target in steps, completion_evidence, message_targets and grid/row must use an exact name
-declared in fields. Include visible save-message text as a field referenced by message_targets;
-explanations belong in purpose/expected_result, not undeclared messages or summary targets.
+declared in fields. Explanations belong in purpose/expected_result, not undeclared messages or
+summary targets.
 screen_path and fields.source/value update that node's memory; the runtime does not infer
 bindings from your next action or equal input values. Matching sources and readings are notebook
 evidence, not a separate evidence list. Explicit empty values record visible empty fields;

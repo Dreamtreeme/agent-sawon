@@ -602,7 +602,7 @@ class Brain:
                     and response.steps[0].action == "open_app"
                 ):
                     raise GuardStop("application_selection_required")
-                return compile_match(response, self.observation, schema, log=self.log)
+                return compile_match(response, self.observation, schema)
 
             if self.visual_plan_error is not None:
                 error, self.visual_plan_error = self.visual_plan_error, None
@@ -782,9 +782,7 @@ class Brain:
                 self._remember_model_task_evidence(response)
             self.visual_points.bind(self.observation, response.targeted_steps)
             screen_action_plan = compile_screen_action_plan(response, self.observation)
-            result = screen_action_plan or compile_match(
-                response, self.observation, schema, log=self.log
-            )
+            result = screen_action_plan or compile_match(response, self.observation, schema)
             self.log.append(
                 "select",
                 payload={
@@ -2202,7 +2200,8 @@ class Brain:
             self.query_submitted = True
         if decision.intent == "save":
             self.save_issued = True
-            self.phase = "save_result"
+            if self.task_instruction is None:
+                self.phase = "save_result"
             self.query_submitted = self.query_value_verified = False
             self.query_descriptor = None
             self.query_window_handle = None
@@ -2814,22 +2813,12 @@ class Brain:
             return self._finish("stopped", "save_result_unknown")
         if review.result == "ready_for_query":
             # Permission to verify persistence, never evidence that saving succeeded.
-            self.phase = "task" if self.task_instruction is not None else "final_query"
-            if (
-                self.phase == "task"
-                and self.settings.screen_matching
-                and not self.settings.visual_model_only_review
-                and self.identity_input_key is not None
-            ):
-                self.saved_evidence.begin(str(self.observation.obs_id))
-                self.review = None
-            if self.phase == "final_query":
-                # The save result can itself be the returned query screen. Reconcile
-                # those current pixels under the new legacy phase before accepting
-                # the reviewer's conditionally proposed next action.
-                self._apply_observation_reconciliation(self.observation)
+            self.phase = "final_query"
+            # The save result can itself be the returned query screen. Reconcile
+            # those current pixels before accepting the reviewer's next action.
+            self._apply_observation_reconciliation(self.observation)
         elif review.result == "rejected":
-            self.phase = "task" if self.task_instruction is not None else "enter"
+            self.phase = "enter"
             self.save_issued = False
             self.query_submitted = self.query_value_verified = False
             self.query_descriptor = self.query_window_handle = None

@@ -216,7 +216,7 @@ def test_synthetic_current_graph_records_model_stop_without_desktop_actions(tmp_
     assert any(event.kind == "observe" for event in brain.log.read_all())
 
 
-def test_generic_task_save_enters_shared_save_review(tmp_path, record):
+def test_generic_task_save_keeps_the_normal_task_decision_path(tmp_path, record):
     relay = FakeRelay(record)
     relay.mode = "editor"
     log = RunLog(tmp_path, case_id=record.case_id, agent_id="brain-test")
@@ -246,10 +246,12 @@ def test_generic_task_save_enters_shared_save_review(tmp_path, record):
     )
 
     assert brain.save_issued
-    assert brain.phase == "save_result"
+    assert brain.phase == "task"
+    assert brain.result is None
 
 
-def test_save_review_returns_to_the_task_workflow(tmp_path, record):
+def test_fixed_shipment_save_review_returns_to_final_query(tmp_path, record):
+    """The task-free ShipmentRecord workflow retains its explicit query review."""
     relay = FakeRelay(record)
     relay.mode = "editor"
     log = RunLog(tmp_path, case_id=record.case_id, agent_id="brain-test")
@@ -258,7 +260,7 @@ def test_save_review_returns_to_the_task_workflow(tmp_path, record):
         goal="Register a shipment",
         relay=relay,
         model=ScriptedModel(log, []),
-        settings=current_settings(tmp_path),
+        settings=current_settings(tmp_path, screen_matching=False, task_path=None),
         case_dir=tmp_path,
         run_log=log,
         visual_ocr=object(),
@@ -278,7 +280,8 @@ def test_save_review_returns_to_the_task_workflow(tmp_path, record):
     )
 
     assert brain._apply_save_review(review) is None
-    assert brain.phase == "task"
+    assert brain.task_instruction is None
+    assert brain.phase == "final_query"
 
 
 class ScriptedModel(MeasuredModelClient):
@@ -298,16 +301,7 @@ class ScriptedModel(MeasuredModelClient):
             response = next(self.decisions)
             if callable(response):
                 response = response(prompt)
-            if schema.__name__ == "SaveReviewResponse" and "result" not in response:
-                # Existing success scripts explicitly move into the visible query.
-                # Error/confirmation tests provide their own save-review responses.
-                response = {
-                    "result": "ready_for_query",
-                    "evidence_refs": [(response.get("action") or {}).get("ref") or "e0"],
-                    "repair_fields": [],
-                    "next_decision": {"decision": response},
-                }
-            elif "decision" in schema.model_fields:
+            if "decision" in schema.model_fields:
                 response = {"decision": response}
         return ProviderReply(
             text=json.dumps(response),

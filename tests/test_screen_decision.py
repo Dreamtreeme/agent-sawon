@@ -1366,73 +1366,6 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(
     assert recovery_permissions == [False], "cached model facts must not authorize route recovery"
 
 
-@pytest.mark.parametrize("has_review", [False, True], ids=["action-only", "current-save-review"])
-def test_save_result_reuses_bound_review_or_requests_current_model_review(
-    tmp_path, record, task_instruction, has_review, monkeypatch
-):
-    from brain.graph.screen_mapping import ScreenMapping
-
-    replies = [] if has_review else [named_response(fields={}, steps=[], operation="stop")]
-    brain, model, *_ = setup_brain(tmp_path, record, replies, task_instruction=task_instruction)
-    request, services = matching_contract(brain)
-    request = replace(request, phase="save_result")
-    brain.memory_retrieval.enabled = True
-
-    bound = []
-
-    def bind_method(screen):
-        bound.append(screen)
-        return ScreenMatch(
-            mapping=ScreenMapping(fields={}),
-            screen_kind="dialog",
-            procedure_step="task-action",
-            controls=[
-                {"id": 7, "role": "button", "confidence": 1},
-                {"id": 8, "role": "text", "confidence": 1},
-            ],
-            steps=[{"target": 7, "action": "click", "intent": "navigate", "point": [20, 20]}],
-            save_result="ready_for_query" if has_review else None,
-            message_targets=[8] if has_review else [],
-        )
-
-    services.memory_retrieval.match_pattern = bind_method
-    cache = ScreenPatternCache(tmp_path / "save-result-cache.json", enabled=True)
-    services = replace(services, cache=cache)
-    prepared = build_decision_prompt(request, services)
-    cached = ScreenMatch(
-        mapping=ScreenMapping(fields={}, operation="stop"),
-        screen_kind="dialog",
-        controls=[],
-        procedure_step="inspect-save",
-        operation="stop",
-        expected_result="Inspect the current save result",
-    )
-    cache.stage(
-        screen_pattern_key(prepared.state),
-        {**cached.model_dump(mode="json"), "mapping": cached.mapping.model_dump(mode="json")},
-    )
-    assert cache.finish(success=True) == 1
-
-    def unused_lookup(key):
-        pytest.fail("save-result review must not read a cache entry it will discard")
-
-    monkeypatch.setattr(cache, "lookup", unused_lookup)
-
-    selected = select_screen_response(request, services, prepared)
-
-    if has_review:
-        assert selected.response == selected.method_proposal
-        assert selected.response.save_result == "ready_for_query"
-        assert selected.response.steps[0].intent == "navigate"
-        assert selected.cache_hit is None
-        assert not selected.used_image
-    else:
-        assert selected.response.mapping.operation == "stop"
-        assert selected.cache_hit is None
-    assert bound == [request.screen]
-    assert len(model.prompts) == (0 if has_review else 1)
-
-
 def test_similar_capture_reruns_ocr_but_reuses_detector_geometry(tmp_path, record):
     next_action = named_response(
         fields={"Next": {"role": "button", "bbox": [100, 15, 150, 30]}},
@@ -1630,6 +1563,186 @@ def test_model_may_complete_from_current_evidence_before_the_last_taught_step(tm
     )
     assert set(complete["conditions"]) == set(instruction.completion_conditions)
     assert len(model.prompts) == 1
+
+
+@pytest.mark.parametrize(
+    "repair_after_save", [False, True], ids=["save-confirm-complete", "repair-and-resave"]
+)
+def test_synthetic_calc_save_confirmation_and_completion_share_the_task_graph(
+    tmp_path, repair_after_save
+):
+    """Synthetic X2-shaped replies through the existing fake vision/model/relay."""
+    from sawon_interfaces import ActionResult
+
+    from brain.task_instruction import TaskInputRecord
+
+    values = {
+        "order_number": "SYNTH-X2-001",
+        "item_name": "Synthetic kit",
+        "quantity": "3 sets",
+        "due_date": "2026-11-16",
+        "delivery_address": "Synthetic warehouse",
+    }
+    task = TaskInstruction(
+        name="Synthetic ledger save",
+        objective="Save the five supplied values in the open ledger.",
+        completion_conditions=["The five values are recorded.", "The same file is saved."],
+        procedure=[
+            {
+                "id": "write-ledger",
+                "instruction": "Write or correct supplied values in their ledger cells.",
+                "completion": "The supplied values are visible in the ledger.",
+                "actions": [
+                    {"verb": "fill", "target": source, "input_key": source, "surface": "any"}
+                    for source in values
+                ],
+            },
+            {
+                "id": "save-ledger",
+                "instruction": "Save the ledger and confirm the existing format if asked.",
+                "completion": "The same ledger is saved with the supplied values.",
+                "actions": [
+                    {"verb": "activate", "target": "Save"},
+                    {"verb": "activate", "target": "Keep format"},
+                ],
+            },
+        ],
+    )
+    fields = {
+        source: {
+            "role": "cell",
+            "bbox": [10 + index * 70, 70, 65, 25],
+            "source": source,
+            "value": value,
+        }
+        for index, (source, value) in enumerate(values.items())
+    }
+    save = named_response(
+        screen_kind="editor",
+        taught_step_id="save-ledger",
+        procedure_step="task-action",
+        fields={**fields, "Save": {"role": "button", "bbox": [270, 15, 90, 30]}},
+        steps=[{"target": "Save", "action": "click", "intent": "save", "point": [310, 30]}],
+    )
+    confirm = named_response(
+        screen_kind="dialog",
+        taught_step_id="save-ledger",
+        procedure_step="task-action",
+        fields={
+            "Format warning": {
+                "role": "text",
+                "bbox": [10, 15, 240, 30],
+                "value": "Keep the existing workbook format?",
+            },
+            "Keep format": {"role": "button", "bbox": [270, 70, 90, 30]},
+        },
+        steps=[
+            {
+                "target": "Keep format",
+                "action": "click",
+                "intent": "confirm_save",
+                "point": [310, 85],
+            }
+        ],
+        save_result="confirmation_required",
+        message_targets=["Format warning"],
+    )
+    complete = named_response(
+        screen_kind="editor",
+        taught_step_id="save-ledger",
+        procedure_step="task-action",
+        fields=fields,
+        steps=[],
+        operation="complete",
+        save_result="ready_for_query",
+        message_targets=[],
+        evidence=[{"field": source, "target": source} for source in values],
+        completion_evidence=[
+            {"condition_index": 0, "target": "order_number"},
+            {"condition_index": 1, "target": "delivery_address"},
+        ],
+    )
+    record = TaskInputRecord(case_id="synthetic-calc-save", inputs=values)
+    responses = [save, confirm, complete]
+    expected_points = [[310, 30], [310, 85]]
+    if repair_after_save:
+        correction = named_response(
+            screen_kind="editor",
+            taught_step_id="write-ledger",
+            procedure_step="task-action",
+            fields={
+                **fields,
+                "quantity": {**fields["quantity"], "value": "wrong quantity"},
+                "Quantity error": {
+                    "role": "text",
+                    "bbox": [10, 110, 240, 30],
+                    "value": "The quantity must be corrected before saving.",
+                },
+            },
+            steps=[
+                {
+                    "target": "quantity",
+                    "action": "fill",
+                    "source": "quantity",
+                    "intent": "fill",
+                    "point": [180, 82],
+                }
+            ],
+            save_result="rejected",
+            message_targets=["Quantity error"],
+            repair_fields=["quantity"],
+        )
+        responses = [save, correction, save, confirm, complete]
+        expected_points = [[310, 30], [180, 82], [310, 30], [310, 85]]
+    brain, model, relay, *_ = setup_brain(tmp_path, record, responses, task_instruction=task)
+    if repair_after_save:
+        brain.settings = brain.settings.model_copy(update={"guard_mode": "enforce"})
+        # Synthetic earlier readings use the existing real memory-commit helper;
+        # the recovery starts with an already filled, observed ledger as X2 did.
+        remember_prior_inputs(brain, set(values))
+    relay.health = lambda: {"ok": True}
+    delivered = []
+
+    def fake_act(action):
+        assert brain.result is None, "Save delivery or format confirmation is not task completion"
+        delivered.append(action.root)
+        return ActionResult(
+            action_id=action.root.action_id,
+            ok=True,
+            duration_ms=0,
+            post_obs_id=relay.current.obs_id,
+        )
+
+    relay.act = fake_act
+
+    outcome = brain.run()
+
+    assert outcome.status == "success", [event.payload for event in brain.log.read_all()[-8:]]
+    assert [list(action.target.image_point) for action in delivered] == expected_points
+    if repair_after_save:
+        assert [action.type for action in delivered] == ["click", "set_text", "click", "click"]
+        assert delivered[1].text == values["quantity"]
+    assert brain.save_issued
+    assert len(model.prompts) == len(responses), (
+        "Only the supplied task decisions should be requested"
+    )
+    contexts = [json.loads(prompt[len(CONTEXT_MAPPING_RULES) :]) for prompt in model.prompts]
+    assert all(context["execution"]["checkpoint"] == "task" for context in contexts)
+    assert all("save_review" not in context["execution"] for context in contexts)
+    final_plan = next(
+        event.payload["response"]
+        for event in reversed(brain.log.read_all())
+        if event.payload.get("check") == "screen_plan_proposed"
+    )
+    assert final_plan["operation"] == "complete"
+    assert final_plan["message_targets"] == []
+    proof = next(
+        event.payload
+        for event in brain.log.read_all()
+        if event.payload.get("check") == "task_completion_fields"
+    )
+    assert set(proof["fields"]) == set(values)
+    assert set(proof["conditions"]) == set(task.completion_conditions)
 
 
 # Cleanup audit C4: preserve real refs and batch compilation without intermediate marker strings.
@@ -2379,47 +2492,6 @@ def test_selected_record_value_is_verified_on_return_to_editor(tmp_path, record)
     )
 
 
-def test_save_matching_receives_same_action_contract_as_validator(tmp_path, record):
-    from brain.graph.save_review import SAVE_RESULT_ACTIONS, SAVE_REVIEW_GUIDANCE
-
-    brain, model, _, _, _, meaning = setup_brain(
-        tmp_path,
-        record,
-        [
-            named_response(
-                screen_kind="dialog",
-                procedure_step="inspect-save",
-                steps=[],
-                operation="stop",
-                save_result="unknown",
-            )
-        ],
-    )
-    brain.phase = "save_result"
-    brain._decide_visual_screen(
-        {
-            "ocr": [b.model_dump() for b in fixture()[0]],
-            "markers": [m.model_dump() for m in fixture()[2]],
-        },
-        None,
-    )
-    state = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
-    expected = {
-        "allowed_intents": {
-            result: sorted(intents) for result, intents in SAVE_RESULT_ACTIONS.items()
-        },
-        "schema_mapping": {
-            "result": "save_result",
-            "evidence_refs": "message_targets",
-            "next_decision": "steps",
-        },
-    }
-    assert "save_review" not in state
-    assert state["execution"]["save_review"] == expected
-    assert state["execution"]["guidance"] == SAVE_REVIEW_GUIDANCE
-    assert model.prompts[-1].count("SAVE RESULT REVIEW:") == 1
-
-
 @pytest.mark.parametrize("pending", [False, True])
 def test_task_prompt_separates_available_pending_and_verified_inputs(tmp_path, record, pending):
     from brain.graph.schemas import Choice, Decision
@@ -2631,7 +2703,6 @@ def test_only_nonproof_invalid_parent_links_are_omitted(tmp_path, record, depend
         payload["controls"] = [payload["controls"][1], payload["controls"][2]]
     response = sanitize_unused_controls(
         matching_contract(brain)[1],
-        brain.phase,
         ScreenMatch.model_validate(payload),
         {
             "markers": [marker.model_dump() for marker in markers],
@@ -2669,7 +2740,6 @@ def test_control_cleanup_keeps_unbound_current_evidence_for_compilation_error(tm
     ]
     response = sanitize_unused_controls(
         matching_contract(brain)[1],
-        brain.phase,
         ScreenMatch.model_validate(
             {
                 "screen_kind": "editor",
@@ -3619,72 +3689,3 @@ def test_query_result_is_remembered_then_next_action_is_selected(tmp_path, recor
     assert "do not use duplicate_clear/duplicate_found" in " ".join(
         model.prompts[-1].lower().split()
     )
-
-
-@pytest.mark.parametrize(
-    ("save_result", "action", "expected_intent"),
-    [
-        ("ready_for_query", "click", "navigate"),
-        ("confirmation_required", "click", "confirm_save"),
-        ("ready_for_query", "key", None),
-        ("rejected", "click", None),
-    ],
-)
-def test_synthetic_save_acknowledgement_normalizes_only_completed_click(
-    tmp_path, save_result, action, expected_intent
-):
-    """Synthetic reconstruction of 088-r3: same target, only execution intent changes."""
-    from test_brain import element
-
-    from brain.graph.save_review import SaveReviewResponse
-    from sawon_runtime.storage import RunLog
-
-    observed = wire()
-    prefix = "e" + str(observed.obs_id.int) + "0"
-    scene = SceneObservation(
-        wire=observed,
-        screen_kind="dialog",
-        elements=[
-            element(prefix + "1", "Text", name="Saved record 1"),
-            element(prefix + "2", "Button", name="OK"),
-        ],
-    )
-    response = ScreenMatch(
-        screen_kind="dialog",
-        controls=[],
-        procedure_step="save-record",
-        save_result=save_result,
-        message_targets=[1],
-        steps=[
-            {
-                "target": 2,
-                "action": action,
-                "intent": "confirm_save",
-                "point": [288, 266],
-                "keys": "enter" if action == "key" else None,
-            }
-        ],
-    )
-    original = response.model_dump_json()
-    log = RunLog(tmp_path, case_id="synthetic-save", agent_id="test")
-    if expected_intent is None:
-        with pytest.raises(ValueError, match="next decision conflicts with save result"):
-            compile_match(response, scene, SaveReviewResponse, log=log)
-        assert not log.read_all()
-    else:
-        review = compile_match(response, scene, SaveReviewResponse, log=log)
-        decision = review.next_decision.to_decision()
-        assert review.result == save_result
-        assert review.evidence_refs == [prefix + "1"]
-        assert decision.intent == expected_intent
-        assert decision.operation == "act"  # Acknowledgement does not finish the task.
-        assert decision.action.type == "click" and decision.action.ref == prefix + "2"
-        events = log.read_all()
-        if expected_intent == "navigate":
-            assert len(events) == 1
-            assert events[0].payload["check"] == "save_acknowledgement_intent_normalized"
-            assert events[0].payload["point"] == [288, 266]
-            assert events[0].payload["target"] == 2
-        else:
-            assert not events
-    assert response.model_dump_json() == original

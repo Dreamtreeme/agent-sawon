@@ -1,4 +1,4 @@
-"""Ground the next step after a save attempt without claiming persistence."""
+"""Review saves for the fixed ShipmentRecord workflow without user task instructions."""
 
 from typing import Literal
 

@@ -459,7 +459,6 @@ def verification_requirements(
 
 def sanitize_unused_controls(
     services: ScreenDecisionServices,
-    phase: str,
     response: ScreenMatch,
     screen: dict,
     required: list[dict] | tuple[dict, ...],
@@ -467,7 +466,7 @@ def sanitize_unused_controls(
     """Discard unrelated role mistakes and impossible parent links before grounding."""
     markers = {m["id"]: m for m in screen.get("markers", [])}
     controls = {c.id: c for c in response.controls}
-    ignored_save_result = phase != "save_result" and response.save_result is not None
+    ignored_save_result = response.save_result is not None
     if ignored_save_result:
         response = response.model_copy(update={"save_result": None, "message_targets": []})
     direct_needed = (
@@ -475,8 +474,6 @@ def sanitize_unused_controls(
         | {e.target for e in response.evidence}
         | {e.target for e in response.completion_evidence}
     )
-    if response.save_result is not None:
-        direct_needed.update(response.message_targets)
     direct_needed.update(i for i in (response.grid, response.row) if i is not None)
     # Verification controls are mandatory even when they are not action targets.
     if required:
@@ -935,14 +932,11 @@ def _validate_step_contract(
 def _validate_action_boundary(
     response: ScreenMatch,
     capability: ActionCapability,
-    request: ScreenDecisionRequest,
 ) -> None:
     allowed_intents = set(capability.actions)
     if "login" in allowed_intents:
         allowed_intents.add("credential")
-    if request.phase != "save_result" and any(
-        action.intent not in allowed_intents for action in response.steps
-    ):
+    if any(action.intent not in allowed_intents for action in response.steps):
         raise ValueError("screen_match_action_outside_procedure")
 
 
@@ -994,7 +988,7 @@ def validate_match_plan(
             _validate_taught_step(response, request)
             response = _validate_completion_annotations(response, request, services)
             _validate_saved_row_navigation_target(response, request)
-            _validate_action_boundary(response, capability, request)
+            _validate_action_boundary(response, capability)
         else:
             checks = (
                 ("taught_step", lambda: _validate_taught_step(response, request)),
@@ -1008,7 +1002,7 @@ def validate_match_plan(
                 ),
                 (
                     "action_boundary",
-                    lambda: _validate_action_boundary(response, capability, request),
+                    lambda: _validate_action_boundary(response, capability),
                 ),
             )
             for check, validate in checks:
@@ -1285,30 +1279,11 @@ def match_screen_pattern(
     method_proposal = request.proposal if allow_method else None
     if allow_method and method_proposal is None and "correction" not in screen:
         method_proposal = services.memory_retrieval.match_pattern(screen)
-        if (
-            request.phase == "save_result"
-            and method_proposal is not None
-            and (
-                method_proposal.save_result in {None, "unknown"}
-                or not method_proposal.message_targets
-            )
-        ):
-            # Legacy/action-only methods still need current result evidence.
-            # A method carrying a rebound save review uses the common executor.
-            services.log.append(
-                "verify",
-                payload={
-                    "check": "memory_retrieval_exception",
-                    "reason": "save_result_not_bound",
-                },
-            )
-            method_proposal = None
     cache_hit = (
         services.cache.lookup(prepared.cache_key)
         if method_proposal is None
         and services.cache.enabled
         and not services.memory_retrieval.recovery_required
-        and request.phase != "save_result"
         and not request.post_action_review
         else None
     )
@@ -1340,7 +1315,6 @@ def select_screen_response(
         )
         or (cache_hit is not None and cache_hit[1].get("operation", "act") != "act")
         or request.post_action_review
-        or request.phase == "save_result"
     )
     if current_review:
         cache_hit = None
@@ -1702,7 +1676,7 @@ def ground_screen_response(
             response = retain_screen_observation(
                 response, request, services, prepared, page=page if used_image else None
             )
-            response = sanitize_unused_controls(services, request.phase, response, screen, required)
+            response = sanitize_unused_controls(services, response, screen, required)
             grounded_response = response
             if response.operation == "act" and not response.steps:
                 completion = _call_screen_decision(
@@ -1744,7 +1718,7 @@ def ground_screen_response(
             response = retain_screen_observation(
                 response, request, services, prepared, page=page if used_image else None
             )
-            response = sanitize_unused_controls(services, request.phase, response, screen, required)
+            response = sanitize_unused_controls(services, response, screen, required)
         # Recoveries return a complete plan; validate the final one, after every recovery.
         if response != validated_response:
             response = prepare_screen_plan(
@@ -1913,7 +1887,10 @@ def decide_screen(
                     else "model",
                 },
             )
-        remember_response = response != method_proposal
+        # Removing obsolete review metadata does not adapt the remembered action.
+        remember_response = method_proposal is None or response != method_proposal.model_copy(
+            update={"save_result": None, "message_targets": []}
+        )
         if response.mapping is not None:
             response = response.model_copy(update={"mapping": response.accepted_mapping(screen)})
         # Window handles/current keyboard focus are not replayable geometric targets.
@@ -1960,7 +1937,7 @@ def decide_screen(
         )
 
 
-def compile_match(response: ScreenMatch, observation, schema, *, log: RunLog | None = None):
+def compile_match(response: ScreenMatch, observation, schema):
     from .schemas import DecisionResponse
 
     prefix = "e" + str(observation.obs_id.int) + "0"
@@ -2038,41 +2015,7 @@ def compile_match(response: ScreenMatch, observation, schema, *, log: RunLog | N
         if len(response.steps) > 1 or (response.operation == "act" and not response.steps):
             raise ValueError("screen_match_requires_one_boundary_action")
         data = decision(response.steps[0] if response.steps else None)
-    # Acknowledging a completed save is navigation, even when the model calls
-    # the same button click confirm_save. Preserve the raw response and target.
-    normalized_acknowledgement = (
-        response.save_result == "ready_for_query"
-        and response.operation == "act"
-        and len(response.steps) == 1
-        and response.steps[0].action == "click"
-        and response.steps[0].intent == "confirm_save"
-    )
-    if normalized_acknowledgement:
-        data["decision"]["intent"] = "navigate"
-    if response.save_result is not None:
-        data = {
-            "result": response.save_result,
-            "evidence_refs": [ref(i) for i in response.message_targets],
-            "repair_fields": response.repair_fields,
-            "next_decision": data,
-        }
-
-    result = adapt_proposal(data, schema)
-    if normalized_acknowledgement and log is not None:
-        log.append(
-            "verify",
-            payload={
-                "check": "save_acknowledgement_intent_normalized",
-                "obs_id": str(observation.obs_id),
-                "save_result": response.save_result,
-                "original_intent": "confirm_save",
-                "execution_intent": "navigate",
-                "action": "click",
-                "target": response.steps[0].target,
-                "point": response.steps[0].point,
-            },
-        )
-    return result
+    return adapt_proposal(data, schema)
 
 
 def compile_screen_action_plan(response: ScreenMatch, observation):
