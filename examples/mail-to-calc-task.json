@@ -1,0 +1,87 @@
+{
+  "schema_version": "0.1",
+  "name": "I1 Gmail에서 읽은 수량을 Calc에 기록·저장",
+  "objective": "등록된 Gmail 앱을 첫 앱으로 선택한다. query.email에 해당하는 메일 본문에서 단위를 포함한 수량을 직접 읽어 quantity로 수집한다. 등록된 Calc 앱을 선택하고 화면의 열기 기능으로 workbook_path 파일(i1-quantity.xlsx)을 연다. 주문대장 시트 C2의 수량(단위포함) 셀에 수집한 수량만 입력하고 같은 .xlsx 파일을 저장한 뒤 정상 완료한다.",
+  "result_keys": [
+    "quantity"
+  ],
+  "requirements": [
+    "공급 입력은 검색어 query.email과 출력 파일 경로 workbook_path뿐이다. 수량 정답은 제공되지 않는다.",
+    "첫 앱은 available_apps에 등록된 gmail을 open_app으로 선택한다. 앱 실행 경로나 셸 명령을 입력하지 않는다.",
+    "Gmail에서 현재 열린 메일이 query.email의 대상인지 화면 본문으로 확인한다. 대상이면 바로 읽고, 아니면 Gmail 검색창에 query.email을 입력하여 대상 메일을 열고 읽는다.",
+    "메일 제목이 없을 수 있다. 검색어와 실제 본문의 문맥으로 자료를 구분하고, 본문에서 직접 읽은 수량과 단위를 quantity로 출처와 함께 메모한다.",
+    "quantity는 Gmail에서 얻는 업무 사실이다. Calc 입력값은 누적 메모의 collected_result.quantity를 사용하며 수량을 추측하거나 공급 입력에서 가져오지 않는다.",
+    "수량을 수집한 뒤 available_apps의 calc를 open_app으로 선택하여 열거나 기존 Calc 창으로 전환한다.",
+    "이번 작업 파일 이름은 i1-quantity.xlsx이다. 현재 열린 다른 파일이나 기존 order-ledger.xlsx는 작업 대상이 아니다. Calc 창으로 전환한 뒤에는 항상 화면의 파일 열기 기능으로 workbook_path의 파일을 연다. 제목이나 시트 모양이 비슷하다는 이유로 파일 열기를 생략하지 않는다.",
+    "주문대장 열은 주문번호·품명·수량(단위포함)·납기·배송지다. C2 수량(단위포함) 셀에만 단위를 포함한 수집 값을 기록한다. 다른 데이터 셀은 빈 상태를 그대로 보존한다.",
+    "같은 파일을 화면의 저장 버튼이나 파일 메뉴로 저장한다. 파일 형식 확인창이 나오면 기존 Excel .xlsx 형식을 유지한다.",
+    "현재 화면과 이번 실행의 누적 관찰로 C2 입력과 저장 결과를 확인한다. 다른 열의 빈칸은 의도된 상태이므로 채우지 말고, 저장이 확인되면 정상 완료한다."
+  ],
+  "completion_conditions": [
+    "Gmail의 대상 메일 본문에서 단위를 포함한 수량을 실제로 읽어 quantity로 출처와 함께 수집했다.",
+    "프로젝트가 Calc를 선택하고 화면에서 workbook_path 파일을 열었으며 C2에 수집한 수량만 기록했다.",
+    "다른 데이터 셀과 헤더를 보존하고 같은 .xlsx 파일을 저장했으며 현재 화면과 누적 관찰로 결과를 확인했다."
+  ],
+  "constraints": [
+    "메일을 작성·발송·수정·삭제하지 않는다. Gmail은 자료를 읽는 용도로만 사용한다.",
+    "출력 변경은 workbook_path 파일의 주문대장 C2에 한정한다. 다른 파일·시트·셀·헤더를 수정하지 않는다.",
+    "새 이름이나 다른 형식으로 저장하지 않는다.",
+    "로그인 또는 보안 인증이 필요하면 상황을 알리고 중단한다."
+  ],
+  "procedure": [
+    {
+      "id": "read-email",
+      "instruction": "먼저 등록 앱 gmail을 open_app으로 선택한다. 현재 메일 본문이 query.email의 자료이면 읽고, 아니면 검색창에 query.email을 넣어 대상 메일을 연다. 본문의 수량과 단위를 직접 읽어 quantity로 출처와 함께 메모한다.",
+      "completion": "지정 메일에서 실제로 읽은 단위 포함 수량을 quantity로 수집했다.",
+      "actions": [
+        {
+          "verb": "fill",
+          "target": "Gmail 검색창(대상 메일이 아직 열려 있지 않은 경우)",
+          "input_key": "query.email",
+          "surface": "direct_input"
+        }
+      ]
+    },
+    {
+      "id": "open-ledger",
+      "instruction": "등록 앱 calc를 open_app으로 선택하여 Calc를 열거나 기존 창으로 전환한다. 현재 열린 기존 주문대장은 작업 대상이 아니므로 항상 보이는 열기 버튼이나 파일 메뉴로 workbook_path를 입력하여 파일을 연다. 제목에 i1-quantity.xlsx이 표시되고 주문대장 시트가 보이는지 확인한다.",
+      "completion": "프로젝트가 지정한 시험용 파일을 Calc 화면에서 열었다.",
+      "actions": [
+        {
+          "verb": "fill",
+          "target": "Calc 열기 대화상자의 파일 이름 입력란",
+          "input_key": "workbook_path",
+          "surface": "direct_input"
+        }
+      ]
+    },
+    {
+      "id": "write-quantity",
+      "instruction": "주문대장 시트 C2의 수량(단위포함) 셀에 Gmail에서 수집한 collected_result.quantity를 입력한다. 다른 데이터 셀은 빈 상태로 남긴다.",
+      "completion": "C2에 수집한 수량과 단위가 기록되었고 다른 데이터 셀은 변경하지 않았다.",
+      "actions": [
+        {
+          "verb": "fill",
+          "target": "주문대장 C2 수량(단위포함) 셀",
+          "input_key": "collected_result.quantity",
+          "surface": "table_cell"
+        }
+      ]
+    },
+    {
+      "id": "save-ledger",
+      "instruction": "보이는 저장 버튼이나 파일 메뉴로 같은 파일을 저장한다. 형식 확인이 나오면 기존 .xlsx 형식을 유지한다. C2와 저장 상태를 현재 화면과 누적 관찰로 확인한 뒤 다른 빈칸을 채우지 말고 정상 완료한다.",
+      "completion": "같은 .xlsx 파일에 C2의 수량이 저장되었으며 업무를 정상 완료했다.",
+      "actions": [
+        {
+          "verb": "activate",
+          "target": "Calc의 저장 버튼 또는 파일 메뉴의 저장 항목"
+        },
+        {
+          "verb": "verify",
+          "target": "C2의 수집 수량과 파일 저장 상태"
+        }
+      ]
+    }
+  ]
+}

@@ -1,9 +1,11 @@
-"""Canonical vocabulary and boundary mapping for user-supplied task inputs.
+"""Canonical source binding for supplied inputs and run-local collected facts.
 
 Inside the worker, an ``input key`` is always the exact key in ``inputs``.  A UI
 action carries that key in ``source`` because credentials and business inputs
 share the same execution channel.  Model-facing aliases are accepted only at
 the screen-match boundary and are immediately converted to the canonical key.
+Taught collected_result.<key> references are resolved from actual screen readings,
+without modifying the supplied inputs or treating destination blanks as source facts.
 """
 
 from collections.abc import Mapping
@@ -17,6 +19,35 @@ if TYPE_CHECKING:
 MODEL_INPUTS_NAME = "inputs"
 LEGACY_INPUT_CONTAINERS = ("record.", "inputs.")
 SOURCE_BOUND_INTENTS = frozenset({"credential", "query_input", "fill", "select_option"})
+COLLECTED_INPUT_PREFIX = "collected_result."
+
+
+def collected_input_sources(task: "TaskInstruction") -> dict[str, str]:
+    """Map taught write sources to facts read in this run, never to stored answers."""
+    return {
+        action.input_key: key
+        for step in task.procedure
+        for action in step.actions
+        if action.verb == "fill"
+        and action.input_key is not None
+        and action.input_key.startswith(COLLECTED_INPUT_PREFIX)
+        and (key := action.input_key.removeprefix(COLLECTED_INPUT_PREFIX)) in task.result_keys
+    }
+
+
+def resolve_task_inputs(
+    supplied: Mapping[str, str], task: "TaskInstruction", collected: Mapping[str, str]
+) -> dict[str, str]:
+    """Derive available writes from supplied inputs and taught references to readings.
+
+    Missing/deleted readings have no executable value. Recomputing this view keeps
+    corrections current without copying source facts into the supplied record.
+    """
+    sources = collected_input_sources(task)
+    return {
+        **{key: value for key, value in supplied.items() if key not in sources},
+        **{source: collected[key] for source, key in sources.items() if key in collected},
+    }
 
 
 def allowed_input_surfaces(

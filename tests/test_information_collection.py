@@ -227,3 +227,286 @@ def test_synthetic_graph_reads_mail_switches_to_chat_and_exports_combined_result
     assert result["provenance"]["address"][0]["screen_path"] == ["Chat", "Synthetic contact"]
     assert brain.values == record.inputs
     assert brain._observed_inputs() == {}
+
+
+def synthetic_quantity_transfer_task():
+    """The synthetic manual names the source of the value, never its answer."""
+    return TaskInstruction(
+        name="Synthetic mail quantity to spreadsheet",
+        objective="Read the order quantity from mail and save it in the spreadsheet.",
+        result_keys=["quantity"],
+        completion_conditions=["The quantity read from mail is saved in the spreadsheet."],
+        procedure=[
+            {
+                "id": "read-mail",
+                "instruction": "Read the quantity in the specified order email.",
+                "completion": "The order quantity has been read from the email.",
+                "actions": [{"verb": "verify", "target": "Order quantity"}],
+            },
+            {
+                "id": "update-sheet",
+                "instruction": "Enter the quantity read from mail in the quantity cell and save.",
+                "completion": "The spreadsheet has saved the quantity read from mail.",
+                "actions": [
+                    {
+                        "verb": "fill",
+                        "target": "Quantity cell",
+                        "input_key": "collected_result.quantity",
+                        "surface": "table_cell",
+                    },
+                    {"verb": "activate", "target": "Save"},
+                ],
+            },
+        ],
+    )
+
+
+def test_synthetic_graph_reads_unsupplied_mail_quantity_then_fills_and_saves_sheet(tmp_path):
+    """Existing fake model/window relay exercise the real graph; no live apps or calls."""
+    from sawon_interfaces import ActionResult
+    from test_window_actions import setup_window_brain
+
+    from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
+
+    quantity = "27"
+    reference = "collected_result.quantity"
+    mail = reading(["Mail", "Synthetic order"], {"quantity": quantity}).model_dump()
+    mail.update(
+        screen_kind="query",
+        steps=[{"action": "focus_window", "handle": 2, "intent": "navigate"}],
+        observed_step_results=[
+            {
+                "step_id": "read-mail",
+                "observed_result": "Read the order quantity",
+                "completed": True,
+            }
+        ],
+    )
+    sheet = {
+        "screen_kind": "editor",
+        "screen_path": ["Calc", "Synthetic ledger"],
+        "fields": {
+            "Quantity cell": {
+                "role": "cell",
+                "bbox": [10, 10, 100, 20],
+                "source": reference,
+                "value": "",
+            },
+            "Save": {"role": "button", "bbox": [130, 10, 80, 20]},
+        },
+        "steps": [
+            {
+                "action": "fill",
+                "target": "Quantity cell",
+                "point": [40, 20],
+                "intent": "fill",
+                "source": reference,
+            }
+        ],
+        "taught_step_id": "update-sheet",
+    }
+    filled = {
+        **sheet,
+        "fields": {
+            **sheet["fields"],
+            "Quantity cell": {**sheet["fields"]["Quantity cell"], "value": quantity},
+        },
+        "steps": [{"action": "click", "target": "Save", "point": [160, 20], "intent": "save"}],
+    }
+    completed = {
+        **filled,
+        "operation": "complete",
+        "steps": [],
+        "observed_step_results": [
+            {"step_id": "update-sheet", "observed_result": "Spreadsheet saved", "completed": True}
+        ],
+    }
+    record = TaskInputRecord(case_id="synthetic-mail-to-sheet", inputs={})
+    brain, model, relay, switched = setup_window_brain(
+        tmp_path,
+        record,
+        [mail, sheet, filled, completed],
+        task_instruction=synthetic_quantity_transfer_task(),
+    )
+    focus = relay.act
+    actions = []
+    saved = []
+
+    def act(action):
+        # Only this fake relay stores the synthetic spreadsheet; never an app API.
+        item = action.root
+        if item.type == "focus_window":
+            return focus(action)
+        actions.append(item)
+        if item.type == "click":
+            saved.append(actions[0].text)
+        return ActionResult(
+            action_id=item.action_id,
+            ok=True,
+            post_obs_id=relay.observe().obs_id,
+            duration_ms=1,
+        )
+
+    relay.act = act
+
+    outcome = brain.run()
+
+    assert outcome.status == "success", [event.payload for event in brain.log.read_all()[-12:]]
+    assert switched == [2]
+    assert [action.type for action in actions] == ["set_text", "click"]
+    assert actions[0].text == quantity, (
+        "Relay text must come from the email reading, not input data"
+    )
+    assert saved == [quantity]
+    assert brain.values == record.inputs == {}
+    assert brain.input_values == {reference: quantity}
+    contexts = [json.loads(prompt[len(CONTEXT_MAPPING_RULES) :]) for prompt in model.prompts]
+    assert len(contexts) == 4
+    assert contexts[0]["notebook"]["collected_result"]["values"] == {}
+    assert all(
+        context["notebook"]["collected_result"]["values"] == {"quantity": quantity}
+        for context in contexts[1:]
+    ), "The empty destination must not erase the source reading on the next request"
+    result = collected_result(brain.screen_nodes, ["quantity"])
+    assert result["values"] == {"quantity": quantity}
+    assert [item["screen_path"] for item in result["provenance"]["quantity"]] == [
+        ["Mail", "Synthetic order"]
+    ]
+    destination = brain.screen_nodes['["Calc", "Synthetic ledger"]']["fields"][reference]
+    assert destination["delivery"]["value"] == quantity
+    assert destination["last_observation"]["value"] == quantity
+
+
+def test_synthetic_observed_input_view_tracks_source_update_and_explicit_blank(tmp_path):
+    """Existing fake memo writes prove values are resolved anew, not frozen after collection."""
+    from test_window_actions import setup_window_brain
+
+    record = TaskInputRecord(case_id="synthetic-observed-input-updates", inputs={})
+    brain, _, relay, _ = setup_window_brain(
+        tmp_path, record, [], task_instruction=synthetic_quantity_transfer_task()
+    )
+    reference = "collected_result.quantity"
+    assert brain.input_values == {}
+    brain.observation = relay.observe()
+    brain.observation_number = 1
+    brain._remember_model_task_evidence(
+        SimpleNamespace(
+            mapping=reading(["Calc", "Synthetic ledger"], {reference: ""}),
+            observed_step_results=[],
+        )
+    )
+    assert reference in brain.screen_nodes['["Calc", "Synthetic ledger"]']["fields"]
+    assert brain.input_values == {}, "An empty destination never invents the unavailable mail value"
+    for number, quantity in enumerate(("27", "31", ""), start=2):
+        brain.observation = relay.observe()
+        brain.observation_number = number
+        brain._remember_model_task_evidence(
+            SimpleNamespace(
+                mapping=reading(["Mail", "Synthetic order"], {"quantity": quantity}),
+                observed_step_results=[],
+            )
+        )
+        assert brain.input_values == ({reference: quantity} if quantity else {}), quantity
+        assert brain.values == record.inputs == {}
+
+
+def synthetic_observed_quantity_fill(quantity=None):
+    """A synthetic composite screen exposes a source reading and destination cell together."""
+    fields = {
+        "Quantity cell": {
+            "role": "cell",
+            "bbox": [10, 50, 100, 20],
+            "source": "collected_result.quantity",
+            "value": "",
+        }
+    }
+    if quantity is not None:
+        fields["Mail quantity"] = {
+            "role": "text",
+            "bbox": [10, 10, 100, 20],
+            "source": "quantity",
+            "value": quantity,
+        }
+    return {
+        "screen_kind": "editor",
+        "screen_path": ["Synthetic combined view"],
+        "fields": fields,
+        "steps": [
+            {
+                "action": "fill",
+                "target": "Quantity cell",
+                "point": [40, 60],
+                "intent": "fill",
+                "source": "collected_result.quantity",
+            }
+        ],
+        "taught_step_id": "update-sheet",
+    }
+
+
+def test_synthetic_graph_read_and_fill_in_same_response_resolves_new_reading(tmp_path):
+    """Existing fake model/relay isolate read→prepare→wire; the next response stops the test."""
+    from sawon_interfaces import ActionResult
+    from test_window_actions import setup_window_brain
+
+    quantity = "43"
+    fill = synthetic_observed_quantity_fill(quantity)
+    stop = {**fill, "operation": "stop", "steps": []}
+    record = TaskInputRecord(
+        case_id="synthetic-same-response-source", inputs={"query.email": "Synthetic order"}
+    )
+    brain, model, relay, _ = setup_window_brain(
+        tmp_path, record, [fill, stop], task_instruction=synthetic_quantity_transfer_task()
+    )
+    sent = []
+
+    def act(action):
+        sent.append(action.root)
+        return ActionResult(
+            action_id=action.root.action_id,
+            ok=True,
+            post_obs_id=relay.observe().obs_id,
+            duration_ms=1,
+        )
+
+    relay.act = act
+
+    outcome = brain.run()
+
+    assert outcome.reason == "model_requested_stop"
+    assert len(model.prompts) == 2, (
+        "Reading and writing must not require an intermediate model turn"
+    )
+    assert [action.type for action in sent] == ["set_text"]
+    assert sent[0].text == quantity
+    assert brain.values == record.inputs == {"query.email": "Synthetic order"}
+    assert brain.input_values == {**record.inputs, "collected_result.quantity": quantity}
+    assert not any(event.payload.get("guard") == "input_scope" for event in brain.log.read_all()), (
+        "The new reading must be available during plan validation, not only during execution"
+    )
+    destination = brain.screen_nodes['["Synthetic combined view"]']["fields"][
+        "collected_result.quantity"
+    ]
+    assert destination["delivery"]["value"] == quantity
+
+
+def test_synthetic_graph_missing_source_reading_never_dispatches_empty_text(tmp_path):
+    """A fake model proposes an unresolved source; no live app or source answer is provided."""
+    from test_window_actions import setup_window_brain
+
+    fill = synthetic_observed_quantity_fill()
+    stop = {**fill, "operation": "stop", "steps": []}
+    record = TaskInputRecord(case_id="synthetic-missing-source", inputs={})
+    brain, model, relay, _ = setup_window_brain(
+        tmp_path, record, [fill, stop], task_instruction=synthetic_quantity_transfer_task()
+    )
+    sent = []
+    relay.act = lambda action: sent.append(action)
+
+    outcome = brain.run()
+
+    assert outcome.reason == "model_requested_stop"
+    assert len(model.prompts) == 2, "The unresolved fill must be evaluated before the stop response"
+    assert sent == [], "Unavailable observations must not become an empty-string write"
+    assert brain.input_values == brain.values == {}
+    assert collected_result(brain.screen_nodes, ["quantity"])["missing_keys"] == ["quantity"]

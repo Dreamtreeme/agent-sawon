@@ -1,0 +1,21 @@
+allowlist:
+- process: chrome.exe
+  title_regex: .*Gmail.*
+- process: msedge.exe
+  title_regex: .*Gmail.*
+- process: soffice.bin
+  title_regex: .*
+restore_allowed_focus: false
+guard_mode: enforce
+observation_mode: visual_only
+apps:
+  gmail:
+    name: Gmail
+    target: https://mail.google.com
+    process: chrome.exe
+    title_regex: .*Gmail.*
+  calc:
+    name: LibreOffice Calc
+    target: C:/Program Files/LibreOffice/program/scalc.exe
+    process: soffice.bin
+    title_regex: .*

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from sawon_interfaces import Action, Observation
 
+from brain.input_binding import COLLECTED_INPUT_PREFIX
 from brain.relay import Relay
 from brain.visual.scene import SceneObservation
 from sawon_runtime.storage import RunLog
@@ -269,6 +270,12 @@ def wire_action(request: ActionWiringRequest, services: ActionWiringServices) ->
         data["target"], data["obs_id"] = _fresh_visual_target(request, services, observation)
         data["schema_version"] = "0.2"
     if choice.type in {"set_text", "type_text"}:
+        if (
+            choice.source is not None
+            and choice.source.startswith(COLLECTED_INPUT_PREFIX)
+            and choice.source not in request.values
+        ):
+            raise GuardStop("collected_input_unavailable:" + choice.source)
         data["text"] = request.credentials.get(choice.source) or request.values.get(
             choice.source, ""
         )

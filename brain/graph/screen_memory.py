@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import TYPE_CHECKING
 
+from brain.input_binding import resolve_task_inputs
 from brain.observe.values import field_matches
 
 if TYPE_CHECKING:
+    from brain.task_instruction import TaskInstruction
+
     from .screen_mapping import ScreenMapping
 
 
 def remember_screen(
     nodes: dict[str, dict],
     mapping: ScreenMapping,
-    values: Mapping[str, str],
+    input_keys: Collection[str],
     observation_id: str,
     *,
     observation_number: int,
@@ -35,7 +38,7 @@ def remember_screen(
             json.dumps(path, ensure_ascii=False),
             {"path": path, "fields": {}, "controls": {}},
         )
-    sources = set(values) | set(result_keys)
+    sources = set(input_keys) | set(result_keys)
     for name, field in mapping.fields.items():
         if field.source in sources:
             entry = node["fields"].setdefault(field.source, {})
@@ -88,6 +91,28 @@ def collected_result(nodes: Mapping[str, dict], result_keys: Sequence[str]) -> d
         "missing_keys": [source for source in result_keys if source not in values],
         "provenance": provenance,
     }
+
+
+def screen_input_values(
+    supplied: Mapping[str, str],
+    task: TaskInstruction,
+    nodes: Mapping[str, dict],
+    mapping: ScreenMapping | None = None,
+) -> dict[str, str]:
+    """Resolve input references, including readings in the plan being prepared.
+
+    The optional mapping is a preview, not a memory mutation. The same readings
+    are committed by remember_screen before the common executor wires actions.
+    """
+    readings = collected_result(nodes, task.result_keys)["values"]
+    if mapping is not None:
+        for field in mapping.fields.values():
+            if field.source in task.result_keys and "value" in field.model_fields_set:
+                if field.value.strip():
+                    readings[field.source] = field.value
+                else:
+                    readings.pop(field.source, None)
+    return resolve_task_inputs(supplied, task, readings)
 
 
 def remember_input_delivery(

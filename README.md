@@ -118,6 +118,13 @@ Calc 단일 업무는 [교육](examples/calc-input-task.json), [합성 입력](e
 기존 `brain.run`의 `--record`, `--task`, `--relay-url`로 연결합니다. 모델이 등록 앱을 선택하고,
 화면에서 파일을 열어 입력·저장합니다. 별도의 Calc 실행기나 ChatGPT 화면 조작은 필요하지 않습니다.
 
+화면에서 처음 읽은 값을 다른 앱에 쓰는 I1 예제는 [Gmail→Calc 교육](examples/mail-to-calc-task.json),
+[검색어·파일 경로만 있는 입력](examples/mail-to-calc-record.json),
+[두 앱 등록](examples/relay.gmail-calc.yaml)을 사용합니다. 위와 같은 빈 양식의 C2에 Gmail에서
+읽은 수량을 기록합니다. 수량은 입력 파일에 넣지 않으며 교육의 `collected_result.quantity`가
+이번 실행의 메모를 참조합니다. 고유한 시험 파일 이름으로 현재 열린 다른 대장과 구분하고,
+예제의 파일 이름·경로와 실제 준비 파일을 맞춥니다. 일반 입력·실행·저장 경로를 재사용합니다.
+
 ## 설정과 환경 변수
 
 | 파일 | 담당 |

@@ -43,13 +43,27 @@ core가 bench 구현에서 직접 import할 수 있는 것은 `sawon_interfaces`
 검색어·자료 위치를 입력으로 제공할 수 있지만, 화면에서 찾아야 할 정답은 사전 입력하지 않는다.
 `TaskInstruction.result_keys`는 수집할 결과의 source 이름이며 값이 아니다. 모델이 현재 화면에서
 읽어 `fields[].source/value`로 반환한 해당 항목은 기존 `screen_nodes`에 보존한다. 결과 키를
-실행 입력 `values`나 verified/remaining 입력 집합에 추가하지 않는다. 수집 응답은
+실행 입력 `values`나 verified/remaining 입력 집합에 무조건 추가하지 않는다. 수집 응답은
 OCR 줄 조각이 아닌 source별 완성된 업무 값을 반환한다. 줄바꿈을 종합하고 주변 설명문을
 제외하는 판단은 모델이 수행하며 코드가 날짜·주소의 형태를 추측하거나 문장을 파싱하지 않는다.
 `collected_result`는
 노드별 실제 읽기의 값과 화면 경로·라벨·관찰 ID·순번을 반환하며, 최신 읽기에서 값이 없는 키는
 `missing_keys`로 남긴다. 완료에는 요청한 결과 키의 관찰값이 필요하다. `task-result.json`의
 성공/실패 상태는 작업자 종료 상태를 따르며, 결과 파일이 존재한다는 사실만으로 성공하지 않는다.
+
+교육의 `fill.input_key`가 `collected_result.<결과 키>`를 참조하면, `input_binding.py`의
+`resolve_task_inputs`와 `screen_memory.py`의 `screen_input_values`가 이번 실행의 읽기에서
+실행 입력을 파생한다. `Brain.values`와 `record.json`은 제공 입력으로 유지한다. 정책·모델
+문맥·행동 준비·전달 기록·기억 슬롯 결합은 같은 `Brain.input_values`를 사용한다. 읽지 않았거나
+명시적으로 지워진 원본에는 입력값이 없으며, 빈 문자열로 전달하지 않는다. 참조하지 않는 수집
+사실은 입력 의무가 되지 않는다. 같은 응답에서 읽기와 입력을 선택하면 검증 시 현재 읽기를
+미리 해석하고, 실행 전에는 기존 관찰 반영 경계에서 그 읽기를 메모에 저장한다.
+
+원본 Gmail 관찰의 `source="quantity"`와 목적지 Calc 필드·행동의
+`source="collected_result.quantity"`는 다르다. 목적지의 빈칸·입력 결과·전달 기록이 원본 사실을
+덮어쓰지 않으며, 원본의 정정·명시적 빈값은 다음 해석에 반영된다. 새 상태 저장소나 앱별
+입력기는 만들지 않는다. 이 계약은 I1의 현재 실행 연결이며, 새 자료의 전체 기억 재사용과
+편찬 시 과거 업무값 제거는 C0 이후 별도 검증한다.
 
 창 선택은 현재 relay 관찰의 `active_window`와 허용된 `windows` 목록을 모델에 전달한다.
 `focus_window`는 handle로 선택하는 비기하 행동이다. 화면 target·point·가짜 마커를 요구하지

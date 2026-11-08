@@ -477,6 +477,10 @@ as named entries (name, source, role, bbox, value). Name by visible meaning, qua
 by section, never detector numbers. source is an exact supplied input or requested result key,
 null for other controls, never literal data. Include source for reviewed fields too. The executor
 supplies fill values from inputs; observed values come from the screen and accumulated readings.
+For a taught fill whose input_key is collected_result.<key>, use that exact source on the
+destination field and fill action. Its value comes from this run's notebook.collected_result,
+not the supplied record. The original app reading keeps source=<key>. A blank destination does
+not erase the original fact. Never use a collected reference before reading its original fact.
 task.result_keys names information to collect from the apps, not supplied answers. Report each
 reading as fields[].source/value. A result field represents one complete business value, not an
 OCR line: combine wrapped lines into that value and use a bbox covering its visible evidence.

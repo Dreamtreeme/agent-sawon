@@ -44,6 +44,7 @@ from .model_call import ResponseT, ScreenModelCall
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision, FieldName
 from .screen_mapping import ScreenMapping, ScreenMappingWire, WindowAction, mapping_prompt
+from .screen_memory import screen_input_values
 from .visual_turn import adapt_proposal
 
 
@@ -1187,6 +1188,13 @@ def prepare_screen_plan(
     active_fields: set[str],
 ):
     """Compile every proposal through the same task and write-surface contract."""
+    if response.mapping is not None:
+        values = screen_input_values(
+            request.values, request.task_instruction, request.screen_nodes, response.mapping
+        )
+        request = replace(request, values=values)
+        active_fields = set(values)
+        capability = capability.model_copy(update={"input_scope": sorted(active_fields)})
     with rejection_evidence(
         services.log,
         "screen_decision.prepare_screen_plan",

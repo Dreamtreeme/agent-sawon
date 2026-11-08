@@ -19,7 +19,10 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from sawon_interfaces import Action, Observation, ShipmentRecord, UIElement
 
 from brain.cache import ScreenPatternCache
-from brain.input_binding import allowed_input_surfaces
+from brain.input_binding import (
+    allowed_input_surfaces,
+    collected_input_sources,
+)
 from brain.observe import describe, redact, summarize
 from brain.observe.evidence import (
     matching_delivered_input,
@@ -104,6 +107,7 @@ from .screen_memory import (
     observed_inputs,
     remember_input_delivery,
     remember_screen,
+    screen_input_values,
 )
 from .selection import (
     SelectionRequest,
@@ -264,7 +268,7 @@ class Brain:
             task_bytes = settings.task_path.read_bytes()
             self.task_instruction = TaskInstruction.model_validate_json(task_bytes)
             identity_field = self.task_instruction.identity_input_key
-            if identity_field is not None and identity_field not in self.values:
+            if identity_field is not None and identity_field not in self.input_values:
                 raise ValueError("task_identity_input_missing")
             if identity_field is not None:
                 self.saved_evidence.identity_field = identity_field
@@ -308,12 +312,19 @@ class Brain:
         )
 
     @property
+    def input_values(self) -> dict[str, str]:
+        """Available supplied inputs and taught references to this run's readings."""
+        if self.task_instruction is None:
+            return self.values
+        return screen_input_values(self.values, self.task_instruction, self.screen_nodes)
+
+    @property
     def identity_input_key(self) -> str | None:
         """Business identifier used to link a saved record across screens."""
 
         if self.task_instruction is not None:
             return self.task_instruction.identity_input_key
-        return "hbl_no" if "hbl_no" in self.values else None
+        return "hbl_no" if "hbl_no" in self.input_values else None
 
     @property
     def memory_retrieval(self) -> MemoryRetrieval:
@@ -323,7 +334,7 @@ class Brain:
             RetrievalContext(
                 self.task_instruction,
                 self.task_instruction_sha256,
-                self.values,
+                self.input_values,
                 self.credentials,
                 str(self.observation.obs_id) if self.observation else None,
             ),
@@ -341,7 +352,9 @@ class Brain:
         assert self.task_instruction_sha256 is not None
         policy = self._decision_policy()
         saved_record_review = (
-            self.saved_evidence.snapshot(self.values) if self.saved_evidence.session_id else None
+            self.saved_evidence.snapshot(self.input_values)
+            if self.saved_evidence.session_id
+            else None
         )
         contract = self._execution_context(
             policy, anticipate=True, saved_record_review=saved_record_review
@@ -359,7 +372,7 @@ class Brain:
             screen=screen,
             page=page,
             phase=self.phase,
-            values=self.values,
+            values=self.input_values,
             verified_fields=frozenset(self._observed_inputs()),
             screen_nodes=self.screen_nodes,
             current_screen_path=self.current_screen_path,
@@ -396,13 +409,13 @@ class Brain:
         saved_record_review: dict | None = None,
     ) -> dict:
         if saved_record_review is None and self.saved_evidence.session_id:
-            saved_record_review = self.saved_evidence.snapshot(self.values)
+            saved_record_review = self.saved_evidence.snapshot(self.input_values)
         context = execution_context(
             ExecutionContextRequest(
                 policy=policy or self._decision_policy(),
                 pending=self.pending if anticipate else None,
                 current_decision=self.decision,
-                values=self.values,
+                values=self.input_values,
                 phase=self.phase,
                 saved_record_review=saved_record_review,
                 saved_identity_field=self.saved_evidence.identity_field,
@@ -991,7 +1004,7 @@ class Brain:
             )
         elif reason in {"incomplete_final_field_evidence", "final_evidence_needs_more"}:
             provided = {item.field for item in decision.evidence} if decision else set()
-            feedback["missing_fields"] = sorted(set(self.values) - provided)
+            feedback["missing_fields"] = sorted(set(self.input_values) - provided)
             feedback["required_response"] = (
                 "Completion was NOT accepted. Provide every final_required_field exactly "
                 "once, using CURRENT cells in the SAME query row. If missing columns are "
@@ -1108,7 +1121,7 @@ class Brain:
         identity_field = self.identity_input_key
         if (
             identity_field is None
-            or identity_field not in self.values
+            or identity_field not in self.input_values
             or observation is None
             or observation.active_window is None
             or observation.active_window.handle != self.query_window_handle
@@ -1134,7 +1147,7 @@ class Brain:
         return (
             len(matches) == 1
             and matches[0].enabled
-            and field_matches(identity_field, matches[0].value, self.values)
+            and field_matches(identity_field, matches[0].value, self.input_values)
         )
 
     def _duplicate_checkpoint_pending(self) -> bool:
@@ -1143,7 +1156,7 @@ class Brain:
     def _apply_observation_reconciliation(self, observation: Observation) -> None:
         """Promote current visible facts before policy or planning runs."""
 
-        reconciled = reconcile_observation(observation, self.values, self.identity_input_key)
+        reconciled = reconcile_observation(observation, self.input_values, self.identity_input_key)
         self.reconciled_observation = reconciled
         if not isinstance(observation, SceneObservation):
             return
@@ -1298,7 +1311,7 @@ class Brain:
                 + json.dumps(
                     {
                         "goal": self.goal,
-                        "record": self.values,
+                        "record": self.input_values,
                     },
                     ensure_ascii=False,
                 ),
@@ -1384,13 +1397,14 @@ class Brain:
             )
             self.review = self.saved_evidence.observe(
                 self.observation,
-                self.values,
+                self.input_values,
                 field_matches,
                 bindings,
                 selected_row_ref=selected_row_ref,
             )
             atomic_write_json(
-                self.case_dir / "saved-evidence.json", self.saved_evidence.snapshot(self.values)
+                self.case_dir / "saved-evidence.json",
+                self.saved_evidence.snapshot(self.input_values),
             )
         elif self.phase == "task":
             self.review = EvidenceReview(
@@ -1402,7 +1416,9 @@ class Brain:
             identity_field = self.identity_input_key
             if identity_field is None:
                 raise GuardStop("identity_input_not_configured")
-            self.review = review_final(self.observation, self.values, field_matches, identity_field)
+            self.review = review_final(
+                self.observation, self.input_values, field_matches, identity_field
+            )
         else:
             self.review = EvidenceReview(
                 obs_id=str(self.observation.obs_id),
@@ -1510,7 +1526,7 @@ class Brain:
         return DecisionPolicy(
             replace(
                 self._workflow_facts(),
-                field_names=tuple(sorted(self.values)),
+                field_names=tuple(sorted(self.input_values)),
                 # Delivered values permit the save action, not completion.
                 verified_field_names=tuple(sorted(self._observed_inputs())),
                 delivered_field_names=tuple(
@@ -1519,9 +1535,9 @@ class Brain:
                             source
                             for node in self.screen_nodes.values()
                             for source, field in node["fields"].items()
-                            if source in self.values
+                            if source in self.input_values
                             and (delivery := field.get("delivery"))
-                            and delivery["value"] == self.values[source]
+                            and delivery["value"] == self.input_values[source]
                             # A later reading supersedes delivery, including a
                             # mismatch observed in another node for this source.
                             and delivery["observation_number"] >= last_observed.get(source, -1)
@@ -1539,7 +1555,7 @@ class Brain:
         )
 
     def _observed_inputs(self) -> dict[str, dict]:
-        return observed_inputs(self.screen_nodes, self.values)
+        return observed_inputs(self.screen_nodes, self.input_values)
 
     def _current_feedback(self) -> list[dict]:
         """비대한 피드백 목록을 설정된 크기(기본 3개)로 축소하여 프롬프트 비대화 방지."""
@@ -1594,7 +1610,7 @@ class Brain:
             + json.dumps(
                 {
                     "goal": self.goal,
-                    "record": self.values,
+                    "record": self.input_values,
                     "plan": self.plan,
                     "phase": self.phase,
                     "execution_policy": (policy or self._decision_policy()).as_prompt(),
@@ -1604,7 +1620,9 @@ class Brain:
                     else None,
                     "final_required_fields": context["final_required_fields"],
                     "verified_fields": sorted(self._observed_inputs()),
-                    "remaining_fields": sorted(set(self.values) - set(self._observed_inputs())),
+                    "remaining_fields": sorted(
+                        set(self.input_values) - set(self._observed_inputs())
+                    ),
                     "duplicate_clear": self.duplicate_clear,
                     "save_issued": self.save_issued,
                     "query_value_verified": self.query_value_verified,
@@ -1891,8 +1909,8 @@ class Brain:
         }
 
     def _input_surfaces(self, source: str | None) -> set[str]:
-        if self.task_instruction is not None and source in self.values:
-            return allowed_input_surfaces(self.task_instruction, source, self.values)
+        if self.task_instruction is not None and source in self.input_values:
+            return allowed_input_surfaces(self.task_instruction, source, self.input_values)
         return {"direct_input"}
 
     def _record_verified_field(self, source: str, element: UIElement) -> bool:
@@ -1903,7 +1921,7 @@ class Brain:
         if not surface_allowed:
             return False
         self._record_input_observation(source, element)
-        if not field_matches(source, element.value, self.values):
+        if not field_matches(source, element.value, self.input_values):
             return False
         self._record_progress("field:" + source)
         return True
@@ -1940,7 +1958,7 @@ class Brain:
         remember_screen(
             self.screen_nodes,
             mapping,
-            self.values,
+            self.input_values.keys() | collected_input_sources(self.task_instruction).keys(),
             str(self.observation.obs_id),
             observation_number=self.observation_number,
             result_keys=self.task_instruction.result_keys,
@@ -1958,8 +1976,8 @@ class Brain:
             source = field.source
             if "value" not in field.model_fields_set:
                 continue
-            if source in self.values:
-                if field_matches(source, field.value, self.values):
+            if source in self.input_values:
+                if field_matches(source, field.value, self.input_values):
                     self._record_progress("field:" + source)
             elif source in self.task_instruction.result_keys:
                 if field.value.strip():
@@ -2044,7 +2062,7 @@ class Brain:
             if (
                 choice is None
                 or choice.type not in {"set_text", "type_text"}
-                or choice.source not in self.values
+                or choice.source not in self.input_values
             ):
                 remaining.append(planned)
                 continue
@@ -2052,7 +2070,7 @@ class Brain:
             if (
                 target is None
                 or not target.enabled
-                or not field_matches(choice.source, target.value, self.values)
+                or not field_matches(choice.source, target.value, self.input_values)
             ):
                 remaining.append(planned)
                 continue
@@ -2118,7 +2136,7 @@ class Brain:
                 choice=choice,
                 decision=decision,
                 credentials=self.credentials,
-                values=self.values,
+                values=self.input_values,
                 planned_point=planned.point if planned is not None else None,
                 fresh_observation=fresh_observation,
                 max_phash_distance=self.settings.visual_action_phash_distance,
@@ -2172,13 +2190,13 @@ class Brain:
                     "window_handle": self.observation.active_window.handle,
                     "descriptor": pending["descriptor"],
                 }
-            if choice.source in self.values:
+            if choice.source in self.input_values:
                 if self.settings.visual_model_only_review:
                     remember_input_delivery(
                         self.screen_nodes,
                         self.current_screen_path,
                         choice.source,
-                        self.values[choice.source],
+                        self.input_values[choice.source],
                         target={
                             "label": target.name,
                             "role": target.role,
@@ -2287,7 +2305,7 @@ class Brain:
                     if choice.source in self.credentials
                     else "delivered_field_names"
                 )
-                if choice.source in self.credentials or choice.source in self.values:
+                if choice.source in self.credentials or choice.source in self.input_values:
                     policy = DecisionPolicy(
                         replace(
                             policy.facts,
@@ -2432,7 +2450,7 @@ class Brain:
     ) -> tuple[WorkerNode | None, Observation, ObservedEffect]:
         if choice.type not in {"set_text", "type_text"}:
             return None, observation, observed_effect
-        if choice.source in self.values and self.settings.visual_model_only_review:
+        if choice.source in self.input_values and self.settings.visual_model_only_review:
             # The current model observation owns the outcome and the next plan.
             return None, observation, ObservedEffect.UNKNOWN
         descriptor = pending["descriptor"]
@@ -2448,7 +2466,7 @@ class Brain:
             source,
             enabled=self.settings.visual_input_blur_recheck,
             credentials=self.credentials,
-            values=self.values,
+            values=self.input_values,
         ):
             before_window = observation.active_window
             outcome = self._blur_visual_input(element, decision)
@@ -2469,7 +2487,7 @@ class Brain:
                 choice=choice,
                 decision=decision,
                 phase=self.phase,
-                values=self.values,
+                values=self.input_values,
                 credentials=self.credentials,
             )
         )
@@ -2515,7 +2533,7 @@ class Brain:
         before = pending["before_observation"]
         self.saved_evidence.begin(str(before.obs_id))
         if isinstance(before, SceneObservation):
-            self.saved_evidence.remember_submitted_query(before, self.values[identity_field])
+            self.saved_evidence.remember_submitted_query(before, self.input_values[identity_field])
         self.review = None
 
     def _record_action_verification(
@@ -2844,7 +2862,7 @@ class Brain:
                 "ok": True,
                 "check": "final_query_fields",
                 "proof_kind": "linked_saved_record_observations",
-                **self.saved_evidence.snapshot(self.values),
+                **self.saved_evidence.snapshot(self.input_values),
             },
         )
         return self._finish("success", "saved_and_verified_awaiting_approval")
@@ -2898,7 +2916,7 @@ class Brain:
                 result = evaluate_task_completion(
                     self.observation,
                     decision,
-                    self.values,
+                    self.input_values,
                     self.task_instruction.completion_conditions,
                     model_only_review=self.settings.visual_model_only_review,
                 )
@@ -2929,7 +2947,7 @@ class Brain:
             payload = evaluate_final_query_completion(
                 self.observation,
                 decision,
-                self.values,
+                self.input_values,
                 identity_field,
                 self._grid(decision),
             )

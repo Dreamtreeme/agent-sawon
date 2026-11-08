@@ -42,7 +42,7 @@ def remember(brain: Brain) -> dict:
             "verified_inputs": sorted(brain._observed_inputs()),
             "screen_nodes": brain.screen_nodes,
             "current_screen_path": brain.current_screen_path,
-            "remaining_inputs": sorted(set(brain.values) - set(brain._observed_inputs())),
+            "remaining_inputs": sorted(set(brain.input_values) - set(brain._observed_inputs())),
         }
     )
     if brain.memory_retrieval.enabled:
