@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from brain.input_binding import MODEL_INPUTS_NAME
 from brain.visual.frame import frame_input
 
-from .screen_memory import pending_screen_inputs, recall_screen_tree
+from .screen_memory import collected_result, pending_screen_inputs, recall_screen_tree
 
 if TYPE_CHECKING:
     from .screen_decision import ScreenDecisionRequest
@@ -56,6 +56,10 @@ def recall_context(request: ScreenDecisionRequest, *, projected_screen: dict | N
         "screen_tree": recall_screen_tree(request.screen_nodes),
         "previous_screen_path": list(request.current_screen_path),
     }
+    if request.task_instruction.result_keys:
+        notebook["collected_result"] = collected_result(
+            request.screen_nodes, request.task_instruction.result_keys
+        )
     if request.phase == "task":
         notebook.update(
             {

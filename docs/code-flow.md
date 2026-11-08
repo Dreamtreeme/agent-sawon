@@ -1,6 +1,6 @@
 # 현재 코드 실행 흐름
 
-기준일: 2026-11-05. 모델·비용·제거된 동작은 [현행 런타임 기준](current-runtime.md),
+기준일: 2026-11-07. 모델·비용·제거된 동작은 [현행 런타임 기준](current-runtime.md),
 상태와 저장소 경계는 [계약 지도](contracts.md)를 함께 따릅니다.
 
 ## 서류에서 화면 작업까지
@@ -72,8 +72,8 @@ flowchart TD
 flowchart TD
     CAP[현재 캡처] --> TEXT[현재 OCR]
     TEXT --> SIM{편찬 경로의 다음 그룹 결합}
-    SIM -->|일치| MEM[Memory Retrieval: 업무 지식 인출]
-    SIM -->|미일치| SCAN[Scanning: OmniParser 후보 탐색]
+    SIM -->|일치| MEM[Memory Retrieval: 재사용 방법 인출]
+    SIM -->|미일치| SCAN[Scanning: 화면 후보 탐지]
     MEM --> STRUCTURE[필드 구조·입력 키·행동 인출]
     STRUCTURE --> STATE[현재 상태·실행 계약과 문맥 원천 확보]
     SCAN --> STATE

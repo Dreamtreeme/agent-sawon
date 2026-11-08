@@ -1,6 +1,6 @@
 # 상태와 저장소 계약 지도
 
-기준일: 2026-11-06
+기준일: 2026-11-08
 
 이 문서는 런타임 상태와 계층 간 인터페이스의 기준 위치를 한 곳에 모읍니다. 설명과 구현이
 다르면 해당 계약을 소유한 코드와 이 문서를 같은 변경에서 맞춥니다.
@@ -18,12 +18,13 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | `ActionBatch`/`ActionBatchResult` | `../agent-sawon-bench/interfaces/sawon_interfaces/contracts.py` | core `execution.py`, relay `act_batch` | 같은 관찰·캡처에 연결한 시각 행동을 순서대로 전달하고, 한 번의 최종 관찰과 실제 전달 prefix를 반환 |
 | `ActionPlan`과 화면 입력 계획 | `brain/graph/execution.py`, `screen_batch.py` | `screen_decision`, `selection`, `engine` | 로그인과 일반 행동을 같은 순서 실행기로 전달. `ScreenFillPlan`은 입력과 현재 화면의 후속 행동을 함께 표현 |
 | 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `screen_decision`, `memory_retrieval` | 의미 이름·bbox·입력 key·행동 point의 모델 경계 |
+| 정보 수집 요청·결과 | `brain/task_instruction.py`, `screen_memory.collected_result`, `notebook.remember` | engine, context_recall, 결과 소비자 | `result_keys`로 읽을 항목만 선언하고 누적 관찰에서 값·출처·누락 항목을 파생. 종료 시 로컬 `task-result.json` 저장 |
 | 현재 화면 모델 입력 | `brain/visual/frame.py`의 `frame_input` | `context_recall`, 화면 판단, 관찰 녹화기 | 현재 OCR·후보 영역·포함 텍스트를 한 번 투영. 내부 마커 번호를 모델 계약에 노출하지 않음 |
 | 교육 단계 관찰 결과 | `brain/task_instruction.py`의 `ObservedStepResult` | `screen_mapping`, `screen_decision`, `cache/methods`, engine | 현재 모델 응답의 교육 완료를 실행 상태에 반영. 편찬물의 과거 결과는 현재 응답으로 복원하지 않음 |
 | 선택 결과의 요청 문맥 | `brain/graph/screen_decision.py`의 `ScreenSelection.prepared` | `decide_screen` → `ground_screen_response` | 같은 판단에서 확장한 교육 상세를 빈 행동 보완에 전달. 거절 후 재계획은 기존 prepared 사용. 턴 간 영구 상태가 아님 |
 | 기억 편찬 응답 | `brain/demo_learning/memory_compilation.py`의 `MemoryAssembly` / `MemoryGroupSelection` | 모델 클라이언트, `compile_memory` | 후보 ID로 전달 행동을 선택하고 `field_renames`로 잘못된 필드 이름을 교정. context_anchors는 첫 8개를 보존하고 초과분 경고 기록 |
 | 인출된 화면·행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup`, `MethodCompletion` | `method_from_match`, `compile_memory`, `MemoryRetrieval._restore_structure`, `screen_decision` | 화면 경로·행동 좌표·필드 기하·입력 키, 저장 결과 메시지 및 검토 조건을 결합. 과거 필드 값은 저장·복원하지 않음 |
-| 실행 문맥 회상 | `brain/graph/context_recall.py`의 `recall_context` | `DecisionPromptContext.state` | 캐시·모델이 필요할 때 이번 실행의 이력·누적 증거·남은 입력·진행 상태를 한 번 조립. 선택·모델 호출·상태 변경 없음 |
+| 문맥 구성(Context Recall) | `brain/graph/context_recall.py`의 `recall_context` | `DecisionPromptContext.state` | 캐시·모델이 필요할 때 이번 실행의 이력·누적 증거·남은 입력·진행 상태를 한 번 조립. 선택·모델 호출·상태 변경 없음 |
 | 화면 트리 기억 | `brain/graph/screen_memory.py`, `ProgressState.screen_nodes` | engine, context_recall, notebook | 방문한 경로별 필드·컨트롤 발견과 입력 전달 이력을 누적. 모델용 트리는 같은 상태에서 파생하며 과거 좌표를 포함하지 않음 |
 | 재탐색 요청 | `ScreenMapping.needs_refinement` → `ScreenPlan`/`ScreenMatch` → `SemanticDetection` | `ScreenScanner._resolve` | 필요한 보이는 컨트롤이 없으면 동일 캡처·OCR로 탐색 재진입. provider 스키마에도 존재 |
 | pHash 유사 캡처의 화면 해석 | `SemanticRequest` / `_SceneCatalog` | `Brain._detect_visual` → `screen_decision` | 로컬 탐지 기하는 재사용하고 OCR은 현재 프레임에서 다시 실행. 현재 문맥·판단은 공통 순서로 수행 |
@@ -37,6 +38,33 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 core가 bench 구현에서 직접 import할 수 있는 것은 `sawon_interfaces`뿐입니다. 화면 캡처, 입력,
 창 관리는 relay HTTP 경계 뒤에 둡니다. `WorkerState`에는 SDK client, relay, 열린 파일 같은
 서비스 객체를 넣지 않습니다.
+
+`TaskInputRecord.inputs`는 사용자나 이전 추출 과정이 제공한 입력이며 비어 있을 수 있다.
+검색어·자료 위치를 입력으로 제공할 수 있지만, 화면에서 찾아야 할 정답은 사전 입력하지 않는다.
+`TaskInstruction.result_keys`는 수집할 결과의 source 이름이며 값이 아니다. 모델이 현재 화면에서
+읽어 `fields[].source/value`로 반환한 해당 항목은 기존 `screen_nodes`에 보존한다. 결과 키를
+실행 입력 `values`나 verified/remaining 입력 집합에 추가하지 않는다. 수집 응답은
+OCR 줄 조각이 아닌 source별 완성된 업무 값을 반환한다. 줄바꿈을 종합하고 주변 설명문을
+제외하는 판단은 모델이 수행하며 코드가 날짜·주소의 형태를 추측하거나 문장을 파싱하지 않는다.
+`collected_result`는
+노드별 실제 읽기의 값과 화면 경로·라벨·관찰 ID·순번을 반환하며, 최신 읽기에서 값이 없는 키는
+`missing_keys`로 남긴다. 완료에는 요청한 결과 키의 관찰값이 필요하다. `task-result.json`의
+성공/실패 상태는 작업자 종료 상태를 따르며, 결과 파일이 존재한다는 사실만으로 성공하지 않는다.
+
+창 선택은 현재 relay 관찰의 `active_window`와 허용된 `windows` 목록을 모델에 전달한다.
+`focus_window`는 handle로 선택하는 비기하 행동이다. 화면 target·point·가짜 마커를 요구하지
+않으며 기존 `FocusWindowAction`으로 전달한다. 전환 후 새 화면을 관찰하고 그 창의 좌표를
+연결한다. 실행별 창 handle은 화면 캐시나 재사용 메서드에 저장하지 않는다.
+모델이 창 전환·앱 열기·대상 없는 키로 계획을 바꾸면 `MemoryRetrieval.remember`는 기존
+대기 그룹을 먼저 해제하고 새 재사용 그룹은 만들지 않는다. 실제 창 전환이나 키 전달이
+실행하지 않은 이전 그룹의 전달·진도로 기록되지 않게 한다.
+`open_app`은 `available_apps`에 공개한 등록 앱 ID만 선택한다. 실행 파일·URL과 창을 식별할
+process/title 규칙은 relay의 실행 설정에 두며 모델이 실행 경로나 쉘 명령을 전달하지 않는다.
+해당 앱의 창이 이미 있으면 전경으로 전환하고, 없으면 등록된 대상을 정상 실행한 뒤 창을
+관찰한다. 기존 창 재사용과 새 실행 요청은 별도 진단으로 기록한다. 보이는 창이 없었다는
+사실만으로 프로세스가 완전히 종료된 상태였다고 판단하지 않는다.
+공개 관찰 0.5는 `available_apps`를 추가하며 새 소비자는 과거 0.3/0.4 관찰도 읽는다.
+새 관찰·행동을 사용하려면 core와 bench를 함께 갱신한다. 구 소비자의 새 계약 수용은 보장하지 않는다.
 
 `DecisionPromptContext`는 한 판단 안의 임시 객체다. 실행 capability는 즉시 준비하고,
 모델용 문맥은 처음 읽을 때 생성한다. 메서드 결합이 수정할 수 있는 화면 투영·메서드 문맥은

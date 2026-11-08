@@ -227,6 +227,18 @@ def test_screen_wire_restores_inline_target_nulls_without_losing_zero_or_source(
     action = sent["properties"]["steps"]["items"]["properties"]
     assert "pageup" not in action["keys"]["enum"]
     assert action["direction"]["enum"] == ["up", "down", ""]
+    # Flat wire descriptions retain the per-action contracts without new grammar branches.
+    for field, used, required in [
+        ("point", "fill, click, double_click, key, scroll", "fill, click, double_click, scroll"),
+        ("target", "fill, click, double_click, key, scroll", "fill, click, double_click, scroll"),
+        ("keys", "key", "key"),
+        ("handle", "focus_window", "focus_window"),
+        ("app_id", "open_app", "open_app"),
+    ]:
+        description = action[field]["description"]
+        assert f"Used for actions: {used}." in description, field
+        assert f"Required for actions: {required}." in description, field
+    assert "For key: Use [] when unspecified; do not emit null." in action["point"]["description"]
     assert "x-anthropic-null" not in json.dumps(sent)
     # Invalid nonempty payloads still fail the original domain validation with usage retained.
     for index, key, value in [
@@ -236,6 +248,9 @@ def test_screen_wire_restores_inline_target_nulls_without_losing_zero_or_source(
         (2, "direction", "up"),
         (3, "keys", "tab"),
         (3, "source", "hbl_no"),
+        (0, "point", []),
+        (2, "point", []),
+        (0, "keys", "enter"),
     ]:
         invalid = deepcopy(encoded)
         invalid["steps"][index][key] = value

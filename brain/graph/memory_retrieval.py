@@ -27,7 +27,7 @@ from brain.visual.action_rebind import hash_distance
 from brain.vocabulary import SCROLL_DIRECTION_KEYS
 from sawon_runtime.storage import RunLog, atomic_write_json
 
-from .screen_mapping import ScreenMapping
+from .screen_mapping import ScreenMapping, WindowAction
 from .visual_points import is_wheel_scroll
 
 if TYPE_CHECKING:
@@ -770,7 +770,9 @@ class MemoryRetrieval:
 
     def remember(self, screen: dict, response: ScreenMatch, *, allow_recovery: bool = True) -> None:
         self.state.pending = None
-        if not self.enabled:
+        if not self.enabled or any(
+            isinstance(step, WindowAction) or step.target is None for step in response.steps
+        ):
             return
         task = self.task_context.task
         source_response = response.mapping if response.mapping is not None else response

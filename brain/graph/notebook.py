@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 from sawon_runtime.storage import atomic_write_json
 
+from .screen_memory import collected_result
+
 if TYPE_CHECKING:
     from .engine import Brain
 
@@ -45,5 +47,14 @@ def remember(brain: Brain) -> dict:
     )
     if brain.memory_retrieval.enabled:
         memo["method_progress"] = brain.memory_retrieval.context()
+    if brain.task_instruction is not None and brain.task_instruction.result_keys:
+        result = collected_result(brain.screen_nodes, brain.task_instruction.result_keys)
+        memo["collected_result"] = result
+        if brain.result is not None:
+            memo["result_path"] = "task-result.json"
+            atomic_write_json(
+                brain.case_dir / "task-result.json",
+                {"status": brain.result.status, "reason": brain.result.reason, **result},
+            )
     atomic_write_json(brain.case_dir / "task-notebook.json", memo)
     return memo

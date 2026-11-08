@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
-from typing import Any, ClassVar, Literal, Protocol
+from typing import Annotated, Any, ClassVar, Literal, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -43,7 +43,7 @@ from .execution import GuardStop, PendingAction
 from .model_call import ResponseT, ScreenModelCall
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision, FieldName
-from .screen_mapping import ScreenMapping, ScreenMappingWire, mapping_prompt
+from .screen_mapping import ScreenMapping, ScreenMappingWire, WindowAction, mapping_prompt
 from .visual_turn import adapt_proposal
 
 
@@ -64,7 +64,7 @@ class ActionCapability(BaseModel):
 
 class MatchAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    target: int = Field(ge=0)
+    target: int | None = Field(default=None, ge=0)
     action: Literal["fill", "click", "double_click", "key"]
     source: str | None = Field(default=None, min_length=1, max_length=4000)
     intent: MatchActionIntent
@@ -93,6 +93,10 @@ class MatchAction(BaseModel):
     def explicit_visual_click_point(self):
         if self.action == "key" and self.keys is None:
             raise ValueError("key_action_requires_keys")
+        if self.target is None and (
+            self.action != "key" or self.keys in SCROLL_DIRECTION_KEYS.values()
+        ):
+            raise ValueError("screen_action_requires_target")
         if self.point is not None and any(value < 0 for value in self.point):
             raise ValueError("visual_click_point_negative")
         return self
@@ -101,7 +105,7 @@ class MatchAction(BaseModel):
 class TargetedMatchAction(MatchAction):
     """Provider action owns its chosen control; runtime actions retain integer IDs."""
 
-    target: ControlMeaning
+    target: ControlMeaning = Field(...)
 
 
 class MatchEvidence(BaseModel):
@@ -169,7 +173,9 @@ class ScreenPlan(MethodChoice):
 
     procedure_step: str
     observed_step_results: list[ObservedStepResult] = Field(default_factory=list)
-    steps: list[MatchAction] = Field(default_factory=list, max_length=50)
+    steps: list[Annotated[MatchAction | WindowAction, Field(discriminator="action")]] = Field(
+        default_factory=list, max_length=50
+    )
     requested_instruction_ids: list[str] = Field(default_factory=list, max_length=40)
     operation: Literal["act", "duplicate_clear", "duplicate_found", "complete", "stop"] = "act"
     grid: int | None = Field(default=None, ge=0)
@@ -182,6 +188,16 @@ class ScreenPlan(MethodChoice):
     message_targets: list[int] = Field(default_factory=list, max_length=50)
     repair_fields: list[FieldName] = Field(default_factory=list, max_length=100)
     expected_result: str = Field(default="", max_length=240)
+
+    @property
+    def targeted_steps(self) -> list[MatchAction]:
+        return [
+            step for step in self.steps if isinstance(step, MatchAction) and step.target is not None
+        ]
+
+    @property
+    def action_target_ids(self) -> set[int]:
+        return {step.target for step in self.targeted_steps}
 
 
 class ScreenMatch(SemanticDetection, ScreenPlan):
@@ -255,7 +271,11 @@ class ScreenMatch(SemanticDetection, ScreenPlan):
         steps = []
         for step in self.steps:
             data = step.model_dump(exclude_none=True)
-            data["target"] = names[step.target]
+            if isinstance(step, WindowAction):
+                steps.append(data)
+                continue
+            if step.target is not None:
+                data["target"] = names[step.target]
             if step.action == "key" and step.keys in directions:
                 data.update(action="scroll", direction=directions[data.pop("keys")])
                 data.pop("source", None)
@@ -451,7 +471,7 @@ def sanitize_unused_controls(
     if ignored_save_result:
         response = response.model_copy(update={"save_result": None, "message_targets": []})
     direct_needed = (
-        {s.target for s in response.steps}
+        response.action_target_ids
         | {e.target for e in response.evidence}
         | {e.target for e in response.completion_evidence}
     )
@@ -632,7 +652,7 @@ def retain_screen_observation(
     else:
         absent = missing_verification(response)
     targets = (
-        {step.target for step in response.steps}
+        response.action_target_ids
         | {item.target for item in response.evidence}
         | {item.target for item in response.completion_evidence}
     )
@@ -667,7 +687,7 @@ def retain_screen_observation(
     if not services.settings.visual_model_only_review and missing_verification(recovered):
         raise GuardStop("required_verification_missing")
     recovered_targets = (
-        {step.target for step in recovered.steps}
+        recovered.action_target_ids
         | {item.target for item in recovered.evidence}
         | {item.target for item in recovered.completion_evidence}
     )
@@ -819,6 +839,9 @@ def _normalize_match_actions(
 
     normalized = []
     for item in response.steps:
+        if isinstance(item, WindowAction):
+            normalized.append(item)
+            continue
         if (
             request.phase == "task"
             and item.action == "fill"
@@ -886,7 +909,9 @@ def _validate_step_contract(
         raise ValueError("screen_match_completion_decision_required")
     marker_ids = {marker["id"] for marker in request.screen.get("markers", [])}
     controls = {control.id: control for control in response.controls}
-    for step in response.steps:
+    if any(isinstance(step, WindowAction) for step in response.steps) and len(response.steps) != 1:
+        raise ValueError("window_action_requires_observation_boundary")
+    for step in response.targeted_steps:
         if step.action in {"click", "double_click"} and step.point is None:
             raise ValueError("screen_match_step_not_executable")
         writes_value = step.intent in {"credential", "fill"} or step.action == "fill"
@@ -924,7 +949,7 @@ def _validate_action_boundary(
 def _validate_input_scope(response: ScreenMatch, capability: ActionCapability) -> None:
     scoped_sources = {
         action.source
-        for action in response.steps
+        for action in response.targeted_steps
         if action.source is not None and not action.source.startswith("credential.")
     }
     if capability.input_scope and not scoped_sources <= set(capability.input_scope):
@@ -937,7 +962,7 @@ def _validate_action_targets_executable(
     """Reject a target that the subsequent visual binding will disable."""
 
     controls = {control.id: control for control in response.controls}
-    for step in response.steps:
+    for step in response.targeted_steps:
         control = controls.get(step.target)
         if control is None:
             continue
@@ -1031,7 +1056,7 @@ def validate_action_surfaces(
     markers = {marker["id"]: marker for marker in screen.get("markers", [])}
     controls = {control.id: control for control in response.controls}
     rejected = []
-    for step in response.steps:
+    for step in response.targeted_steps:
         marker = markers.get(step.target)
         control = controls.get(step.target)
         source = marker.get("source", "") if marker is not None else ""
@@ -1575,7 +1600,7 @@ def validate_or_replan(
                     "rejected_fields": [
                         control.visual_description
                         for control in response.controls
-                        if control.id in {step.target for step in response.steps}
+                        if control.id in response.action_target_ids
                     ],
                 },
             }
@@ -1596,8 +1621,8 @@ def validate_or_replan(
                 "verify",
                 payload={
                     "check": correction_check,
-                    "rejected_target_ids": sorted(step.target for step in response.steps),
-                    "corrected_target_ids": sorted(step.target for step in corrected.steps),
+                    "rejected_target_ids": sorted(response.action_target_ids),
+                    "corrected_target_ids": sorted(corrected.action_target_ids),
                 },
             )
             return corrected
@@ -1891,6 +1916,10 @@ def decide_screen(
         remember_response = response != method_proposal
         if response.mapping is not None:
             response = response.model_copy(update={"mapping": response.accepted_mapping(screen)})
+        # Window handles/current keyboard focus are not replayable geometric targets.
+        session_bound_action = any(
+            isinstance(step, WindowAction) or step.target is None for step in response.steps
+        )
         visual_match_candidate = (
             (
                 cache_hit[0] if cache_hit is not None else prepared.cache_key,
@@ -1903,7 +1932,7 @@ def decide_screen(
                     ),
                 },
             )
-            if method_proposal is None
+            if method_proposal is None and not session_bound_action
             else None
         )
         services.log.append(
@@ -1918,6 +1947,7 @@ def decide_screen(
                 "expected_result": response.expected_result,
                 "purpose": response.purpose,
                 "method_id": response.method_id,
+                "cache_skip_reason": "session_bound_action" if session_bound_action else None,
                 "prompt_chars": sum(prompt_sizes),
             },
         )
@@ -1944,6 +1974,18 @@ def compile_match(response: ScreenMatch, observation, schema, *, log: RunLog | N
             raise ValueError("visual_proposal_unknown_marker")
         return result
 
+    def choice(action):
+        if action is None:
+            return None
+        if isinstance(action, WindowAction):
+            return Choice(type=action.action, **action.model_dump(exclude={"action", "intent"}))
+        return Choice(
+            type="set_text" if action.action == "fill" else action.action,
+            ref=ref(action.target),
+            source=action.source if action.action == "fill" else None,
+            keys=action.keys,
+        )
+
     def decision(action=None):
         return {
             "decision": Decision(
@@ -1956,14 +1998,7 @@ def compile_match(response: ScreenMatch, observation, schema, *, log: RunLog | N
                 else "verify",
                 subgoal=response.purpose or response.procedure_step,
                 reason=response.expected_result or "Current form matched to procedure",
-                action=Choice(
-                    type="set_text" if action.action == "fill" else action.action,
-                    ref=ref(action.target),
-                    source=action.source if action.action == "fill" else None,
-                    keys=action.keys,
-                )
-                if action
-                else None,
+                action=choice(action),
                 grid_ref=ref(response.grid)
                 if response.operation in {"duplicate_clear", "duplicate_found", "complete"}
                 else None,
@@ -2046,6 +2081,10 @@ def compile_screen_action_plan(response: ScreenMatch, observation):
     from .schemas import DecisionResponse
 
     if response.operation != "act" or not response.steps:
+        return None
+    if any(isinstance(step, WindowAction) for step in response.steps):
+        if len(response.steps) != 1:
+            raise ValueError("window_action_requires_observation_boundary")
         return None
     if all(step.action == "fill" and step.intent == "fill" for step in response.steps):
         # Pure business fills retain their batch transport and field verification.

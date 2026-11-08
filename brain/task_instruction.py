@@ -1,8 +1,21 @@
 """User-authored task intent and input data without application routes or coordinates."""
 
+from collections.abc import Iterable
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+def _validate_input_keys(keys: Iterable[str]) -> None:
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+    for key in keys:
+        if (
+            not key
+            or len(key) > 120
+            or key.startswith("credential.")
+            or any(character not in allowed for character in key)
+        ):
+            raise ValueError("task_input_key_invalid")
 
 
 class ObservedStepResult(BaseModel):
@@ -64,14 +77,20 @@ class TaskInstruction(BaseModel):
     completion_conditions: list[str] = Field(min_length=1, max_length=20)
     constraints: list[str] = Field(default_factory=list, max_length=20)
     procedure: list[TaughtProcedureStep] = Field(default_factory=list, max_length=40)
+    result_keys: list[str] = Field(
+        default_factory=list,
+        max_length=200,
+        description="Business fact keys to read from screens and export; not supplied input values",
+    )
 
     @model_validator(mode="after")
     def unique_nonempty_items(self):
-        for attribute in ("requirements", "completion_conditions", "constraints"):
+        for attribute in ("requirements", "completion_conditions", "constraints", "result_keys"):
             items = getattr(self, attribute)
             normalized = [item.strip() for item in items]
             if any(not item for item in normalized) or len(set(normalized)) != len(normalized):
                 raise ValueError("task_instruction_items_must_be_unique_and_nonempty")
+        _validate_input_keys(self.result_keys)
         step_ids = [step.id for step in self.procedure]
         if len(step_ids) != len(set(step_ids)):
             raise ValueError("task_instruction_procedure_step_ids_must_be_unique")
@@ -88,18 +107,10 @@ class TaskInputRecord(BaseModel):
     inputs: dict[
         str,
         str,
-    ] = Field(min_length=1, max_length=200)
+    ] = Field(max_length=200)
     origin: Literal["manual"] = "manual"
 
     @model_validator(mode="after")
     def safe_input_keys(self):
-        allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
-        for key in self.inputs:
-            if (
-                not key
-                or len(key) > 120
-                or key.startswith("credential.")
-                or any(character not in allowed for character in key)
-            ):
-                raise ValueError("task_input_key_invalid")
+        _validate_input_keys(self.inputs)
         return self

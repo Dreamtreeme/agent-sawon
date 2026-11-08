@@ -1,0 +1,8 @@
+{
+  "schema_version": "0.1",
+  "case_id": "chat-email-collection",
+  "inputs": {
+    "query.email": "\"테스트용 주문입니다\""
+  },
+  "origin": "manual"
+}

@@ -2932,10 +2932,14 @@ def test_action_owned_control_normalizes_once_and_keeps_cache_contract():
     assert ScreenMatch.model_validate_json(result.model_dump_json()) == result
     schema = ScreenMatch.model_json_schema()
     assert schema["$defs"]["NamedAction"]["properties"]["target"]["type"] == "string"
+    assert "target" in schema["$defs"]["NamedAction"]["required"]
     assert "controls" not in schema["properties"]
     assert "maxItems" not in json.dumps(schema)
     stored_schema = ScreenMatch.model_json_schema(mode="serialization")
-    assert stored_schema["$defs"]["MatchAction"]["properties"]["target"]["type"] == "integer"
+    assert stored_schema["$defs"]["MatchAction"]["properties"]["target"]["anyOf"] == [
+        {"minimum": 0, "type": "integer"},
+        {"type": "null"},
+    ]
     # All supporting metadata takes the same replacement path. One collision
     # exercises every field; provider field ordering is covered by the memory replay.
     raw["controls"] = [
@@ -3222,6 +3226,7 @@ def test_semantic_mapping_uses_declared_name_at_unique_current_point():
                 "Save Completion Close Button": {
                     "role": "button",
                     "bbox": [250, 240, 80, 45],
+                    "parent": "House B/L 조회 결과 목록",
                 },
             },
             "steps": [
@@ -3236,7 +3241,19 @@ def test_semantic_mapping_uses_declared_name_at_unique_current_point():
         }
     )
 
-    response = ScreenMatch.model_validate(mapping.local_payload({}))
+    # Synthetic dense parent table: locally collected OCR must not reject a child click.
+    screen = {
+        "ocr": [
+            {"id": i, "text": f"Synthetic row {i}", "bbox": [40, 170 + 8 * i, 100, 7]}
+            for i in range(51)
+        ]
+    }
+    response = ScreenMatch.model_validate(mapping.local_payload(screen))
+    table, button = response.controls
+    assert table.text_ids == list(range(51))
+    assert button.parent_id == table.id
+    assert response.steps[0].action == "click"
+    assert response.steps[0].point == [290, 262]
     assert (
         next(
             control.visual_description

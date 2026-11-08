@@ -1,22 +1,58 @@
 # 화면 처리 개념과 실행 순서
 
-기준일: 2026-11-05
+기준일: 2026-11-08
+
+이 문서는 현재 구현의 용어와 코드 대응을 정의한다. [업무 완수와 경험 재사용 계획](development-plan.md)은
+현재 기반을 여섯 책임으로 구분해 첫 실제 앱 업무 완수·새 자료 재사용·정제 비교를 진행한다.
+책임 구분은 새 모듈·상태·실행 루프를 추가하라는 뜻이 아니며, 미완성 연결을 완료된 것으로 보지 않는다.
 
 Memory Retrieval은 **과거에 배운 업무 방법**을 가져온다. Context Recall은 **이번 실행의
-현재 상황**을 복원한다. 두 역할은 서로를 대체하지 않는다. 기억을 찾은 경우와 새로 탐색한
-경우 모두 현재 상황을 확인하고, 현재 화면에 맞는 패턴을 연결한 뒤 다음 행동을 정한다.
+메모와 이력을 모델 문맥으로 구성**한다. 파일에서 중단 상태를 복원하는 기능을 뜻하지 않는다.
+기억을 찾은 경우와 새로 탐지한 경우 모두 현재 실행 상태와 화면에 맞춰 다음 행동을 정한다.
+
+## 업무와 기억의 용어
+
+| 용어 | 의미와 경계 | 현재 코드와의 관계 |
+|---|---|---|
+| 업무 매뉴얼·교육 | 사용자가 알려준 목적·절차·완료 조건. 모델 가중치 학습을 뜻하지 않음 | `TaskInstruction` |
+| 업무 탐색 | 교육·현재 관찰·누적 메모로 자료를 찾고 해석하며 다음 행동을 선택해 목적을 달성하는 과정 | 현재 화면 판단·공통 실행을 재사용. 새 정보의 후속 입력과 실제 GUI 업무 완수는 계획 대상 |
+| 화면 관찰 | 현재 캡처·OCR·조작 후보와 읽은 내용. `Observation` 책임 노드 전체와 구분 | relay, `ScreenScanner`, 화면 판단 |
+| 화면 탐지(Scanning) | OCR와 OmniParser로 텍스트·후보 영역을 찾는 처리. 자료 찾기나 업무 전체의 탐색과 구분 | `ScreenScanner._build_catalog` |
+| 업무 정보 | 이번 건에서 주어지거나 화면에서 읽은 값과 출처. 모든 정보가 필수 입력이거나 확인된 정답인 것은 아님 | 사전 입력은 `TaskInputRecord`/`values`; 새 정보의 후속 입력 연결은 개발 계획 대상 |
+| 화면 기억 | 특정 화면 경로의 필드·컨트롤·관찰·전달 이력 | `ProgressState.screen_nodes`; 앱·문서 식별 확장은 계획 대상 |
+| 업무 메모 | 이번 실행의 정보·행동 이력·진행 상황을 함께 부르는 표현. 별도 새 클래스나 저장소 이름이 아님 | 화면 기억, 진행 상태, `task-notebook.json` |
+| 재사용 방법 | 성공 기록에서 남긴 처리 순서·필드 연결·정보를 얻는 방법. 사용자 교육과 이번 값은 별개 | `LearnedMethod`는 현재 화면·행동·입력 키 연결을 저장; 새 정보의 후속 활용은 계획 대상 |
+| 편찬(Memory Compilation) | 성공 기록에서 재사용 방법을 만드는 전체 작업. 코드 생성·모델 학습을 뜻하지 않음 | `assemble_memory`, `compile_memory` |
+| 경험 정제 | 모델이 행동의 기여·의존관계를 보고 유지·제거와 의미 교정을 선택 | `memory_assembly_prompt`, `MemoryAssembly` 응답 |
+| 재사용 형식 변환 | 선택된 실제 기록을 인출 가능한 방법 구조로 구성·검증 | `compile_memory`; 정제 없는 기준선은 구현 예정 |
+| 기억 인출(Memory Retrieval) | 배운 방법을 현재 업무·부분업무에 적용해 수행. 이번 건의 값을 과거 기록에서 복원하지 않음 | `MemoryRetrieval`; 실제 앱의 새 자료 재사용은 계획의 검증 대상 |
+| 문맥 구성(Context Recall) | 현재 상태에서 모델에게 줄 업무 메모·이력을 조립. 검색·행동 선택·프로세스 재개와 구분 | `context_recall.recall_context` |
+
+수집 정보, 실행 입력, 완료 조건은 서로 연결되지만 같은 목록이 아니다. 이 용어 구분은
+현재 저장소를 복제하거나 새 상태 클래스를 추가하라는 뜻이 아니다.
+
+계획·시연에서는 **첫 수행**, **원본 방법 재사용**, **정제 방법 재사용**을 구분한다.
+콜드/웜은 기억·캐시 등 실험 초기 조건이며, 매 화면의 탐지·인출 경로와 같은 말이 아니다.
+방법 재사용 중에도 새 문서나 조회 결과를 읽는 판단이 필요할 수 있다. 이 계획에서 그런 호출은
+정상 정보 획득이며 예외 복구와 구분한다. 현재 인출 경로가 이를 이미 지원한다는 뜻은 아니다.
+재사용 방법과 `visual_match_cache`의 화면 행동 응답 캐시도 효과를 따로 기록한다.
+
+검증 범위는 **Mock ERP 검증**(자체 합성 앱), **실제 앱 검증**(독립적으로 만들어진 기존 앱),
+**현장 검증**(실제 회사의 업무·환경)으로 표시한다. ‘실제 ERP’라는 표현만으로 범위를 대신하지 않는다.
+시연 영상은 검증 과정을 보여주는 자료이며 결과 대조·실행 기록을 대신하지 않는다.
 
 ## 책임과 데이터
 
 | 단계 | 질문 | 입력 → 출력 | 코드 |
 |---|---|---|---|
 | 화면 유사도·기억 결합 | 배운 다음 행동을 현재 화면에 연결할 수 있는가? | 캡처·현재 OCR·업무 식별 → 다음 기억 또는 미일치 | `ScreenScanner.scan`, `MemoryRetrieval._matching_route`, `MethodLibrary.bind_with_context` |
-| Memory Retrieval | 이 업무를 어떻게 처리했는가? | 일치한 기억 → 필드 이름·bbox·입력 key·행동 좌표·학습한 절차 | `MemoryRetrieval.retrieve_screen_memory`, `_restore_structure` |
-| Scanning | 현재 무엇이 보이는가? | 캡처 → OCR 텍스트·OmniParser 후보 영역 | `ScreenScanner._build_catalog` |
-| Context Recall | 이번 실행은 어디까지 왔는가? | 현재 상태 → 메모·이력·완료/미완료 입력·진행 중 행동·교육 위치 | `context_recall.recall_context` |
+| Memory Retrieval | 이 업무를 어떻게 처리했는가? | 일치한 기억 → 필드 이름·bbox·입력 key·행동 좌표·저장한 절차 | `MemoryRetrieval.retrieve_screen_memory`, `_restore_structure` |
+| 화면 탐지(Scanning) | 현재 어떤 텍스트·조작 후보가 있는가? | 캡처 → OCR 텍스트·OmniParser 후보 영역 | `ScreenScanner._build_catalog` |
+| 문맥 구성(Context Recall) | 이번 실행은 어디까지 왔는가? | 현재 상태 → 메모·이력·완료/미완료 입력·진행 중 행동·교육 위치 | `context_recall.recall_context` |
 | Pattern Matching | 배운 방법을 지금 적용할 수 있는가? | 현재 화면·진행 상태 → 결합된 메서드 또는 화면 캐시 | `screen_decision.match_screen_pattern` |
 | 화면 판단 | 다음에 무엇을 할 것인가? | 위 결과 → 실행 계획 또는 탐색 요청 | `screen_decision.decide_screen`, `select_screen_response` |
-| Memory Compilation | 성공 경험에서 무엇을 재사용할 것인가? | 성공 실행 기록 → 절차·필드 대응·좌표·검토 대상을 담은 기억 | `compile_memory` |
+| 경험 정제 | 성공 경험에서 무엇을 재사용할 것인가? | 성공 실행 기록·후속 관찰 → 모델의 유지·제거·의미 교정 선택 | `memory_assembly_prompt`, `assemble_memory`의 모델 호출 |
+| 재사용 형식 변환 | 선택한 기록을 어떻게 저장할 것인가? | 선택안·실제 기록 → 절차·필드 대응·좌표·검토 대상을 담은 방법 | `compile_memory` |
 
 Context Recall에는 모델 호출·행동 선택·상태 변경이 없다. 모델 호출과 응답 검증·복구는
 `screen_decision.py`가 소유한다. 편찬물은 입력 키와 실행 방법을 보관하고, 실제 입력 문자열은
@@ -28,8 +64,8 @@ Context Recall에는 모델 호출·행동 선택·상태 변경이 없다. 모�
 flowchart TD
     CAP[현재 캡처] --> TEXT[현재 OCR]
     TEXT --> SIM{다음 기억 결합}
-    SIM -->|일치| MEM[Memory Retrieval: 업무 지식 인출]
-    SIM -->|미일치| SCAN[Scanning: OmniParser 후보 탐색]
+    SIM -->|일치| MEM[Memory Retrieval: 재사용 방법 인출]
+    SIM -->|미일치| SCAN[Scanning: 화면 후보 탐지]
     MEM --> STRUCTURE[필드 구조·입력 키·행동 인출]
     STRUCTURE --> STATE[현재 실행 계약·문맥 원천 확보]
     SCAN --> STATE
@@ -37,7 +73,7 @@ flowchart TD
     PAT -->|행동 결합 성공| BIND
     PAT -->|경로 소진·완료 화면 일치| FINISH[기억 경로 완료]
     PAT -->|미결합·예외| CTX
-    CTX[Context Recall: 모델용 현재 문맥 조립]
+    CTX[Context Recall: 모델용 현재 문맥 구성]
     CTX --> DEC[현재 검토는 모델·그 외는 캐시 또는 모델]
     DEC -->|needs_refinement| SCAN
     DEC --> BIND[장면 결합·현재 관찰이 있는 항목만 증거 갱신]
@@ -58,7 +94,7 @@ flowchart TD
 
 새 `ScreenScanner.scan()`은 캡처가 같아도 OCR을 수행한다. 유사한 화면의 기억이나 catalog가
 있으면 탐지 영역을 재사용하지만 현재 문자열은 다시 읽는다. 같은 관찰을 다시 판단하는
-`rematch()`와 보완 탐지는 이미 읽은 OCR을 사용한다. 어느 경우에도 현재 문맥 회상과
+`rematch()`와 보완 탐지는 이미 읽은 OCR을 사용한다. 어느 경우에도 현재 문맥 구성과
 패턴 매칭을 거쳐 다음 행동을 정한다. 판단을 Decision 노드까지 미루던 이전의 별도 경로는 제거했다.
 
 ## 기억과 탐색의 연결 계약

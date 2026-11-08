@@ -20,6 +20,7 @@ from brain.graph.schemas import (
     FieldName,
     FocusChoice,
     KeyChoice,
+    OpenAppChoice,
     TextChoice,
     WaitChoice,
     WireActDecision,
@@ -121,7 +122,7 @@ class _ActionRule:
     click_types: tuple[str, ...] = ()
     text_sources: tuple[str, ...] = ()
     keys: tuple[str, ...] = ()
-    focus: bool = False
+    window_actions: bool = False
     wait: bool = False
 
     def as_prompt(self) -> dict[str, Any]:
@@ -132,8 +133,9 @@ class _ActionRule:
             actions.append({"type": ["set_text", "type_text"], "source": list(self.text_sources)})
         if self.keys:
             actions.append({"type": ["key"], "keys": list(self.keys)})
-        if self.focus:
+        if self.window_actions:
             actions.append({"type": ["focus_window"], "requires": ["observed_window_handle"]})
+            actions.append({"type": ["open_app"], "requires": ["registered_app_id"]})
         if self.wait:
             actions.append({"type": ["wait"], "duration_ms": {"minimum": 0, "maximum": 3000}})
         return {
@@ -154,7 +156,7 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
                 screens,
                 click_types=("click", "double_click"),
                 keys=NAVIGATION_KEY_INPUTS,
-                focus=True,
+                window_actions=True,
             ),
             _ActionRule("cancel", screens, click_types=("click",), keys=("esc",)),
             _ActionRule("wait", screens, wait=True),
@@ -206,7 +208,7 @@ def _rules(facts: ExecutionFacts) -> tuple[_ActionRule, ...]:
             screens,
             click_types=("click", "double_click"),
             keys=NAVIGATION_KEY_INPUTS,
-            focus=True,
+            window_actions=True,
         ),
         _ActionRule("cancel", screens, click_types=("click",), keys=("esc",)),
         _ActionRule("wait", screens, wait=True),
@@ -277,8 +279,8 @@ def _action_model(rule: _ActionRule) -> Any:
         alternatives.append(
             create_model(name + "Key", __base__=KeyChoice, keys=(_literal(rule.keys), ...))
         )
-    if rule.focus:
-        alternatives.append(FocusChoice)
+    if rule.window_actions:
+        alternatives.extend((FocusChoice, OpenAppChoice))
     if rule.wait:
         alternatives.append(WaitChoice)
     return reduce(or_, alternatives)

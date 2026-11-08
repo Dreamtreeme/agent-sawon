@@ -458,6 +458,8 @@ def action_group_from_match(
     blocks = {item["id"]: item for item in screen.get("ocr", [])}
     if not steps or response.get("operation", "act") != "act":
         return None
+    if any(step.get("target") is None for step in steps):
+        return None  # Current focus/window actions have no reusable geometric target.
     if slots is None:
         sources = dict.fromkeys(step["source"] for step in steps if step.get("source"))
         slots = [MethodSlot(name=key, description=key, source_key=key) for key in sources]

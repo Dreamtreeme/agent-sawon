@@ -20,6 +20,7 @@ from brain.vocabulary import (
     KeyboardInput,
     MatchActionIntent,
     ScrollDirection,
+    WindowActionIntent,
 )
 from models.schema import compact_provider_schema
 
@@ -33,7 +34,8 @@ class ScreenField(BaseModel):
         description="Original image x,y,width,height of the actual control, not its caption",
     )
     source: str | None = Field(
-        default=None, description="Exact business input key for this field; null for other controls"
+        default=None,
+        description="Exact supplied input or requested result key; null for other controls",
     )
     value: str = ""
     enabled: bool = True
@@ -61,7 +63,15 @@ class NamedAction(NamedTarget):
     source: str | None = None
 
 
-class NamedKeyAction(NamedTarget):
+class NamedKeyAction(BaseModel):
+    """A key may use current focus or an explicitly grounded target."""
+
+    model_config = ConfigDict(extra="forbid")
+    target: str | None = Field(
+        default=None, description="Optional exact field name; null to use current focus"
+    )
+    intent: MatchActionIntent
+    point: list[float] | None = Field(default=None, min_length=2, max_length=2)
     action: Literal["key"]
     keys: KeyboardInput
 
@@ -75,6 +85,27 @@ class NamedScrollAction(NamedTarget):
     )
     action: Literal["scroll"]
     direction: ScrollDirection
+
+
+class NamedFocusAction(BaseModel):
+    """Select an observed window without inventing screen geometry."""
+
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["focus_window"]
+    handle: int = Field(gt=0)
+    intent: WindowActionIntent
+
+
+class NamedOpenAppAction(BaseModel):
+    """Open a relay-registered application without supplying a path or command."""
+
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["open_app"]
+    app_id: str = Field(min_length=1)
+    intent: WindowActionIntent
+
+
+WindowAction = NamedFocusAction | NamedOpenAppAction
 
 
 class NamedCompletionEvidence(BaseModel):
@@ -110,7 +141,10 @@ class ScreenMapping(BaseModel):
         ),
     )
     steps: list[
-        Annotated[NamedAction | NamedKeyAction | NamedScrollAction, Field(discriminator="action")]
+        Annotated[
+            NamedAction | NamedKeyAction | NamedScrollAction | WindowAction,
+            Field(discriminator="action"),
+        ]
     ] = Field(default_factory=list)
     completion_evidence: list[NamedCompletionEvidence] = Field(default_factory=list)
     operation: Literal["act", "duplicate_clear", "duplicate_found", "complete", "stop"] = "act"
@@ -186,6 +220,8 @@ class ScreenMapping(BaseModel):
                 },
                 "steps": [
                     step.model_copy(update={"target": names.get(step.target, step.target)})
+                    if not isinstance(step, WindowAction)
+                    else step
                     for step in self.steps
                 ],
                 "completion_evidence": [
@@ -231,7 +267,15 @@ class ScreenMapping(BaseModel):
             raise KeyError(reference)
 
         # Resolve executable targets before mutating the current screen catalog.
-        actions = [(step, field_name(step.target, step)) for step in self.steps]
+        actions = [
+            (
+                step,
+                None
+                if isinstance(step, WindowAction) or step.target is None
+                else field_name(step.target, step),
+            )
+            for step in self.steps
+        ]
         # Parent links enrich observation only; an undeclared parent must not erase it.
         parents = {name: ids.get(field.parent) for name, field in self.fields.items()}
         controls = []
@@ -291,7 +335,10 @@ class ScreenMapping(BaseModel):
         result["steps"] = []
         for step, name in actions:
             action = step.model_dump()
-            action["target"] = ids[name]
+            if isinstance(step, WindowAction):
+                result["steps"].append(action)
+                continue
+            action["target"] = ids[name] if name is not None else None
             if isinstance(step, NamedScrollAction):
                 action["action"] = "key"
                 action["keys"] = SCROLL_DIRECTION_KEYS[action.pop("direction")]
@@ -357,7 +404,15 @@ class ScreenMappingWire(ScreenMapping):
     fields: list[NamedScreenField]
 
     anthropic_unions: ClassVar[dict[str, dict[str, Any]]] = {
-        "properties/steps/items": {"source": "", "keys": "", "direction": ""},
+        "properties/steps/items": {
+            "source": "",
+            "keys": "",
+            "direction": "",
+            "target": "",
+            "point": [],
+            "handle": 0,
+            "app_id": "",
+        },
     }
     anthropic_nulls: ClassVar[dict[str, Any]] = {
         "properties/taught_step_id": "",
@@ -367,6 +422,8 @@ class ScreenMappingWire(ScreenMapping):
         "properties/row": "",
         "properties/save_result": "",
         "$defs/NamedAction/properties/source": "",
+        "$defs/NamedKeyAction/properties/target": "",
+        "$defs/NamedKeyAction/properties/point": [],
         "$defs/NamedScreenField/properties/source": "",
         "$defs/NamedScreenField/properties/parent": "",
         "$defs/NamedScreenField/properties/table_state": "",
@@ -417,8 +474,16 @@ other nodes are history, not current visible fields. Reuse the first field name 
 input source in that node and use that exact name throughout this response's actions.
 Return all currently readable business fields, including those not used by the next action,
 as named entries (name, source, role, bbox, value). Name by visible meaning, qualify duplicates
-by section, never detector numbers. source is an exact business input key, null for other
-controls, never literal data. Include source for reviewed fields too; the executor supplies values.
+by section, never detector numbers. source is an exact supplied input or requested result key,
+null for other controls, never literal data. Include source for reviewed fields too. The executor
+supplies fill values from inputs; observed values come from the screen and accumulated readings.
+task.result_keys names information to collect from the apps, not supplied answers. Report each
+reading as fields[].source/value. A result field represents one complete business value, not an
+OCR line: combine wrapped lines into that value and use a bbox covering its visible evidence.
+Return one field per result source, extracting the requested value without surrounding prose.
+Use notebook.collected_result for accumulated values and their sources, and missing_keys for
+missing information. Preserve established values unless the source actually changes the fact.
+Never infer result values from instructions or unobserved screens.
 Use the current image/OCR for the actual control bbox and precise action point: captions identify
 meaning, not necessarily writable locations. Prior geometry is a hint, not current observation.
 Every target in steps, completion_evidence, message_targets and grid/row must use an exact name
@@ -449,11 +514,19 @@ Retrieved procedures are learned actions, not actions completed in this run; an 
 match alone does not verify current values or completion. Use this run's inputs and evidence.
 operation=act requires executable steps unless requesting education details or local scanning.
 Batch ordered work grounded in this screen, including input then scroll or submit/search.
+screen.active_window identifies the current capture; screen.windows lists observed windows.
+screen.available_apps lists relay-registered app IDs and names. To open a listed app, return
+one open_app step with its app_id and intent=navigate; never supply a path, URL or command.
+To switch apps, return one focus_window step with its listed handle and intent=navigate, without
+a target or point. Opening and focusing apps are standalone actions: observe the resulting
+window before planning its controls. Never request a window or app absent from those lists.
 After a terminal scroll or screen change, observe newly revealed targets/results next turn;
 do not guess them. For offscreen inputs, use action=scroll, direction=down/up and a point inside
 the current scrollable region. Its target names context; the point need not be in that field's
 bbox. Scroll has no keys/source; key uses keys, never direction or pageup/pagedown. Click and
 double_click have no keys/direction and only click; purpose text cannot turn them into scrolling.
+For a key sent to current focus, omit target/point or use null. A fill followed by Enter can
+remain one ordered plan; the Enter uses the focus established by the fill without another click.
 No preliminary focus click is required. needs_refinement=true with steps=[] requests scanning
 only for a required visible control missing from candidates, never for offscreen fields.
 execution.last_action_observation describes structural movement: changed=false is not necessarily

@@ -23,7 +23,6 @@ class ControlMeaning(BaseModel):
     )
     text_ids: list[int] = Field(
         default_factory=list,
-        max_length=30,
         description="OCR block IDs literally inside this control",
     )
     confidence: float = Field(

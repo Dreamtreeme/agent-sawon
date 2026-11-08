@@ -4,6 +4,25 @@ import json
 from brain.cache import ScreenPatternCache, screen_pattern_key
 
 
+def test_window_handles_are_session_local_but_window_semantics_and_result_values_are_not():
+    first = {
+        "screen": {
+            "active_window": {"handle": 1, "title": "Mail", "process": "browser.exe"},
+            "windows": [{"handle": 1, "title": "Mail", "process": "browser.exe"}],
+        },
+        "notebook": {"collected_result": {"values": {"handle": "ORDER-A"}}},
+    }
+    second = json.loads(json.dumps(first))
+    second["screen"]["active_window"]["handle"] = 99
+    second["screen"]["windows"][0]["handle"] = 99
+    assert screen_pattern_key(first) == screen_pattern_key(second)
+    second["screen"]["active_window"]["title"] = "Chat"
+    assert screen_pattern_key(first) != screen_pattern_key(second)
+    second["screen"]["active_window"]["title"] = "Mail"
+    second["notebook"]["collected_result"]["values"]["handle"] = "ORDER-B"
+    assert screen_pattern_key(first) != screen_pattern_key(second)
+
+
 def test_visual_match_cache_promotes_only_a_successful_run(tmp_path):
     path = tmp_path / "visual.json"
     state = {"screen": {"markers": [1]}, "workflow": {"phase": "task"}}

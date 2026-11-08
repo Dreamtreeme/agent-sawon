@@ -110,6 +110,10 @@ MATCH_ACTION_INTENT_VALUES = tuple(
 )
 MatchActionIntent = Literal[*MATCH_ACTION_INTENT_VALUES]
 
+WindowActionIntent = Literal[
+    *tuple(intent for intent in MATCH_ACTION_INTENT_VALUES if intent == "navigate")
+]
+
 DECISION_INTENT_VALUES = (*EXECUTABLE_INTENT_VALUES, "verify", "stop")
 DecisionIntent = Literal[*DECISION_INTENT_VALUES]
 

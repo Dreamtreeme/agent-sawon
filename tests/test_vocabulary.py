@@ -1,5 +1,9 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
+Locally derived OCR text IDs have no arbitrary count cap (2026-11-08).
+Current-focus keyboard actions make key target/ref optional (2026-11-08).
+Registered app opening extends window actions and existing decision schemas (2026-11-08).
+ScreenMatch/ScreenPlan add target-free window focus and requested result sources (2026-11-08).
 Capability task text is deduplicated; decision schema descriptions condensed (2026-11-06).
 ScreenMatch/ScreenPlan distinguish action decisions from observation-only schemas (2026-11-05).
 ScreenFillPlan now carries credential inputs and an optional action; LoginScreenPlan is removed.
@@ -110,37 +114,37 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
 @pytest.mark.parametrize(
     ("model", "digest"),
     [
-        (ControlMeaning, "3f15cd8cd1a1feb8bca4fe7afe81c98069ca8081f0467c4659483ec3cff43c6e"),
-        (VisualControl, "44b8a87d6caa5c94fa9ff1674ad5a267725d98afe3b22a3b0aeff222dd120a5e"),
+        (ControlMeaning, "2f3bf1c6b5d7d54eecddb7149309f881e048646fc797b3cd358f985d3ce1f25d"),
+        (VisualControl, "faae082c21a2e2b676d26491f362d2c3b81fab5e378f9484ffd486adff0ea858"),
         (Detection, "0e6893dbc589bc2911076bb4e7a08b672036167373240ad063f3a28d1f09182c"),
         (
             SemanticDetection,
             "4bb02cfe9fbffb82400d576b99007a631014b3ce54e807dae954cc07a29caa26",
         ),
         (ActionCapability, "81dd3026b6a843cb3dd757bc3556c9b8f255ecb841c2af5e1c9892100655e10c"),
-        (MatchAction, "e5247c320d25596a20050602b7627698974052fcb178bff6e158e7f7c16af5ef"),
+        (MatchAction, "c2896e29704320a3f581ed22c9e62cd4eb9130b17e8324c1eb64cd657797ef7f"),
         (
             TargetedMatchAction,
-            "010d16ae1c205f2e97b7661173dd1ff9f35ba34aa17a3d6b0a4165447c6f755c",
+            "03403957ede105318d200c173f8a71a82a077a1f3e197ff59f7e7665ce7e947e",
         ),
-        (ScreenPlan, "f0ec3f34df06decfe0435270d611936200f4a7b974b4753640a0dbc6cd7047b6"),
-        (ScreenMatch, "f0ec3f34df06decfe0435270d611936200f4a7b974b4753640a0dbc6cd7047b6"),
-        (Decision, "0dd9a48fb753c30ea6f54d65c1272bfc631435abedc33d3864e138bf412f5bf0"),
+        (ScreenPlan, "64d687f5379913229c8be04b7dbc561e871293f83c8c5e3967228fcd4be66f13"),
+        (ScreenMatch, "64d687f5379913229c8be04b7dbc561e871293f83c8c5e3967228fcd4be66f13"),
+        (Decision, "4f361687bf9a556d6439945786cb2f959c502506cdd09be48c800f88645bb028"),
         (
             WireActDecision,
-            "934351453c32a3e6e2dd9ed009242bf1821962426e2525c5c81dc84dc3a9f1a8",
+            "5bc044aca3044f927de4f08765bafac6ec274b7a4efaa5bb343f5f16760596e3",
         ),
         (
             DecisionResponse,
-            "7410a47133139cd431807ef8df528fe3fe8c69b90e64a6603c68b20e8ac8083f",
+            "b520181e74c6113ea70c85acbf3d6599ccda90302a60a79ffe3d542dd9ddfded",
         ),
         (
             SaveReviewResponse,
-            "ff43cc8625bb9fe58a15c07ff84aa18e8ffe6b797e0aa44b71144d9c76541895",
+            "6f5134c53bcf6ea939684db9a4f245b22af4d730d789dcad439f8ba8d496a1ec",
         ),
         (
             ScreenFillPlan,
-            "70458ea40977368a8738b30c4097f5eb3190ab2d9b6e3a5ebcbe7c22c0adedde",
+            "f063c8e6891ff28a3ac9cf5c48190ea9981a43718b4c4babe2b3b4e23306ed1b",
         ),
         (
             ActionTransition,

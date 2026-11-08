@@ -98,7 +98,12 @@ from .screen_batch import (
     verify_screen_fields,
 )
 from .screen_mapping import ScreenMapping, ScreenMappingWire, observation_prompt
-from .screen_memory import observed_inputs, remember_input_delivery, remember_screen
+from .screen_memory import (
+    collected_result,
+    observed_inputs,
+    remember_input_delivery,
+    remember_screen,
+)
 from .selection import (
     SelectionRequest,
     SelectionServices,
@@ -635,7 +640,7 @@ class Brain:
             prefix = "e" + str(self.observation.obs_id.int) + "0"
             grounded_refs = {element.ref for element in self.observation.elements}
             required_targets = (
-                {step.target for step in response.steps}
+                response.action_target_ids
                 | {item.target for item in response.evidence}
                 | {item.target for item in response.completion_evidence}
             )
@@ -645,7 +650,7 @@ class Brain:
             synthetic = []
             if missing_targets and self.settings.guard_mode == "observe_only":
                 controls = {control.id: control for control in response.controls}
-                for step in response.steps:
+                for step in response.targeted_steps:
                     if step.target not in missing_targets or step.point is None:
                         continue
                     x, y = step.point
@@ -701,7 +706,7 @@ class Brain:
                         }
                     )
                     required_targets = (
-                        {step.target for step in response.steps}
+                        response.action_target_ids
                         | {item.target for item in response.evidence}
                         | {item.target for item in response.completion_evidence}
                     )
@@ -759,7 +764,7 @@ class Brain:
             if not proposal_reused:
                 self._bind_saved_evidence(response)
                 self._remember_model_task_evidence(response)
-            self.visual_points.bind(self.observation, response.steps)
+            self.visual_points.bind(self.observation, response.targeted_steps)
             screen_action_plan = compile_screen_action_plan(response, self.observation)
             result = screen_action_plan or compile_match(
                 response, self.observation, schema, log=self.log
@@ -1223,7 +1228,9 @@ class Brain:
             raise GuardStop("blocked_foreground")
         if observation.active_window is None:
             raise GuardStop("missing_foreground")
-        if not observation.elements:
+        if not observation.elements and (
+            self.visual_proposal is None or self.visual_proposal.action_target_ids
+        ):
             raise GuardStop("unknown_window_type")
         self.credential_submissions = {
             source: entry
@@ -1718,7 +1725,9 @@ class Brain:
                     ),
                 },
             )
-            if decision.screen_kind == "unknown":
+            if decision.screen_kind == "unknown" and not (
+                decision.action is not None and decision.action.type in {"focus_window", "open_app"}
+            ):
                 raise GuardStop("unknown_window_type")
             if decision.operation == "stop":
                 return self._finish("stopped", "model_requested_stop")
@@ -1910,6 +1919,7 @@ class Brain:
             self.values,
             str(self.observation.obs_id),
             observation_number=self.observation_number,
+            result_keys=self.task_instruction.result_keys,
         )
         self.log.append(
             "verify",
@@ -1922,10 +1932,16 @@ class Brain:
         )
         for field in mapping.fields.values():
             source = field.source
-            if source not in self.values or "value" not in field.model_fields_set:
+            if "value" not in field.model_fields_set:
                 continue
-            if field_matches(source, field.value, self.values):
-                self._record_progress("field:" + source)
+            if source in self.values:
+                if field_matches(source, field.value, self.values):
+                    self._record_progress("field:" + source)
+            elif source in self.task_instruction.result_keys:
+                if field.value.strip():
+                    self._record_progress("result:" + source)
+            else:
+                continue
             recorded.append(source)
         if recorded:
             self.log.append(
@@ -2261,7 +2277,8 @@ class Brain:
             and isinstance(self.observation, SceneObservation)
             and callable(getattr(self.relay, "act_batch", None))
             and all(
-                item.decision.action is not None and item.decision.action.ref is not None
+                item.decision.action is not None
+                and (item.decision.action.ref is not None or item.decision.action.type == "key")
                 for item in plan.actions
             )
         )
@@ -2851,9 +2868,17 @@ class Brain:
         assert self.observation is not None
         if self.phase == "task":
             assert self.task_instruction is not None
-            if outcome := self._complete_remembered_route():
-                return outcome
             try:
+                if self.task_instruction.result_keys:
+                    result_facts = collected_result(
+                        self.screen_nodes, self.task_instruction.result_keys
+                    )
+                    if result_facts["missing_keys"]:
+                        raise CompletionRetry(
+                            "task_result_missing:" + ",".join(result_facts["missing_keys"])
+                        )
+                if outcome := self._complete_remembered_route():
+                    return outcome
                 result = evaluate_task_completion(
                     self.observation,
                     decision,

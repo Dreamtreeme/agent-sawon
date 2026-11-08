@@ -42,21 +42,40 @@ class NullableWireCodec:
         tag = node["discriminator"]["propertyName"]
         references = list(dict.fromkeys(node["discriminator"]["mapping"].values()))
         properties = {}
+        used_by, required_by = {}, {}
         tags = []
         for reference in references:
             branch = self.schema["$defs"][reference.rsplit("/", 1)[-1]]
+            tag_spec = branch["properties"][tag]
+            branch_tags = tag_spec.get("enum", [tag_spec.get("const")])
+            tags.extend(branch_tags)
             for name, spec in branch["properties"].items():
                 if name == tag:
-                    tags.extend(spec.get("enum", [spec.get("const")]))
-                elif name not in properties:
+                    continue
+                used_by.setdefault(name, []).extend(branch_tags)
+                if name in branch.get("required", []):
+                    required_by.setdefault(name, []).extend(branch_tags)
+                if name not in properties:
                     properties[name] = deepcopy(spec)
-                elif spec.get("description") != properties[name].get("description"):
+                    properties[name].pop("description", None)
+                if spec.get("description"):
                     properties[name]["description"] = (
-                        properties[name].get("description", "") + " " + spec.get("description", "")
+                        properties[name].get("description", "")
+                        + f" For {', '.join(branch_tags)}: {spec['description']}"
                     ).strip()
+        for name, spec in properties.items():
+            spec["description"] = (
+                f"Used for actions: {', '.join(used_by[name])}. "
+                f"Required for actions: {', '.join(required_by.get(name, [])) or 'none'}. "
+                + spec.get("description", "")
+            ).strip()
         properties = {tag: {"type": "string", "enum": tags}, **properties}
         for name, sentinel in defaults.items():
             spec = properties[name]
+            # An unused action field carries its explicit sentinel on the flat wire.
+            # The original tagged branch still enforces these bounds after decoding.
+            for bound in ("minimum", "exclusiveMinimum", "minLength", "minItems"):
+                spec.pop(bound, None)
             if "enum" in spec and sentinel not in spec["enum"]:
                 spec["enum"].append(sentinel)
             spec["description"] = (

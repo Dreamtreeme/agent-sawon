@@ -43,14 +43,21 @@ def validate_action_guard(request: ActionGuardRequest) -> None:
     point_only_scroll = bool(
         isinstance(observation, SceneObservation) and is_wheel_scroll(choice.type, choice.keys)
     )
-    if choice.type not in {"wait", "focus_window"} and (
-        target is None or (not target.enabled and not point_only_scroll)
+    focused_key = choice.type == "key" and choice.ref is None
+    if (
+        choice.type not in {"wait", "focus_window", "open_app"}
+        and not focused_key
+        and (target is None or (not target.enabled and not point_only_scroll))
     ):
         raise GuardStop("target_not_current_or_enabled")
     if choice.type == "focus_window" and choice.handle not in {
         window.handle for window in observation.windows
     }:
         raise GuardStop("window_not_observed")
+    if choice.type == "open_app" and choice.app_id not in {
+        app.id for app in observation.available_apps
+    }:
+        raise GuardStop("application_not_registered")
     if choice.type in {"set_text", "type_text"} and target.role.casefold() not in TEXT_INPUT_ROLES:
         raise GuardStop("target_not_text_input")
     if decision.intent == "fill" and (request.phase == "task" or decision.screen_kind == "editor"):
@@ -253,10 +260,12 @@ def wire_action(request: ActionWiringRequest, services: ActionWiringServices) ->
     data = {
         "type": choice.type,
         "action_id": str(uuid4()),
-        "obs_id": str(observation.obs_id),
+        "obs_id": str((request.fresh_observation or observation).obs_id),
         "reason": decision.intent,
     }
-    if choice.type not in {"wait", "focus_window"}:
+    if choice.type not in {"wait", "focus_window", "open_app"} and not (
+        choice.type == "key" and choice.ref is None
+    ):
         data["target"], data["obs_id"] = _fresh_visual_target(request, services, observation)
         data["schema_version"] = "0.2"
     if choice.type in {"set_text", "type_text"}:
@@ -271,6 +280,8 @@ def wire_action(request: ActionWiringRequest, services: ActionWiringServices) ->
             data["keys"] = choice.keys
     elif choice.type == "focus_window":
         data["handle"] = choice.handle
+    elif choice.type == "open_app":
+        data["app_id"] = choice.app_id
     elif choice.type == "wait":
         data["duration_ms"] = choice.duration_ms
     return Action.model_validate(data)

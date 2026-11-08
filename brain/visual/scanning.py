@@ -59,6 +59,7 @@ class _SceneCatalog:
     selected_fields: dict[str, dict] = field(default_factory=dict)
     memory: dict | None = None
     reused: bool = False
+    window_context: dict = field(default_factory=dict)
 
     def interpretation(self) -> SemanticDetection:
         if self.detection is None:
@@ -458,6 +459,13 @@ class ScreenScanner:
         page, blocks, boxes, markers = catalog.page, catalog.blocks, catalog.boxes, catalog.markers
         path = page.image_path
         folder = path.parent
+        catalog.window_context = {
+            "active_window": wire.active_window.model_dump(mode="json")
+            if wire.active_window
+            else None,
+            "windows": [window.model_dump(mode="json") for window in wire.windows],
+            "available_apps": [app.model_dump(mode="json") for app in wire.available_apps],
+        }
         request = self._semantic_request(
             page,
             markers,
@@ -466,6 +474,7 @@ class ScreenScanner:
             memory=catalog.memory,
             selected_fields=catalog.selected_fields,
             reused=catalog.reused,
+            window_context=catalog.window_context,
         )
         detection_ms = 0.0
         refinement_attempted = catalog.refined
@@ -579,7 +588,13 @@ class ScreenScanner:
                         "refinement_regions": regions,
                     },
                 )
-                request = self._semantic_request(page, markers, blocks, screen_phash=catalog.key[0])
+                request = self._semantic_request(
+                    page,
+                    markers,
+                    blocks,
+                    screen_phash=catalog.key[0],
+                    window_context=catalog.window_context,
+                )
                 continue
             try:
                 if catalog.memory is not None and "screen_path" not in request.screen:
@@ -768,6 +783,7 @@ class ScreenScanner:
             memory=catalog.memory,
             selected_fields=catalog.selected_fields,
             reused=catalog.reused,
+            window_context=catalog.window_context,
         )
         return request, catalog.interpretation()
 
@@ -870,10 +886,12 @@ class ScreenScanner:
         memory=None,
         selected_fields=None,
         reused=False,
+        window_context=None,
     ) -> SemanticRequest:
         request = SemanticRequest(
             page=page,
             screen={
+                **(window_context or {}),
                 "image_size": [page.width, page.height],
                 "screen_phash": screen_phash,
                 "minimum_confidence": self.threshold,

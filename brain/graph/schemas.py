@@ -41,25 +41,32 @@ class Choice(StrictModel):
         "type_text",
         "key",
         "focus_window",
+        "open_app",
         "wait",
     ]
     ref: str | None = Field(
         default=None,
         description=(
-            "Current enabled target ref; required for every action except wait/focus_window."
+            "Current enabled target ref; optional for current-focus key, wait, "
+            "focus_window/open_app."
         ),
     )
     source: FieldName | None = None
     keys: str | None = None
     handle: int | None = None
+    app_id: str | None = None
     duration_ms: int = Field(default=250, ge=0, le=3000)
 
     @model_validator(mode="after")
     def require_action_target(self) -> "Choice":
-        if self.type not in {"wait", "focus_window"} and (not self.ref or not self.ref.strip()):
+        if self.type not in {"key", "wait", "focus_window", "open_app"} and (
+            not self.ref or not self.ref.strip()
+        ):
             raise ValueError("A targeted action requires a current element ref")
         if self.type in {"set_text", "type_text"} and self.source is None:
             raise ValueError("A text action requires a record or credential source")
+        if self.type == "open_app" and (not self.app_id or not self.app_id.strip()):
+            raise ValueError("An app action requires a registered application ID")
         return self
 
 
@@ -151,7 +158,7 @@ class TextChoice(WireModel):
 
 class KeyChoice(WireModel):
     type: Literal["key"]
-    ref: NonemptyRef
+    ref: NonemptyRef | None = None
     keys: KeyInput
 
 
@@ -160,12 +167,17 @@ class FocusChoice(WireModel):
     handle: int
 
 
+class OpenAppChoice(WireModel):
+    type: Literal["open_app"]
+    app_id: NonemptyRef
+
+
 class WaitChoice(WireModel):
     type: Literal["wait"]
     duration_ms: int = Field(default=250, ge=0, le=3000)
 
 
-WireChoice = ClickChoice | TextChoice | KeyChoice | FocusChoice | WaitChoice
+WireChoice = ClickChoice | TextChoice | KeyChoice | FocusChoice | OpenAppChoice | WaitChoice
 
 
 class WireEvidence(WireModel):

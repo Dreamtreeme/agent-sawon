@@ -31,6 +31,9 @@ def frame_input(screen: dict) -> dict:
         "text_regions": [{"text": b["text"], "bbox": b["bbox"]} for b in blocks],
         "control_regions": controls,
     }
+    for key in ("active_window", "windows", "available_apps"):
+        if key in screen:
+            result[key] = screen[key]
     if screen.get("memory_fields"):
         result["memory_fields"] = screen["memory_fields"]
         result["memory_screen_path"] = screen.get("screen_path", [])

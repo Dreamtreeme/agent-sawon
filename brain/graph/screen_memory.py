@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from brain.observe.values import field_matches
@@ -19,6 +19,7 @@ def remember_screen(
     observation_id: str,
     *,
     observation_number: int,
+    result_keys: Sequence[str] = (),
 ) -> dict:
     """Apply the model's current node, bindings and readings as a memory delta.
 
@@ -34,8 +35,9 @@ def remember_screen(
             json.dumps(path, ensure_ascii=False),
             {"path": path, "fields": {}, "controls": {}},
         )
+    sources = set(values) | set(result_keys)
     for name, field in mapping.fields.items():
-        if field.source in values:
+        if field.source in sources:
             entry = node["fields"].setdefault(field.source, {})
             node["controls"].pop(name, None)
         else:
@@ -47,7 +49,7 @@ def remember_screen(
             bbox=list(field.bbox),
             observation_id=observation_id,
         )
-        if field.source in values and "value" in field.model_fields_set:
+        if field.source in sources and "value" in field.model_fields_set:
             entry["last_observation"] = {
                 "value": field.value,
                 "observation_id": observation_id,
@@ -64,6 +66,28 @@ def remember_screen(
         if fact not in history:
             history.append(fact)
     return node
+
+
+def collected_result(nodes: Mapping[str, dict], result_keys: Sequence[str]) -> dict:
+    """Project requested facts from actual readings, preserving their screen provenance."""
+    provenance = {key: [] for key in result_keys}
+    for node in nodes.values():
+        for source, field in node["fields"].items():
+            observed = field.get("last_observation")
+            if source in provenance and observed is not None:
+                provenance[source].append(
+                    {"screen_path": list(node["path"]), "label": field["label"], **observed}
+                )
+    values = {}
+    for source, readings in provenance.items():
+        readings.sort(key=lambda reading: reading["observation_number"])
+        if readings and readings[-1]["value"].strip():
+            values[source] = readings[-1]["value"]
+    return {
+        "values": values,
+        "missing_keys": [source for source in result_keys if source not in values],
+        "provenance": provenance,
+    }
 
 
 def remember_input_delivery(
