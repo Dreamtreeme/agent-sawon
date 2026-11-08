@@ -111,6 +111,13 @@ core case에는 `result.json`과 `run_log.jsonl`이 남으며 성공 시 case �
 행동 전달, 작업자 종료, bench의 ERP 저장 채점은 구분합니다. 문서를 먼저 처리할 때는
 `pipeline.run` 또는 `pipeline.workflow`를 사용합니다. [문서→화면 실행 흐름](docs/code-flow.md)을 참고하세요.
 
+Calc 단일 업무는 [교육](examples/calc-input-task.json), [합성 입력](examples/calc-input-record.json),
+[relay 앱 등록](examples/relay.calc.yaml) 예제를 사용합니다. 입력을 복사해 `workbook_path`를 실제
+시험용 `.xlsx` 경로로 바꾸고, `주문대장` 시트에 주문번호·품명·수량(단위포함)·납기·배송지
+헤더와 빈 입력 행을 준비합니다. 앱 설치 경로도 확인합니다. bench relay에 해당 YAML을 지정하고,
+기존 `brain.run`의 `--record`, `--task`, `--relay-url`로 연결합니다. 모델이 등록 앱을 선택하고,
+화면에서 파일을 열어 입력·저장합니다. 별도의 Calc 실행기나 ChatGPT 화면 조작은 필요하지 않습니다.
+
 ## 설정과 환경 변수
 
 | 파일 | 담당 |

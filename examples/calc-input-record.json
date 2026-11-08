@@ -1,0 +1,13 @@
+{
+  "schema_version": "0.1",
+  "case_id": "calc-order-demo",
+  "inputs": {
+    "workbook_path": "C:/path/to/order-ledger.xlsx",
+    "order_number": "SYNTH-X2-001",
+    "item_name": "입력 검증 키트",
+    "quantity": "3세트",
+    "due_date": "2030-12-31",
+    "delivery_address": "가상시 시험구 로컬로 10, 테스트 창고 1층"
+  },
+  "origin": "manual"
+}

@@ -1,0 +1,12 @@
+allowlist:
+  - process: soffice.bin
+    title_regex: .*
+apps:
+  calc:
+    name: LibreOffice Calc
+    target: C:/Program Files/LibreOffice/program/scalc.exe
+    process: soffice.bin
+    title_regex: .*
+restore_allowed_focus: false
+guard_mode: enforce
+observation_mode: visual_only
