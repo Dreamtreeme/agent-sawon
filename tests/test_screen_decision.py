@@ -2839,6 +2839,12 @@ def test_synthetic_education_expansion_survives_empty_action_recovery(tmp_path, 
         if event.kind == "model_call"
     ]
     assert purposes == ["screen_decision", "education_retrieval", "missing_actions_recovery"]
+    for purpose, prompt in zip(purposes, model.prompts, strict=True):
+        assert "give a concise decision rationale in Korean" in prompt, purpose
+        assert (
+            "In observed_step_results[].observed_result, briefly identify the visible\n"
+            "evidence and any prior-memory information" in prompt
+        ), purpose
     initial, expanded, recovered = [
         json.loads(prompt[len(CONTEXT_MAPPING_RULES) :]) for prompt in model.prompts
     ]
@@ -2914,6 +2920,13 @@ def test_synthetic_fallback_education_survives_empty_action_recovery(tmp_path, r
         "education_retrieval",
         "missing_actions_recovery",
     ]
+    for event, prompt in zip(calls, model.prompts, strict=True):
+        purpose = event.payload["context"]["purpose"]
+        assert "give a concise decision rationale in Korean" in prompt, purpose
+        assert (
+            "In observed_step_results[].observed_result, briefly identify the visible\n"
+            "evidence and any prior-memory information" in prompt
+        ), purpose
     initial, expanded, recovered = [
         json.loads(prompt[len(CONTEXT_MAPPING_RULES) :]) for prompt in model.prompts
     ]
