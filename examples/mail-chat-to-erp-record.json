@@ -1,0 +1,9 @@
+{
+  "schema_version": "0.1",
+  "case_id": "mail-chat-to-erp-example",
+  "inputs": {
+    "query.email": "subject:SHIP-DEMO-1109",
+    "query.chat": "SHIP-DEMO-1109"
+  },
+  "origin": "manual"
+}

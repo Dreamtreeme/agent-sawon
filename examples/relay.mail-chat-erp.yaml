@@ -1,0 +1,25 @@
+allowlist:
+- process: chrome.exe
+  title_regex: .*Gmail.*
+- process: msedge.exe
+  title_regex: .*Gmail.*
+- process: KakaoTalk.exe
+  title_regex: .*
+- process: MockErp.exe
+  title_regex: '^한결 포워딩 · '
+- process: dotnet.exe
+  title_regex: '^한결 포워딩 · '
+restore_allowed_focus: false
+guard_mode: enforce
+observation_mode: visual_only
+apps:
+  gmail:
+    name: Gmail
+    target: https://mail.google.com
+    process: chrome.exe
+    title_regex: .*Gmail.*
+  kakaotalk:
+    name: 카카오톡
+    target: C:/Program Files (x86)/Kakao/KakaoTalk/KakaoTalk.exe
+    process: KakaoTalk.exe
+    title_regex: .*

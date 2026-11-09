@@ -510,3 +510,273 @@ def test_synthetic_graph_missing_source_reading_never_dispatches_empty_text(tmp_
     assert sent == [], "Unavailable observations must not become an empty-string write"
     assert brain.input_values == brain.values == {}
     assert collected_result(brain.screen_nodes, ["quantity"])["missing_keys"] == ["quantity"]
+
+
+def test_synthetic_graph_collects_mail_and_chat_registers_then_requeries_erp(tmp_path):
+    """Synthetic existing fake model/scanner/window relay run the real graph, without GUI/API.
+
+    The fake ERP saves only received wire text; the final model reading is populated
+    from that saved text. Business answers exist solely in the synthetic source replies.
+    """
+    from sawon_interfaces import ActionResult, WindowInfo
+    from test_window_actions import setup_window_brain
+
+    from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
+
+    mail_values = {
+        "hbl_no": "SYNTHETIC-HBL-83",
+        "mbl_no": "SYNTHETIC-MBL-19",
+        "shipper": "SYNTHETIC EXPORTER",
+        "consignee": "SYNTHETIC IMPORTER",
+        "description": "Synthetic replacement parts",
+    }
+    chat_values = {
+        "packages.count": "26",
+        "packages.unit": "CTNS",
+        "gross_weight_kg": "292",
+        "container_no": "SYNTHETIC-CONTAINER-41",
+        "pol": "SYNTHETIC-LOAD",
+        "pod": "SYNTHETIC-DISCHARGE",
+    }
+    expected = {**mail_values, **chat_values}
+    refs = {source: "collected_result." + source for source in expected}
+    task = TaskInstruction(
+        name="Synthetic source apps to existing ERP",
+        objective="Read mail and chat, register the shipment, save, then requery its HBL.",
+        identity_input_key=refs["hbl_no"],
+        result_keys=list(expected),
+        completion_conditions=["The newly saved shipment has been requeried by its read HBL."],
+        procedure=[
+            {
+                "id": "collect-mail",
+                "instruction": "Read the shipment identifiers and parties in the specified mail.",
+                "completion": "Shipment mail facts have been read.",
+            },
+            {
+                "id": "collect-chat",
+                "instruction": "Read the remaining shipment information in the specified chat.",
+                "completion": "The chat facts are associated with the same shipment.",
+            },
+            {
+                "id": "register",
+                "instruction": "Query the read HBL and create a shipment only if it is absent.",
+                "completion": "All collected shipment fields have been saved once.",
+                "actions": [
+                    {"verb": "fill", "target": source, "input_key": reference}
+                    for source, reference in refs.items()
+                ],
+            },
+            {
+                "id": "requery",
+                "instruction": "Search the saved shipment by the same read HBL and open its row.",
+                "completion": "The saved shipment detail is visible after a fresh search.",
+                "actions": [{"verb": "fill", "target": "Query HBL", "input_key": refs["hbl_no"]}],
+            },
+        ],
+    )
+    mail = reading(["Mail", "Synthetic shipment"], mail_values).model_dump()
+    mail.update(
+        screen_kind="query",
+        steps=[{"action": "focus_window", "handle": 2, "intent": "navigate"}],
+        taught_step_id="collect-chat",
+    )
+    chat = reading(["Chat", "Synthetic shipment"], chat_values).model_dump()
+    chat.update(
+        screen_kind="query",
+        steps=[{"action": "focus_window", "handle": 3, "intent": "navigate"}],
+        taught_step_id="register",
+    )
+    query_fields = {
+        "Query HBL": {
+            "role": "edit",
+            "bbox": [220, 42, 130, 16],
+            "source": refs["hbl_no"],
+            "value": "",
+        },
+        "Search": {"role": "button", "bbox": [220, 72, 80, 16]},
+        "New": {"role": "button", "bbox": [220, 102, 80, 16]},
+    }
+    query_steps = [
+        {
+            "action": "fill",
+            "target": "Query HBL",
+            "point": [250, 50],
+            "intent": "fill",
+            "source": refs["hbl_no"],
+        },
+        {"action": "click", "target": "Search", "point": [250, 80], "intent": "search"},
+    ]
+    query = {
+        "screen_kind": "query",
+        "screen_path": ["ERP", "HBL query"],
+        "fields": query_fields,
+        "steps": query_steps,
+        "taught_step_id": "register",
+    }
+    new = {
+        **query,
+        "fields": {
+            **query_fields,
+            "Query HBL": {**query_fields["Query HBL"], "value": expected["hbl_no"]},
+        },
+        "steps": [{"action": "click", "target": "New", "point": [250, 110], "intent": "navigate"}],
+    }
+    editor_fields = {
+        source: {
+            "role": "edit",
+            "bbox": [10, 10 + index * 14, 160, 12],
+            "source": refs[source],
+            "value": "",
+        }
+        for index, source in enumerate(expected)
+    }
+    editor = {
+        "screen_kind": "editor",
+        "screen_path": ["ERP", "Shipment editor"],
+        "fields": {**editor_fields, "Save": {"role": "button", "bbox": [220, 12, 80, 16]}},
+        "steps": [
+            {
+                "action": "fill",
+                "target": source,
+                "point": [70, 16 + index * 14],
+                "intent": "fill",
+                "source": refs[source],
+            }
+            for index, source in enumerate(expected)
+        ]
+        + [{"action": "click", "target": "Save", "point": [250, 20], "intent": "save"}],
+        "taught_step_id": "register",
+    }
+    requery = {**query, "taught_step_id": "requery"}
+    open_saved = {
+        **query,
+        "fields": {
+            **new["fields"],
+            "Saved shipment": {"role": "dataitem", "bbox": [220, 132, 130, 16]},
+        },
+        "steps": [
+            {
+                "action": "click",
+                "target": "Saved shipment",
+                "point": [250, 140],
+                "intent": "navigate",
+            }
+        ],
+        "taught_step_id": "requery",
+    }
+    completed = {
+        **editor,
+        "screen_path": ["ERP", "Requeried shipment"],
+        "fields": {source: dict(field) for source, field in editor_fields.items()},
+        "steps": [],
+        "operation": "complete",
+        "taught_step_id": "requery",
+    }
+    record = TaskInputRecord(case_id="synthetic-mail-chat-erp", inputs={})
+    brain, model, relay, switched = setup_window_brain(
+        tmp_path,
+        record,
+        [mail, chat, query, new, editor, requery, open_saved, completed],
+        task_instruction=task,
+    )
+    base_observe, base_act = relay.observe, relay.act
+    erp_window = WindowInfo(handle=3, title="Synthetic ERP", process="erp.exe")
+    erp_active = False
+    entered, saved, searches = {}, {}, []
+    transmitted = []
+
+    def observe():
+        wire = base_observe()
+        relay.current = wire.model_copy(
+            update={
+                "windows": [*wire.windows, erp_window],
+                "active_window": erp_window if erp_active else wire.active_window,
+            }
+        )
+        return relay.current
+
+    def act(action):
+        nonlocal erp_active
+        item = action.root
+        transmitted.append(item)
+        if item.type == "focus_window":
+            erp_active = item.handle == 3
+            if not erp_active:
+                return base_act(action)
+            switched.append(3)
+        else:
+            assert erp_active, "All shipment writes must target the fake ERP window"
+            point = list(item.target.image_point)
+            if item.type == "set_text":
+                if point == [250, 50]:
+                    entered["query"] = item.text
+                else:
+                    source = list(expected)[int((point[1] - 16) / 14)]
+                    entered[source] = item.text
+            elif point == [250, 80]:
+                searches.append(entered["query"])
+            elif point == [250, 20]:
+                saved.update({source: entered[source] for source in expected})
+                for source, field in completed["fields"].items():
+                    field["value"] = saved[source]
+            elif point == [250, 140]:
+                assert searches[-1] == saved["hbl_no"], "Detail must follow the saved HBL query"
+            else:
+                assert point == [250, 110], point
+        return ActionResult(
+            action_id=item.action_id, ok=True, post_obs_id=observe().obs_id, duration_ms=1
+        )
+
+    relay.observe, relay.act = observe, act
+
+    outcome = brain.run()
+
+    assert outcome.status == "success", [event.payload for event in brain.log.read_all()[-12:]]
+    assert switched == [2, 3]
+    assert searches == [expected["hbl_no"], expected["hbl_no"]]
+    assert saved == expected, "Saved fields must come from received wire text, not fixture answers"
+    assert len([action for action in transmitted if action.type == "set_text"]) == len(expected) + 2
+    assert brain.values == record.inputs == {}
+    assert brain.identity_input_key == refs["hbl_no"]
+    contexts = [json.loads(prompt[len(CONTEXT_MAPPING_RULES) :]) for prompt in model.prompts]
+    assert contexts[0]["notebook"]["inputs"] == {}
+    assert contexts[1]["notebook"]["collected_result"]["values"] == mail_values
+    assert contexts[2]["notebook"]["collected_result"]["values"] == expected
+    assert contexts[-1]["notebook"]["collected_result"]["values"] == expected
+    result = collected_result(brain.screen_nodes, list(expected))
+    assert result["values"] == expected
+    assert result["provenance"]["hbl_no"][0]["screen_path"] == ["Mail", "Synthetic shipment"]
+    assert result["provenance"]["packages.count"][0]["screen_path"] == [
+        "Chat",
+        "Synthetic shipment",
+    ]
+
+
+@pytest.mark.parametrize("identity", ["missing", "collected_result.not_declared"])
+def test_missing_undeclared_identity_still_rejects_before_collection(tmp_path, identity):
+    """Both a static typo and an undeclared collected reference remain invalid configuration."""
+    from test_window_actions import setup_window_brain
+
+    task = synthetic_quantity_transfer_task().model_copy(update={"identity_input_key": identity})
+    record = TaskInputRecord(case_id="synthetic-invalid-identity", inputs={})
+    with pytest.raises(ValueError, match="task_identity_input_missing"):
+        setup_window_brain(tmp_path, record, [], task_instruction=task)
+
+
+def test_synthetic_collected_shipment_sources_preserve_numeric_and_unit_comparison():
+    """The same shipment facts retain their existing comparison meaning after source binding."""
+    from brain.observe.values import field_matches
+
+    original = {"packages.count": "24", "packages.unit": "CTNS", "gross_weight_kg": "288"}
+    references = {"collected_result." + source: value for source, value in original.items()}
+    for source, actual, expected in [
+        ("gross_weight_kg", "288.000", True),
+        ("packages.count", "24 CTNS", True),
+        ("packages.unit", "24 CTNS", True),
+        ("gross_weight_kg", "289.000", False),
+        ("packages.count", "25 CTNS", False),
+        ("packages.unit", "24 PCS", False),
+    ]:
+        label = f"{source} read as {actual!r}"
+        assert field_matches(source, actual, original) is expected, label
+        assert field_matches("collected_result." + source, actual, references) is expected, label

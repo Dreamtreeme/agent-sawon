@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+COLLECTED_INPUT_PREFIX = "collected_result."
+
 
 def _validate_input_keys(keys: Iterable[str]) -> None:
     allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")

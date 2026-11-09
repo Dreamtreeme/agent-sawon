@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from brain.observe.values import normalize
+from brain.task_instruction import COLLECTED_INPUT_PREFIX
 
 if TYPE_CHECKING:
     from brain.task_instruction import TaskInstruction
@@ -19,7 +20,6 @@ if TYPE_CHECKING:
 MODEL_INPUTS_NAME = "inputs"
 LEGACY_INPUT_CONTAINERS = ("record.", "inputs.")
 SOURCE_BOUND_INTENTS = frozenset({"credential", "query_input", "fill", "select_option"})
-COLLECTED_INPUT_PREFIX = "collected_result."
 
 
 def collected_input_sources(task: "TaskInstruction") -> dict[str, str]:

@@ -125,6 +125,16 @@ Calc 단일 업무는 [교육](examples/calc-input-task.json), [합성 입력](e
 이번 실행의 메모를 참조합니다. 고유한 시험 파일 이름으로 현재 열린 다른 대장과 구분하고,
 예제의 파일 이름·경로와 실제 준비 파일을 맞춥니다. 일반 입력·실행·저장 경로를 재사용합니다.
 
+Gmail·카톡에서 선적 자료를 읽어 기존 Mock ERP에 등록·저장·재조회하는 예제는
+[선적 교육](examples/mail-chat-to-erp-task.json),
+[검색어만 있는 입력](examples/mail-chat-to-erp-record.json),
+[앱·ERP 창 허용 설정](examples/relay.mail-chat-erp.yaml)을 사용합니다. 검색어를 실제 시험
+자료에 맞추고 Gmail·카톡에 로그인합니다. 기존 bench로 새 DB의 ERP를 준비한 뒤, relay는
+여러 앱을 선택할 수 있도록 단일 ERP `--pid`로 제한하지 않습니다. 작업자는 현재 창 목록의
+ERP를 선택하고, 화면에서 읽은 `collected_result.*` 값으로 기존 회사 교육을 수행합니다.
+HBL을 포함한 선적 정답은 입력 record에 넣지 않습니다. 준비·무료 회귀 통과와 실제 앱의
+등록·저장·재조회 성공은 구분하며, 독립 ERP 채점은 작업자 종료 뒤에 수행합니다.
+
 ## 설정과 환경 변수
 
 | 파일 | 담당 |

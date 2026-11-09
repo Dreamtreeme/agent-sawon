@@ -9,8 +9,8 @@ from uuid import uuid4
 
 from sawon_interfaces import Action, Observation
 
-from brain.input_binding import COLLECTED_INPUT_PREFIX
 from brain.relay import Relay
+from brain.task_instruction import COLLECTED_INPUT_PREFIX
 from brain.visual.scene import SceneObservation
 from sawon_runtime.storage import RunLog
 

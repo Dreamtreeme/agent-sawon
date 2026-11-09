@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 
 from sawon_interfaces import ShipmentRecord
 
-from brain.task_instruction import TaskInputRecord
+from brain.task_instruction import COLLECTED_INPUT_PREFIX, TaskInputRecord
 
 RecordInput = ShipmentRecord | TaskInputRecord
 
@@ -40,11 +40,14 @@ def field_matches(field: str, actual: str | None, values: dict[str, str]) -> boo
     if actual is None:
         return False
     expected = values[field]
-    if field in {"gross_weight_kg", "packages.count"}:
+    key = field.removeprefix(COLLECTED_INPUT_PREFIX)
+    prefix = COLLECTED_INPUT_PREFIX if key != field else ""
+    if key in {"gross_weight_kg", "packages.count"}:
         clean = unicodedata.normalize("NFKC", actual).strip()
-        if field == "packages.count":
-            unit = re.escape(values["packages.unit"])
-            clean = re.sub(rf"\s*{unit}\s*$", "", clean, flags=re.IGNORECASE)
+        if key == "packages.count":
+            unit = values.get(prefix + "packages.unit")
+            if unit:
+                clean = re.sub(rf"\s*{re.escape(unit)}\s*$", "", clean, flags=re.IGNORECASE)
             # A focused numeric input may expose its caret as a trailing OCR glyph.
             clean = re.sub(r"(?<=\d)\|$", "", clean)
         if not re.fullmatch(r"[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?", clean):
@@ -53,8 +56,9 @@ def field_matches(field: str, actual: str | None, values: dict[str, str]) -> boo
             return Decimal(clean.replace(",", "")) == Decimal(expected)
         except InvalidOperation:
             return False
-    if field == "packages.unit":
+    if key == "packages.unit":
         if normalize(actual) == normalize(expected):
             return True
-        return normalize(actual) == normalize(values["packages.count"] + " " + expected)
+        count = values.get(prefix + "packages.count")
+        return count is not None and normalize(actual) == normalize(count + " " + expected)
     return normalize(actual) == normalize(expected)

@@ -268,7 +268,11 @@ class Brain:
             task_bytes = settings.task_path.read_bytes()
             self.task_instruction = TaskInstruction.model_validate_json(task_bytes)
             identity_field = self.task_instruction.identity_input_key
-            if identity_field is not None and identity_field not in self.input_values:
+            if (
+                identity_field is not None
+                and identity_field not in self.input_values
+                and identity_field not in collected_input_sources(self.task_instruction)
+            ):
                 raise ValueError("task_identity_input_missing")
             if identity_field is not None:
                 self.saved_evidence.identity_field = identity_field
