@@ -2,8 +2,8 @@
   "schema_version": "0.1",
   "case_id": "mail-chat-to-erp-example",
   "inputs": {
-    "query.email": "subject:SHIP-DEMO-1109",
-    "query.chat": "SHIP-DEMO-1109"
+    "query.email": "subject:\"출고의뢰 1109-01\"",
+    "query.chat": "출고의뢰 1109-01"
   },
   "origin": "manual"
 }
