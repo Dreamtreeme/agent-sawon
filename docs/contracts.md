@@ -712,6 +712,12 @@ Anthropic 전송에서는 ScreenPlan/ScreenMatch의 `anthropic_unions`가 지정
 `plan_delivery=not_dispatched`, `delivered_actions=0`은 해당 계획의 앞선 입력도 미전달임을
 뜻한다. 부분 실행, 재시도 횟수, 완료 판정은 변경하지 않는다.
 
+Windows relay의 캡처는 관찰 대상 창 bbox 범위의 실제 데스크톱 픽셀이다. 겹친 창의
+픽셀도 범위 안에서는 보존하며, 가려진 창을 `PrintWindow`로 따로 렌더링하지 않는다.
+`CaptureGeometry.origin`은 같은 창 bbox의 물리 원점이며 캡처 크기·DPI와 클릭 변환은
+기존 계약을 유지한다. 창 제목과 handle은 캡처 범위의 기준 창을 가리키므로 이미지에
+그 창의 내용만 있다는 뜻이 아니다. 전경 전환과 실제 지점의 입력 가능성도 구분한다.
+
 relay의 `Observation`은 `visual_only` 캡처 봉투이며 `elements=[]`이다. 화면이
 차단되지 않았다면 창과 캡처 geometry가 필요하다. `SceneObservation`만 OCR 의미
 요소와 부모·행 관계를 가진다. `UIElement`에는 외부 자동화 식별자 필드가 없다.
