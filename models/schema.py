@@ -139,13 +139,9 @@ class NullableWireCodec:
                     allowed = self.original["$defs"][reference.rsplit("/", 1)[-1]]["properties"]
                     item = dict(item)
                     if not encode:
-                        for key, sentinel in defaults.items():
-                            if (
-                                key not in allowed
-                                and type(item.get(key)) is type(sentinel)
-                                and item.get(key) == sentinel
-                            ):
-                                item.pop(key)
+                        for key in defaults:
+                            if key not in allowed:
+                                item.pop(key, None)
                     result = visit(item, {"$ref": reference})
                     if encode:
                         for key, sentinel in defaults.items():

@@ -240,17 +240,34 @@ def test_screen_wire_restores_inline_target_nulls_without_losing_zero_or_source(
         assert f"Required for actions: {required}." in description, field
     assert "For key: Use [] when unspecified; do not emit null." in action["point"]["description"]
     assert "x-anthropic-null" not in json.dumps(sent)
-    # Invalid nonempty payloads still fail the original domain validation with usage retained.
+    # Synthetic flat-wire fields belonging to other actions are transport scaffolding.
+    # Decoding preserves the selected action and its complete original local contract.
     for index, key, value in [
-        (1, "keys", "not-a-key"),
-        (1, "keys", "pageup"),
         (2, "keys", "pageup"),
         (2, "direction", "up"),
         (3, "keys", "tab"),
         (3, "source", "hbl_no"),
+        (0, "keys", "enter"),
+    ]:
+        projected = deepcopy(encoded)
+        projected["steps"][index][key] = value
+        sdk.messages.create.return_value.content[0].text = json.dumps(projected)
+        reply = client.complete_json(f"Synthetic unused step field {index}: {key}", ScreenMatch)
+        assert reply.response == ScreenMatch.model_validate(original), (index, key, value)
+        assert key not in reply.response.pending_mapping.steps[index].model_dump(), (
+            index,
+            key,
+            value,
+        )
+        assert log.read_all()[-1].cost.usd is not None, (index, key, value)
+
+    # Selected-action errors and unknown extras still fail local validation with usage retained.
+    for index, key, value in [
+        (1, "keys", "not-a-key"),
+        (1, "keys", "pageup"),
         (0, "point", []),
         (2, "point", []),
-        (0, "keys", "enter"),
+        (2, "unexpected_field", "not-a-flat-field"),
     ]:
         invalid = deepcopy(encoded)
         invalid["steps"][index][key] = value

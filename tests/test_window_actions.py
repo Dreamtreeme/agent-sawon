@@ -391,12 +391,19 @@ def test_synthetic_focus_flat_wire_sentinels_never_become_executor_coordinates(t
         ScreenMatch.model_json_schema(), ScreenMatch.anthropic_nulls, ScreenMatch.anthropic_unions
     )
     assert "minItems" not in codec.schema["properties"]["steps"]["items"]["properties"]["point"]
-    for raw in (
-        focus_response(2),
-        {
-            **focus_response(2),
-            "steps": [{"action": "open_app", "app_id": "synthetic-chat", "intent": "navigate"}],
-        },
+    # Synthetic provider responses include the meaningful unused target seen in S1.
+    for raw, unused in (
+        (
+            focus_response(2),
+            {"target": "한결포워딩ERP", "point": [0, 0], "app_id": "synthetic-chat"},
+        ),
+        (
+            {
+                **focus_response(2),
+                "steps": [{"action": "open_app", "app_id": "synthetic-chat", "intent": "navigate"}],
+            },
+            {"target": "한결포워딩ERP", "point": [0, 0], "handle": 99},
+        ),
     ):
         encoded = codec.convert(raw, encode=True)
         assert encoded["steps"][0]["target"] == "", raw["steps"]
@@ -407,17 +414,28 @@ def test_synthetic_focus_flat_wire_sentinels_never_become_executor_coordinates(t
         resolved = response.pending_mapping.resolve({})
         assert resolved.local_payload({})["steps"][0] == raw["steps"][0]
 
-        invalid = deepcopy(encoded)
-        invalid["steps"][0]["point"] = [0, 0]
-        sdk.messages.create.return_value.content[0].text = json.dumps(invalid)
-        with pytest.raises(ValueError, match="point"):
-            client.complete_json("Synthetic window action cannot carry a point", ScreenMatch)
-        assert log.read_all()[-1].cost.usd is not None
+        for key, value in unused.items():
+            projected = deepcopy(encoded)
+            projected["steps"][0][key] = value
+            sdk.messages.create.return_value.content[0].text = json.dumps(projected)
+            response = client.complete_json("Synthetic unused window field", ScreenMatch).response
+            resolved = response.pending_mapping.resolve({})
+            assert resolved.local_payload({})["steps"][0] == raw["steps"][0], (key, value)
+            assert key not in response.pending_mapping.steps[0].model_dump(), (key, value)
+            assert log.read_all()[-1].cost.usd is not None
 
     click = {
         **focus_response(2),
         "fields": [{"name": "Button", "role": "button", "region_refs": ["control:0"]}],
-        "steps": [{"action": "click", "target": "Button", "point": [], "intent": "navigate"}],
+        "steps": [
+            {
+                "action": "click",
+                "target": "Button",
+                "point": [],
+                "intent": "navigate",
+                "app_id": "synthetic-chat",
+            }
+        ],
     }
     sdk.messages.create.return_value.content[0].text = json.dumps(codec.convert(click, encode=True))
     with pytest.raises(ValueError, match="point"):
