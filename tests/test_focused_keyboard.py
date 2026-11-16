@@ -125,16 +125,17 @@ def test_synthetic_provider_fill_and_focused_enter_share_batch_and_delivery_rece
     ]
     assert len(receipts) == 2 and all(receipt["ok"] for receipt in receipts)
     assert len({receipt["post_obs_id"] for receipt in receipts}) == 1
-    assert not brain.memory_retrieval.state.staged
-    assert (
-        method_from_match(
-            {"screen_phash": 0, "image_size": [400, 200]},
-            proposal.mapping,
-            method_id="synthetic-focus-key",
-            purpose="Cannot invent geometry for current focus",
-        )
-        is None
+    staged = next(iter(brain.memory_retrieval.state.staged.values()))
+    assert [step.action for step in staged.action_groups[0].actions] == ["fill", "key"]
+    method = method_from_match(
+        {"screen_phash": 0, "image_size": [400, 200]},
+        proposal.mapping,
+        method_id="synthetic-focus-key",
+        purpose="Preserve current-focus Enter after filling the search field",
     )
+    assert method is not None
+    focused_key = method.action_groups[0].actions[1]
+    assert (focused_key.target, focused_key.point, focused_key.keys) == (None, None, "enter")
 
 
 def test_focused_keys_do_not_remove_click_or_wheel_target_requirements():

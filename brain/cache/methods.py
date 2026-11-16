@@ -12,7 +12,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 import portalocker
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from brain.graph.screen_mapping import ScreenMapping
 from brain.observe.values import field_matches, normalize
@@ -63,12 +70,48 @@ class MethodTarget(BaseModel):
 
 class MethodAction(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    target: str
-    action: Literal["fill", "click", "double_click", "key"]
+    target: str | None = None
+    action: Literal["fill", "click", "double_click", "key", "open_app", "focus_window"]
     intent: str
     slot: str | None = None
     keys: str | None = None
     point: tuple[float, float] | None = None
+    app_id: str | None = None
+    window_process: str | None = None
+    window_title: str | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_action(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        # Existing geometric artifacts keep their canonical representation and IDs.
+        for name in ("app_id", "window_process", "window_title"):
+            if data.get(name) is None:
+                data.pop(name, None)
+        return data
+
+
+def bind_window_action(action: MethodAction, screen: dict) -> dict | None:
+    """Resolve a remembered app/window selector against this run's public observation."""
+    if action.action == "open_app":
+        if action.app_id is not None and any(
+            app["id"] == action.app_id for app in screen.get("available_apps", [])
+        ):
+            return {"action": action.action, "app_id": action.app_id, "intent": action.intent}
+    elif action.action == "focus_window":
+        if action.window_process is None or action.window_title is None:
+            return None
+        windows = [
+            window
+            for window in screen.get("windows", [])
+            if window["process"] == action.window_process and window["title"] == action.window_title
+        ]
+        if len(windows) == 1:
+            return {
+                "action": action.action,
+                "handle": windows[0]["handle"],
+                "intent": action.intent,
+            }
+    return None
 
 
 def _discard_legacy_field_values(value: Any) -> Any:
@@ -87,7 +130,7 @@ class MethodActionGroup(BaseModel):
     trace_index: int | None = Field(default=None, ge=0)
     predecessor_group_ids: list[str] = Field(default_factory=list)
     context_anchors: list[str] = Field(default_factory=list)
-    targets: list[MethodTarget] = Field(min_length=1)
+    targets: list[MethodTarget] = Field(default_factory=list)
     actions: list[MethodAction] = Field(min_length=1)
     expected_result: str = ""
     screen_kind: str = "unknown"
@@ -240,7 +283,7 @@ def compile_method_candidate(
     groups = []
     signatures = set()
     for group in method.action_groups:
-        if (
+        if all(action.action in {"open_app", "focus_window"} for action in group.actions) or (
             group.screen_phash is not None
             and group.image_size is not None
             and all(
@@ -281,17 +324,7 @@ def compile_method_candidate(
                         }
                         for target in compiled.targets
                     ],
-                    "actions": [
-                        {
-                            "target": action.target,
-                            "action": action.action,
-                            "intent": action.intent,
-                            "slot": action.slot,
-                            "keys": action.keys,
-                            "point": action.point,
-                        }
-                        for action in compiled.actions
-                    ],
+                    "actions": [action.model_dump(mode="json") for action in compiled.actions],
                     "save_result": compiled.save_result,
                     "repair_fields": compiled.repair_fields,
                     "observed_fields": [
@@ -423,8 +456,6 @@ def action_group_from_match(
     The caller supplies model-extracted purpose and input roles. Coordinates, screenshot
     identity and source bindings come from executed actions, not a second reconstruction.
     """
-    if screen.get("screen_phash") is None or not screen.get("image_size"):
-        return None
     mapping = (
         response
         if isinstance(response, ScreenMapping)
@@ -457,8 +488,10 @@ def action_group_from_match(
     blocks = {item["id"]: item for item in screen.get("ocr", [])}
     if not steps or response.get("operation", "act") != "act":
         return None
-    if any(step.get("target") is None for step in steps):
-        return None  # Current focus/window actions have no reusable geometric target.
+    if not all(step["action"] in {"open_app", "focus_window"} for step in steps) and (
+        screen.get("screen_phash") is None or not screen.get("image_size")
+    ):
+        return None
     if slots is None:
         sources = dict.fromkeys(step["source"] for step in steps if step.get("source"))
         slots = [MethodSlot(name=key, description=key, source_key=key) for key in sources]
@@ -500,6 +533,33 @@ def action_group_from_match(
         )
 
     for step in steps:
+        if step["action"] == "open_app":
+            if not step.get("app_id"):
+                return None
+            actions.append(
+                MethodAction(action=step["action"], app_id=step["app_id"], intent=step["intent"])
+            )
+            continue
+        if step["action"] == "focus_window":
+            windows = [
+                window for window in screen.get("windows", []) if window["handle"] == step["handle"]
+            ]
+            if len(windows) != 1:
+                return None
+            actions.append(
+                MethodAction(
+                    action=step["action"],
+                    window_process=windows[0]["process"],
+                    window_title=windows[0]["title"],
+                    intent=step["intent"],
+                )
+            )
+            continue
+        if step.get("target") is None:
+            if step["action"] != "key":
+                return None
+            actions.append(MethodAction(action="key", intent=step["intent"], keys=step["keys"]))
+            continue
         control = controls.get(step["target"])
         if control is None:
             if step.get("point") is None:
@@ -816,7 +876,7 @@ def _marker_text_ids(marker: dict, screen: dict, role: str) -> list[int]:
         return list(marker.get("text_ids", []))
     return [
         block["id"]
-        for block in sorted(screen["ocr"], key=lambda b: (b["bbox"][1], b["bbox"][0]))
+        for block in sorted(screen.get("ocr", []), key=lambda b: (b["bbox"][1], b["bbox"][0]))
         if (contains_control_text if role in {"edit", "combobox"} else contains)(
             marker["bbox"], block["bbox"]
         )
@@ -850,6 +910,14 @@ def screen_similarity_distance(
     group: MethodActionGroup | MethodCompletion, screen: dict, max_phash_distance: int
 ) -> int | None:
     """Use the same viewport/pHash contract before OCR and when binding actions."""
+    if isinstance(group, MethodActionGroup) and all(
+        action.action in {"open_app", "focus_window"} for action in group.actions
+    ):
+        return (
+            0
+            if all(bind_window_action(action, screen) is not None for action in group.actions)
+            else None
+        )
     current_hash = screen.get("screen_phash")
     if (
         group.screen_phash is None
@@ -1034,9 +1102,13 @@ class MethodLibrary:
         for group in method.action_groups:
             if group_id is not None and group.id != group_id:
                 continue
+            window_only = all(
+                action.action in {"open_app", "focus_window"} for action in group.actions
+            )
             current_kind = screen.get("screen_kind")
             if (
-                current_kind
+                not window_only
+                and current_kind
                 and group.screen_kind != "unknown"
                 and current_kind != group.screen_kind
             ):
@@ -1081,7 +1153,21 @@ class MethodLibrary:
                 marker, label_ids = bound[target.name]
                 controls[marker["id"]] = _bound_control(target, marker, label_ids, screen)
             for action in group.actions:
-                marker, _ = bound[action.target]
+                if action.action in {"open_app", "focus_window"}:
+                    step = bind_window_action(action, screen)
+                    if step is None:
+                        break
+                    steps.append(step)
+                    continue
+                if action.action == "key" and action.target is None:
+                    steps.append(
+                        {"action": action.action, "keys": action.keys, "intent": action.intent}
+                    )
+                    continue
+                binding = bound.get(action.target)
+                if binding is None:
+                    break
+                marker, _ = binding
                 source = sources.get(action.slot) if action.slot else None
                 if action.slot and (source is None or source not in values):
                     break

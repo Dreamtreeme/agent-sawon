@@ -343,6 +343,8 @@ class MemoryRetriever(Protocol):
 
     def match_pattern(self, screen: dict) -> ScreenMatch | None: ...
 
+    def required_result_keys(self) -> set[str]: ...
+
     def completion_receipt(self, screen: dict) -> dict | None: ...
 
     def remember(
@@ -1330,22 +1332,44 @@ def select_screen_response(
     method_proposal, cache_hit = match_screen_pattern(
         request, services, prepared, allow_method=allow_method
     )
-    # A bound route already supplies the next action or its terminal outcome.
-    # Exploration's unread-value checks apply only when that route cannot bind;
-    # they must not turn normal memory execution into repeated model decisions.
-    current_review = method_proposal is None and bool(
-        any(
-            item.get("screen") == "query"
-            and item["source"] in request.values
-            and item["source"] not in request.verified_fields
-            for item in request.required_verification
+    read_sources = (
+        services.memory_retrieval.required_result_keys().intersection(
+            collected_result(request.screen_nodes, request.task_instruction.result_keys)[
+                "missing_keys"
+            ]
         )
-        or (cache_hit is not None and cache_hit[1].get("operation", "act") != "act")
-        or request.post_action_review
+        if method_proposal is not None and request.task_instruction is not None
+        else set()
+    )
+    if read_sources:
+        services.log.append(
+            "select",
+            payload={
+                "check": "method_result_reading",
+                "method_id": method_proposal.method_id,
+                "sources": sorted(read_sources),
+                "frame": str(page.image_path) if page is not None else None,
+            },
+        )
+        method_proposal = None
+        cache_hit = None
+    # The route supplies known actions; declared result keys require this run's readings.
+    current_review = bool(read_sources) or (
+        method_proposal is None
+        and bool(
+            any(
+                item.get("screen") == "query"
+                and item["source"] in request.values
+                and item["source"] not in request.verified_fields
+                for item in request.required_verification
+            )
+            or (cache_hit is not None and cache_hit[1].get("operation", "act") != "act")
+            or request.post_action_review
+        )
     )
     if current_review:
         cache_hit = None
-        # With no bound route, obtain current readings and a recovery action.
+    if current_review and not read_sources:
         services.log.append(
             "verify",
             payload={

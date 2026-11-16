@@ -15,6 +15,7 @@ from brain.cache.methods import (
     MethodDocument,
     MethodLibrary,
     MethodSlot,
+    bind_window_action,
     compile_method_candidate,
     group_input_sources,
     merge_method_contents,
@@ -440,6 +441,10 @@ class MemoryRetrieval:
                                 "target": action.target,
                                 "source": sources.get(action.target),
                                 "keys": action.keys,
+                                **action.model_dump(
+                                    include={"app_id", "window_process", "window_title"},
+                                    exclude_none=True,
+                                ),
                             }
                             for action in group.actions[self._action_offset(method.id, group.id) :]
                         ],
@@ -511,7 +516,10 @@ class MemoryRetrieval:
                 for control in bound.response["controls"]
             }
             steps = [
-                {**step, "target": names[step["target"]]}
+                {
+                    **step,
+                    **({"target": names[step["target"]]} if step.get("target") is not None else {}),
+                }
                 for step in bound.response["steps"][self._action_offset(method.id, group.id) :]
             ]
         if not fields:
@@ -654,6 +662,17 @@ class MemoryRetrieval:
         )
         return response
 
+    def required_result_keys(self) -> set[str]:
+        """Read the current bound group's source goals from its existing field bindings."""
+        pending = self.state.pending
+        task = self.task_context.task
+        if pending is None or task is None:
+            return set()
+        method = pending["method"]
+        group = next(group for group in method.action_groups if group.id == pending["group_id"])
+        sources = group_input_sources(method, group, self.state.bindings.get(method.id, {}))
+        return set(task.result_keys).intersection(sources.values())
+
     def _restore_structure(self, screen, response, screen_path, fields):
         """Recall field bindings and actions without claiming values on the current frame."""
         names = {int(ref): item["name"] for ref, item in screen.get("selected_fields", {}).items()}
@@ -661,7 +680,8 @@ class MemoryRetrieval:
         directions = {key: direction for direction, key in SCROLL_DIRECTION_KEYS.items()}
         for step in response.steps:
             data = step.model_dump(exclude_none=True)
-            data["target"] = names[step.target]
+            if getattr(step, "target", None) is not None:
+                data["target"] = names[step.target]
             if step.action == "key" and step.keys in directions:
                 data.update(action="scroll", direction=directions[data.pop("keys")])
             steps.append(data)
@@ -738,18 +758,29 @@ class MemoryRetrieval:
         group = remaining[0]
         # Attribute the model's recovery action, not a saved coordinate replay.
         # Scrolling may change the image while leaving this control in place.
-        if tuple(screen.get("image_size", ())) != group.image_size:
-            return None
         targets = {target.name: target for target in group.targets}
         sources = {slot.name: mapping.get(slot.name, slot.source_key) for slot in method.slots}
         start = self._action_offset(method.id, group.id)
         end = start
         for actual, expected in zip(response.steps, group.actions[start:], strict=False):
-            if (actual.action, actual.source, actual.keys) != (
+            if (actual.action, getattr(actual, "source", None), getattr(actual, "keys", None)) != (
                 expected.action,
                 sources.get(expected.slot),
                 expected.keys,
             ):
+                break
+            if isinstance(actual, WindowAction):
+                bound = bind_window_action(expected, screen)
+                if bound is None or actual.model_dump(include=set(bound)) != bound:
+                    break
+                end += 1
+                continue
+            if expected.target is None:
+                if actual.target is not None or actual.point is not None:
+                    break
+                end += 1
+                continue
+            if tuple(screen.get("image_size", ())) != group.image_size:
                 break
             if is_wheel_scroll(actual.action, actual.keys):
                 end += 1
@@ -770,9 +801,7 @@ class MemoryRetrieval:
 
     def remember(self, screen: dict, response: ScreenMatch, *, allow_recovery: bool = True) -> None:
         self.state.pending = None
-        if not self.enabled or any(
-            isinstance(step, WindowAction) or step.target is None for step in response.steps
-        ):
+        if not self.enabled:
             return
         task = self.task_context.task
         source_response = response.mapping if response.mapping is not None else response
@@ -821,15 +850,24 @@ class MemoryRetrieval:
                 or self.state.bindings.get(previous.id)
                 or {slot.name: slot.source_key for slot in previous.slots}
             )
-            if any(source not in self._binding_values() for source in mapping.values()):
+            available_sources = set(self._binding_values())
+            if task is not None:
+                available_sources.update(f"collected_result.{key}" for key in task.result_keys)
+            if any(source not in available_sources for source in mapping.values()):
                 self.state.blocked_method_ids.add(previous.id)
                 return
             self.state.bindings[previous.id] = mapping
             self.state.active_method_id = previous.id
             if allow_recovery:
                 self._resume_from_model(previous, response)
-                self.state.blocked_method_ids.discard(previous.id)
             action_progress = self._replacement_progress(previous, mapping, screen, response)
+            if (
+                any(isinstance(step, WindowAction) for step in response.steps)
+                and action_progress is None
+            ):
+                return
+            if allow_recovery:
+                self.state.blocked_method_ids.discard(previous.id)
             if action_progress is not None:
                 original = next(
                     group
@@ -864,7 +902,11 @@ class MemoryRetrieval:
             method_id = "method-" + hashlib.sha256(identity.encode()).hexdigest()[:16]
             slots = [
                 MethodSlot(name=source, description=source, source_key=source)
-                for source in dict.fromkeys(step.source for step in response.steps if step.source)
+                for source in dict.fromkeys(
+                    getattr(step, "source", None)
+                    for step in response.steps
+                    if getattr(step, "source", None)
+                )
             ]
         else:
             method_id = previous.id
@@ -875,7 +917,11 @@ class MemoryRetrieval:
             covered = {slot.source_key for slot in slots}
             slots.extend(
                 MethodSlot(name=source, description=source, source_key=source)
-                for source in dict.fromkeys(step.source for step in response.steps if step.source)
+                for source in dict.fromkeys(
+                    getattr(step, "source", None)
+                    for step in response.steps
+                    if getattr(step, "source", None)
+                )
                 if source not in covered
             )
         method = method_from_match(

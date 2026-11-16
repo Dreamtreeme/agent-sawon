@@ -26,6 +26,7 @@ from brain.cache.methods import (
 from brain.cache.pattern_matching import ScreenPatternDocument
 from brain.demo_learning.methods import read_screen
 from brain.graph.screen_mapping import ScreenMapping
+from brain.graph.screen_memory import screen_input_values
 from brain.observe.values import values_for
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from brain.vocabulary import SCROLL_DIRECTION_KEYS
@@ -227,7 +228,10 @@ def _case_values(case_dir: Path) -> dict[str, str]:
         if "inputs" in data
         else ShipmentRecord.model_validate(data)
     )
-    return values_for(record)
+    task = TaskInstruction.model_validate_json((case_dir / "task-instruction.json").read_bytes())
+    notebook_path = case_dir / "task-notebook.json"
+    nodes = _read(notebook_path).get("screen_nodes", {}) if notebook_path.exists() else {}
+    return screen_input_values(values_for(record), task, nodes)
 
 
 def read_memory_candidates(
@@ -264,6 +268,16 @@ def read_memory_candidates(
         json.loads(line)
         for line in (case_dir / "run_log.jsonl").read_text(encoding="utf-8").splitlines()
     ]
+    window_context = {}
+    for event in events:
+        payload = event.get("payload", {})
+        if event.get("kind") != "observe" or not (snapshot := payload.get("snapshot")):
+            continue
+        observed = _read(case_dir / snapshot)
+        wire = observed.get("wire", observed)
+        window_context[payload["obs_id"]] = {
+            key: wire[key] for key in ("active_window", "windows", "available_apps") if key in wire
+        }
     plans = _recorded_plans(case_dir, events)
     action_order = {
         event["payload"]["action"]["action_id"]: seq
@@ -342,22 +356,27 @@ def read_memory_candidates(
             continue
         seen.add(delivery_ids)
         key, mapping = recorded_mapping(plan)
-        screen = read_screen(case_dir, obs_id)
+        screen = window_context.get(obs_id, {})
+        if (case_dir / "visual" / obs_id / "capture.png").is_file() or not all(
+            step["action"] in {"open_app", "focus_window"} for step in retained
+        ):
+            screen = {**read_screen(case_dir, obs_id), **screen}
         if mapping is not None:
             # Recorded executor IDs are decoded once; offline memory keeps semantic names.
-            named = ScreenMapping.model_validate({**mapping, "steps": []})
+            named = ScreenMapping.model_validate(mapping)
+            execution_fields = named.execution_view().fields
             names = {
                 control["id"]: control["visual_description"]
                 for control in response.get("controls", [])
-                if control.get("visual_description") in named.fields
+                if control.get("visual_description") in execution_fields
             }
             directions = {key: direction for direction, key in SCROLL_DIRECTION_KEYS.items()}
 
             for actions in (retained, already):
                 for index, step in enumerate(actions):
                     action = {key: value for key, value in step.items() if value is not None}
-                    target = step["target"]
-                    action["target"] = target if target in named.fields else names[target]
+                    if (target := step.get("target")) is not None:
+                        action["target"] = target if target in execution_fields else names[target]
                     if action["action"] == "key" and action["keys"] in directions:
                         action.update(action="scroll", direction=directions[action.pop("keys")])
                     actions[index] = action
@@ -425,7 +444,10 @@ def read_memory_candidates(
             plan is not final_plans[-1] or plan["obs_id"] != final_stop[1].get("last_obs_id")
         ):
             continue
-        final_screen = read_screen(case_dir, plan["obs_id"])
+        final_screen = {
+            **read_screen(case_dir, plan["obs_id"]),
+            **window_context.get(plan["obs_id"], {}),
+        }
         final_response = plan["response"]
         _, final_mapping = recorded_mapping(plan)
         if final_mapping is not None:
@@ -489,6 +511,11 @@ def memory_assembly_prompt(source: dict, candidates: list[MemoryCandidate]) -> s
                 "trace_index": candidate.trace_index,
                 "previous_candidate_id": candidates[index - 1].candidate_id if index else None,
                 "screen_kind": response.get("screen_kind", "unknown"),
+                **{
+                    key: candidate.screen[key]
+                    for key in ("active_window", "windows", "available_apps")
+                    if key in candidate.screen
+                },
                 "screen_phash": candidate_screens[index].get("screen_phash"),
                 "after_screen_phash": after_phash,
                 "matching_later_candidates": matching_later_candidates,
@@ -512,10 +539,16 @@ def memory_assembly_prompt(source: dict, candidates: list[MemoryCandidate]) -> s
                 ],
                 "actions": [
                     {
-                        **step,
-                        "target": candidate.screen.get("selected_fields", {})
-                        .get(str(step["target"]), {})
-                        .get("name", step["target"]),
+                        **{key: value for key, value in step.items() if value is not None},
+                        **(
+                            {
+                                "target": candidate.screen.get("selected_fields", {})
+                                .get(str(step["target"]), {})
+                                .get("name", step["target"])
+                            }
+                            if step.get("target") is not None
+                            else {}
+                        ),
                     }
                     for step in response["steps"]
                 ],
@@ -532,7 +565,9 @@ def memory_assembly_prompt(source: dict, candidates: list[MemoryCandidate]) -> s
                     {
                         step["target"]
                         for step in response["steps"]
-                        if step["target"] not in raw_markers and step.get("point") is not None
+                        if step.get("target") is not None
+                        and step["target"] not in raw_markers
+                        and step.get("point") is not None
                     }
                 ),
                 "original_purpose": _redact(response.get("purpose", ""), values),
@@ -695,7 +730,9 @@ def compile_memory(
     for selection, candidate in zip(assembly.groups, selected, strict=True):
         entry = ordered[entry_index]
         entry_index = positions[candidate.candidate_id] + 1
-        if candidate.screen.get("screen_phash") is None:
+        if candidate.screen.get("screen_phash") is None and not all(
+            step["action"] in {"open_app", "focus_window"} for step in candidate.response["steps"]
+        ):
             raise ValueError("warm_method_candidate_requires_reference_screenshot")
         visible = {str(block["text"]) for block in entry.screen.get("ocr", [])}
         context_anchors = [
@@ -706,8 +743,8 @@ def compile_memory(
         ]
         response = {
             **candidate.response,
-            "purpose": selection.purpose,
-            "expected_result": selection.expected_result,
+            "purpose": _redact(selection.purpose, source["values"]),
+            "expected_result": _redact(selection.expected_result, source["values"]),
         }
         group = action_group_from_match(
             candidate.screen,
@@ -736,6 +773,16 @@ def compile_memory(
             group = _rebase_entry_observation(group, entry_group)
             refs.append(f"{source['source_case']}/visual/{entry.obs_id}:{entry.cache_key}")
         group = _rename_group_fields(group, selection.field_renames)
+        group = _rename_group_fields(
+            group,
+            [
+                MemoryFieldRename(old_name=name, new_name=redacted)
+                for name in dict.fromkeys(
+                    target.name for target in [*group.targets, *group.observed_fields]
+                )
+                if (redacted := _redact(name, source["values"])) != name
+            ],
+        )
         group = group.model_copy(
             update={
                 "trace_index": candidate.trace_index,
@@ -757,7 +804,7 @@ def compile_memory(
         refs.append(source_receipt)
     method = LearnedMethod(
         id=method_id,
-        purpose=assembly.purpose,
+        purpose=_redact(assembly.purpose, source["values"]),
         task_objective=source["task"]["objective"],
         task_contract_sha256=source["task_sha256"],
         artifact_kind="warm_compiled",

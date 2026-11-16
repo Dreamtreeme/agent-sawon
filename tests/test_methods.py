@@ -579,6 +579,7 @@ def test_named_method_replays_action_only_targets_without_inventing_observed_fie
                 "intent": "fill",
                 "point": [220, 160],
             },
+            {"action": "key", "keys": "enter", "intent": "search"},
         ],
     )
     original = mapping.model_dump()
@@ -586,6 +587,14 @@ def test_named_method_replays_action_only_targets_without_inventing_observed_fie
     assert method is not None
     group = method.action_groups[0]
     assert [target.name for target in group.observed_fields] == ["Customer"]
+    assert set(group.actions[0].model_dump()) == {
+        "target",
+        "action",
+        "intent",
+        "slot",
+        "keys",
+        "point",
+    }
     assert group.observed_fields[0].bbox == (10, 30, 80, 20)
     assert group.field_sources == {"Customer": "party"}
     assert mapping.model_dump() == original
@@ -595,10 +604,118 @@ def test_named_method_replays_action_only_targets_without_inventing_observed_fie
     library.upsert(method)
     rebound = library.bind_with_context(method, {}, screen, {"party": "New customer", "count": "9"})
     assert rebound is not None
-    assert [step["point"] for step in rebound.response["steps"]] == [
+    assert [step.get("point") for step in rebound.response["steps"]] == [
         [200, 65],
         [183, 117],
         [220, 160],
+        None,
     ]
-    assert [step.get("source") for step in rebound.response["steps"]] == ["party", None, "count"]
+    assert [step.get("source") for step in rebound.response["steps"]] == [
+        "party",
+        None,
+        "count",
+        None,
+    ]
+    assert rebound.response["steps"][-1] == {
+        "action": "key",
+        "intent": "search",
+        "keys": "enter",
+    }
     assert rebound.response.get("evidence", []) == []
+    assert (
+        library.bind_with_context(
+            method,
+            {},
+            {**screen, "image_size": [1600, 1200]},
+            {"party": "New customer", "count": "9"},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("action", ["open_app", "focus_window"])
+def test_synthetic_window_method_roundtrip_uses_current_app_or_unique_window(tmp_path, action):
+    # Synthetic S1 app transitions use existing named actions, with no invented image or target.
+    original_window = {"handle": 11, "process": "chat.exe", "title": "Self chat"}
+    source = {
+        "windows": [original_window],
+        "available_apps": [{"id": "chat", "name": "Chat"}],
+    }
+    step = (
+        {"action": action, "app_id": "chat", "intent": "navigate"}
+        if action == "open_app"
+        else {"action": action, "handle": 11, "intent": "navigate"}
+    )
+    readings = (
+        {}
+        if action == "open_app"
+        else {
+            "Package count": {
+                "role": "text",
+                "source": "packages.count",
+                "value": "37",
+                "bbox": [20, 30, 80, 20],
+            }
+        }
+    )
+    mapping = ScreenMapping(screen_kind="menu", screen_path=["Mail"], fields=readings, steps=[step])
+    method = method_from_match(
+        source,
+        mapping,
+        method_id="switch-app",
+        purpose="Read the next source",
+        slots=[
+            MethodSlot(name="future", description="Read later", source_key="collected_result.hbl")
+        ],
+    )
+    assert method is not None
+    group = method.action_groups[0]
+    assert group.targets == []
+    assert [field.name for field in group.observed_fields] == list(readings)
+    assert group.field_sources == {name: field["source"] for name, field in readings.items()}
+    assert '"value"' not in method.model_dump_json()
+    assert group.screen_phash is None and group.image_size is None
+    assert "handle" not in group.actions[0].model_dump()
+    if action == "focus_window":
+        assert group.actions[0].window_process == "chat.exe"
+        assert group.actions[0].window_title == "Self chat"
+        assert (
+            method_from_match(
+                {**source, "windows": []}, mapping, method_id="missing", purpose="Read next"
+            )
+            is None
+        )
+
+    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
+    library.upsert(compile_method_candidate(method, {}))
+    other_action = group.actions[0].model_copy(
+        update={"app_id": "mail"} if action == "open_app" else {"window_title": "Other chat"}
+    )
+    other_group = group.model_copy(update={"id": "other-app", "actions": [other_action]})
+    two_windows = compile_method_candidate(
+        method.model_copy(update={"action_groups": [group, other_group]}), {}
+    )
+    assert len(two_windows.action_groups) == 2  # Different app selectors are different transitions.
+    restored = library.methods()[0]
+    current_window = {**original_window, "handle": 99}
+    current = {**source, "windows": [current_window], "screen_kind": "editor"}
+    rebound = library.bind_with_context(restored, {}, current, {})
+    assert rebound is not None  # An unrelated future input slot is not required by this action.
+    expected = step if action == "open_app" else {**step, "handle": 99}
+    assert rebound.response["steps"] == [expected]
+    assert set(rebound.fields) == set(readings)
+    assert all("value" not in field for field in rebound.fields.values())
+    assert len(rebound.response["controls"]) == len(readings)
+
+    invalid_contexts = (
+        [("unregistered-app", {"available_apps": []})]
+        if action == "open_app"
+        else [
+            ("missing-window", {"windows": []}),
+            ("ambiguous-window", {"windows": [current_window, {**current_window, "handle": 100}]}),
+            ("other-process", {"windows": [{**current_window, "process": "other.exe"}]}),
+            ("other-title", {"windows": [{**current_window, "title": "Other chat"}]}),
+        ]
+    )
+    for label, change in invalid_contexts:
+        assert library.bind_with_context(restored, {}, {**current, **change}, {}) is None, label

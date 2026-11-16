@@ -10,10 +10,12 @@ from test_visual_scene import wire
 from brain.cache.methods import MethodDocument, MethodLibrary
 from brain.cache.pattern_matching import ScreenPatternDocument, ScreenPatternEntry
 from brain.demo_learning.memory_compilation import (
+    MEMORY_COMPILATION_RULES,
     MemoryAssembly,
     MemoryCandidate,
     assemble_memory,
     compile_memory,
+    memory_assembly_prompt,
     read_memory_candidates,
 )
 from brain.graph.memory_retrieval import (
@@ -692,6 +694,25 @@ def create_successful_case(tmp_path, *, reinterpreted=False):
 @pytest.mark.parametrize("cache_state", ["omitted", "missing", "invalid"])
 def test_recorded_mapping_compiles_without_opening_legacy_cache(tmp_path, cache_state):
     case, cache_path, _, mapping, match, _ = create_successful_case(tmp_path)
+    mapping = mapping.model_copy(
+        update={
+            "steps": ScreenMapping.model_validate(
+                {
+                    "fields": {},
+                    "steps": [
+                        {
+                            "target": "Reference action",
+                            "action": "fill",
+                            "intent": "fill",
+                            "source": "hbl_no",
+                            "point": [400, 300],
+                        }
+                    ],
+                }
+            ).steps
+        }
+    )
+    match = mapping.local_payload(screen("Shipment editor"))
     log_path = case / "run_log.jsonl"
     events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     events.insert(
@@ -715,16 +736,261 @@ def test_recorded_mapping_compiles_without_opening_legacy_cache(tmp_path, cache_
     loaded_source, loaded = read_memory_candidates(case, cache_argument)
     assert len(loaded) == 1
     assert loaded[0].cache_key.startswith("trace:")
-    assert loaded[0].response["steps"][0]["target"] == "Reference"
+    assert loaded[0].response["steps"][0]["target"] == "Reference action"
+    assert set(loaded[0].response["fields"]) == {"Reference"}
     compiled = compile_memory(
         loaded_source, loaded, draft(groups=(loaded[0].candidate_id,)), method_id="modern-trace"
     )
-    assert compiled.action_groups[0].actions[0].point == (200, 300)
+    assert compiled.action_groups[0].actions[0].point == (400, 300)
+    assert compiled.action_groups[0].targets[0].name == "Reference action"
+    assert [field.name for field in compiled.action_groups[0].observed_fields] == ["Reference"]
     assert "HBL-001" not in compiled.model_dump_json()
 
     atomic_write_json(case / "result.json", {"status": "stopped"})
     with pytest.raises(ValueError, match="requires_successful_cold_run"):
         read_memory_candidates(case, cache_argument)
+
+
+def test_synthetic_collected_values_and_window_actions_survive_trace_compilation(tmp_path):
+    # Synthetic successful trace and screen memory; no model or native desktop is used.
+    case = tmp_path / "synthetic-source"
+    education_sha = "c" * 64
+    atomic_write_json(case / "result.json", {"status": "success"})
+    search_value, collected_value = 'subject:"Synthetic quantity"', "47"
+    search_name, quantity_name = f"Search {search_value}", f"Quantity {collected_value}"
+    task = TaskInstruction(
+        name="Mail to spreadsheet",
+        objective="Read the mail quantity and write it in the spreadsheet.",
+        completion_conditions=["The quantity is saved in the spreadsheet."],
+        result_keys=["quantity"],
+        procedure=[
+            {
+                "id": "find-mail",
+                "instruction": "Search the mail.",
+                "completion": "The source mail is visible.",
+                "actions": [{"verb": "fill", "target": "Search", "input_key": "query.email"}],
+            },
+            {
+                "id": "write-quantity",
+                "instruction": "Write the collected quantity.",
+                "completion": "The spreadsheet contains the quantity.",
+                "actions": [
+                    {"verb": "fill", "target": "Quantity", "input_key": "collected_result.quantity"}
+                ],
+            },
+        ],
+    )
+    atomic_write_json(case / "task-instruction.json", task)
+    atomic_write_json(
+        case / "record.json",
+        {
+            "case_id": "synthetic-source",
+            "inputs": {"query.email": search_value},
+            "origin": "manual",
+        },
+    )
+    atomic_write_json(
+        case / "task-notebook.json",
+        {
+            "screen_nodes": {
+                '["Synthetic mail"]': {
+                    "path": ["Synthetic mail"],
+                    "fields": {
+                        "quantity": {
+                            "label": "Mail quantity",
+                            "role": "text",
+                            "last_observation": {"value": collected_value, "observation_number": 3},
+                        }
+                    },
+                    "controls": {},
+                }
+            }
+        },
+    )
+    mail = {"handle": 1, "title": "Synthetic mail", "process": "mail.exe"}
+    sheet = {"handle": 42, "title": "Synthetic sheet", "process": "calc.exe"}
+    windows = [mail, sheet]
+    available = [{"id": "synthetic-mail", "name": "Mail"}]
+    plans = [
+        {
+            "fields": {},
+            "steps": [{"action": "open_app", "app_id": "synthetic-mail", "intent": "navigate"}],
+        },
+        {
+            "fields": {
+                search_name: {"role": "edit", "source": "query.email", "bbox": [150, 280, 180, 40]}
+            },
+            "steps": [
+                {
+                    "action": "fill",
+                    "target": search_name,
+                    "source": "query.email",
+                    "intent": "fill",
+                    "point": [200, 300],
+                },
+                {"action": "key", "keys": "enter", "intent": "search"},
+            ],
+        },
+        {"fields": {}, "steps": [{"action": "focus_window", "handle": 42, "intent": "navigate"}]},
+        {
+            "fields": {
+                quantity_name: {
+                    "role": "edit",
+                    "source": "collected_result.quantity",
+                    "bbox": [150, 280, 180, 40],
+                }
+            },
+            "steps": [
+                {
+                    "action": "fill",
+                    "target": quantity_name,
+                    "source": "collected_result.quantity",
+                    "intent": "fill",
+                    "point": [200, 300],
+                }
+            ],
+        },
+    ]
+    events = [
+        {"kind": "verify", "payload": {"check": "user_education_loaded", "sha256": education_sha}}
+    ]
+    for index, plan in enumerate(plans, 1):
+        obs_id = f"obs-{index}"
+        current = screen(f"{search_value} Quantity={collected_value}")
+        mapping = ScreenMapping.model_validate(plan)
+        match = mapping.local_payload(current)
+        if index > 1:
+            visual = case / "visual" / obs_id
+            atomic_write_json(visual / "markers.json", {"image_size": [800, 600], "markers": []})
+            atomic_write_json(visual / "ocr.json", {"blocks": current["ocr"]})
+            Image.new("RGB", (800, 600), "white").save(visual / "capture.png")
+        snapshot = f"observations/{index:04d}.json"
+        atomic_write_json(
+            case / snapshot,
+            {
+                "wire": {
+                    "active_window": None if index == 1 else sheet if index == 4 else mail,
+                    "windows": [] if index == 1 else windows,
+                    "available_apps": available,
+                }
+            },
+        )
+        events.extend(
+            [
+                {"kind": "observe", "payload": {"obs_id": obs_id, "snapshot": snapshot}},
+                {
+                    "kind": "verify",
+                    "payload": {
+                        "check": "screen_plan_proposed",
+                        "obs_id": obs_id,
+                        "response": match,
+                        "mapping": mapping.model_dump(mode="json"),
+                    },
+                },
+            ]
+        )
+        for step_index, step in enumerate(match["steps"]):
+            action_id = f"a{index}-{step_index}"
+            events.extend(
+                [
+                    {
+                        "kind": "act",
+                        "payload": {"stage": "requested", "action": {"action_id": action_id}},
+                    },
+                    {
+                        "kind": "verify",
+                        "payload": {
+                            "transition": {
+                                "action_id": action_id,
+                                "before_obs_id": obs_id,
+                                "delivery": "delivered",
+                                "intent": step["intent"],
+                                "source": step.get("source"),
+                            }
+                        },
+                    },
+                ]
+            )
+    (case / "run_log.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in events), encoding="utf-8"
+    )
+
+    loaded_source, loaded = read_memory_candidates(case)
+    assert loaded_source["values"] == {
+        "query.email": search_value,
+        "collected_result.quantity": collected_value,
+    }
+    assert len(loaded) == 4 and sum(len(item.response["steps"]) for item in loaded) == 5
+    assert loaded[0].screen == {
+        "active_window": None,
+        "windows": [],
+        "available_apps": available,
+    }
+    assert not (case / "visual" / "obs-1").exists()
+    assert loaded[2].screen["active_window"] == mail
+    assert loaded[2].screen["windows"] == windows
+    assert loaded[2].screen["available_apps"] == available
+    prompt = memory_assembly_prompt(loaded_source, loaded)
+    supplied = json.loads(prompt[len(MEMORY_COMPILATION_RULES) :])["candidates"]
+    assert supplied[0]["actions"] == plans[0]["steps"]
+    assert supplied[2]["actions"] == plans[2]["steps"]
+    assert supplied[2]["active_window"] == mail
+    assert supplied[2]["windows"] == windows
+    assert supplied[2]["available_apps"] == available
+    assert supplied[1]["actions"][1] == {"action": "key", "keys": "enter", "intent": "search"}
+    assert "Quantity={collected_result.quantity}" in prompt
+    assert search_value not in prompt
+    assembly = draft(groups=tuple(item.candidate_id for item in loaded)).model_dump()
+    assembly["purpose"] = f"Process {search_value}, quantity {collected_value}"
+    for selected in assembly["groups"]:
+        selected.update(
+            purpose=f"Use {search_value}", expected_result=f"Quantity {collected_value} handled"
+        )
+    assembly["groups"][1]["field_renames"] = [
+        {"old_name": search_name, "new_name": f"Find {search_value}"}
+    ]
+    compiled = compile_memory(loaded_source, loaded, assembly, method_id="synthetic-multi-app")
+    assert compiled.purpose == "Process {query.email}, quantity {collected_result.quantity}"
+    assert compiled.action_groups[1].purpose == "Use {query.email}"
+    assert (
+        compiled.action_groups[1].expected_result == "Quantity {collected_result.quantity} handled"
+    )
+    assert compiled.action_groups[1].actions[0].target == "Find {query.email}"
+    assert compiled.action_groups[1].field_sources == {"Find {query.email}": "query.email"}
+    assert compiled.action_groups[3].actions[0].target == "Quantity {collected_result.quantity}"
+    assert [action.action for group in compiled.action_groups for action in group.actions] == [
+        "open_app",
+        "fill",
+        "key",
+        "focus_window",
+        "fill",
+    ]
+    assert compiled.action_groups[0].actions[0].app_id == "synthetic-mail"
+    assert compiled.action_groups[1].actions[1].target is None
+    focus = compiled.action_groups[2].actions[0]
+    assert (focus.target, focus.window_process, focus.window_title) == (
+        None,
+        "calc.exe",
+        "Synthetic sheet",
+    )
+    assert compiled.action_groups[0].targets == compiled.action_groups[2].targets == []
+    path = tmp_path / "synthetic-methods.json"
+    atomic_write_json(path, MethodDocument(methods=[compiled]))
+    restored = MethodLibrary(path, enabled=True).methods()[0]
+    assert restored.action_groups[0].screen_phash is None
+    assert restored.action_groups[0].image_size is None
+    assert restored.action_groups[0].actions[0].app_id == "synthetic-mail"
+    current = {**screen("Mail application"), "screen_phash": restored.action_groups[1].screen_phash}
+    current_values = {"query.email": 'subject:"New quantity"', "collected_result.quantity": "83"}
+    bound = MethodLibrary(path, enabled=True).bind_with_context(
+        restored, {}, current, current_values, group_id=restored.action_groups[1].id
+    )
+    assert bound is not None
+    assert bound.response["steps"][0]["source"] == "query.email"
+    assert current_values[bound.response["steps"][0]["source"]] == 'subject:"New quantity"'
+    assert bound.fields["Find {query.email}"]["source"] == "query.email"
+    assert search_value not in compiled.model_dump_json()
+    assert f'"{collected_value}"' not in compiled.model_dump_json()
 
 
 def test_synthetic_completion_survives_recorded_trace_compilation_without_old_values(tmp_path):

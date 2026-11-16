@@ -216,6 +216,134 @@ def matching_contract(brain, screen=None):
     return brain._screen_decision_request(screen, None), services
 
 
+def test_synthetic_memory_reads_new_source_before_window_replay(tmp_path):
+    """Synthetic A-to-B reading uses the real memory, decision, notebook and relay boundaries."""
+    from sawon_interfaces import ActionResult, WindowInfo
+
+    from brain.cache.methods import MethodSlot, method_from_match
+    from brain.graph.schemas import DecisionResponse
+    from brain.graph.screen_memory import collected_result
+    from brain.task_instruction import TaskInputRecord
+
+    task = TaskInstruction.model_validate(
+        {
+            "name": "Read a source and use its quantity",
+            "objective": "Read the selected source and enter its quantity in ERP.",
+            "result_keys": ["quantity"],
+            "completion_conditions": ["The destination contains this source's quantity."],
+            "procedure": [
+                {
+                    "id": "read",
+                    "instruction": "Read quantity in the source.",
+                    "completion": "Read.",
+                },
+                {
+                    "id": "write",
+                    "instruction": "Enter the read quantity.",
+                    "completion": "Entered.",
+                    "actions": [
+                        {
+                            "verb": "fill",
+                            "target": "Quantity",
+                            "input_key": "collected_result.quantity",
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+    record = TaskInputRecord(case_id="synthetic-source-B", inputs={"query": "B"})
+    model_reply = {
+        "screen_kind": "editor",
+        "screen_path": ["Mail"],
+        "fields": {
+            "Quantity": {
+                "role": "text",
+                "source": "quantity",
+                "value": "25",
+                "bbox": [10, 20, 60, 15],
+            }
+        },
+        "steps": [{"action": "focus_window", "intent": "navigate", "handle": 22}],
+        "operation": "act",
+        "purpose": "The current source quantity is 25; switch to ERP.",
+    }
+    brain, model, relay, *_ = setup_brain(tmp_path, record, [model_reply], task_instruction=task)
+    before = wire()
+    erp = WindowInfo(handle=22, title="ERP", process="erp.exe")
+    before = before.model_copy(update={"windows": [before.active_window, erp]})
+    brain.observation = SceneObservation(wire=before, screen_kind="editor", elements=[])
+    relay.current = before
+    screen = {
+        "screen_kind": "editor",
+        "screen_phash": 42,
+        "image_size": [400, 200],
+        "ocr": [],
+        "markers": [],
+        "windows": [item.model_dump() for item in before.windows],
+    }
+    source = ScreenMapping.model_validate(model_reply)
+    source.fields["Quantity"].value = "10"
+    source.steps[0].handle = 11
+    method = method_from_match(
+        {**screen, "windows": [{**erp.model_dump(), "handle": 11}]},
+        source,
+        method_id="synthetic-A",
+        purpose="Read quantity and switch to ERP.",
+        slots=[
+            MethodSlot(
+                name="quantity", description="Quantity", source_key="collected_result.quantity"
+            )
+        ],
+        task_objective=task.objective,
+        task_contract_sha256=brain.task_instruction_sha256,
+    )
+    assert method is not None
+    brain.method_library.enabled = True
+    brain.method_library.upsert(method)
+    request, services = matching_contract(brain, screen)
+    services = replace(
+        services, cache=ScreenPatternCache(tmp_path / "source-cache.json", enabled=True)
+    )
+    prepared = build_decision_prompt(request, services)
+    stale = ScreenMatch.model_validate(source.local_payload(screen))
+    services.cache.stage(prepared.cache_key, stale.model_dump(mode="json"))
+    services.cache.finish(success=True)
+
+    current = decide_screen(request, services).response
+
+    assert len(model.prompts) == 1
+    assert current.mapping.fields["Quantity"].value == "25"
+    assert current.steps[0].handle == 22
+    assert not any(e.payload.get("check") == "visual_match_cache" for e in brain.log.read_all())
+    assert any(e.payload.get("check") == "method_result_reading" for e in brain.log.read_all())
+    brain._remember_model_task_evidence(current)
+    assert brain.input_values["collected_result.quantity"] == "25"
+    assert collected_result(brain.screen_nodes, task.result_keys)["values"] == {"quantity": "25"}
+    request, services = matching_contract(brain, screen)
+    replay = decide_screen(request, services).response
+    assert len(model.prompts) == 1
+    brain._remember_model_task_evidence(replay)
+    assert brain.input_values["collected_result.quantity"] == "25"
+    sent = []
+
+    def act(action):
+        sent.append(action.root)
+        return ActionResult(
+            action_id=action.root.action_id,
+            ok=True,
+            duration_ms=0,
+            post_obs_id=relay.current.obs_id,
+        )
+
+    relay.act = act
+    brain.decision = compile_match(replay, brain.observation, DecisionResponse).to_decision()
+    brain.execution_authorized = True
+    assert brain._act_node() == "observation"
+    assert [action.handle for action in sent] == [22]
+    assert (method.id, method.action_groups[0].id) in brain.memory_retrieval.state.used
+
+
 def remember_prior_inputs(brain, sources):
     """Use the real model-observation commit path for synthetic earlier screen readings."""
     from brain.graph.screen_mapping import ScreenMapping

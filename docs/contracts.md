@@ -23,7 +23,7 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | 교육 단계 관찰 결과 | `brain/task_instruction.py`의 `ObservedStepResult` | `screen_mapping`, `screen_decision`, `cache/methods`, engine | 현재 모델 응답의 교육 완료를 실행 상태에 반영. 편찬물의 과거 결과는 현재 응답으로 복원하지 않음 |
 | 선택 결과의 요청 문맥 | `brain/graph/screen_decision.py`의 `ScreenSelection.prepared` | `decide_screen` → `ground_screen_response` | 같은 판단에서 확장한 교육 상세를 빈 행동 보완에 전달. 거절 후 재계획은 기존 prepared 사용. 턴 간 영구 상태가 아님 |
 | 기억 편찬 응답 | `brain/demo_learning/memory_compilation.py`의 `MemoryAssembly` / `MemoryGroupSelection` | 모델 클라이언트, `compile_memory` | 후보 ID로 전달 행동을 선택하고 `field_renames`로 잘못된 필드 이름을 교정. context_anchors는 첫 8개를 보존하고 초과분 경고 기록 |
-| 인출된 화면·행동과 저장 결과 | `brain/cache/methods.py`의 `MethodActionGroup`, `MethodCompletion` | `method_from_match`, `compile_memory`, `MemoryRetrieval._restore_structure`, `screen_decision` | 화면 경로·행동 좌표·필드 기하·입력 키, 저장 결과 메시지 및 검토 조건을 결합. 과거 필드 값은 저장·복원하지 않음 |
+| 인출된 화면·행동과 저장 결과 | `brain/cache/methods.py`의 `MethodAction`, `MethodActionGroup`, `MethodCompletion` | `method_from_match`, `compile_memory`, `MemoryRetrieval._restore_structure`, `screen_decision` | 화면 경로·행동 좌표·필드 기하·입력 키와 앱·창 선택자를 결합. 과거 필드 값과 창 handle은 저장·복원하지 않음 |
 | 문맥 구성(Context Recall) | `brain/graph/context_recall.py`의 `recall_context` | `DecisionPromptContext.state` | 캐시·모델이 필요할 때 이번 실행의 이력·누적 증거·남은 입력·진행 상태를 한 번 조립. 선택·모델 호출·상태 변경 없음 |
 | 화면 트리 기억 | `brain/graph/screen_memory.py`, `ProgressState.screen_nodes` | engine, context_recall, notebook | 방문한 경로별 필드·컨트롤 발견과 입력 전달 이력을 누적. 모델용 트리는 같은 상태에서 파생하며 과거 좌표를 포함하지 않음 |
 | 재탐색 요청 | `ScreenMapping.needs_refinement` → `ScreenPlan`/`ScreenMatch` → `SemanticDetection` | `ScreenScanner._resolve` | 필요한 보이는 컨트롤이 없으면 동일 캡처·OCR로 탐색 재진입. provider 스키마에도 존재 |
@@ -522,6 +522,20 @@ scratchpad에 이 목록을 복사하지 않는다. 입력 키는 inputs 자체�
 증거 영역 밖의 명시적 point도 그대로 보존하며, 현재 앵커로 상대 위치를 변환할 때 영역의
 가장자리로 잘라 맞추지 않습니다.
 
+`MethodAction`은 좌표 행동, 대상 없는 키 입력, `open_app`, `focus_window`를 같은 실행 순서에
+보존합니다. 앱은 `app_id`를 현재 `available_apps`에, 창은 `window_process`와 `window_title`을
+현재 `windows`의 유일한 항목에 연결합니다. `bind_window_action`이 이번 실행의 handle을
+공급하며, 해당 창이 없거나 여러 개면 기존 모델 판단 경로로 돌아갑니다. 창 행동만 있는 그룹은
+이 선택자로 결합하고 사각형이나 pHash를 요구하지 않습니다. 대상 없는 키와 좌표 행동은
+기존 viewport·pHash 조건을 유지합니다. 새 선택자 필드가 없는 기존 좌표 행동의 저장 표현과
+그룹 ID는 유지합니다.
+
+편찬 reader는 원본 `ScreenMapping.execution_view`로 실제 전달 대상 이름을 복원하고, 원본
+공개 관찰에서 창·등록 앱 목록을 가져옵니다. `screen_input_values`로 계산한 당시 수집값은
+편찬 설명·앵커의 값 제거와 완료 비교에 사용합니다. 방법에는 입력 참조와 읽을 결과 키를
+보존합니다. 전체 방법의 미래 입력 슬롯은 `collected_result.<result_key>` 선언으로 연결하고,
+실제 입력값의 존재 여부는 해당 행동 그룹을 결합할 때 확인합니다.
+
 | 자료 | 생산자·소유자 | 소비자 | 허용되는 사용 |
 |---|---|---|---|
 | 필드 이름·role·bbox·source와 행동 point | `method_from_match`, `compile_memory` → `MethodActionGroup` | `retrieve_screen_memory`, `_restore_structure`, 실행 계획 | 다음 입력 위치와 행동 재사용 |
@@ -562,6 +576,11 @@ OCR 일치로 인출된 증거를 만들던 `MethodLibrary.bind_visible_value_ev
 완료는 탐색용 미확인 입력 조건 때문에 모델로 넘기지 않습니다. 미확인 전달은 문맥에 남기며
 현재 관찰값으로 바꾸지 않습니다. 경로·필수 구조·저장 결과가 결합되지 않거나 실행이 실패하면
 기존 `ScreenMatch`로 현재 관찰과 다음 행동을 함께 얻습니다.
+결합된 그룹의 `field_sources`에 아직 수집하지 않은 `TaskInstruction.result_keys`가 있으면
+`required_result_keys`와 `collected_result.missing_keys`를 대조하여 현재 화면 모델을 호출합니다.
+이때 화면 캐시도 건너뛰며 `select/check=method_result_reading`에 필요한 키를 기록합니다.
+읽은 값은 기존 메모 반영 경로를 거쳐 다음 입력에 공급합니다. 이미 수집한 키는 이 조건으로
+재호출하지 않습니다. 새 자료 읽기는 정상 내용 해석이며 경로 결합 실패와 구분합니다.
 화면 캐시가 매핑을 재사용할 때도 과거 value·교육 완료·저장 결과·완료
 주석과 수정 대상 목록을 제거합니다. 캐시는 `operation="act"`인 행동 계획만 재사용하며,
 중복 조회 결과·완료·중단 판정은 현재 모델이 맡습니다. 입력 후 검토에서는 캐시를 건너뜁니다.
