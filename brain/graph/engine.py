@@ -1093,7 +1093,6 @@ class Brain:
                 target_summary=f"{act.type}:{tgt}",
                 action_type=act.type,
                 observed_effect=reason,
-                success=False,
                 checkpoint=self._decision_policy().current_step,
             )
 
@@ -2609,12 +2608,6 @@ class Brain:
             decision,
             choice,
             observed_effect,
-            bool(
-                navigation_change
-                or new_facts
-                or observed_effect
-                not in {ObservedEffect.NO_CHANGE, ObservedEffect.UNCHECKED, ObservedEffect.UNKNOWN}
-            ),
             new_facts,
         )
 
@@ -2623,7 +2616,6 @@ class Brain:
         decision: Decision,
         choice: Choice,
         observed_effect: ObservedEffect,
-        success: bool,
         new_facts: list[TransitionFact],
     ) -> None:
         before = (self.pending or {}).get("before_observation", self.observation)
@@ -2639,11 +2631,10 @@ class Brain:
             target_summary=f"{choice.type}:{target_desc}",
             action_type=choice.type,
             observed_effect=str(observed_effect),
-            success=success,
             checkpoint=self._decision_policy().current_step,
         )
         for fact in new_facts:
-            self.rolling_context.mark_milestone(f"검증 완료: {fact}")
+            self.rolling_context.record_fact(fact)
 
     def _log_verification_transition(
         self,
@@ -2702,7 +2693,6 @@ class Brain:
                     delivered["decision"],
                     delivered["choice"],
                     ObservedEffect.INPUT_VALUE_MATCHES,
-                    True,
                     [delivered["choice"].source],
                 )
         self.log.append("verify", payload={**result.payload, "obs_id": str(observation.obs_id)})

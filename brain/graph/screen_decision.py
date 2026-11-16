@@ -269,6 +269,17 @@ class ScreenMatch(SemanticDetection, ScreenPlan):
             self.model_dump(include=set(SemanticDetection.model_fields))
         )
 
+    def without_current_readings(self) -> ScreenMatch:
+        """Keep recalled execution structure without claiming fresh observations."""
+        if self.mapping is None:
+            return self
+        mapping = self.mapping.model_copy(deep=True)
+        for observed_field in mapping.fields.values():
+            observed_field.model_fields_set.difference_update(
+                {"value", "table_state", "enabled", "focused", "parent"}
+            )
+        return self.model_copy(update={"mapping": mapping})
+
     def accepted_mapping(self, screen: dict) -> ScreenMapping | None:
         """Keep observations intact while persisting the plan the executor actually accepted."""
         if self.mapping is None:
@@ -1531,6 +1542,8 @@ def select_screen_response(
         write_decision_artifact(services, "image", response)
         if response.needs_image:
             raise ValueError("screen_match_unresolved_image")
+        cache_hit = method_proposal = None
+        used_image = True
     if response.mapping is None:
         response = bind_value_evidence_to_controls(services, response, screen)
     return ScreenSelection(response, cache_hit, method_proposal, used_image, prepared)
@@ -1864,6 +1877,8 @@ def decide_screen(
                         and str(error).startswith("screen_match_")
                     ):
                         # Keep observations without caching the rejected next action.
+                        if cache_hit is not None:
+                            reported_response = reported_response.without_current_readings()
                         return ScreenDecisionResult(reported_response, None, plan_error=str(error))
                     raise
                 rejected = services.memory_retrieval.reject_pending(reason=str(error))
@@ -1922,6 +1937,11 @@ def decide_screen(
         remember_response = method_proposal is None or response != method_proposal.model_copy(
             update={"save_result": None, "message_targets": []}
         )
+        recalled_observation = (
+            (cache_hit is not None or method_proposal is not None)
+            and response.mapping is not None
+            and response.mapping is selection.response.mapping
+        )
         if response.mapping is not None:
             response = response.model_copy(update={"mapping": response.accepted_mapping(screen)})
         # Window handles/current keyboard focus are not replayable geometric targets.
@@ -1961,6 +1981,10 @@ def decide_screen(
         )
         if services.memory_retrieval.enabled and remember_response:
             services.memory_retrieval.remember(screen, response, allow_recovery=cache_hit is None)
+        if recalled_observation:
+            # Keep execution/guard metadata and cached structure, but do not stamp
+            # remembered attributes as a new reading on this capture.
+            response = response.without_current_readings()
         return ScreenDecisionResult(
             response=response,
             visual_match_candidate=visual_match_candidate,

@@ -20,7 +20,6 @@ class RollingTurn(BaseModel):
     )
     action_type: str = Field(description="실제 디스패치된 액션 타입 (click, set_text 등)")
     observed_effect: str = Field(max_length=120, description="액션 직후 관찰된 효과 요약")
-    success: bool = Field(description="화면 변화나 값 검증 성공 여부")
     checkpoint: str = Field(default="", description="액션 수행 당시의 정책 체크포인트")
 
 
@@ -29,9 +28,9 @@ class StructuredScratchpad(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    completed_milestones: list[str] = Field(
+    recorded_facts: list[str] = Field(
         default_factory=list,
-        description="완료된 상위 마일스톤 (턴 버퍼에서 밀려나도 영구 보존됨)",
+        description="기존 검토가 보고한 사실 식별자 원문 (턴 버퍼에서 밀려나도 보존됨)",
     )
     current_goal: str = Field(
         default="", max_length=200, description="현재 집중하고 있는 상위 목표"
@@ -45,7 +44,7 @@ class RollingContextManager:
         # buffer_size 개수를 초과하면 가장 오래된 턴이 자동으로 밀려남(FIFO)
         self.buffer_size = buffer_size
         self._turns: deque[RollingTurn] = deque(maxlen=buffer_size)
-        self._completed_milestones: list[str] = []
+        self._recorded_facts: list[str] = []
 
     @property
     def recent_turns(self) -> list[RollingTurn]:
@@ -53,8 +52,8 @@ class RollingContextManager:
         return list(self._turns)
 
     @property
-    def completed_milestones(self) -> list[str]:
-        return list(self._completed_milestones)
+    def recorded_facts(self) -> list[str]:
+        return list(self._recorded_facts)
 
     def record_turn(
         self,
@@ -64,7 +63,6 @@ class RollingContextManager:
         target_summary: str,
         action_type: str,
         observed_effect: str,
-        success: bool,
         checkpoint: str = "",
     ) -> None:
         """한 턴의 실행 결과를 기록하며, 버퍼 크기를 초과한 오래된 턴은 자동 제거."""
@@ -74,15 +72,14 @@ class RollingContextManager:
             target_summary=target_summary[:120],
             action_type=action_type,
             observed_effect=observed_effect[:120],
-            success=success,
             checkpoint=checkpoint,
         )
         self._turns.append(turn)
 
-    def mark_milestone(self, description: str) -> None:
-        """상위 마일스톤을 기록하여 과거 턴이 버퍼에서 지워져도 진행 상태를 보존."""
-        if description and description not in self._completed_milestones:
-            self._completed_milestones.append(description[:120])
+    def record_fact(self, fact: str) -> None:
+        """기존 검토가 보고한 사실의 의미나 식별자를 바꾸지 않고 보존."""
+        if fact and fact not in self._recorded_facts:
+            self._recorded_facts.append(fact)
 
     def build_scratchpad(
         self,
@@ -91,7 +88,7 @@ class RollingContextManager:
     ) -> StructuredScratchpad:
         """현재 에이전트 상태를 기반으로 Layer 1 스크래치패드 생성."""
         return StructuredScratchpad(
-            completed_milestones=list(self._completed_milestones),
+            recorded_facts=list(self._recorded_facts),
             current_goal=current_goal[:200],
         )
 

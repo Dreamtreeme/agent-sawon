@@ -109,6 +109,63 @@ def test_synthetic_window_delivery_keeps_target_in_next_model_request(tmp_path, 
     assert state["notebook"]["recent_turns"][-1]["target_summary"] == (
         "focus_window:Synthetic Mail"
     )
+    assert state["notebook"]["recent_turns"][-1]["observed_effect"] == "changed"
+    assert "success" not in state["notebook"]["recent_turns"][-1]
+    assert state["notebook"]["scratchpad"]["recorded_facts"] == []
+
+
+def test_synthetic_save_receipt_keeps_delivery_and_no_change_separate_in_next_request(
+    tmp_path, record
+):
+    # Synthetic receipt, real memory/context path: delivery does not create a saved-value reading.
+    from uuid import uuid4
+
+    from sawon_interfaces import Action
+
+    brain, model, *_ = setup_brain(
+        tmp_path, record, [named_response(fields={}, steps=[], operation="stop")]
+    )
+    before = (
+        FakeRelay(record)
+        .observe()
+        .model_copy(update={"elements": [element("e1", "Button", name="Save")]})
+    )
+    brain.observation = before
+    decision = Decision(
+        screen_kind="editor",
+        operation="act",
+        intent="save",
+        subgoal="Save",
+        reason="Save",
+        action=Choice(type="click", ref="e1"),
+    )
+    wire = Action.model_validate(
+        {
+            "schema_version": "0.2",
+            "type": "click",
+            "action_id": str(uuid4()),
+            "obs_id": str(before.obs_id),
+            "reason": "save",
+            "target": {
+                "image_point": [10, 10],
+                "capture_id": str(uuid4()),
+                "evidence": "synthetic",
+                "source": "visual",
+            },
+        }
+    )
+    brain.pending = brain._accept_dispatched_action(wire, decision, decision.action)
+    brain._record_action_verification(
+        decision, decision.action, None, None, ObservedEffect.NO_CHANGE, ["save_issued"]
+    )
+    brain._decide_visual_screen({"image_size": [400, 200], "ocr": [], "markers": []}, None)
+    notebook = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])["notebook"]
+    assert notebook["workflow_state"]["save_issued"] is True
+    assert notebook["scratchpad"]["recorded_facts"] == ["save_issued"]
+    assert notebook["recent_turns"][-1]["observed_effect"] == "no_change"
+    assert "success" not in notebook["recent_turns"][-1]
+    assert notebook["verified_inputs"] == []
+    assert "검증 완료" not in json.dumps(notebook, ensure_ascii=False)
 
 
 def test_synthetic_action_summary_uses_delivered_frame_not_new_frame(tmp_path, record):

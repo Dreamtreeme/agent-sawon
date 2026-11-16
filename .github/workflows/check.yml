@@ -3,7 +3,7 @@ on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 env:
-  BENCH_REVISION: 0b566eac9fbd1b26bbcbb9948410e831a2e887fb
+  BENCH_REVISION: d627495e3c6983211d62a7dc987a6067f6c9970f
 jobs:
   unit:
     strategy:

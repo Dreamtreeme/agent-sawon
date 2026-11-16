@@ -1318,13 +1318,28 @@ def test_nonwriting_input_goal_preserves_literal_action_without_replanning(
     assert event.payload["intent"] == "navigate"
 
 
+@pytest.mark.parametrize("rejected_next_plan", [False, True], ids=["valid-plan", "rejected-plan"])
 def test_promoted_exact_visual_match_reuse_precedes_model_call(
-    tmp_path, record, task_instruction, monkeypatch
+    tmp_path, record, task_instruction, monkeypatch, rejected_next_plan
 ):
     cache_path = tmp_path / "visual-match.json"
 
     old_reading = named_response()
     old_reading["fields"]["Reference"]["value"] = record.fields.hbl_no.value
+    old_reading["fields"].update(
+        {
+            "Panel": {"role": "window", "bbox": [0, 0, 400, 200]},
+            "Status": {
+                "role": "table",
+                "bbox": [270, 100, 100, 30],
+                "value": "Saved #1",
+                "table_state": "rows",
+                "enabled": False,
+                "focused": False,
+                "parent": "Panel",
+            },
+        }
+    )
     old_reading["repair_fields"] = ["Reference"]
     old_reading["observed_step_results"] = [
         {"step_id": "previous-read", "observed_result": "Previously visible", "completed": True}
@@ -1353,14 +1368,37 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(
         return remember(runtime, screen, response, **kwargs)
 
     monkeypatch.setattr(runtime_type, "remember", remember_cached)
+    if rejected_next_plan:
+
+        def reject(*args, **kwargs):
+            raise ValueError("screen_match_action_surface_mismatch")
+
+        monkeypatch.setattr("brain.graph.screen_decision.validate_or_replan", reject)
     second._observe()
     assert second_model.prompts == []
     assert "value" not in second.visual_proposal.mapping.fields["Reference"].model_fields_set
     assert second.visual_proposal.observed_step_results == []
     assert second.visual_proposal.mapping.repair_fields == []
+    status = second.visual_proposal.mapping.fields["Status"]
+    assert status.enabled is False and status.parent == "Panel"
+    assert not status.model_fields_set & {"value", "table_state", "enabled", "focused", "parent"}
+    remembered_status = second.screen_nodes["[]"]["controls"]["Status"]
+    assert "last_observation" not in remembered_status
+    assert "observed_properties" not in remembered_status
+    # Saving a cache candidate must still preserve execution/guard structure.
+    candidate = (
+        first.visual_match_candidate if rejected_next_plan else second.visual_match_candidate
+    )
+    stored = candidate[1]["mapping"]["fields"]["Status"]
+    assert stored["enabled"] is False and stored["parent"] == "Panel"
     assert second.visual_proposal.evidence == []
     assert second._observed_inputs() == {}
-    assert second._select_node() == "review"
+    if rejected_next_plan:
+        assert second.visual_match_candidate is None
+        with pytest.raises(ValueError, match="screen_match_action_surface_mismatch"):
+            second._selection_call("unused", ScreenMatch)
+    else:
+        assert second._select_node() == "review"
     assert second_model.prompts == []
     hits = [
         event
@@ -1368,7 +1406,9 @@ def test_promoted_exact_visual_match_reuse_precedes_model_call(
         if event.kind == "cache_hit" and event.payload.get("check") == "visual_match_cache"
     ]
     assert len(hits) == 1
-    assert recovery_permissions == [False], "cached model facts must not authorize route recovery"
+    assert recovery_permissions == ([] if rejected_next_plan else [False]), (
+        "cached model facts must not authorize route recovery"
+    )
 
 
 def test_similar_capture_reruns_ocr_but_reuses_detector_geometry(tmp_path, record):

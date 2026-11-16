@@ -912,7 +912,6 @@ def prepare_worker(path, record, responses):
         target_summary="key:enter",
         action_type="key",
         observed_effect="changed",
-        success=True,
         checkpoint="task",
     )
     return brain, model
@@ -930,7 +929,7 @@ def semantic_memory(brain):
             for source, field in brain._observed_inputs().items()
         },
         "recent_actions": [turn.model_dump() for turn in brain.rolling_context.recent_turns],
-        "milestones": brain.rolling_context.completed_milestones,
+        "recorded_facts": brain.rolling_context.recorded_facts,
     }
 
 

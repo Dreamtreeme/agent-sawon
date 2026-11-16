@@ -596,6 +596,10 @@ No preliminary focus click is required. needs_refinement=true with steps=[] requ
 only for a required visible control missing from candidates, never for offscreen fields.
 execution.last_action_observation describes structural movement: changed=false is not necessarily
 task failure (focus may be intended). Interpret it with current values to choose remaining work.
+recent_turns.observed_effect also describes the recorded effect, not whole-task success.
+scratchpad.recorded_facts keeps literal runtime facts: save_issued/query_submitted describe
+delivery, not confirmed persistence or completed work. Use observed values and step results for
+those conclusions; no summary-level success flag replaces them.
 Judge the user's completion conditions from current observations, prior readings and delivered
 actions. An entry-form reading does not prove persistence or a saved-record observation;
 distinguish them using screen_path, action history and observation numbers.

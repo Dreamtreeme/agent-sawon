@@ -1,6 +1,6 @@
 # 상태와 저장소 계약 지도
 
-기준일: 2026-11-08
+기준일: 2026-11-16
 
 이 문서는 런타임 상태와 계층 간 인터페이스의 기준 위치를 한 곳에 모읍니다. 설명과 구현이
 다르면 해당 계약을 소유한 코드와 이 문서를 같은 변경에서 맞춥니다.
@@ -185,12 +185,22 @@ relay는 단일 행동과 배치에서 같은 물리 입력 함수를 사용하�
 않는다. 명시적인 완료만 기존 완료 ID에 반영한다. 행동 선택·전달만으로
 완료를 추론하거나 전체 업무 성공으로 바꾸지 않는다. 기존 응답은 빈 목록으로 읽는다.
 
+롤링 요약은 행동의 `observed_effect`를 그대로 전달하며 포괄적인 `success` 필드를 만들지
+않는다. scratchpad와 task-notebook의 `recorded_facts`는 기존 전이의 사실 식별자를 그대로
+보존하며, 전달 사실에 “검증 완료”를 붙이지 않는다. 전달은 `last_delivered_actions`와
+`delivery`, 화면 변화는 구조 비교, 입력 확인은 `last_observation`과 `verified_inputs`, 교육
+완료는 `observed_step_results`가 각각 소유한다. 요약은 이 판정을 새로 만들거나 승격하지 않는다.
+이전 실행 파일의 completed_milestones나 success는 재작성하지 않는다.
+
 입력·수집 source가 없는 컨트롤도 명시적으로 읽은 값은 같은 `last_observation` 형식으로
 보존한다. `observed_properties`는 명시한 table_state·enabled·focused·parent를 속성별 값과
 관찰 ID·순번으로 보존한다. 빈 문자열·false·null도 명시한 관찰이며, 생략은 기존 값과 기존
 순번을 유지한다. 모델용 트리는 값과 순번을 전달하고 과거 좌표·ID는 현재 대상으로 노출하지
 않는다. `notebook.observation_number`로 현재 관찰 순번을 제공한다. 이 컨트롤 사실은 입력
 검증·수집 결과를 만들어내지 않으며, 행동만 있는 실행용 임시 대상도 관찰 사실이 되지 않는다.
+캐시·메서드가 그대로 제공한 매핑은 실행 메타데이터를 유지하되 현재 읽기의 명시성에서는
+제외한다. 따라서 과거 enabled·table_state 등이 이번 관찰 순번으로 재발행되지 않는다.
+실제 모델 보완이 반환한 새 매핑은 현재 관찰로 처리한다.
 화면 캐시는 전체 판단 문맥이 일치할 때 행동 구조를 재사용하며 과거 관찰값과 완료 판단은
 현재 응답에서 제거한다. `MethodActionGroup`과 `MethodCompletion`의 `observed_step_results`는
 편찬 기록에 남지만 `MethodLibrary.bind_with_context`·`bind_completion_with_context`는 이를
