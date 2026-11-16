@@ -76,6 +76,7 @@ from .execution import (
     PendingAction,
     PlanExecution,
     PreparedAction,
+    describe_action,
     execute_plan,
     log_transition,
 )
@@ -944,7 +945,13 @@ class Brain:
             remember(self)
         return "finish"
 
-    def _fail(self, reason: str, *, validation_errors: list[dict] | None = None) -> WorkerNode:
+    def _fail(
+        self,
+        reason: str,
+        *,
+        validation_errors: list[dict] | None = None,
+        execution_result: dict | None = None,
+    ) -> WorkerNode:
         decision = self.decision
         retrieval = self.memory_retrieval
         model_recovery = bool(
@@ -1006,6 +1013,8 @@ class Brain:
                     "were executed. Correct the step identified by validation_errors.loc using "
                     "its point, target_bbox and image_size, then resubmit the needed actions."
                 )
+        if execution_result is not None:
+            feedback["execution_result"] = execution_result
 
         if reason == "duplicate_evidence_required":
             feedback["required_response"] = DUPLICATE_EVIDENCE_GUIDANCE
@@ -1076,7 +1085,8 @@ class Brain:
         # 실패 턴도 다음 판단에 필요한 최근 행동 이력으로 남긴다.
         if self.decision and self.decision.action:
             act = self.decision.action
-            tgt = act.source or (act.keys if act.type == "key" else act.ref) or "unknown"
+            target = describe_action(self.decision, self.observation)["target"]
+            tgt = act.source or (act.keys if act.type == "key" else target or act.ref) or "unknown"
             self.rolling_context.record_turn(
                 turn_index=self.steps,
                 intent=self.decision.intent,
@@ -2373,11 +2383,28 @@ class Brain:
             for pending in execution.delivered:
                 log_transition(self.log, pending)
             self.pending = None
+            failed = result.failed_action
+            execution_result = {
+                "delivered_actions": [
+                    describe_action(item.planned.decision, self.observation, wire=item.wire)
+                    for item in result.delivered
+                ],
+                "failed_action": (
+                    describe_action(failed.planned.decision, self.observation, wire=failed.wire)
+                    if failed is not None
+                    else None
+                ),
+                "response": (
+                    result.response.model_dump(mode="json") if result.response is not None else None
+                ),
+            }
             if isinstance(result.error, GuardStop):
                 if str(result.error) == "relay_action_failed":
-                    return self._fail("relay_action_failed")
+                    return self._fail("relay_action_failed", execution_result=execution_result)
                 raise result.error
-            return self._fail("action_error:" + type(result.error).__name__)
+            return self._fail(
+                "action_error:" + type(result.error).__name__, execution_result=execution_result
+            )
         self.pending = {**execution.delivered[-1], "execution": execution}
         if self.pending["decision"].intent == "login":
             scene = execution.before
@@ -2599,8 +2626,12 @@ class Brain:
         success: bool,
         new_facts: list[TransitionFact],
     ) -> None:
+        before = (self.pending or {}).get("before_observation", self.observation)
+        target = describe_action(decision, before)["target"]
         target_desc = (
-            choice.source or (choice.keys if choice.type == "key" else choice.ref) or "unknown"
+            choice.source
+            or (choice.keys if choice.type == "key" else target or choice.ref)
+            or "unknown"
         )
         self.rolling_context.record_turn(
             turn_index=self.steps,

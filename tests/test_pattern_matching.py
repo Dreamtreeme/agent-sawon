@@ -10,15 +10,24 @@ def test_window_handles_are_session_local_but_window_semantics_and_result_values
             "active_window": {"handle": 1, "title": "Mail", "process": "browser.exe"},
             "windows": [{"handle": 1, "title": "Mail", "process": "browser.exe"}],
         },
-        "notebook": {"collected_result": {"values": {"handle": "ORDER-A"}}},
+        "notebook": {
+            "collected_result": {"values": {"action": "focus_window", "handle": "ORDER-A"}}
+        },
+        "execution": {
+            "last_delivered_actions": [{"action": "focus_window", "handle": 1, "target": "Mail"}]
+        },
     }
     second = json.loads(json.dumps(first))
     second["screen"]["active_window"]["handle"] = 99
     second["screen"]["windows"][0]["handle"] = 99
+    second["execution"]["last_delivered_actions"][0]["handle"] = 99
     assert screen_pattern_key(first) == screen_pattern_key(second)
     second["screen"]["active_window"]["title"] = "Chat"
     assert screen_pattern_key(first) != screen_pattern_key(second)
     second["screen"]["active_window"]["title"] = "Mail"
+    second["execution"]["last_delivered_actions"][0]["target"] = "Chat"
+    assert screen_pattern_key(first) != screen_pattern_key(second)
+    second["execution"]["last_delivered_actions"][0]["target"] = "Mail"
     second["notebook"]["collected_result"]["values"]["handle"] = "ORDER-B"
     assert screen_pattern_key(first) != screen_pattern_key(second)
 

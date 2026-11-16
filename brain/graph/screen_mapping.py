@@ -560,6 +560,10 @@ evidence; set completed from that evidence, not delivery alone. All confirmed fi
 visible at once. Do not revisit hidden fields to repeat established readings; investigate conflicts.
 The notebook and focused step describe progress BEFORE this screenshot is interpreted.
 last_delivered_actions were successfully executed, not actions to execute again.
+recent_feedback[].execution_result preserves acknowledged actions, the failed request and the
+original relay response. attempted=false means input did not start; true means it was attempted,
+not that it succeeded; null means unknown. Use the recorded error/details and do not repeat the
+acknowledged prefix or infer business success from delivery alone.
 In this response, report current observations and choose remaining steps from them plus memory.
 The runtime commits observations before executing these steps; do not wait another turn only to
 acknowledge a completed action. Never repeat a satisfied fill. purpose explains these same steps,

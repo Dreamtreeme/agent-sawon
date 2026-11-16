@@ -12,9 +12,10 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, NotRequired, TypedDict
 from uuid import uuid4
 
-from sawon_interfaces import Action, ActionBatch, ActionResult, Observation
+from sawon_interfaces import Action, ActionBatch, ActionBatchResult, ActionResult, Observation
 
 from brain.relay import Relay
+from brain.vocabulary import SCROLL_DIRECTION_KEYS
 from sawon_runtime.storage import RunLog
 
 from .schemas import Choice, Decision, FieldName
@@ -100,6 +101,60 @@ class ExecutionRequest:
 class ExecutionResult:
     delivered: tuple[PreparedAction, ...]
     error: Exception | None = None
+    failed_action: PreparedAction | None = None
+    response: ActionResult | ActionBatchResult | None = None
+
+
+def describe_action(
+    decision: Decision, before: Observation | None = None, *, wire: Action | None = None
+) -> dict:
+    """Describe the chosen target without copying input or credential text."""
+    choice = decision.action
+    target = (
+        next((element for element in before.elements if choice and element.ref == choice.ref), None)
+        if before is not None
+        else None
+    )
+    result = {
+        "intent": decision.intent,
+        "source": choice.source if choice else None,
+        "screen_kind": decision.screen_kind,
+        "action": choice.type if choice else None,
+        "target": (target.name or target.label_hint) if target else None,
+    }
+    if choice is not None:
+        if choice.type == "focus_window":
+            result["handle"] = choice.handle
+            window = (
+                next((window for window in before.windows if window.handle == choice.handle), None)
+                if before is not None
+                else None
+            )
+            result["target"] = window.title if window else f"window:{choice.handle}"
+        elif choice.type == "open_app":
+            result["app_id"] = choice.app_id
+            app = (
+                next((app for app in before.available_apps if app.id == choice.app_id), None)
+                if before is not None
+                else None
+            )
+            result["target"] = app.name if app else f"app:{choice.app_id}"
+        elif choice.type == "key":
+            directions = {key: value for value, key in SCROLL_DIRECTION_KEYS.items()}
+            if choice.keys in directions:
+                result.update(action="scroll", direction=directions[choice.keys])
+            else:
+                result["keys"] = choice.keys
+    if wire is not None:
+        payload = wire.model_dump(mode="json")
+        # These are the actual request's coordinates/identity, never its text value.
+        result.update(
+            action_id=payload["action_id"], obs_id=payload["obs_id"], action=payload["type"]
+        )
+        for key in ("target", "wheel_delta", "duration_ms", "handle", "app_id", "keys"):
+            if key in payload:
+                result["wire_target" if key == "target" else key] = payload[key]
+    return result
 
 
 def relay_error_code(error: str | None) -> str | None:
@@ -139,6 +194,8 @@ def log_returned(log: RunLog, action: Action, response: ActionResult) -> None:
             "ok": response.ok,
             "error": "relay_action_failed" if response.error else None,
             "error_code": relay_error_code(response.error),
+            "attempted": response.attempted,
+            "details": response.details,
             "post_obs_id": str(response.post_obs_id) if response.post_obs_id else None,
         },
         latency_ms=response.duration_ms,
@@ -148,6 +205,8 @@ def log_returned(log: RunLog, action: Action, response: ActionResult) -> None:
 def execute_plan(request: ExecutionRequest, relay: Relay, log: RunLog) -> ExecutionResult:
     """No worker mutation or callbacks into policy; return only acknowledged prefix."""
     delivered = []
+    failed_action = None
+    failure_response = None
     try:
         if request.batch:
             prepared = list(request.actions)
@@ -155,6 +214,7 @@ def execute_plan(request: ExecutionRequest, relay: Relay, log: RunLog) -> Execut
             for item in prepared:
                 log_requested(log, item)
             response = relay.act_batch(batch)
+            failure_response = response
             log.append(
                 "act",
                 payload={
@@ -176,20 +236,38 @@ def execute_plan(request: ExecutionRequest, relay: Relay, log: RunLog) -> Execut
             for item, result in zip(prepared, response.results, strict=False):
                 log_returned(log, item.wire, result)
                 if not result.ok:
+                    failure_response = result
+                    if result.details.get("stage") in {"batch_preflight", "batch_settle"}:
+                        failed_action = next(
+                            (
+                                candidate
+                                for candidate in prepared
+                                if str(candidate.wire.root.action_id)
+                                == result.details.get("failed_action_id")
+                            ),
+                            None,
+                        )
+                    elif result.details.get("stage") == "batch_delivery":
+                        failed_action = item
                     break
                 delivered.append(item)
             if not response.ok or len(delivered) != len(prepared):
+                if failure_response is None:
+                    failure_response = response
                 raise GuardStop("relay_action_failed")
         else:
             for item in request.actions:
+                failed_action = item
                 log_requested(log, item)
                 result = relay.act(item.wire)
+                failure_response = result
                 log_returned(log, item.wire, result)
                 if result.action_id != item.wire.root.action_id:
                     raise GuardStop("relay_action_identity_mismatch")
                 if not result.ok:
                     raise GuardStop("relay_action_failed")
                 delivered.append(item)
+                failed_action = failure_response = None
     except Exception as error:
-        return ExecutionResult(tuple(delivered), error)
+        return ExecutionResult(tuple(delivered), error, failed_action, failure_response)
     return ExecutionResult(tuple(delivered))

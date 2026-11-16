@@ -11,6 +11,7 @@ from test_screen_decision import fixture, named_response, setup_brain
 from brain.graph.memory_retrieval import open_memory_library
 from brain.graph.schemas import Choice, Decision
 from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
+from brain.graph.transitions import ObservedEffect
 from brain.task_instruction import TaskInstruction
 from brain.visual.markers import build_markers
 
@@ -67,6 +68,73 @@ def test_generic_task_context_has_no_legacy_query_input_gate(tmp_path, record):
     assert context["remaining_inputs"] == sorted(brain.values)
     assert "remaining_fields" not in context
     assert context["guidance"] == "Use the user task description as the workflow."
+
+
+def test_synthetic_window_delivery_keeps_target_in_next_model_request(tmp_path, record):
+    # Synthetic window switch: real receipt/context functions, fake model and relay.
+    from sawon_interfaces import Action, WindowInfo
+
+    brain, model, *_ = setup_brain(
+        tmp_path, record, [named_response(fields={}, steps=[], operation="stop")]
+    )
+    before = FakeRelay(record).observe()
+    target = WindowInfo(handle=987, title="Synthetic Mail", process="mail.exe")
+    brain.observation = before.model_copy(update={"windows": [before.active_window, target]})
+    decision = Decision(
+        screen_kind="editor",
+        operation="act",
+        intent="navigate",
+        subgoal="Switch apps",
+        reason="Switch apps",
+        action=Choice(type="focus_window", handle=target.handle),
+    )
+    wire = Action.model_validate(
+        {
+            "type": "focus_window",
+            "action_id": "00000000-0000-0000-0000-000000000001",
+            "obs_id": str(before.obs_id),
+            "handle": target.handle,
+            "reason": "navigate",
+        }
+    )
+    brain.pending = brain._accept_dispatched_action(wire, decision, decision.action)
+    brain._record_action_verification(
+        decision, decision.action, None, True, ObservedEffect.CHANGED, []
+    )
+    brain._decide_visual_screen({"image_size": [400, 200], "ocr": [], "markers": []}, None)
+    state = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
+    delivered = state["execution"]["last_delivered_actions"][0]
+    assert delivered["handle"] == target.handle
+    assert delivered["target"] == target.title
+    assert state["notebook"]["recent_turns"][-1]["target_summary"] == (
+        "focus_window:Synthetic Mail"
+    )
+
+
+def test_synthetic_action_summary_uses_delivered_frame_not_new_frame(tmp_path, record):
+    # Synthetic frame change: an old ref must keep its original target meaning.
+    brain, *_ = setup_brain(tmp_path, record, [])
+    before = (
+        FakeRelay(record)
+        .observe()
+        .model_copy(update={"elements": [element("e1", "Button", name="Original command")]})
+    )
+    brain.observation = before.model_copy(
+        update={"elements": [element("e2", "Button", name="Next screen command")]}
+    )
+    decision = Decision(
+        screen_kind="editor",
+        operation="act",
+        intent="navigate",
+        subgoal="Switch view",
+        reason="Switch view",
+        action=Choice(type="click", ref="e1"),
+    )
+    brain.pending = {"before_observation": before, "decision": decision, "choice": decision.action}
+    brain._record_action_verification(
+        decision, decision.action, None, True, ObservedEffect.CHANGED, []
+    )
+    assert brain.rolling_context.recent_turns[-1].target_summary == "click:Original command"
 
 
 def test_pending_external_selection_exposes_only_post_verification_steps(tmp_path, record):

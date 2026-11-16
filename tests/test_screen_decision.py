@@ -3550,7 +3550,9 @@ def test_named_mixed_plan_failure_records_only_delivered_prefix(tmp_path, record
             {"target": "Command", "action": "click", "intent": "search", "point": [310, 28]},
         ],
     )
-    brain, model, relay, *_ = setup_brain(tmp_path, record, [data])
+    brain, model, relay, *_ = setup_brain(
+        tmp_path, record, [data, named_response(fields={}, steps=[], operation="stop")]
+    )
     brain._observe()
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
@@ -3563,7 +3565,11 @@ def test_named_mixed_plan_failure_records_only_delivered_prefix(tmp_path, record
             action_id=action.root.action_id,
             ok=ok,
             duration_ms=0,
-            error=None if ok else "action_failed",
+            error=None if ok else "point_outside_allowed_window",
+            attempted=ok or failure_index == 1,
+            details={}
+            if ok
+            else {"hit": {"handle": 999}, "checks": {"hit_identity_matches": False}},
             post_obs_id=relay.current.obs_id,
         )
 
@@ -3574,6 +3580,157 @@ def test_named_mixed_plan_failure_records_only_delivered_prefix(tmp_path, record
     assert brain.pending is None
     assert "hbl_no" not in brain._observed_inputs()
     assert any(e.payload.get("reason") == "relay_action_failed" for e in brain.log.read_all())
+    brain._observe()
+    request = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
+    result = request["notebook"]["recent_feedback"][-1]["execution_result"]
+    assert result["response"]["error"] == "point_outside_allowed_window"
+    assert result["response"]["attempted"] is (failure_index == 1)
+    assert result["response"]["details"]["hit"] == {"handle": 999}
+    assert result["failed_action"]["wire_target"]["image_point"] == (
+        [125, 28] if failure_index == 0 else [310, 28]
+    )
+    assert [item["source"] for item in result["delivered_actions"]] == (
+        [] if failure_index == 0 else ["hbl_no"]
+    )
+    assert '"text":' not in json.dumps(result), "Execution facts must refer to input sources."
+
+
+@pytest.mark.parametrize(
+    "stage,known_target",
+    [("batch_preflight", True), ("batch_preflight", False), ("batch_settle", False), (None, False)],
+    ids=[
+        "actual-second-action",
+        "unknown-preflight",
+        "post-dispatch-unknown",
+        "old-result-unknown",
+    ],
+)
+def test_synthetic_batch_failure_target_survives_next_model_request(
+    tmp_path, record, stage, known_target
+):
+    # Synthetic batch rejection: first wire result identifies the batch envelope,
+    # while details identify the actual inspected member (or explicitly do not).
+    from sawon_interfaces import ActionBatchResult, ActionResult
+
+    data = named_response(
+        fields={
+            "Reference": {"source": "hbl_no", "role": "edit", "bbox": [100, 15, 150, 30]},
+            "Command": {"role": "button", "bbox": [270, 15, 90, 30]},
+        },
+        steps=[
+            {"target": "Reference", "action": "fill", "intent": "fill", "point": [125, 28]},
+            {"target": "Command", "action": "click", "intent": "search", "point": [310, 28]},
+        ],
+    )
+    brain, model, relay, *_ = setup_brain(
+        tmp_path, record, [data, named_response(fields={}, steps=[], operation="stop")]
+    )
+
+    def reject_batch(batch):
+        settling = stage == "batch_settle"
+        results = (
+            [
+                ActionResult(
+                    action_id=batch.actions[0].root.action_id,
+                    ok=True,
+                    attempted=True,
+                    post_obs_id=batch.actions[0].root.obs_id,
+                    duration_ms=0,
+                )
+            ]
+            if settling
+            else []
+        )
+        results.append(
+            ActionResult(
+                schema_version="0.1" if stage is None else "0.2",
+                action_id=batch.actions[1 if settling else 0].root.action_id,
+                ok=False,
+                error="point_outside_allowed_window",
+                attempted=None if stage is None else settling,
+                duration_ms=0,
+                details={}
+                if stage is None
+                else {
+                    "stage": stage,
+                    "failed_action_id": str(batch.actions[1].root.action_id)
+                    if known_target
+                    else None,
+                },
+            )
+        )
+        return ActionBatchResult(
+            batch_id=batch.batch_id,
+            ok=False,
+            error="point_outside_allowed_window",
+            duration_ms=0,
+            results=results,
+        )
+
+    relay.act_batch = reject_batch
+    brain._observe()
+    assert brain._select_node() == "review"
+    assert brain._review_node() == "execution"
+    assert brain._act_node() == "observation"
+    brain._observe()
+    request = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
+    result = request["notebook"]["recent_feedback"][-1]["execution_result"]
+    assert [item["source"] for item in result["delivered_actions"]] == (
+        ["hbl_no"] if stage == "batch_settle" else []
+    )
+    assert result["response"]["attempted"] is (None if stage is None else stage == "batch_settle")
+    if known_target:
+        assert result["failed_action"]["target"] == "Command"
+        assert result["failed_action"]["wire_target"]["image_point"] == [310, 28]
+    else:
+        assert result["failed_action"] is None
+
+
+def test_synthetic_mismatched_batch_reply_preserves_original_response(tmp_path, record):
+    # Synthetic malformed relay reply; preserve it without acknowledging any member.
+    from uuid import uuid4
+
+    from sawon_interfaces import ActionBatchResult, ActionResult
+
+    from brain.graph.execution import ExecutionRequest, execute_plan
+
+    data = named_response(
+        steps=[
+            {
+                "target": "Reference",
+                "action": "fill",
+                "source": "hbl_no",
+                "intent": "fill",
+                "point": [175, 30],
+            },
+            {"action": "key", "keys": "enter", "intent": "search"},
+        ]
+    )
+    brain, _, relay, *_ = setup_brain(tmp_path, record, [data])
+    brain._observe()
+    assert brain._select_node() == "review"
+    actions = list(brain._prepare_actions(brain.action_plan, batch=True))
+    reply = ActionBatchResult(
+        batch_id=uuid4(),
+        ok=True,
+        post_obs_id=relay.current.obs_id,
+        duration_ms=0,
+        results=[
+            ActionResult(
+                action_id=item.wire.root.action_id,
+                ok=True,
+                post_obs_id=relay.current.obs_id,
+                duration_ms=0,
+            )
+            for item in actions
+        ],
+    )
+    relay.act_batch = lambda batch: reply
+    result = execute_plan(ExecutionRequest(actions, batch=True), relay, brain.log)
+    assert str(result.error) == "relay_action_identity_mismatch"
+    assert result.response is reply
+    assert result.delivered == ()
+    assert result.failed_action is None
 
 
 # Cleanup audit C2: preserve final review and education context when removing prompt round trip.

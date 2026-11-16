@@ -8,9 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from brain.vocabulary import SCROLL_DIRECTION_KEYS
-
-from .execution import PendingAction
+from .execution import PendingAction, describe_action
 from .policy import DecisionPolicy
 from .save_review import SAVE_RESULT_ACTIONS, SAVE_REVIEW_GUIDANCE
 from .schemas import Decision
@@ -159,29 +157,7 @@ def _delivered_actions(pending: PendingAction | None) -> list[dict]:
         decision = delivered.get("decision")
         if decision is None:
             continue
-        choice = delivered.get("choice") or decision.action
-        before = delivered.get("before_observation")
-        target = (
-            next((element for element in before.elements if element.ref == choice.ref), None)
-            if before is not None and choice is not None
-            else None
-        )
-        action = {
-            "intent": decision.intent,
-            "source": choice.source if choice else None,
-            "screen_kind": decision.screen_kind,
-            "action": choice.type if choice else None,
-            "target": (target.name or target.label_hint) if target else None,
-        }
-        if choice is not None and choice.type == "key":
-            direction = {key: value for value, key in SCROLL_DIRECTION_KEYS.items()}.get(
-                choice.keys
-            )
-            if direction is not None:
-                action.update(action="scroll", direction=direction)
-            else:
-                action["keys"] = choice.keys
-        result.append(action)
+        result.append(describe_action(decision, delivered.get("before_observation")))
     return result
 
 

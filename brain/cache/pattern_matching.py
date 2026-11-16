@@ -66,6 +66,12 @@ def _cache_contract(value: Any, *, parent: str | None = None) -> Any:
                 continue
             if parent in {"active_window", "windows"} and key == "handle":
                 continue
+            if (
+                parent == "last_delivered_actions"
+                and value.get("action") == "focus_window"
+                and key == "handle"
+            ):
+                continue
             result[key] = _cache_contract(item, parent=key)
         return result
     if isinstance(value, list):
