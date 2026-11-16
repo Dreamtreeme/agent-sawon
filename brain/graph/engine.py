@@ -349,7 +349,9 @@ class Brain:
             promotion_path=self.settings.methods.promotion_path,
         )
 
-    def _screen_decision_request(self, screen: dict, page, *, interpretation=None, proposal=None):
+    def _screen_decision_request(
+        self, screen: dict, page, *, interpretation=None, proposal=None, observation_id=None
+    ):
         from .screen_decision import ScreenDecisionRequest, required_verification
 
         assert self.task_instruction is not None
@@ -380,6 +382,8 @@ class Brain:
             verified_fields=frozenset(self._observed_inputs()),
             screen_nodes=self.screen_nodes,
             current_screen_path=self.current_screen_path,
+            observation_id=observation_id or str(getattr(self.observation, "obs_id", "")),
+            observation_number=self.observation_number,
             execution_contract=contract,
             required_verification=tuple(required_verification(self.pending)),
             post_action_review=post_action_review,
@@ -431,7 +435,14 @@ class Brain:
         return context
 
     def _decide_visual_screen(
-        self, screen: dict, page, *, interpretation=None, proposal=None, defer_plan_errors=False
+        self,
+        screen: dict,
+        page,
+        *,
+        interpretation=None,
+        proposal=None,
+        observation_id=None,
+        defer_plan_errors=False,
     ):
         from .screen_decision import ScreenDecisionServices, decide_screen
 
@@ -440,6 +451,7 @@ class Brain:
             page,
             interpretation=interpretation,
             proposal=proposal,
+            observation_id=observation_id,
         )
         result = decide_screen(
             request,
@@ -555,6 +567,7 @@ class Brain:
             response = self._decide_visual_screen(
                 screen,
                 request.page,
+                observation_id=request.page.image_path.parent.name,
                 defer_plan_errors=True,
             )
             self.visual_proposal = response
@@ -1231,6 +1244,8 @@ class Brain:
 
     def _observe(self) -> Observation:
         observation = redact(self.relay.observe(), self.secrets)
+        # The scanner may request recovery before the final observation is committed.
+        self.observation_number += 1
         self.visual_proposal = None
         self.visual_plan_error = None
         if not observation.blocked_reason:
@@ -1238,7 +1253,6 @@ class Brain:
             self.visual_proposal_obs_id = observation.obs_id
         self.observation = observation
         self.review = None
-        self.observation_number += 1
         # One response observes the pending action's outcome and plans from it.
         # Commit its review scope and current values before compiling/delivering
         # those same steps. Committing observations does not invalidate that plan.

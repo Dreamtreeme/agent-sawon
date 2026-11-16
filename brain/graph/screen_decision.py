@@ -6,6 +6,7 @@ import json
 import re
 import unicodedata
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
@@ -17,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from brain.cache import ScreenPatternCache, screen_pattern_key
 from brain.input_binding import (
     allowed_input_surfaces,
+    collected_input_sources,
     normalize_action_source,
     resolve_input_key,
 )
@@ -44,7 +46,12 @@ from .model_call import ResponseT, ScreenModelCall
 from .policy import DecisionPolicy
 from .schemas import Choice, Decision, FieldName
 from .screen_mapping import ScreenMapping, ScreenMappingWire, WindowAction, mapping_prompt
-from .screen_memory import screen_input_values
+from .screen_memory import (
+    collected_result,
+    recall_screen_tree,
+    remember_screen,
+    screen_input_values,
+)
 from .visual_turn import adapt_proposal
 
 
@@ -359,6 +366,8 @@ class ScreenDecisionRequest:
     proposal: ScreenMatch | None = None
     screen_nodes: Mapping[str, dict] = field(default_factory=dict)
     current_screen_path: list[str] = field(default_factory=list)
+    observation_id: str = ""
+    observation_number: int = 0
 
 
 @dataclass(frozen=True)
@@ -1692,12 +1701,39 @@ def ground_screen_response(
             response = sanitize_unused_controls(services, response, screen, required)
             grounded_response = response
             if response.operation == "act" and not response.steps:
+                recovery_state = prepared.state
+                current_observation = None
+                if response.mapping is not None:
+                    current_observation = response.mapping.model_dump(exclude_unset=True)
+                    # Preview this response; only the final response is committed by the engine.
+                    nodes = deepcopy(request.screen_nodes)
+                    remember_screen(
+                        nodes,
+                        response.mapping,
+                        request.values.keys()
+                        | collected_input_sources(request.task_instruction).keys(),
+                        request.observation_id,
+                        observation_number=request.observation_number,
+                        result_keys=request.task_instruction.result_keys,
+                    )
+                    notebook = {
+                        **recovery_state["notebook"],
+                        "screen_tree": recall_screen_tree(nodes),
+                        "previous_screen_path": list(response.mapping.screen_path),
+                    }
+                    notebook.update(
+                        {
+                            key: collected_result(nodes, request.task_instruction.result_keys)
+                            for key in {"collected_result"} & notebook.keys()
+                        }
+                    )
+                    recovery_state = {**recovery_state, "notebook": notebook}
                 completion = _call_screen_decision(
                     services,
                     "missing_actions_recovery",
                     mapping_prompt(
                         {
-                            **prepared.state,
+                            **recovery_state,
                             "recovery": {
                                 "reason": "missing_actions",
                                 "instruction": (
@@ -1707,11 +1743,7 @@ def ground_screen_response(
                                     "evidence."
                                 ),
                                 "matched_inputs": [item.field for item in response.evidence],
-                                "current_observation": (
-                                    response.mapping.model_dump(exclude_unset=True)
-                                    if response.mapping is not None
-                                    else None
-                                ),
+                                "current_observation": current_observation,
                             },
                         },
                     ),

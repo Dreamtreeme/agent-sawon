@@ -108,10 +108,7 @@ def test_synthetic_106_unused_observation_uses_local_geometry_without_losing_rea
     assert len(model.prompts) == 1
 
 
-@pytest.mark.xfail(
-    strict=True, raises=ObservationBlockedByPlan, reason="106 recovery uses old memo"
-)
-def test_synthetic_106_recovery_must_receive_current_observed_memory(tmp_path, record):
+def test_synthetic_106_recovery_must_receive_current_observed_memory(tmp_path, record, monkeypatch):
     # Synthetic seq537/540: fake recovery does not prove how a real model would choose.
     from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
 
@@ -120,6 +117,19 @@ def test_synthetic_106_recovery_must_receive_current_observed_memory(tmp_path, r
     final = deepcopy(first)
     final["operation"] = "stop"
     brain, model = prepare_worker(tmp_path / "recovery", record, [first, final])
+    original_nodes = deepcopy(brain.screen_nodes)
+    original_path = list(brain.current_screen_path)
+    original_observation = brain.observation
+    generate = model._generate
+
+    def check_uncommitted_memory(prompt, schema, **kwargs):
+        # Synthetic responses must not commit the initial reading before recovery finishes.
+        assert brain.screen_nodes == original_nodes
+        assert brain.current_screen_path == original_path
+        assert brain.observation is original_observation
+        return generate(prompt, schema, **kwargs)
+
+    monkeypatch.setattr(model, "_generate", check_uncommitted_memory)
     brain._observe()
     assert len(model.prompts) == 2
     recovered = json.loads(model.prompts[1][len(CONTEXT_MAPPING_RULES) :])
@@ -133,6 +143,10 @@ def test_synthetic_106_recovery_must_receive_current_observed_memory(tmp_path, r
     if not notebook["screen_tree"]["children"]:
         assert notebook["screen_tree"]["fields"] == {}
         raise ObservationBlockedByPlan("Recovery sees matching evidence but pre-observation memo")
+    current = notebook["screen_tree"]["children"]["Registration"]["children"]["Basic"]
+    assert current["fields"]["hbl_no"]["last_observation"]["observation_number"] == 1
+    assert brain.observation_number == 1
+    assert notebook["previous_screen_path"] == first["screen_path"]
     assert (
         notebook["screen_tree"]["children"]["Registration"]["children"]["Basic"]["fields"][
             "hbl_no"
