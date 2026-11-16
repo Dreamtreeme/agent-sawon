@@ -90,8 +90,9 @@ def relative_point(
     if point is None:
         ratio_x = ratio_y = 0.5
     else:
-        ratio_x = min(1.0, max(0.0, (point[0] - old_box[0]) / max(1, old_box[2])))
-        ratio_y = min(1.0, max(0.0, (point[1] - old_box[1]) / max(1, old_box[3])))
+        # An observed caption can anchor an action point outside its own rectangle.
+        ratio_x = (point[0] - old_box[0]) / max(1, old_box[2])
+        ratio_y = (point[1] - old_box[1]) / max(1, old_box[3])
     return new_box[0] + new_box[2] * ratio_x, new_box[1] + new_box[3] * ratio_y
 
 

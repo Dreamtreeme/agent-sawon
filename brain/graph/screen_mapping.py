@@ -47,13 +47,13 @@ class ScreenField(ScreenFieldSemantics):
     bbox: list[int] = Field(
         min_length=4,
         max_length=4,
-        description="Original image x,y,width,height of the actual control, not its caption",
+        description="Original image x,y,width,height of observation evidence, not a click boundary",
     )
 
 
 class NamedTarget(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    target: str = Field(description="Exact semantic field name from fields")
+    target: str = Field(description="Descriptive action target; need not be declared in fields")
     intent: MatchActionIntent
     point: list[float] = Field(
         min_length=2, max_length=2, description="Your chosen original image click/input point"
@@ -70,7 +70,7 @@ class NamedKeyAction(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     target: str | None = Field(
-        default=None, description="Optional exact field name; null to use current focus"
+        default=None, description="Optional action target label; null to use current focus"
     )
     intent: MatchActionIntent
     point: list[float] | None = Field(default=None, min_length=2, max_length=2)
@@ -237,24 +237,14 @@ class ScreenMapping(BaseModel):
             }
         )
 
-    def local_payload(self, screen: dict, inputs: Mapping[str, str] | None = None) -> dict:
-        """Allocate transient executor references from resolved field geometry."""
-        # Runtime refs are a projection of this frame, never accumulated model identities.
-        markers = [m for m in screen.get("markers", []) if m["source"] != "model_selected"]
-        next_id = max((m["id"] for m in markers), default=0) + 1
-        ids = {name: next_id + i for i, name in enumerate(self.fields)}
-
-        def field_name(reference: str, step=None) -> str:
-            if reference in ids:
-                return reference
-            matching_names = [
-                name for name, field in self.fields.items() if field.source == reference
-            ]
-            if len(matching_names) == 1:
-                return matching_names[0]
-            if step is not None and not isinstance(step, NamedScrollAction):
-                # Use only this response's declared geometry, never a similar
-                # string or an earlier viewport's coordinates, to reuse its name.
+    def _field_name(self, reference: str, step=None) -> str:
+        if reference in self.fields:
+            return reference
+        matching_names = [name for name, field in self.fields.items() if field.source == reference]
+        if len(matching_names) == 1:
+            return matching_names[0]
+        if step is not None:
+            if step.point is not None and not isinstance(step, NamedScrollAction):
                 x, y = step.point
                 matching_names = [
                     name
@@ -266,27 +256,50 @@ class ScreenMapping(BaseModel):
                 ]
                 if len(matching_names) == 1:
                     return matching_names[0]
-            raise KeyError(reference)
+            return reference
+        raise KeyError(reference)
 
-        # Resolve executable targets before mutating the current screen catalog.
-        actions = [
-            (
-                step,
-                None
-                if isinstance(step, WindowAction) or step.target is None
-                else field_name(step.target, step),
-            )
-            for step in self.steps
-        ]
+    def execution_view(self) -> ScreenMapping:
+        """Project action handles without adding observations to the original mapping."""
+        fields = dict(self.fields)
+        steps = []
+        for step in self.steps:
+            if isinstance(step, WindowAction) or step.target is None:
+                steps.append(step)
+                continue
+            name = self._field_name(step.target, step)
+            if name not in fields:
+                if step.point is None:
+                    steps.append(step.model_copy(update={"target": None}))
+                    continue
+                x, y = step.point
+                fields[name] = ScreenField(
+                    role="edit" if step.action == "fill" else "button",
+                    bbox=[int(x), int(y), 1, 1],
+                    source=step.source if step.action == "fill" else None,
+                )
+            data = {"target": name}
+            if step.action == "fill":
+                data["source"] = step.source or fields[name].source
+            steps.append(step.model_copy(update=data))
+        return self.model_copy(update={"fields": fields, "steps": steps})
+
+    def local_payload(self, screen: dict, inputs: Mapping[str, str] | None = None) -> dict:
+        """Project observations and independent action handles into the current executor."""
+        view = self.execution_view()
+        fields = view.fields
+        markers = [m for m in screen.get("markers", []) if m["source"] != "model_selected"]
+        next_id = max((m["id"] for m in markers), default=0) + 1
+        ids = {name: next_id + i for i, name in enumerate(fields)}
         # Parent links enrich observation only; an undeclared parent must not erase it.
-        parents = {name: ids.get(field.parent) for name, field in self.fields.items()}
+        parents = {name: ids.get(field.parent) for name, field in fields.items()}
         controls = []
         bindings = {name: field.source for name, field in self.fields.items() if field.source}
         # The model's current view replaces speculative geometry from a similar capture.
         screen["screen_path"] = list(self.screen_path)
         screen["markers"] = markers
         geometry = screen["selected_fields"] = {}
-        for name, field in self.fields.items():
+        for name, field in fields.items():
             target = ids[name]
             text_ids = [b["id"] for b in screen.get("ocr", []) if contains(field.bbox, b["bbox"])]
             controls.append(
@@ -335,17 +348,15 @@ class ScreenMapping(BaseModel):
         # Keep the complete explanation in the saved semantic mapping.
         result["purpose"] = self.purpose[:160]
         result["steps"] = []
-        for step, name in actions:
+        for step in view.steps:
             action = step.model_dump()
             if isinstance(step, WindowAction):
                 result["steps"].append(action)
                 continue
-            action["target"] = ids[name] if name is not None else None
+            action["target"] = ids[step.target] if step.target is not None else None
             if isinstance(step, NamedScrollAction):
                 action["action"] = "key"
                 action["keys"] = SCROLL_DIRECTION_KEYS[action.pop("direction")]
-            elif step.action == "fill":
-                action["source"] = step.source or self.fields[name].source
             result["steps"].append(action)
         # Fields own input bindings and readings, exactly as in screen memory.
         # The optional evidence list cannot invent or override a field's source.
@@ -365,7 +376,7 @@ class ScreenMapping(BaseModel):
 
         def annotation_target(reference: str, kind: str) -> int | None:
             try:
-                return ids[field_name(reference)]
+                return ids[self._field_name(reference)]
             except KeyError:
                 unresolved.append({"kind": kind, "target": reference})
                 return None
@@ -526,12 +537,13 @@ Never infer result values from instructions or unobserved screens.
 Select region_refs from the current screen's control_regions, text_regions or memory_fields.
 These refs are temporary handles for this frame, never field names or input source keys. The
 runtime copies their bbox, or encloses multiple selected regions; never return or invent bbox.
-Choose the actual control region and precise action point from the current image/OCR: captions
-identify meaning, not necessarily writable locations. Prior geometry is a hint, not current
-observation; memory region refs do not establish current values.
-Every target in steps, completion_evidence, message_targets and grid/row must use an exact name
-declared in fields. Explanations belong in purpose/expected_result, not undeclared messages or
-summary targets.
+region_refs identify observation evidence, which may be a caption or text rather than an input
+surface. Choose each action's precise point independently from the current image/OCR; it need not
+be inside a field's evidence regions. Actions carry their own descriptive target, point and fill
+source; their targets need not be declared again in fields. Do not add fields just to authorize
+an action. Prior geometry is a hint, not current observation; memory region refs do not establish
+current values. completion_evidence, message_targets and grid/row still refer to observed fields.
+Explanations belong in purpose/expected_result, not invented proof or summary targets.
 screen_path and fields.source/value update that node's memory; the runtime does not infer
 bindings from your next action or equal input values. Matching sources and readings are notebook
 evidence, not a separate evidence list. Explicit empty values record visible empty fields;

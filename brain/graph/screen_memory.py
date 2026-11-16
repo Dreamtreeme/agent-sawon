@@ -129,8 +129,8 @@ def remember_input_delivery(
     node = nodes.setdefault(
         json.dumps(path, ensure_ascii=False), {"path": list(path), "fields": {}, "controls": {}}
     )
-    entry = node["fields"].setdefault(source, {})
-    entry.update(target, label=entry.get("label", target["label"]))
+    # Delivery cannot replace the geometry/provenance of an existing observation.
+    entry = node["fields"].setdefault(source, dict(target))
     node["controls"].pop(target["label"], None)
     entry["delivery"] = {
         "value": value,

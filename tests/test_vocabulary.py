@@ -1,6 +1,7 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
-ScreenMatch/ScreenPlan select current region refs; runtime geometry is unchanged (2026-11-16).
+ScreenMatch/ScreenPlan separate observation regions from action points/targets (2026-11-16).
+MatchAction-family points use capture bounds rather than evidence bounds (2026-11-16).
 Locally derived OCR text IDs have no arbitrary count cap (2026-11-08).
 Current-focus keyboard actions make key target/ref optional (2026-11-08).
 Registered app opening extends window actions and existing decision schemas (2026-11-08).
@@ -123,13 +124,13 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
             "4bb02cfe9fbffb82400d576b99007a631014b3ce54e807dae954cc07a29caa26",
         ),
         (ActionCapability, "81dd3026b6a843cb3dd757bc3556c9b8f255ecb841c2af5e1c9892100655e10c"),
-        (MatchAction, "c2896e29704320a3f581ed22c9e62cd4eb9130b17e8324c1eb64cd657797ef7f"),
+        (MatchAction, "6dbb0afb928c453ba6dc8586e26a0f39fe772effd1ca2e8ff38bd0ac0e975bba"),
         (
             TargetedMatchAction,
-            "03403957ede105318d200c173f8a71a82a077a1f3e197ff59f7e7665ce7e947e",
+            "0e9016e1f3c5ea9ceae293f02c63b82e497a9f2a48438f55b50e166297b559c9",
         ),
-        (ScreenPlan, "f04642a1e02946b807e48d6ae1fbd9bbe1b7b2d7ea224b5bae02fba8e3ae89bb"),
-        (ScreenMatch, "f04642a1e02946b807e48d6ae1fbd9bbe1b7b2d7ea224b5bae02fba8e3ae89bb"),
+        (ScreenPlan, "4a701662bd38688b6401467298ddbdeb2e5ec2e9a8745ee4e4b6aaec7f564f73"),
+        (ScreenMatch, "4a701662bd38688b6401467298ddbdeb2e5ec2e9a8745ee4e4b6aaec7f564f73"),
         (Decision, "4f361687bf9a556d6439945786cb2f959c502506cdd09be48c800f88645bb028"),
         (
             WireActDecision,

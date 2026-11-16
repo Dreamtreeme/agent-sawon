@@ -13,6 +13,7 @@ from brain.cache.methods import (
     method_from_match,
 )
 from brain.graph.screen_decision import ScreenMatch
+from brain.graph.screen_mapping import ScreenMapping
 from brain.task_instruction import ObservedStepResult
 from sawon_runtime.storage import atomic_write_json
 
@@ -548,3 +549,56 @@ def test_coordinate_method_keeps_each_action_point_and_ignores_numbered_catalog(
     replay = library.bind_with_context(method, {}, screen, {})
     assert replay is not None
     assert [step["point"] for step in replay.response["steps"]] == [[20, 30], [21, 31]]
+
+
+def test_named_method_replays_action_only_targets_without_inventing_observed_fields(tmp_path):
+    # Synthetic caption/input and undeclared-tab scenario from the actual ERP failures.
+    screen = {"image_size": [800, 600], "screen_phash": 123, "ocr": [], "markers": []}
+    mapping = ScreenMapping(
+        screen_kind="editor",
+        fields={
+            "Customer": {
+                "role": "edit",
+                "source": "party",
+                "value": "Old customer",
+                "bbox": [10, 30, 80, 20],
+            }
+        },
+        steps=[
+            {"target": "Customer", "action": "fill", "intent": "fill", "point": [200, 65]},
+            {
+                "target": "Additional",
+                "action": "click",
+                "intent": "select_tab",
+                "point": [183, 117],
+            },
+            {
+                "target": "Count",
+                "action": "fill",
+                "source": "count",
+                "intent": "fill",
+                "point": [220, 160],
+            },
+        ],
+    )
+    original = mapping.model_dump()
+    method = method_from_match(screen, mapping, method_id="named", purpose="Enter and continue")
+    assert method is not None
+    group = method.action_groups[0]
+    assert [target.name for target in group.observed_fields] == ["Customer"]
+    assert group.observed_fields[0].bbox == (10, 30, 80, 20)
+    assert group.field_sources == {"Customer": "party"}
+    assert mapping.model_dump() == original
+    assert "Old customer" not in method.model_dump_json()
+
+    library = MethodLibrary(tmp_path / "methods.json", enabled=True)
+    library.upsert(method)
+    rebound = library.bind_with_context(method, {}, screen, {"party": "New customer", "count": "9"})
+    assert rebound is not None
+    assert [step["point"] for step in rebound.response["steps"]] == [
+        [200, 65],
+        [183, 117],
+        [220, 160],
+    ]
+    assert [step.get("source") for step in rebound.response["steps"]] == ["party", None, "count"]
+    assert rebound.response.get("evidence", []) == []

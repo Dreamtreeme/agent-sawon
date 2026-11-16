@@ -64,15 +64,10 @@ class VisualPointBindings:
                 reason = "visual_click_point_unknown_target"
             else:
                 x, y = step.point
-                if is_wheel_scroll(step.action, step.keys):
-                    # Wheel input acts at an image point, not inside the named field.
-                    shot = observation.screenshot
-                    if shot is None or not (0 <= x < shot.width and 0 <= y < shot.height):
-                        reason = "visual_point_outside_capture"
-                else:
-                    left, top, width, height = target.bbox
-                    if not (left <= x < left + width and top <= y < top + height):
-                        reason = "visual_click_point_outside_target"
+                # Evidence rectangles locate readings; actions own their image point.
+                shot = observation.screenshot
+                if shot is None or not (0 <= x < shot.width and 0 <= y < shot.height):
+                    reason = "visual_point_outside_capture"
             if reason is not None:
                 shot = observation.screenshot
                 raise VisualPointError(

@@ -75,7 +75,19 @@ def test_input_rebinds_to_resized_local_control_without_a_model(tmp_path):
     assert result.phash_distance <= 16
 
 
-def test_click_rebinds_to_current_ocr_caption_and_preserves_relative_point(tmp_path):
+@pytest.mark.parametrize(
+    "caption,planned_point,expected",
+    [
+        ((150, 120, 120, 36), (120, 115), (180, 138)),
+        ((100, 100, 80, 30), (200, 150), (200, 150)),
+        ((140, 120, 80, 30), (200, 150), (240, 170)),
+        ((150, 120, 120, 36), (200, 150), (300, 180)),
+    ],
+    ids=["inside-caption", "outside-unchanged", "outside-moved", "outside-scaled"],
+)
+def test_click_rebinds_to_current_ocr_caption_and_preserves_relative_point(
+    tmp_path, caption, planned_point, expected
+):
     old_path, fresh_path = same_form_images(tmp_path)
     target = UIElement(ref="e2", role="button", name="저장", bbox=(100, 100, 80, 30))
     scene = SceneObservation(wire=wire(), elements=[target])
@@ -85,12 +97,12 @@ def test_click_rebinds_to_current_ocr_caption_and_preserves_relative_point(tmp_p
         old_capture=old_path,
         fresh_capture=fresh_path,
         fresh_size=(600, 240),
-        blocks=[OcrBlock(id=0, text="저장", confidence=1, bbox=(150, 120, 120, 36))],
+        blocks=[OcrBlock(id=0, text="저장", confidence=1, bbox=caption)],
         markers=[],
-        planned_point=(120, 115),
+        planned_point=planned_point,
     )
     assert result.method == "ocr_text_anchor"
-    assert result.point == (180, 138)
+    assert result.point == expected
 
 
 def test_changed_scene_family_is_rejected_before_reusing_visible_caption(tmp_path):

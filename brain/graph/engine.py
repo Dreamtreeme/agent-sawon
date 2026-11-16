@@ -682,7 +682,9 @@ class Brain:
             assert isinstance(self.observation, SceneObservation)
             if response.mapping is not None and not proposal_reused:
                 self.observation = self.screen_scanner.bind_mapping(
-                    self.observation.wire, response.interpretation(), response.mapping.fields
+                    self.observation.wire,
+                    response.interpretation(),
+                    response.mapping.execution_view().fields,
                 )
             prefix = "e" + str(self.observation.obs_id.int) + "0"
             grounded_refs = {element.ref for element in self.observation.elements}

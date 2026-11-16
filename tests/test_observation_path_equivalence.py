@@ -61,10 +61,13 @@ def test_synthetic_106_click_declaration_must_not_discard_observation(tmp_path, 
     assert len(model.prompts) == len(replies)
     assert observed_inputs(brain)["hbl_no"]["value"] == record.fields.hbl_no.value
     assert brain.visual_proposal.mapping.steps[0].point == [280, 75]
-    assert brain.visual_proposal.steps == []
-    assert brain.visual_plan_error == "screen_match_action_target_undeclared"
-    assert brain.visual_match_candidate is None
-    assert brain._select_node() == "observation"
+    assert brain.visual_proposal.steps[0].point == [280, 75]
+    assert "Continue" not in brain.visual_proposal.mapping.fields
+    assert "Continue" not in brain.screen_nodes["[]"]["controls"]
+    assert brain.visual_plan_error is None
+    assert brain._select_node() == "review"
+    chosen = brain.decision or brain.action_plan.actions[0].decision
+    assert brain._wire_action(chosen.action, chosen).root.target.image_point == (280, 75)
     assert not any(event.kind == "act" for event in brain.log.read_all())
 
 

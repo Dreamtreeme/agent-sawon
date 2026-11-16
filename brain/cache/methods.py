@@ -434,21 +434,20 @@ def action_group_from_match(
     )
     if mapping is not None:
         response = mapping.model_dump(exclude_unset=True)
+        execution = mapping.execution_view()
         selected_fields = {
             name: {"name": name, **field.model_dump(exclude_unset=True)}
-            for name, field in mapping.fields.items()
+            for name, field in execution.fields.items()
         }
         controls = {
             name: {"role": field.role, "visual_description": name}
-            for name, field in mapping.fields.items()
+            for name, field in execution.fields.items()
         }
         steps = []
-        for action in mapping.steps:
+        for action in execution.steps:
             step = action.model_dump(exclude_none=True)
             if step["action"] == "scroll":
                 step.update(action="key", keys=SCROLL_DIRECTION_KEYS[step.pop("direction")])
-            elif step["action"] == "fill":
-                step["source"] = step.get("source") or mapping.fields[step["target"]].source
             steps.append(step)
     else:
         selected_fields = screen.get("selected_fields", {})
@@ -568,13 +567,17 @@ def action_group_from_match(
         **{item["target"]: item["field"] for item in response.get("evidence", [])},
         **{step["target"]: step["source"] for step in steps if step.get("source")},
     }
-    observed_controls = {
-        **{
-            (ref if mapping is not None else int(ref)): {"role": field["role"]}
-            for ref, field in selected_fields.items()
-        },
-        **controls,
-    }
+    observed_controls = (
+        {
+            name: {"role": field.role, "visual_description": name}
+            for name, field in mapping.fields.items()
+        }
+        if mapping is not None
+        else {
+            **{int(ref): {"role": field["role"]} for ref, field in selected_fields.items()},
+            **controls,
+        }
+    )
     for target_id, control in observed_controls.items():
         name = (
             selected_fields.get(str(target_id), {}).get("name")

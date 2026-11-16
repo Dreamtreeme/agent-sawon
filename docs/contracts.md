@@ -17,7 +17,7 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | `ExecutionRequest`/`ExecutionResult` | `brain/graph/execution.py` | `engine.py`, relay adapter | 준비된 행동 전달과 relay가 확인한 결과. 업무 성공을 판정하지 않음 |
 | `ActionBatch`/`ActionBatchResult` | `../agent-sawon-bench/interfaces/sawon_interfaces/contracts.py` | core `execution.py`, relay `act_batch` | 같은 관찰·캡처에 연결한 시각 행동을 순서대로 전달하고, 한 번의 최종 관찰과 실제 전달 prefix를 반환 |
 | `ActionPlan`과 화면 입력 계획 | `brain/graph/execution.py`, `screen_batch.py` | `screen_decision`, `selection`, `engine` | 로그인과 일반 행동을 같은 순서 실행기로 전달. `ScreenFillPlan`은 입력과 현재 화면의 후속 행동을 함께 표현 |
-| 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `screen_decision`, `memory_retrieval` | 모델은 의미 이름·입력 key·현재 영역 참조·행동 point를 선택. 코드가 후보 bbox를 연결 |
+| 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `screen_decision`, `memory_retrieval` | 관찰 필드는 현재 영역 참조로 증거 bbox를 연결하고, 행동은 별도 이름·입력 key·point로 실행 |
 | 정보 수집 요청·결과 | `brain/task_instruction.py`, `screen_memory.collected_result`, `notebook.remember` | engine, context_recall, 결과 소비자 | `result_keys`로 읽을 항목만 선언하고 누적 관찰에서 값·출처·누락 항목을 파생. 종료 시 로컬 `task-result.json` 저장 |
 | 현재 화면 모델 입력 | `brain/visual/frame.py`의 `frame_input` | `context_recall`, 화면 판단, 관찰 녹화기 | 현재 OCR·후보 영역·포함 텍스트를 한 번 투영. 내부 마커 번호를 모델 계약에 노출하지 않음 |
 | 교육 단계 관찰 결과 | `brain/task_instruction.py`의 `ObservedStepResult` | `screen_mapping`, `screen_decision`, `cache/methods`, engine | 현재 모델 응답의 교육 완료를 실행 상태에 반영. 편찬물의 과거 결과는 현재 응답으로 복원하지 않음 |
@@ -359,6 +359,9 @@ provisional 진도로 기록한다. 비모델 경로의 입력 검증과 `SavedE
 해당 요청 안에서만 유효하다. 업무 이름이나 지속 메모의 키로 사용하지 않는다.
 `ScreenMappingWire.resolve`는 모델에게 보낸 같은 프레임 snapshot에서 bbox를 가져오며,
 여러 OCR 줄을 선택하면 코드가 합집합 사각형을 계산한다. 모델은 영역 크기를 새로 작성하지 않는다.
+이 bbox는 읽은 값·라벨 등의 관찰 근거 영역이며 클릭·입력 좌표의 허용 경계가 아니다.
+행동의 `target`은 실행할 대상의 의미 이름이고 `point`는 현재 캡처에서 선택한 실제 위치다.
+행동 대상을 `fields`에 중복 선언할 필요는 없다. `fill.source`는 관찰값과 별개인 실행 입력 키다.
 화면 없이 먼저 파싱되는 실행 응답은 `ScreenPlan.pending_mapping`에 선택을 잠시 보관하고,
 현재 프레임과 연결한 뒤 기존 `mapping`·`local_payload` 경로로 넘긴다. 임시 참조는
 내부 `ScreenMapping`에 저장하지 않는다. 내부 필드 bbox, 메모·캐시·편찬물 형식과 행동 point는
@@ -380,6 +383,8 @@ provisional 진도로 기록한다. 비모델 경로의 입력 검증과 `SavedE
 필드 안의 `source`는 정확한 업무 키이며 컨트롤은 null을 사용한다. 별도 assignments와
 행동·증거·같은 문자열에서 입력 연결을 역추론하는 경로는 없다. `_remember_model_task_evidence`
 는 같은 읽은 값을 노드에 반영한다. 입력 일치 목록은 이 원본을 조회하여 파생한다.
+빈 행동 보완 요청은 현재 관찰을 반영한 임시 메모를 사용하며, 실제 메모는 최종 응답 이후에
+확정한다. `execution_view`의 행동 대상 투영은 이 시점을 바꾸거나 관찰값을 추가하지 않는다.
 
 의미 매핑의 실행용 입력 evidence도 `fields.source/value`에서만 파생한다. 응답의 선택적
 `evidence` 목록은 필드 연결을 추가하거나 덮어쓰지 않는다. 입력 record가 있는 실행 경계에서는
@@ -388,15 +393,15 @@ provisional 진도로 기록한다. 비모델 경로의 입력 검증과 `SavedE
 같은 화면 노드의 같은 입력 source는 처음 모델이 정한 이름을 유지하고 현재 기하·값을
 갱신한다. `ScreenMapping.reuse_names`는 현재 응답의 입력 연결이 유일하고 이름 충돌이 없을 때
 필드와 그 참조를 기존 이름으로 통일한다. 다른 노드나 미식별 경로의 이름은 승계하지 않는다.
-대상은 선언 이름·유일한 source로 연결한다. 이름이 어긋난 클릭·입력·키 행동은 현재 응답의
-좌표를 포함하는 조작 가능한 선언 영역이 유일하면 그 이름을 사용한다. 과거 좌표·문자열 유사도나
-role만으로 대상을 추측하지 않는다. 스크롤 좌표는 문맥 필드의 영역과 독립이므로 이 연결을
-사용하지 않는다. 미해결 보조 주석·grid·row는
-`unresolved_annotations`에 기록하고 증거로 사용하지 않는다. 미해결 행동 대상은 기존 대상
-조회 오류를 유지한다. 관찰 중 다음 행동의 대상이 미선언이면 실행 steps를 비우고
-`ScreenDecisionResult.plan_error`로 인계하여 현재 필드 관찰을 보존한다. 원문 mapping에는
-거절된 행동을 남기며 실행·캐시·메서드 학습에는 넘기지 않는다. 정확한 대상과 좌표를 가진
-행동에 새로운 거절 조건을 추가하지 않는다.
+`ScreenMapping.execution_view`는 원본 관찰 필드를 보존한 채 행동의 실행 참조를 투영한다.
+기존 이름·유일한 source 또는 현재 좌표가 포함된 유일한 선언 영역이 있으면 그 이름을
+재사용하지만, 연결할 관찰 필드가 없어도 행동 이름과 명시적 point로 실행 대상을 만든다.
+과거 좌표·문자열 유사도나 role만으로 대상을 추측하지 않는다. 없는 대상의 실행 참조에는
+point 위치의 임시 영역을 사용하며 원본 `mapping.fields`에 필드나 관찰값을 추가하지 않는다.
+클릭·입력 point를 관찰 bbox 안으로 옮기거나, 관찰 필드 미선언만으로 steps를 비우지 않는다.
+보조 주석·grid·row는 여전히 원본 관찰 필드에 연결하며, 미해결 참조는
+`unresolved_annotations`에 기록하고 증거로 사용하지 않는다. 행동에서 만든 실행 대상은
+이 주석의 관찰 근거를 대신하지 않는다.
 관찰 전용 실행과 녹화기도 같은 의미 매핑을 사용한다. `fields.parent`는 부모의 의미 이름이며
 실행 투영에서만 현재 ID로 바꾼다. `fields.focused`, `fields.table_state`는 기존 관찰 계약의
 포커스와 빈 표·행 존재·불확실 상태를 보존한다. 생략한 표 상태는 기존 투영 기본값을 따른다.
@@ -485,6 +490,10 @@ scratchpad에 이 목록을 복사하지 않는다. 입력 키는 inputs 자체�
 두 모델에서 `field_values`는 제거했습니다. 구형 산출물은 `_discard_legacy_field_values`를 통해
 해당 키를 버리고 나머지 구조를 읽으며 원본 파일은 변경하지 않습니다. 런타임 학습과 편찬 CLI가
 공유하는 `method_from_match`·`method_completion_from_match`도 관찰값을 산출물에 넣지 않습니다.
+행동 그룹은 `execution_view`의 대상·point·입력 출처를 사용하고, `observed_fields`는 원본
+`mapping.fields`만 사용합니다. 행동을 위해 만든 임시 대상은 관찰 필드로 편찬하지 않습니다.
+증거 영역 밖의 명시적 point도 그대로 보존하며, 현재 앵커로 상대 위치를 변환할 때 영역의
+가장자리로 잘라 맞추지 않습니다.
 
 | 자료 | 생산자·소유자 | 소비자 | 허용되는 사용 |
 |---|---|---|---|
@@ -664,10 +673,10 @@ Anthropic 전송에서는 ScreenPlan/ScreenMatch의 `anthropic_unions`가 지정
 
 ### 화면 행동의 좌표와 거절 피드백
 
-`VisualPointBindings.bind`는 click·fill·일반 key의 명시 좌표를 선언한 컨트롤 bbox에
-결합한다. `key+pagedown/pageup`은 휠 동작이므로 컨트롤 bbox 대신 현재 캡처 범위에서
-좌표를 검증한다. 의미 대상 ref는 현재 관찰에 존재해야 하지만 휠 위치를 그 필드 안으로
-옮기지 않는다. 실행기는 동일한 `is_wheel_scroll` 판정으로 휠 명령을 생성한다.
+`VisualPointBindings.bind`는 click·fill·일반 key·휠의 명시 좌표를 현재 캡처 범위에서
+검증하고 그 관찰의 실행 ref에 결합한다. ref는 원본 관찰 필드 또는 `execution_view`가 만든
+현재 실행 대상에 속한다. 관찰 증거 bbox에 포함되는지는 실행 조건이 아니며 point를 그 안으로
+옮기지 않는다. 실행기는 기존 `is_wheel_scroll` 판정으로 휠 명령을 생성한다.
 현재 창·프레임 갱신과 relay의 좌표 범위·전경 검사는 유지한다.
 
 좌표 결합은 계획 전체의 전달 전에 수행한다. `VisualPointError`는 실패한 steps 인덱스

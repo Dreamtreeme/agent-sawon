@@ -82,8 +82,8 @@ class MatchAction(BaseModel):
         min_length=2,
         max_length=2,
         description=(
-            "Original-image [x,y] point inside target, except pagedown/pageup wheel points "
-            "which may be anywhere in the current image's scrollable region. "
+            "Original-image [x,y] execution point inside the current capture, independent of "
+            "the target's observation evidence rectangle. "
             "Required for click/double_click and for "
             "every action whose target is a model-created control without a local marker."
         ),
@@ -1791,12 +1791,10 @@ def decide_screen(
     ):
         original_call = services.call
         prompt_sizes = []
-        mapping_plan_error: ScreenDecisionResult | None = None
 
         def traced_call(
             prompt: str, schema: type[ResponseT], *, page: RenderedPage | None = None
         ) -> ResponseT:
-            nonlocal mapping_plan_error
             prompt_sizes.append(len(prompt))
             with model_call_context(
                 decision_id=decision_id,
@@ -1813,17 +1811,7 @@ def decide_screen(
                     if mapping is not None:
                         write_decision_artifact(services, "semantic-mapping", mapping)
                         mapping = mapping.reuse_names(request.screen_nodes)
-                        plan_error = None
-                        try:
-                            payload = mapping.local_payload(screen, request.values)
-                        except KeyError:
-                            if not defer_plan_errors:
-                                raise
-                            # Keep the current observation; reject only its unbound next action.
-                            plan_error = "screen_match_action_target_undeclared"
-                            payload = mapping.model_copy(update={"steps": []}).local_payload(
-                                screen, request.values
-                            )
+                        payload = mapping.local_payload(screen, request.values)
                         if screen.get("unresolved_annotations"):
                             services.log.append(
                                 "verify",
@@ -1835,11 +1823,6 @@ def decide_screen(
                         response = ScreenMatch.model_validate(payload).model_copy(
                             update={"mapping": mapping}
                         )
-                        if plan_error is not None:
-                            mapping_plan_error = ScreenDecisionResult(
-                                response, None, plan_error=plan_error
-                            )
-                            raise ValueError(plan_error)
                         return response
                     return mapped
                 return original_call(prompt, schema, page=page)
@@ -1874,8 +1857,6 @@ def decide_screen(
                     used_image=used_image,
                 )
             except ValueError as error:
-                if mapping_plan_error is not None:
-                    return mapping_plan_error
                 if method_proposal is None:
                     if (
                         defer_plan_errors

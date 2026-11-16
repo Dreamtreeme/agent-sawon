@@ -245,8 +245,8 @@ def remember_prior_inputs(brain, sources):
     brain.observation = previous
 
 
-@pytest.mark.parametrize("last_action", ["wheel", "invalid-click"])
-def test_synthetic_fill_then_wheel_crosses_point_binding_or_reports_undispatched_plan(
+@pytest.mark.parametrize("last_action", ["wheel", "click", "outside-capture-click"])
+def test_synthetic_mixed_actions_use_image_points_and_report_outside_capture(
     tmp_path, record, last_action
 ):
     # Synthetic equivalent of 113's mixed proposal; uses the existing fake model/relay.
@@ -279,12 +279,12 @@ def test_synthetic_fill_then_wheel_crosses_point_binding_or_reports_undispatched
                 "action": "key" if last_action == "wheel" else "click",
                 "intent": "navigate",
                 "keys": "pagedown" if last_action == "wheel" else None,
-                "point": [300, 150],
+                "point": [400 if last_action == "outside-capture-click" else 300, 150],
             },
         ],
     )
     route = brain._select_node()
-    if last_action == "wheel":
+    if last_action != "outside-capture-click":
         assert route == "review"
         actions = [
             brain._wire_action(
@@ -292,9 +292,13 @@ def test_synthetic_fill_then_wheel_crosses_point_binding_or_reports_undispatched
             ).root
             for item in brain.action_plan.actions
         ]
-        assert [a.type for a in actions] == ["set_text", "scroll"]
+        assert [a.type for a in actions] == [
+            "set_text",
+            "scroll" if last_action == "wheel" else "click",
+        ]
         assert actions[1].target.image_point == (300, 150)
-        assert actions[1].wheel_delta == -600
+        if last_action == "wheel":
+            assert actions[1].wheel_delta == -600
     else:
         assert route == "observation" and brain.action_plan is None
         request, services = matching_contract(brain)
@@ -303,7 +307,7 @@ def test_synthetic_fill_then_wheel_crosses_point_binding_or_reports_undispatched
         assert detail["loc"] == ["steps", 1, "point"]
         assert detail["target_name"] == "Reference"
         assert detail["target_bbox"] == [20, 30, 200, 40]
-        assert detail["point"] == [300, 150] and detail["image_size"] == [400, 200]
+        assert detail["point"] == [400, 150] and detail["image_size"] == [400, 200]
         assert detail["plan_delivery"] == "not_dispatched" and detail["delivered_actions"] == 0
         assert "none of its actions" in feedback["required_response"]
     assert model.prompts == []
@@ -3074,8 +3078,13 @@ def test_inline_target_reaches_wire_with_exact_fill_point_without_recovery(
 
 
 # Cleanup audit C3: keep actual-frame mapping while removing the empty-screen conversion.
+@pytest.mark.parametrize(
+    ("region_ref", "evidence_bbox"),
+    [("control:0", (100, 15, 150, 30)), ("text:0", (10, 20, 60, 15))],
+    ids=["input-region", "caption-outside-execution-point"],
+)
 def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
-    tmp_path, record, monkeypatch
+    tmp_path, record, monkeypatch, region_ref, evidence_bbox
 ):
     from brain.cache.methods import MethodLibrary, method_from_match
     from brain.graph.screen_mapping import ScreenMapping
@@ -3097,7 +3106,7 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
                 "name": "Reference",
                 "source": "hbl_no",
                 "role": "edit",
-                "region_refs": ["control:0"],
+                "region_refs": [region_ref],
                 "value": "CURRENT",
             }
         ],
@@ -3117,7 +3126,8 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
     assert len(converted_frames) == 1 and converted_frames[0]["markers"]
     mapping = brain.visual_proposal.mapping
     target = next(e for e in brain.observation.elements if e.role == "edit")
-    assert target.name == "Reference" and target.bbox == (100, 15, 150, 30)
+    assert target.name == "Reference" and target.bbox == evidence_bbox
+    assert mapping.fields["Reference"].bbox == list(evidence_bbox)
     assert brain._select_node() == "review"
     assert brain.action_plan.actions[0].decision.action.source == "hbl_no"
     # Raw provider artifact is semantic, executor refs are generated afterwards.
@@ -3364,8 +3374,11 @@ def test_semantic_mapping_uses_declared_name_at_unique_current_point():
     assert response.steps[0].target != response.grid
     assert response.grid is None  # An act plan does not consume result-grid metadata.
     mapping.fields["Overlapping control"] = mapping.fields["Save Completion Close Button"]
-    with pytest.raises(KeyError, match="Save Completion Close"):
-        mapping.local_payload({})  # A point shared by two controls cannot choose their names.
+    response = ScreenMatch.model_validate(mapping.local_payload({}))
+    chosen = next(c for c in response.controls if c.id == response.steps[0].target)
+    assert chosen.visual_description == "Save Completion Close"
+    assert response.steps[0].point == [290, 262]
+    assert "Save Completion Close" not in mapping.fields
 
 
 @pytest.mark.parametrize("separate", [False, True], ids=["combined", "reused-observation"])
@@ -3671,8 +3684,16 @@ def test_unresolved_annotations_preserve_actions_without_inventing_proof():
     }
     data["steps"][0]["target"] = "unresolvable executable target"
     data["steps"][0]["point"] = [399, 199]
-    with pytest.raises(KeyError, match="unresolvable executable target"):
-        ScreenMapping.model_validate(data).local_payload({})
+    data["message_targets"].append("unresolvable executable target")
+    mapping = ScreenMapping.model_validate(data)
+    screen = {}
+    payload = mapping.local_payload(screen)
+    assert payload["steps"][0]["point"] == [399, 199]
+    assert "unresolvable executable target" not in mapping.fields
+    assert payload["steps"][0]["target"] not in payload["message_targets"]
+    assert {"kind": "message_targets", "target": "unresolvable executable target"} in screen[
+        "unresolved_annotations"
+    ]
 
 
 def test_group_click_role_policy_is_observed_without_rejection(tmp_path):
