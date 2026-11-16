@@ -11,7 +11,7 @@
 | PaddleOCR | 현재 캡처 | 문자열과 원본 이미지 bbox | 현재 관찰 |
 | OmniParser v2 | 현재 캡처 | 조작 후보 bbox | 현재 관찰 |
 | 현재 화면 입력 | 스크린샷, OCR, 후보 bbox | 전체 OCR와 영역별 contained_text | 현재 캡처, 내부 ID 미노출 |
-| 업무 화면 매핑 | 사용자 교육, notebook, 스크린샷, text/control bbox | 의미 이름, 입력 key, 행동 point의 `ScreenMapping` | 의미 이름은 현재 화면 계약, point는 현재 캡처 |
+| 업무 화면 매핑 | 사용자 교육, notebook, 스크린샷, 현재 영역 후보 | 의미 이름, 입력 key, region_refs, 행동 point | 영역 참조는 현재 요청, 의미 이름은 화면 계약 |
 | 편찬된 기억 | 성공 trace, OCR anchor, pHash | 현재 화면에 재결합한 행동 | 교육 digest와 화면 유사도 범위 |
 
 캡처의 현재 OCR을 먼저 읽고 기억을 검색합니다. 일반 그룹은 viewport·pHash 조건을 사용하고,
@@ -20,7 +20,10 @@
 OmniParser로 bbox를 찾습니다. 캡처가 같아도 OCR을 생략하지 않습니다.
 같은 관찰을 다시 판단하는 `rematch()`와 보완 탐지는 이미 읽은 OCR을 사용하며, 현재 문맥 회상,
 패턴 매칭, 화면 판단은 같은 순서로 실행합니다.
-관찰과 업무 판단은 같은 ScreenMapping으로 의미 이름과 bbox를 선택합니다.
+관찰과 업무 판단은 같은 `ScreenMappingWire`로 의미 이름과 현재 영역 참조를 선택합니다.
+코드가 동일 프레임의 후보 bbox를 복사하여 내부 `ScreenMapping`을 만듭니다. 여러 OCR 줄의
+합집합도 코드가 계산하며 모델이 영역 크기를 재작성하지 않습니다. 업무 source·읽은 값·
+행동 point와 저장된 메모·편찬 형식은 유지합니다.
 기억이 불충분하면 모델의 `needs_refinement` 응답으로 같은 캡처·OCR에서
 탐지 경로로 돌아갑니다. 이 신호는 내부 타입뿐 아니라 provider 응답 스키마에도 있습니다.
 Florence-2의 기능 캡션은 빈 입력칸을 `Maximize`, `Center` 등으로 잘못 설명했으므로 현재

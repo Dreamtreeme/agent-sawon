@@ -39,7 +39,7 @@ from brain.relay import Relay
 from brain.settings import BrainSettings
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from brain.visual.detector import OmniParserDetector
-from brain.visual.frame import window_context
+from brain.visual.frame import frame_input, window_context
 from brain.visual.scanning import ScreenScanner, SemanticRequest, VisualGroundingError
 from brain.visual.scene import SceneObservation, SemanticDetection
 from models.accounting import read_model_accounting
@@ -101,7 +101,7 @@ from .screen_batch import (
     ScreenFieldVerificationServices,
     verify_screen_fields,
 )
-from .screen_mapping import ScreenMapping, ScreenMappingWire, observation_prompt
+from .screen_mapping import ScreenMappingWire, observation_prompt
 from .screen_memory import (
     collected_result,
     observed_inputs,
@@ -564,8 +564,9 @@ class Brain:
         # later in _selection_call against this immutable interpretation.
         if request.correction is not None:
             request.screen["correction"] = {"error": request.correction.get("error")}
-        wire = self._call(observation_prompt(request.screen), ScreenMappingWire, page=request.page)
-        mapping = ScreenMapping.model_validate(wire.model_dump(exclude_unset=True))
+        frame = frame_input(request.screen)
+        wire = self._call(observation_prompt(frame), ScreenMappingWire, page=request.page)
+        mapping = wire.resolve(frame)
         payload = mapping.model_copy(update={"steps": []}).local_payload(request.screen)
         return SemanticDetection.model_validate(
             {key: payload[key] for key in SemanticDetection.model_fields if key in payload}

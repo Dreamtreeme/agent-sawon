@@ -29,7 +29,7 @@ def focus_response(handle):
     return {
         "screen_kind": "menu",
         "screen_path": ["Synthetic app"],
-        "fields": {},
+        "fields": [],
         "steps": [{"action": "focus_window", "handle": handle, "intent": "navigate"}],
         "purpose": "Read the other app",
         "expected_result": "The selected window is visible",
@@ -404,7 +404,8 @@ def test_synthetic_focus_flat_wire_sentinels_never_become_executor_coordinates(t
         assert codec.convert(encoded)["steps"] == raw["steps"]
         sdk.messages.create.return_value.content[0].text = json.dumps(encoded)
         response = client.complete_json("Synthetic window action", ScreenMatch).response
-        assert response.mapping.steps[0].model_dump() == raw["steps"][0]
+        resolved = response.pending_mapping.resolve({})
+        assert resolved.local_payload({})["steps"][0] == raw["steps"][0]
 
         invalid = deepcopy(encoded)
         invalid["steps"][0]["point"] = [0, 0]
@@ -415,7 +416,7 @@ def test_synthetic_focus_flat_wire_sentinels_never_become_executor_coordinates(t
 
     click = {
         **focus_response(2),
-        "fields": {"Button": {"role": "button", "bbox": [10, 20, 80, 25]}},
+        "fields": [{"name": "Button", "role": "button", "region_refs": ["control:0"]}],
         "steps": [{"action": "click", "target": "Button", "point": [], "intent": "navigate"}],
     }
     sdk.messages.create.return_value.content[0].text = json.dumps(codec.convert(click, encode=True))

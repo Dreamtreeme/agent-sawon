@@ -1,4 +1,4 @@
-"""Project one current capture without exposing internal marker namespaces."""
+"""Project one current capture with temporary references to its candidate regions."""
 
 from __future__ import annotations
 
@@ -38,20 +38,27 @@ def frame_input(screen: dict) -> dict:
             contained = [b for b in blocks if contains(marker["bbox"], b["bbox"])]
         controls.append(
             {
+                "ref": f"control:{len(controls)}",
                 "bbox": marker["bbox"],
                 "contained_text": [{"text": b["text"], "bbox": b["bbox"]} for b in contained],
             }
         )
     result = {
         "image_size": screen.get("image_size"),
-        "text_regions": [{"text": b["text"], "bbox": b["bbox"]} for b in blocks],
+        "text_regions": [
+            {"ref": f"text:{index}", "text": b["text"], "bbox": b["bbox"]}
+            for index, b in enumerate(blocks)
+        ],
         "control_regions": controls,
     }
     for key in ("active_window", "windows", "available_apps", "blocked_reason"):
         if key in screen:
             result[key] = screen[key]
     if screen.get("memory_fields"):
-        result["memory_fields"] = screen["memory_fields"]
+        result["memory_fields"] = [
+            {**field, "ref": f"memory:{index}"}
+            for index, field in enumerate(screen["memory_fields"])
+        ]
         result["memory_screen_path"] = screen.get("screen_path", [])
         procedures = []
         for group in screen.get("retrieved_procedure", []):

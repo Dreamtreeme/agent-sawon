@@ -72,7 +72,23 @@ def recorder_fixture(monkeypatch, tmp_path, *, fields=None):
 
     class Detector:
         def read(self, _page):
-            return [Marker(id=42, source="omniparser", bbox=(100, 20, 200, 30), confidence=1)]
+            # Synthetic local detections are independent of the model's selections.
+            boxes = (
+                [
+                    (0, 0, 400, 200),
+                    (100, 20, 200, 30),
+                    (310, 20, 80, 30),
+                    (10, 80, 380, 100),
+                    (20, 100, 360, 40),
+                    (30, 110, 80, 20),
+                ]
+                if fields is not None
+                else [(100, 20, 200, 30)]
+            )
+            return [
+                Marker(id=i, source="omniparser", bbox=box, confidence=1)
+                for i, box in enumerate(boxes)
+            ]
 
         def close(self):
             closed.append("detector")
@@ -91,7 +107,7 @@ def recorder_fixture(monkeypatch, tmp_path, *, fields=None):
                             {
                                 "name": "Reference",
                                 "role": "edit",
-                                "bbox": [100, 20, 200, 30],
+                                "region_refs": ["control:0"],
                                 "value": "Current visual reading",
                             }
                         ],
@@ -202,7 +218,7 @@ def test_recorder_preserves_named_table_state_parents_and_focus(monkeypatch, tmp
         {
             "name": "Reference",
             "role": "edit",
-            "bbox": [100, 20, 200, 30],
+            "region_refs": ["control:1"],
             "parent": "Window",
             "focused": True,
             "value": "Current visual reading",
@@ -210,7 +226,7 @@ def test_recorder_preserves_named_table_state_parents_and_focus(monkeypatch, tmp
         {
             "name": "Continue",
             "role": "button",
-            "bbox": [310, 20, 80, 30],
+            "region_refs": ["control:2"],
             "parent": "Unobserved parent",
         },
     ]
@@ -220,14 +236,14 @@ def test_recorder_preserves_named_table_state_parents_and_focus(monkeypatch, tmp
                 {
                     "name": "Result value",
                     "role": "cell",
-                    "bbox": [30, 110, 80, 20],
+                    "region_refs": ["control:5"],
                     "parent": "Result row",
                     "value": "Visible result",
                 },
                 {
                     "name": "Result row",
                     "role": "row",
-                    "bbox": [20, 100, 360, 40],
+                    "region_refs": ["control:4"],
                     "parent": "Results",
                 },
             ]
@@ -237,11 +253,11 @@ def test_recorder_preserves_named_table_state_parents_and_focus(monkeypatch, tmp
             {
                 "name": "Results",
                 "role": "table",
-                "bbox": [10, 80, 380, 100],
+                "region_refs": ["control:3"],
                 "table_state": table_state,
                 "parent": "Window",
             },
-            {"name": "Window", "role": "window", "bbox": [0, 0, 400, 200]},
+            {"name": "Window", "role": "window", "region_refs": ["control:0"]},
         ]
     )
     fixture = recorder_fixture(monkeypatch, tmp_path, fields=fields)

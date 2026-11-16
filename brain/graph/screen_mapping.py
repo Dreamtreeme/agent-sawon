@@ -1,4 +1,4 @@
-"""Meaning/geometry model boundary; detector handles are private execution details."""
+"""Named screen semantics select frame regions; the runtime owns their geometry."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from brain.observe.values import field_matches
 from brain.task_instruction import ObservedStepResult
-from brain.visual.frame import frame_input
 from brain.visual.scene import contains
 from brain.vocabulary import (
     ACTION_CONTROL_ROLES,
@@ -25,14 +24,9 @@ from brain.vocabulary import (
 from models.schema import compact_provider_schema
 
 
-class ScreenField(BaseModel):
+class ScreenFieldSemantics(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: ControlRole
-    bbox: list[int] = Field(
-        min_length=4,
-        max_length=4,
-        description="Original image x,y,width,height of the actual control, not its caption",
-    )
     source: str | None = Field(
         default=None,
         description="Exact supplied input or requested result key; null for other controls",
@@ -46,6 +40,14 @@ class ScreenField(BaseModel):
     table_state: Literal["not_table", "empty", "rows", "uncertain"] | None = Field(
         default=None,
         description="Observed table contents; empty must be visibly established, never inferred",
+    )
+
+
+class ScreenField(ScreenFieldSemantics):
+    bbox: list[int] = Field(
+        min_length=4,
+        max_length=4,
+        description="Original image x,y,width,height of the actual control, not its caption",
     )
 
 
@@ -236,7 +238,7 @@ class ScreenMapping(BaseModel):
         )
 
     def local_payload(self, screen: dict, inputs: Mapping[str, str] | None = None) -> dict:
-        """Allocate transient executor references only after the model chose meaning/geometry."""
+        """Allocate transient executor references from resolved field geometry."""
         # Runtime refs are a projection of this frame, never accumulated model identities.
         markers = [m for m in screen.get("markers", []) if m["source"] != "model_selected"]
         next_id = max((m["id"] for m in markers), default=0) + 1
@@ -394,14 +396,43 @@ class ScreenMapping(BaseModel):
         return result
 
 
-class NamedScreenField(ScreenField):
+class NamedScreenField(ScreenFieldSemantics):
     name: str
+    region_refs: list[str] = Field(
+        min_length=1,
+        description="Current screen region refs identifying this control or its visible evidence",
+    )
 
 
 class ScreenMappingWire(ScreenMapping):
-    """Strict providers need declared object keys; names remain strings, never marker IDs."""
+    """Model semantics refer to current candidates without generating field rectangles."""
 
     fields: list[NamedScreenField]
+
+    def resolve(self, projected_frame: dict) -> ScreenMapping:
+        """Copy geometry from the exact frame snapshot supplied with this response."""
+        regions = {
+            region["ref"]: region["bbox"]
+            for key in ("control_regions", "text_regions", "memory_fields")
+            for region in projected_frame.get(key, [])
+        }
+        fields = {}
+        for field in self.fields:
+            try:
+                boxes = [regions[ref] for ref in field.region_refs]
+            except KeyError as error:
+                raise ValueError("screen_mapping_region_ref_unknown") from error
+            left = min(box[0] for box in boxes)
+            top = min(box[1] for box in boxes)
+            right = max(box[0] + box[2] for box in boxes)
+            bottom = max(box[1] + box[3] for box in boxes)
+            fields[field.name] = {
+                **field.model_dump(exclude={"name", "region_refs"}, exclude_unset=True),
+                "bbox": [left, top, right - left, bottom - top],
+            }
+        return ScreenMapping.model_validate(
+            {**self.model_dump(exclude={"fields"}, exclude_unset=True), "fields": fields}
+        )
 
     anthropic_unions: ClassVar[dict[str, dict[str, Any]]] = {
         "properties/steps/items": {
@@ -450,18 +481,21 @@ def mapping_prompt(context: dict) -> str:
     return CONTEXT_MAPPING_RULES + json.dumps(state, ensure_ascii=False)
 
 
-def observation_prompt(screen: dict) -> str:
+def observation_prompt(projected_frame: dict) -> str:
     """Use the same named observation contract for recorders and observation-only runs."""
     return (
-        "Observe the current screenshot. Return screen_path and named fields with role, bbox, "
+        "Observe the current screenshot. Return screen_path and named fields with role, "
+        "region_refs, "
         "and any visibly read value. Use semantic names, never detector numbers. Control regions "
         "include their contained OCR text; outside captions remain in text_regions. "
+        "Choose each field's region_refs from the current screen candidates; do not return bbox. "
+        "For wrapped visible values, select every text region containing their evidence. "
         "Name a visible containing field in parent and mark the currently focused field. "
         "For tables report table_state=empty, rows, or uncertain from visible contents; "
         "missing OCR alone never proves an empty table. "
         "Do not infer business input sources without user education. Return source=null, "
         "steps=[], operation=act. Request needs_refinement only for a missing visible control.\n"
-        + json.dumps({"screen": frame_input(screen)}, ensure_ascii=False)
+        + json.dumps({"screen": projected_frame}, ensure_ascii=False)
     )
 
 
@@ -473,9 +507,10 @@ or assign unidentified root fields to a known node. screen_tree.children contain
 other nodes are history, not current visible fields. Reuse the first field name for the same
 input source in that node and use that exact name throughout this response's actions.
 Return all currently readable business fields, including those not used by the next action,
-as named entries (name, source, role, bbox, value). Name by visible meaning, qualify duplicates
-by section, never detector numbers. source is an exact supplied input or requested result key,
-null for other controls, never literal data. Include source for reviewed fields too. The executor
+as named entries (name, source, role, region_refs, value). Name by visible meaning, qualify
+duplicates by section, never detector numbers. source is an exact supplied input or requested
+result key, null for other controls, never literal data. Include source for reviewed fields too.
+The executor
 supplies fill values from inputs; observed values come from the screen and accumulated readings.
 For a taught fill whose input_key is collected_result.<key>, use that exact source on the
 destination field and fill action. Its value comes from this run's notebook.collected_result,
@@ -483,13 +518,17 @@ not the supplied record. The original app reading keeps source=<key>. A blank de
 not erase the original fact. Never use a collected reference before reading its original fact.
 task.result_keys names information to collect from the apps, not supplied answers. Report each
 reading as fields[].source/value. A result field represents one complete business value, not an
-OCR line: combine wrapped lines into that value and use a bbox covering its visible evidence.
+OCR line: combine wrapped lines into that value and select all regions of its visible evidence.
 Return one field per result source, extracting the requested value without surrounding prose.
 Use notebook.collected_result for accumulated values and their sources, and missing_keys for
 missing information. Preserve established values unless the source actually changes the fact.
 Never infer result values from instructions or unobserved screens.
-Use the current image/OCR for the actual control bbox and precise action point: captions identify
-meaning, not necessarily writable locations. Prior geometry is a hint, not current observation.
+Select region_refs from the current screen's control_regions, text_regions or memory_fields.
+These refs are temporary handles for this frame, never field names or input source keys. The
+runtime copies their bbox, or encloses multiple selected regions; never return or invent bbox.
+Choose the actual control region and precise action point from the current image/OCR: captions
+identify meaning, not necessarily writable locations. Prior geometry is a hint, not current
+observation; memory region refs do not establish current values.
 Every target in steps, completion_evidence, message_targets and grid/row must use an exact name
 declared in fields. Explanations belong in purpose/expected_result, not undeclared messages or
 summary targets.

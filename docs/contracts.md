@@ -17,7 +17,7 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | `ExecutionRequest`/`ExecutionResult` | `brain/graph/execution.py` | `engine.py`, relay adapter | 준비된 행동 전달과 relay가 확인한 결과. 업무 성공을 판정하지 않음 |
 | `ActionBatch`/`ActionBatchResult` | `../agent-sawon-bench/interfaces/sawon_interfaces/contracts.py` | core `execution.py`, relay `act_batch` | 같은 관찰·캡처에 연결한 시각 행동을 순서대로 전달하고, 한 번의 최종 관찰과 실제 전달 prefix를 반환 |
 | `ActionPlan`과 화면 입력 계획 | `brain/graph/execution.py`, `screen_batch.py` | `screen_decision`, `selection`, `engine` | 로그인과 일반 행동을 같은 순서 실행기로 전달. `ScreenFillPlan`은 입력과 현재 화면의 후속 행동을 함께 표현 |
-| 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `screen_decision`, `memory_retrieval` | 의미 이름·bbox·입력 key·행동 point의 모델 경계 |
+| 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `screen_decision`, `memory_retrieval` | 모델은 의미 이름·입력 key·현재 영역 참조·행동 point를 선택. 코드가 후보 bbox를 연결 |
 | 정보 수집 요청·결과 | `brain/task_instruction.py`, `screen_memory.collected_result`, `notebook.remember` | engine, context_recall, 결과 소비자 | `result_keys`로 읽을 항목만 선언하고 누적 관찰에서 값·출처·누락 항목을 파생. 종료 시 로컬 `task-result.json` 저장 |
 | 현재 화면 모델 입력 | `brain/visual/frame.py`의 `frame_input` | `context_recall`, 화면 판단, 관찰 녹화기 | 현재 OCR·후보 영역·포함 텍스트를 한 번 투영. 내부 마커 번호를 모델 계약에 노출하지 않음 |
 | 교육 단계 관찰 결과 | `brain/task_instruction.py`의 `ObservedStepResult` | `screen_mapping`, `screen_decision`, `cache/methods`, engine | 현재 모델 응답의 교육 완료를 실행 상태에 반영. 편찬물의 과거 결과는 현재 응답으로 복원하지 않음 |
@@ -354,6 +354,15 @@ provisional 진도로 기록한다. 비모델 경로의 입력 검증과 `SavedE
 `mapping_prompt`는 같은 자료를 재사용한다. serializer는 raw screen을 다시 받거나 덮어쓰지 않는다.
 교육 확장과 복구 설명은 문맥에 추가하며, 이전 화면 기억과 인출된 구조는 현재 관찰값과 구분한다.
 모델 경계는 일반 판단·보완·관찰 녹화기 모두 `ScreenMappingWire`/`ScreenMapping`을 사용한다.
+`ScreenMappingWire.fields`는 `bbox` 대신 현재 프레임의 `region_refs`를 선택한다.
+`frame_input`이 OCR·탐지·현재 인출 기하에 붙인 `text:`, `control:`, `memory:` 참조는
+해당 요청 안에서만 유효하다. 업무 이름이나 지속 메모의 키로 사용하지 않는다.
+`ScreenMappingWire.resolve`는 모델에게 보낸 같은 프레임 snapshot에서 bbox를 가져오며,
+여러 OCR 줄을 선택하면 코드가 합집합 사각형을 계산한다. 모델은 영역 크기를 새로 작성하지 않는다.
+화면 없이 먼저 파싱되는 실행 응답은 `ScreenPlan.pending_mapping`에 선택을 잠시 보관하고,
+현재 프레임과 연결한 뒤 기존 `mapping`·`local_payload` 경로로 넘긴다. 임시 참조는
+내부 `ScreenMapping`에 저장하지 않는다. 내부 필드 bbox, 메모·캐시·편찬물 형식과 행동 point는
+유지한다. 관찰 전용·녹화기도 같은 프레임을 프롬프트와 resolve에 사용한다.
 실행 판단의 `ScreenPlan`/`ScreenMatch` provider 스키마는 관찰 전용과 달리 현재 관찰을
 반영한 다음 실행 행동까지 요구한다. 설명문만으로 행동을 대체하지 않는다. 완료·중단과
 교육 조회·재탐지 요청의 빈 행동은 유지하며, 새로운 거절이나 재시도 조건은 추가하지 않는다.

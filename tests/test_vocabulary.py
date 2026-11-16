@@ -1,5 +1,6 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
+ScreenMatch/ScreenPlan select current region refs; runtime geometry is unchanged (2026-11-16).
 Locally derived OCR text IDs have no arbitrary count cap (2026-11-08).
 Current-focus keyboard actions make key target/ref optional (2026-11-08).
 Registered app opening extends window actions and existing decision schemas (2026-11-08).
@@ -127,8 +128,8 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
             TargetedMatchAction,
             "03403957ede105318d200c173f8a71a82a077a1f3e197ff59f7e7665ce7e947e",
         ),
-        (ScreenPlan, "64d687f5379913229c8be04b7dbc561e871293f83c8c5e3967228fcd4be66f13"),
-        (ScreenMatch, "64d687f5379913229c8be04b7dbc561e871293f83c8c5e3967228fcd4be66f13"),
+        (ScreenPlan, "f04642a1e02946b807e48d6ae1fbd9bbe1b7b2d7ea224b5bae02fba8e3ae89bb"),
+        (ScreenMatch, "f04642a1e02946b807e48d6ae1fbd9bbe1b7b2d7ea224b5bae02fba8e3ae89bb"),
         (Decision, "4f361687bf9a556d6439945786cb2f959c502506cdd09be48c800f88645bb028"),
         (
             WireActDecision,

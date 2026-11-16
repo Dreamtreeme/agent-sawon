@@ -309,7 +309,10 @@ def test_synthetic_compilation_preserves_field_structure_without_source_run_read
         }
     )
     supplied = json.loads(prompt[prompt.index("{") :])["screen"]
-    assert supplied["memory_fields"] == memory["fields"]
+    assert supplied["memory_fields"] == [
+        {**field, "ref": f"memory:{index}"} for index, field in enumerate(memory["fields"])
+    ]
+    assert all("ref" not in field for field in memory["fields"])
     assert supplied["retrieved_procedure"][0]["steps"] == [
         {"target": "Close", "action": "click", "intent": "navigate", "point": [650, 520]}
     ]

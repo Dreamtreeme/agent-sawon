@@ -9,10 +9,11 @@ import os
 from decimal import Decimal
 from pathlib import Path
 
-from brain.graph.screen_mapping import ScreenMapping, ScreenMappingWire, observation_prompt
+from brain.graph.screen_mapping import ScreenMappingWire, observation_prompt
 from brain.relay import HttpRelay
 from brain.settings import BrainSettings
 from brain.visual.detector import OmniParserDetector
+from brain.visual.frame import frame_input
 from brain.visual.scanning import ScreenScanner, SemanticRequest
 from brain.visual.scene import SemanticDetection
 from models.accounting import read_model_accounting
@@ -74,7 +75,8 @@ def main(argv=None) -> int:
         screen, page = request.screen, request.page
         if request.correction is not None:
             screen["correction"] = {"error": request.correction.get("error")}
-        prompt = observation_prompt(screen)
+        frame = frame_input(screen)
+        prompt = observation_prompt(frame)
         accounting = read_model_accounting(log)
         if accounting.unknown:
             raise ValueError("unknown_model_call_cost")
@@ -84,7 +86,7 @@ def main(argv=None) -> int:
         result = model.complete_json(prompt, ScreenMappingWire, images=[page.image_path])
         if used + result.usd > Decimal(str(args.max_cost_usd)):
             raise ValueError("demonstration_cost_cap")
-        mapping = ScreenMapping.model_validate(result.response.model_dump(exclude_unset=True))
+        mapping = result.response.resolve(frame)
         # Recording owns observations only, even if the model proposes an action.
         payload = mapping.model_copy(update={"steps": []}).local_payload(screen)
         return SemanticDetection.model_validate(

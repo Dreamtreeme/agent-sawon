@@ -94,7 +94,7 @@ def test_synthetic_provider_fill_and_focused_enter_share_batch_and_delivery_rece
             {
                 "name": "Search mail",
                 "role": "edit",
-                "bbox": [100, 20, 200, 30],
+                "region_refs": ["control:0"],
                 "source": "query.email",
                 "value": "",
             }

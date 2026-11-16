@@ -36,7 +36,7 @@ from brain.graph.screen_decision import (
     validate_action_surfaces,
     validate_match_plan,
 )
-from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES
+from brain.graph.screen_mapping import CONTEXT_MAPPING_RULES, ScreenMapping
 from brain.task_instruction import TaskInstruction
 from brain.visual.scene import SceneObservation
 from sawon_runtime.storage import RunLog
@@ -365,6 +365,7 @@ def test_synthetic_click_scroll_mix_is_not_a_model_action(action, extra):
             }
         ]
     )
+    data["fields"] = [{"name": "Reference", "role": "edit", "region_refs": ["control:0"]}]
     with pytest.raises(ValidationError):
         ScreenMatch.model_validate(data)
 
@@ -436,7 +437,7 @@ def response(meaning, **kwargs):
 
 
 def named_response(**overrides):
-    """Provider fixture: semantic names and chosen geometry, with no detector handles."""
+    """Internal mapping fixture after current-frame region selection has been resolved."""
     return {
         "screen_kind": "query",
         "fields": {
@@ -477,7 +478,7 @@ def test_synthetic_unchanged_plan_is_not_prepared_or_grounded_twice(
     if source == "method":
         # A remembered input supplies its structure/source, never a current reading.
         del data["fields"]["Reference"]["value"]
-        mapped = ScreenMatch.model_validate(data).mapping
+        mapped = ScreenMapping.model_validate(data)
         proposal = ScreenMatch.model_validate(mapped.local_payload(request.screen, request.values))
         request = replace(request, proposal=proposal.model_copy(update={"mapping": mapped}))
 
@@ -2144,7 +2145,12 @@ def test_synthetic_bound_method_precedes_review_gates_without_inventing_current_
         services, cache=ScreenPatternCache(tmp_path / "review-cache.json", enabled=True)
     )
     prepared = build_decision_prompt(request, services)
-    stale = ScreenMatch.model_validate(current)
+    stale = ScreenMatch(
+        procedure_step=current["procedure_step"],
+        screen_kind=current["screen_kind"],
+        controls=[],
+        mapping=ScreenMapping.model_validate(current),
+    )
     stale.mapping.fields["Reference"] = stale.mapping.fields["Reference"].model_copy(
         update={"value": "PAST-RUN"}
     )
@@ -2208,7 +2214,7 @@ def test_synthetic_unseen_pending_input_does_not_interrupt_structural_navigation
         }
     }
     original = json.dumps(nodes, ensure_ascii=False)
-    mapped = ScreenMatch.model_validate(
+    mapped = ScreenMapping.model_validate(
         named_response(
             screen_path=["Current"],
             fields={"Continue": {"role": "button", "bbox": [250, 15, 80, 30]}},
@@ -2216,7 +2222,7 @@ def test_synthetic_unseen_pending_input_does_not_interrupt_structural_navigation
                 {"target": "Continue", "action": "click", "intent": "navigate", "point": [280, 30]}
             ],
         )
-    ).mapping
+    )
     request.screen["memory_fields"] = [
         {"name": name, **item.model_dump(exclude_unset=True)}
         for name, item in mapped.fields.items()
@@ -3040,15 +3046,23 @@ def test_action_owned_control_normalizes_once_and_keeps_cache_contract():
     assert normalized.controls[0].visual_description == ""
 
 
-@pytest.mark.parametrize("model_created", [False, True], ids=["detected", "model-created"])
+@pytest.mark.parametrize("has_candidate", [True, False], ids=["detected", "missing-candidate"])
 def test_inline_target_reaches_wire_with_exact_fill_point_without_recovery(
-    tmp_path, record, model_created
+    tmp_path, record, has_candidate
 ):
     data = named_response()
+    data["fields"] = [
+        {"name": "Reference", "source": "hbl_no", "role": "edit", "region_refs": ["control:0"]}
+    ]
     data["steps"][0]["point"] = [175.25, 30.75]
     brain, model, *_ = setup_brain(tmp_path, record, [data])
-    if model_created:
+    if not has_candidate:
         brain.screen_scanner.detector.read = lambda *args, **kwargs: []
+        with pytest.raises(ValueError, match="screen_mapping_region_ref_unknown"):
+            brain._observe()
+        assert len(model.prompts) == 1
+        assert not any(event.kind == "act" for event in brain.log.read_all())
+        return
     brain._observe()
     assert brain._select_node() == "review"
     selected = brain.action_plan.actions[0].decision
@@ -3078,14 +3092,15 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
     monkeypatch.setattr(ScreenMapping, "local_payload", convert)
     raw = {
         "screen_kind": "query",
-        "fields": {
-            "Reference": {
+        "fields": [
+            {
+                "name": "Reference",
                 "source": "hbl_no",
                 "role": "edit",
-                "bbox": [100, 15, 150, 30],
+                "region_refs": ["control:0"],
                 "value": "CURRENT",
             }
-        },
+        ],
         "steps": [{"target": "Reference", "action": "fill", "intent": "fill", "point": [125, 28]}],
     }
     brain, model, _, ocr, _, _ = setup_brain(tmp_path, record, [raw])
@@ -3100,6 +3115,7 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
     )
     brain._observe()
     assert len(converted_frames) == 1 and converted_frames[0]["markers"]
+    mapping = brain.visual_proposal.mapping
     target = next(e for e in brain.observation.elements if e.role == "edit")
     assert target.name == "Reference" and target.bbox == (100, 15, 150, 30)
     assert brain._select_node() == "review"
@@ -3115,11 +3131,12 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
     assert '"id_namespace"' not in model.prompts[0]
     prompted_frame = json.loads(model.prompts[0][len(CONTEXT_MAPPING_RULES) :])["screen"]
     assert prompted_frame["text_regions"] == [
-        {"text": "Reference", "bbox": [10, 20, 60, 15]},
-        {"text": "CURRENT", "bbox": [110, 20, 70, 15]},
+        {"ref": "text:0", "text": "Reference", "bbox": [10, 20, 60, 15]},
+        {"ref": "text:1", "text": "CURRENT", "bbox": [110, 20, 70, 15]},
     ]
     assert prompted_frame["control_regions"] == [
         {
+            "ref": "control:0",
             "bbox": [100, 15, 150, 30],
             "contained_text": [{"text": "CURRENT", "bbox": [110, 20, 70, 15]}],
         }
@@ -3127,7 +3144,6 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
     schema = ScreenMatch.model_json_schema()
     assert schema["$defs"]["NamedAction"]["properties"]["target"]["type"] == "string"
     screen = brain.screen_scanner.planning_context()[0].screen
-    mapping = ScreenMapping.model_validate(raw)
     payload = mapping.local_payload(screen)
     original_markers = json.dumps(screen["markers"], ensure_ascii=False)
     assert mapping.local_payload(screen) == payload
@@ -3565,7 +3581,10 @@ def test_mapping_preserves_review_and_retrieval_purpose_and_ignores_unused_grid(
         "intent": "navigate",
         "point": [300, 150],
     }
-    screen = {"memory_fields": ["Reference"], "retrieved_procedure": [{"steps": [stored]}]}
+    screen = {
+        "memory_fields": [{"name": "Reference", "bbox": [100, 15, 150, 30]}],
+        "retrieved_procedure": [{"steps": [stored]}],
+    }
     state["screen"] = frame_input(screen)
     prompt = mapping_prompt(state)
     payload = json.loads(prompt[len(CONTEXT_MAPPING_RULES) :])
@@ -3650,11 +3669,10 @@ def test_unresolved_annotations_preserve_actions_without_inventing_proof():
         "message_targets",
         "completion_evidence",
     }
-    assert ScreenMatch.model_validate(data).mapping is not None
     data["steps"][0]["target"] = "unresolvable executable target"
     data["steps"][0]["point"] = [399, 199]
     with pytest.raises(KeyError, match="unresolvable executable target"):
-        ScreenMatch.model_validate(data).mapping.local_payload({})
+        ScreenMapping.model_validate(data).local_payload({})
 
 
 def test_group_click_role_policy_is_observed_without_rejection(tmp_path):

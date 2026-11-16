@@ -68,26 +68,44 @@ def test_synthetic_106_click_declaration_must_not_discard_observation(tmp_path, 
     assert not any(event.kind == "act" for event in brain.log.read_all())
 
 
-@pytest.mark.xfail(
-    strict=True, raises=ObservationBlockedByPlan, reason="106 unused zero-size field"
-)
-def test_synthetic_106_unused_zero_area_must_not_discard_observation(tmp_path, record):
-    # Synthetic seq469: the added text field has no action, evidence or parent references.
-    valid = observed_response(record)
-    control, _ = prepare_worker(tmp_path / "valid", record, [valid])
-    control._observe()
-    expected = observed_inputs(control)["hbl_no"]["value"]
-    invalid = deepcopy(valid)
-    invalid["fields"]["Unused title"] = {"role": "text", "bbox": [10, 8, 0, 0]}
-    brain, model = prepare_worker(tmp_path / "invalid", record, [invalid])
-    try:
-        brain._observe()
-    except ValueError as exc:
-        assert str(exc) == "visual_bbox_outside_capture"
-        assert len(model.prompts) == 1
-        assert "hbl_no" not in observed_inputs(brain)
-        raise ObservationBlockedByPlan("Unreferenced zero-area text discarded valid field") from exc
-    assert observed_inputs(brain)["hbl_no"]["value"] == expected
+def test_synthetic_106_unused_observation_uses_local_geometry_without_losing_readings(
+    tmp_path, record
+):
+    # Synthetic replacement for 106: provider fields select regions, not zero-area rectangles.
+    from brain.visual.markers import Marker
+
+    reply = {
+        "screen_kind": "dialog",
+        "fields": [
+            {
+                "name": "Reference",
+                "role": "edit",
+                "source": "hbl_no",
+                "region_refs": ["control:0"],
+                "value": record.fields.hbl_no.value,
+            },
+            {"name": "Continue", "role": "button", "region_refs": ["control:1"]},
+            {"name": "Unused title", "role": "text", "region_refs": ["text:0"]},
+        ],
+        "steps": [
+            {"target": "Continue", "action": "click", "intent": "navigate", "point": [280, 75]}
+        ],
+    }
+    brain, model = prepare_worker(tmp_path / "current-regions", record, [reply])
+    brain.screen_scanner.detector.read = lambda _page: [
+        Marker(id=1, bbox=(100, 15, 150, 30), source="omniparser", confidence=1),
+        Marker(id=2, bbox=(250, 60, 80, 30), source="omniparser", confidence=1),
+    ]
+
+    brain._observe()
+
+    assert observed_inputs(brain)["hbl_no"]["value"] == record.fields.hbl_no.value
+    mapping = brain.visual_proposal.mapping
+    assert mapping.fields["Unused title"].bbox == [10, 20, 60, 15]
+    assert mapping.fields["Reference"].bbox == [100, 15, 150, 30]
+    assert brain.visual_proposal.steps[0].point == [280, 75]
+    assert "region_refs" not in json.dumps(mapping.model_dump())
+    assert len(model.prompts) == 1
 
 
 @pytest.mark.xfail(

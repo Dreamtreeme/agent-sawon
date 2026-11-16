@@ -146,6 +146,7 @@ class ScreenPlan(MethodChoice):
 
     model_config = ConfigDict(extra="forbid")
     mapping: ScreenMapping | None = Field(default=None, exclude=True)
+    pending_mapping: ScreenMappingWire | None = Field(default=None, exclude=True)
     needs_refinement: bool = False
 
     @classmethod
@@ -163,9 +164,12 @@ class ScreenPlan(MethodChoice):
     @classmethod
     def semantic_mapping(cls, value):
         if isinstance(value, dict) and "fields" in value:
-            mapping = ScreenMapping.model_validate(value)
-            # Parse model semantics now; allocate execution refs once the frame is available.
-            payload = {"procedure_step": mapping.procedure_step, "mapping": mapping}
+            # Provider selections resolve only against the frame sent with this request.
+            mapping = ScreenMappingWire.model_validate(value)
+            payload = {
+                "procedure_step": mapping.procedure_step,
+                "pending_mapping": mapping,
+            }
             if "screen_kind" in cls.model_fields:
                 payload["screen_kind"] = mapping.screen_kind
                 payload["controls"] = []
@@ -1558,7 +1562,8 @@ def validate_or_replan(
             if str(error) == "screen_match_action_surface_mismatch":
                 correction_instruction = (
                     "Re-read the CURRENT screen and return a corrected interpretation and "
-                    "plan. For every step, name its actual visible field and control bbox. "
+                    "plan. For every step, name its actual visible field and select its "
+                    "current region refs. "
                     "A caption alone may be clicked but cannot serve as a writable input. "
                     "Fill and keyboard actions must target the actual input control. "
                     "Use the exact semantic field name in steps[].target."
@@ -1768,9 +1773,14 @@ def decide_screen(
             ):
                 if schema in {ScreenMatch, ScreenPlan}:
                     mapped = original_call(prompt, schema, page=page)
-                    if mapped.mapping is not None:
-                        write_decision_artifact(services, "semantic-mapping", mapped.mapping)
-                        mapping = mapped.mapping.reuse_names(request.screen_nodes)
+                    mapping = (
+                        mapped.pending_mapping.resolve(prepared.state["screen"])
+                        if mapped.pending_mapping is not None
+                        else mapped.mapping
+                    )
+                    if mapping is not None:
+                        write_decision_artifact(services, "semantic-mapping", mapping)
+                        mapping = mapping.reuse_names(request.screen_nodes)
                         plan_error = None
                         try:
                             payload = mapping.local_payload(screen, request.values)

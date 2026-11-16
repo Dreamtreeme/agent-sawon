@@ -301,6 +301,18 @@ class ScriptedModel(MeasuredModelClient):
             response = next(self.decisions)
             if callable(response):
                 response = response(prompt)
+            if "mapping" in schema.model_fields and isinstance(response.get("fields"), dict):
+                # Internal worker scenarios inject a resolved mapping, not a provider selection.
+                # Provider-boundary scenarios use fields lists with real current-region refs.
+                from brain.graph.screen_mapping import ScreenMapping
+
+                mapping = ScreenMapping.model_validate(response)
+                response = {
+                    "procedure_step": mapping.procedure_step,
+                    "mapping": mapping.model_dump(exclude_unset=True),
+                }
+                if "controls" in schema.model_fields:
+                    response.update(screen_kind=mapping.screen_kind, controls=[])
             if "decision" in schema.model_fields:
                 response = {"decision": response}
         return ProviderReply(

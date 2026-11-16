@@ -7,6 +7,7 @@ from test_memory_retrieval import setup, synthetic_ordered_route, synthetic_reco
 
 from brain.cache.methods import MethodAction, MethodDocument, MethodTarget
 from brain.graph.screen_decision import ScreenMatch
+from brain.visual.frame import frame_input
 from sawon_runtime.storage import atomic_write_json
 
 
@@ -31,14 +32,14 @@ def test_synthetic_model_arrival_resumes_inside_a_taught_step_without_fake_deliv
     raw = ScreenMatch.model_validate(
         {
             "screen_kind": "editor",
-            "fields": {},
+            "fields": [],
             "method_id": method.id,
             "resume_group_id": detail.id,
             "observed_step_results": [],
             "steps": [],
         }
     )
-    mapped = raw.mapping
+    mapped = raw.pending_mapping.resolve(frame_input(screen))
     response = ScreenMatch.model_validate(mapped.local_payload(screen)).model_copy(
         update={"mapping": mapped}
     )

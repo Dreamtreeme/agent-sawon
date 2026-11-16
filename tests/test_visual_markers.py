@@ -9,6 +9,7 @@ from test_visual_scene import wire
 from brain.graph.screen_mapping import observation_prompt
 from brain.visual.detector import DetectorSettings, OmniParserDetector
 from brain.visual.detector_worker import original_box, restore_region_box
+from brain.visual.frame import frame_input
 from brain.visual.markers import (
     Marker,
     MergeSettings,
@@ -320,12 +321,16 @@ def test_perception_keeps_local_markers_out_of_named_observation_prompt(tmp_path
     calls = []
 
     def interpret(request):
-        prompt = observation_prompt(request.screen)
+        prompt = observation_prompt(frame_input(request.screen))
         page, payload = request.page, request.screen
         assert page.image_path.name == "capture.png"
         frame = json.loads(prompt.split("\n", 1)[1])["screen"]
-        assert frame["control_regions"] == [{"bbox": [100, 15, 150, 30], "contained_text": []}]
-        assert frame["text_regions"] == [{"text": "Reference", "bbox": [10, 20, 60, 15]}]
+        assert frame["control_regions"] == [
+            {"ref": "control:0", "bbox": [100, 15, 150, 30], "contained_text": []}
+        ]
+        assert frame["text_regions"] == [
+            {"ref": "text:0", "text": "Reference", "bbox": [10, 20, 60, 15]}
+        ]
         for private_key in ('"id"', '"label_ids"', '"text_ids"', '"markers"'):
             assert private_key not in prompt
         assert all("confidence" not in marker for marker in payload["markers"])
@@ -499,7 +504,7 @@ def test_perception_refines_only_after_basic_detection_reports_failure(
             return blocks
 
     def interpret(request):
-        prompt = observation_prompt(request.screen)
+        prompt = observation_prompt(frame_input(request.screen))
         assert request.page.image_path.name == "capture.png"
         calls.append("meaning")
         clock[0] += 1

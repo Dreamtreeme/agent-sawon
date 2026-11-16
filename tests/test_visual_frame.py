@@ -1,9 +1,12 @@
 """Current-frame projections preserve OCR connections without numeric model IDs."""
 
+import json
 from copy import deepcopy
 
 import pytest
+from pydantic import ValidationError
 
+from brain.graph.screen_mapping import ScreenMappingWire
 from brain.visual.frame import frame_input
 
 
@@ -50,9 +53,11 @@ def test_control_text_connections_survive_order_and_id_changes(reverse_order, re
         (32, 875, 112, 49): [{"text": "저장", "bbox": [59, 881, 54, 35]}],
     }
     assert projected["text_regions"] == [
-        {"text": b["text"], "bbox": b["bbox"]} for b in current["ocr"]
+        {"ref": f"text:{i}", "text": b["text"], "bbox": b["bbox"]}
+        for i, b in enumerate(current["ocr"])
     ]
-    assert all(set(c) == {"bbox", "contained_text"} for c in projected["control_regions"])
+    assert [c["ref"] for c in projected["control_regions"]] == ["control:0", "control:1"]
+    assert all(set(c) == {"ref", "bbox", "contained_text"} for c in projected["control_regions"])
     projected["control_regions"][0]["bbox"][0] = 999
     projected["text_regions"][0]["bbox"][0] = 999
     assert current == before
@@ -75,16 +80,23 @@ def test_existing_connections_take_precedence_over_geometry(links):
         }
     )
 
-    assert projected["text_regions"] == [inside, outside]
+    assert projected["text_regions"] == [
+        {"ref": "text:0", **inside},
+        {"ref": "text:1", **outside},
+    ]
     assert projected["control_regions"] == [
-        {"bbox": [0, 0, 100, 50], "contained_text": [] if links == [] else [inside]}
+        {
+            "ref": "control:0",
+            "bbox": [0, 0, 100, 50],
+            "contained_text": [] if links == [] else [inside],
+        }
     ]
 
 
 def test_uncontained_text_survives_without_control_candidates():
     assert frame_input({"ocr": [{"id": 3, "text": "안내", "bbox": [20, 30, 40, 20]}]}) == {
         "image_size": None,
-        "text_regions": [{"text": "안내", "bbox": [20, 30, 40, 20]}],
+        "text_regions": [{"ref": "text:0", "text": "안내", "bbox": [20, 30, 40, 20]}],
         "control_regions": [],
     }
 
@@ -115,9 +127,13 @@ def test_retrieved_memory_and_correction_stay_separate_from_current_observations
 
     projected = frame_input(current)
 
-    assert projected["text_regions"] == [{"text": "CURRENT", "bbox": [5, 5, 50, 20]}]
-    assert projected["control_regions"][0]["contained_text"] == projected["text_regions"]
-    assert projected["memory_fields"] == current["memory_fields"]
+    assert projected["text_regions"] == [
+        {"ref": "text:0", "text": "CURRENT", "bbox": [5, 5, 50, 20]}
+    ]
+    assert projected["control_regions"][0]["contained_text"] == [
+        {"text": "CURRENT", "bbox": [5, 5, 50, 20]}
+    ]
+    assert projected["memory_fields"] == [{"ref": "memory:0", **current["memory_fields"][0]}]
     assert projected["memory_screen_path"] == ["Entry"]
     assert projected["retrieved_procedure"] == [
         {
@@ -135,3 +151,129 @@ def test_retrieved_memory_and_correction_stay_separate_from_current_observations
     projected["memory_fields"][0]["value"] = "changed output"
     projected["correction"]["bbox"][0] = 999
     assert current == before
+
+
+@pytest.mark.parametrize(
+    ("region_refs", "expected_bbox"),
+    [
+        (["control:0"], [100, 15, 150, 30]),
+        (["text:0", "text:1"], [110, 20, 100, 40]),
+        (["memory:0"], [100, 90, 150, 30]),
+    ],
+    ids=["local-control", "wrapped-ocr-value", "remembered-control"],
+)
+def test_named_fields_resolve_local_geometry_without_changing_meaning(region_refs, expected_bbox):
+    projected = frame_input(
+        {
+            "image_size": [400, 200],
+            "ocr": [
+                {"id": 7, "text": "First line", "bbox": [110, 20, 100, 15]},
+                {"id": 8, "text": "Second line", "bbox": [115, 45, 80, 15]},
+            ],
+            "markers": [
+                {"id": 42, "source": "omniparser", "bbox": [100, 15, 150, 30]},
+                {"id": 43, "source": "omniparser", "bbox": [0, 0, 400, 200]},
+            ],
+            "memory_fields": [{"name": "Earlier name", "bbox": [100, 90, 150, 30]}],
+        }
+    )
+    before = deepcopy(projected)
+    raw = {
+        "screen_path": ["Entry", "Details"],
+        "fields": [
+            {
+                "name": "Reference",
+                "role": "edit",
+                "region_refs": region_refs,
+                "source": "reference",
+                "value": "Model reading",
+                "parent": "Entry",
+                "focused": True,
+            },
+            {"name": "Entry", "role": "window", "region_refs": ["control:1"]},
+        ],
+        "steps": [
+            {
+                "action": "fill",
+                "target": "Reference",
+                "intent": "fill",
+                "source": "reference",
+                "point": [125.25, 28.75],
+            }
+        ],
+    }
+
+    resolved = ScreenMappingWire.model_validate(raw).resolve(projected)
+
+    field = resolved.fields["Reference"]
+    assert field.bbox == expected_bbox
+    assert (field.source, field.value, field.parent, field.focused) == (
+        "reference",
+        "Model reading",
+        "Entry",
+        True,
+    )
+    assert resolved.screen_path == raw["screen_path"]
+    assert resolved.steps[0].model_dump() == raw["steps"][0]
+    assert "region_refs" not in resolved.model_dump()["fields"]["Reference"]
+    assert projected == before
+    field.bbox[0] = 999
+    assert projected == before
+
+
+@pytest.mark.parametrize("value", [None, ""], ids=["unread", "explicit-blank"])
+def test_geometry_resolution_preserves_whether_a_value_was_observed(value):
+    field = {"name": "Reference", "role": "edit", "region_refs": ["control:0"]}
+    if value is not None:
+        field["value"] = value
+    projected = frame_input(
+        {"markers": [{"id": 3, "source": "omniparser", "bbox": [10, 20, 100, 30]}]}
+    )
+
+    resolved = ScreenMappingWire.model_validate({"fields": [field]}).resolve(projected)
+
+    stored = resolved.fields["Reference"]
+    assert ("value" in stored.model_fields_set) is (value is not None)
+    assert ("value" in stored.model_dump(exclude_unset=True)) is (value is not None)
+    if value is not None:
+        assert stored.value == ""
+
+
+def test_unused_large_list_can_only_select_current_geometry_and_cannot_return_a_bbox():
+    # Synthetic seq64 boundary: capture height is 2110, while the retired model box reached 2370.
+    from brain.graph.screen_decision import ScreenMatch
+
+    projected = frame_input(
+        {
+            "image_size": [400, 2110],
+            "markers": [
+                {"id": 7, "source": "omniparser", "bbox": [100, 15, 150, 30]},
+                {"id": 8, "source": "omniparser", "bbox": [0, 0, 400, 2110]},
+            ],
+        }
+    )
+    raw = {
+        "fields": [
+            {"name": "Continue", "role": "button", "region_refs": ["control:0"]},
+            {"name": "Unused list", "role": "table", "region_refs": ["control:1"]},
+        ],
+        "steps": [
+            {"target": "Continue", "action": "click", "intent": "navigate", "point": [125, 28]}
+        ],
+    }
+
+    resolved = ScreenMappingWire.model_validate(raw).resolve(projected)
+
+    assert resolved.fields["Unused list"].bbox == [0, 0, 400, 2110]
+    assert resolved.fields["Continue"].bbox == [100, 15, 150, 30]
+    assert resolved.steps[0].point == [125, 28]
+    invented = deepcopy(raw)
+    invented["fields"][1]["bbox"] = [0, 0, 400, 2370]
+    with pytest.raises(ValidationError, match="bbox"):
+        ScreenMappingWire.model_validate(invented)
+    with pytest.raises(ValidationError, match="bbox"):
+        ScreenMatch.model_validate_json(json.dumps(invented))
+    missing = deepcopy(raw)
+    missing["fields"][1]["region_refs"] = ["control:99"]
+    with pytest.raises(ValueError, match="screen_mapping_region_ref_unknown"):
+        ScreenMappingWire.model_validate(missing).resolve(projected)
