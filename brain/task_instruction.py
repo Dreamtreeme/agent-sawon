@@ -61,6 +61,15 @@ class TaughtProcedureStep(BaseModel):
     actions: list[TaughtProcedureAction] = Field(default_factory=list, max_length=30)
 
 
+class TaskInputFormat(BaseModel):
+    """Numeric destination format for one exact execution input key."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["number", "integer"]
+    unit: str | None = Field(default=None, min_length=1, max_length=40)
+
+
 class TaskInstruction(BaseModel):
     """Describe desired work and an optional user-taught program procedure."""
 
@@ -84,6 +93,7 @@ class TaskInstruction(BaseModel):
         max_length=200,
         description="Business fact keys to read from screens and export; not supplied input values",
     )
+    input_formats: dict[str, TaskInputFormat] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def unique_nonempty_items(self):
@@ -93,6 +103,7 @@ class TaskInstruction(BaseModel):
             if any(not item for item in normalized) or len(set(normalized)) != len(normalized):
                 raise ValueError("task_instruction_items_must_be_unique_and_nonempty")
         _validate_input_keys(self.result_keys)
+        _validate_input_keys(self.input_formats)
         step_ids = [step.id for step in self.procedure]
         if len(step_ids) != len(set(step_ids)):
             raise ValueError("task_instruction_procedure_step_ids_must_be_unique")

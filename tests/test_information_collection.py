@@ -382,10 +382,14 @@ def test_synthetic_observed_input_view_tracks_source_update_and_explicit_blank(t
     from test_window_actions import setup_window_brain
 
     record = TaskInputRecord(case_id="synthetic-observed-input-updates", inputs={})
-    brain, _, relay, _ = setup_window_brain(
-        tmp_path, record, [], task_instruction=synthetic_quantity_transfer_task()
-    )
     reference = "collected_result.quantity"
+    task = TaskInstruction.model_validate(
+        {
+            **synthetic_quantity_transfer_task().model_dump(),
+            "input_formats": {reference: {"type": "integer"}},
+        }
+    )
+    brain, _, relay, _ = setup_window_brain(tmp_path, record, [], task_instruction=task)
     assert brain.input_values == {}
     brain.observation = relay.observe()
     brain.observation_number = 1
@@ -397,7 +401,9 @@ def test_synthetic_observed_input_view_tracks_source_update_and_explicit_blank(t
     )
     assert reference in brain.screen_nodes['["Calc", "Synthetic ledger"]']["fields"]
     assert brain.input_values == {}, "An empty destination never invents the unavailable mail value"
-    for number, quantity in enumerate(("27", "31", ""), start=2):
+    for number, (quantity, executable) in enumerate(
+        (("27.0", "27"), ("31.0", "31"), ("unreadable", None), ("", None)), start=2
+    ):
         brain.observation = relay.observe()
         brain.observation_number = number
         brain._remember_model_task_evidence(
@@ -406,7 +412,10 @@ def test_synthetic_observed_input_view_tracks_source_update_and_explicit_blank(t
                 observed_step_results=[],
             )
         )
-        assert brain.input_values == ({reference: quantity} if quantity else {}), quantity
+        assert brain.input_values == ({reference: executable} if executable else {}), quantity
+        assert collected_result(brain.screen_nodes, ["quantity"])["values"] == (
+            {"quantity": quantity} if quantity else {}
+        ), "Formatting must preserve the original reading, including an invalid number"
         assert brain.values == record.inputs == {}
 
 
@@ -450,13 +459,20 @@ def test_synthetic_graph_read_and_fill_in_same_response_resolves_new_reading(tmp
     from test_window_actions import setup_window_brain
 
     quantity = "43"
-    fill = synthetic_observed_quantity_fill(quantity)
+    raw_quantity = "43.0"
+    fill = synthetic_observed_quantity_fill(raw_quantity)
     stop = {**fill, "operation": "stop", "steps": []}
     record = TaskInputRecord(
         case_id="synthetic-same-response-source", inputs={"query.email": "Synthetic order"}
     )
+    task = TaskInstruction.model_validate(
+        {
+            **synthetic_quantity_transfer_task().model_dump(),
+            "input_formats": {"collected_result.quantity": {"type": "integer"}},
+        }
+    )
     brain, model, relay, _ = setup_window_brain(
-        tmp_path, record, [fill, stop], task_instruction=synthetic_quantity_transfer_task()
+        tmp_path, record, [fill, stop], task_instruction=task
     )
     sent = []
 
@@ -481,6 +497,9 @@ def test_synthetic_graph_read_and_fill_in_same_response_resolves_new_reading(tmp
     assert sent[0].text == quantity
     assert brain.values == record.inputs == {"query.email": "Synthetic order"}
     assert brain.input_values == {**record.inputs, "collected_result.quantity": quantity}
+    assert collected_result(brain.screen_nodes, ["quantity"])["values"] == {
+        "quantity": raw_quantity
+    }
     assert not any(event.payload.get("guard") == "input_scope" for event in brain.log.read_all()), (
         "The new reading must be available during plan validation, not only during execution"
     )
@@ -531,20 +550,25 @@ def test_synthetic_graph_collects_mail_and_chat_registers_then_requeries_erp(tmp
         "description": "Synthetic replacement parts",
     }
     chat_values = {
-        "packages.count": "26",
+        "packages.count": "26.0",
         "packages.unit": "CTNS",
-        "gross_weight_kg": "292",
+        "gross_weight_kg": "292 KG",
         "container_no": "SYNTHETIC-CONTAINER-41",
         "pol": "SYNTHETIC-LOAD",
         "pod": "SYNTHETIC-DISCHARGE",
     }
-    expected = {**mail_values, **chat_values}
+    observed = {**mail_values, **chat_values}
+    expected = {**observed, "packages.count": "26", "gross_weight_kg": "292"}
     refs = {source: "collected_result." + source for source in expected}
     task = TaskInstruction(
         name="Synthetic source apps to existing ERP",
         objective="Read mail and chat, register the shipment, save, then requery its HBL.",
         identity_input_key=refs["hbl_no"],
         result_keys=list(expected),
+        input_formats={
+            refs["gross_weight_kg"]: {"type": "number", "unit": "KG"},
+            refs["packages.count"]: {"type": "integer"},
+        },
         completion_conditions=["The newly saved shipment has been requeried by its read HBL."],
         procedure=[
             {
@@ -741,10 +765,15 @@ def test_synthetic_graph_collects_mail_and_chat_registers_then_requeries_erp(tmp
     contexts = [json.loads(prompt[len(CONTEXT_MAPPING_RULES) :]) for prompt in model.prompts]
     assert contexts[0]["notebook"]["inputs"] == {}
     assert contexts[1]["notebook"]["collected_result"]["values"] == mail_values
-    assert contexts[2]["notebook"]["collected_result"]["values"] == expected
-    assert contexts[-1]["notebook"]["collected_result"]["values"] == expected
+    assert contexts[2]["notebook"]["collected_result"]["values"] == observed
+    assert contexts[-1]["notebook"]["collected_result"]["values"] == observed
+    assert contexts[2]["notebook"]["inputs"][refs["gross_weight_kg"]] == "292"
+    assert contexts[2]["task"]["input_formats"][refs["gross_weight_kg"]] == {
+        "type": "number",
+        "unit": "KG",
+    }
     result = collected_result(brain.screen_nodes, list(expected))
-    assert result["values"] == expected
+    assert result["values"] == observed
     assert result["provenance"]["hbl_no"][0]["screen_path"] == ["Mail", "Synthetic shipment"]
     assert result["provenance"]["packages.count"][0]["screen_path"] == [
         "Chat",

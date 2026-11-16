@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from decimal import Decimal, InvalidOperation
 
 from sawon_interfaces import PackageCount
+
+from sawon_runtime.normalization import convert_mass, number
 
 from .schemas import FieldName
 
@@ -33,35 +34,10 @@ _PACKAGE_UNITS = {
     "BAG": "BAG",
     "BAGS": "BAG",
 }
-_WEIGHT_UNITS = {
-    "KG": Decimal(1),
-    "KGS": Decimal(1),
-    "KILOGRAM": Decimal(1),
-    "KILOGRAMS": Decimal(1),
-    "G": Decimal("0.001"),
-    "GRAM": Decimal("0.001"),
-    "GRAMS": Decimal("0.001"),
-    "T": Decimal(1000),
-    "MT": Decimal(1000),
-    "TONNE": Decimal(1000),
-    "TONNES": Decimal(1000),
-    "LB": Decimal("0.45359237"),
-    "LBS": Decimal("0.45359237"),
-}
 
 
 def normalized_text(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
-
-
-def number(value: str) -> Decimal:
-    text = unicodedata.normalize("NFKC", value).strip()
-    if not re.fullmatch(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?", text):
-        raise ValueError("ambiguous_or_invalid_number")
-    try:
-        return Decimal(text.replace(",", ""))
-    except InvalidOperation as exc:
-        raise ValueError("invalid_number") from exc
 
 
 def normalize_value(
@@ -75,9 +51,7 @@ def normalize_value(
         chosen_unit = (unit or "").strip().upper().rstrip(".")
         parsed = number(text)
         if name == "gross_weight_kg":
-            if chosen_unit not in _WEIGHT_UNITS:
-                raise ValueError("unknown_weight_unit")
-            return float(parsed * _WEIGHT_UNITS[chosen_unit])
+            return float(convert_mass(parsed, chosen_unit, "KG"))
         if chosen_unit not in _PACKAGE_UNITS:
             raise ValueError("unknown_package_unit")
         if parsed != parsed.to_integral_value() or parsed <= 0:

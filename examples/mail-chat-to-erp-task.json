@@ -3,6 +3,10 @@
   "name": "Gmail·카카오톡 선적 자료를 기존 ERP에 등록·저장·재조회",
   "objective": "Gmail에서 query.email에 맞는 메일을 찾고 카카오톡 나와의 채팅에서 query.chat 표식이 있는 같은 선적의 자료를 읽는다. 출처가 있는 누적 메모의 값으로 허용 창 목록의 ERP에서 House B/L 기존 건을 확인하고, 신규이면 등록·저장한 뒤 같은 House B/L을 다시 조회하여 모든 저장값을 확인한다.",
   "identity_input_key": "collected_result.hbl_no",
+  "input_formats": {
+    "collected_result.gross_weight_kg": {"type": "number", "unit": "KG"},
+    "collected_result.packages.count": {"type": "integer"}
+  },
   "requirements": [
     "공급 입력은 메일 검색어 query.email과 카카오톡 자료 표식 query.chat뿐이다. 실제 House B/L 번호와 업무값은 앱에서 직접 읽어야 한다.",
     "먼저 등록 앱 gmail을 open_app으로 선택하고 대상 메일을 찾는다. 메일에서 hbl_no, mbl_no, shipper, consignee, description, pol, pod를 읽는다.",

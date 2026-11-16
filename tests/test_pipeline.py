@@ -15,6 +15,7 @@ from pipeline.checks import can_enter
 from pipeline.normalize import container_is_valid, normalize_value
 from pipeline.runner import load_inputs, prepare_case
 from pipeline.schemas import DocumentInput, OcrBlock, PipelineSettings
+from sawon_runtime.normalization import normalize_numeric_input
 from sawon_runtime.storage import CaseStatus, RunLog, StateStore
 
 VALUES = {
@@ -302,6 +303,10 @@ def test_existing_case_not_overwritten(tmp_path, documents):
 )
 def test_normalization(name, raw, unit, expected):
     assert normalize_value(name, raw, unit) == expected
+    if name == "gross_weight_kg":
+        assert Decimal(normalize_numeric_input(f"{raw} {unit}", unit="KG")) == Decimal(
+            str(expected)
+        )
 
 
 @pytest.mark.parametrize(
@@ -311,6 +316,35 @@ def test_normalization(name, raw, unit, expected):
 def test_ambiguous_weight_or_unit_requires_review(raw, unit):
     with pytest.raises(ValueError):
         normalize_value("gross_weight_kg", raw, unit)
+
+
+def test_declared_numeric_inputs_reuse_document_parsing_and_unit_semantics():
+    for label, raw, integer, unit, expected in [
+        ("observed-unit", "315.8 KG", False, "KG", "315.8"),
+        ("converted-unit", "315800 G", False, "KG", "315.8"),
+        ("bare-target-unit", "315.800", False, "KG", "315.8"),
+        (
+            "bare-target-preserves-precision",
+            "12345678901234567890.123456789",
+            False,
+            "LB",
+            "12345678901234567890.123456789",
+        ),
+        ("target-pounds", "453.59237 G", False, "LB", "1"),
+        ("target-grams", "0.3158KG", False, "G", "315.8"),
+        ("integer", "0024.000", True, None, "24"),
+    ]:
+        assert normalize_numeric_input(raw, integer=integer, unit=unit) == expected, label
+    for label, raw, integer, unit, reason in [
+        ("undeclared-unit", "315.8 KG", False, None, "ambiguous_or_invalid_number"),
+        ("unknown-source-unit", "315.8 FURLONG", False, "KG", "unknown_weight_unit"),
+        ("unknown-target-unit", "315.8", False, "FURLONG", "unknown_weight_unit"),
+        ("label-is-not-a-number", "총중량315.8 KG", False, "KG", "ambiguous_or_invalid_number"),
+        ("fractional-integer", "24.5", True, None, "invalid_integer"),
+    ]:
+        with pytest.raises(ValueError, match=reason) as error:
+            normalize_numeric_input(raw, integer=integer, unit=unit)
+        assert str(error.value) == reason, label
 
 
 def test_container_code_checkdigit():

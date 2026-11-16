@@ -21,12 +21,40 @@ class PassthroughScanner:
         return observation
 
 
-def test_shipment_task_declares_duplicate_identity_input():
+@pytest.mark.parametrize(
+    "example,identity,input_formats",
+    [
+        ("shipment-task.json", "hbl_no", {}),
+        (
+            "mail-chat-to-erp-task.json",
+            "collected_result.hbl_no",
+            {
+                "collected_result.gross_weight_kg": {"type": "number", "unit": "KG"},
+                "collected_result.packages.count": {"type": "integer", "unit": None},
+            },
+        ),
+    ],
+    ids=["existing-untyped-task", "collected-numeric-inputs"],
+)
+def test_example_tasks_preserve_identity_and_execution_input_formats(
+    example, identity, input_formats
+):
     task = TaskInstruction.model_validate_json(
-        (Path(__file__).resolve().parents[1] / "examples/shipment-task.json").read_bytes()
+        (Path(__file__).resolve().parents[1] / "examples" / example).read_bytes()
     )
 
-    assert task.identity_input_key == "hbl_no"
+    assert task.identity_input_key == identity
+    assert {key: value.model_dump() for key, value in task.input_formats.items()} == input_formats
+    assert set(task.input_formats) <= {
+        action.input_key
+        for step in task.procedure
+        for action in step.actions
+        if action.verb == "fill"
+    }
+    restored = TaskInstruction.model_validate_json(task.model_dump_json())
+    assert restored.input_formats == task.input_formats
+    assert restored.procedure == task.procedure
+    assert restored.result_keys == task.result_keys
 
 
 def test_user_taught_actions_preserve_ui_labels_without_coordinates():
@@ -87,9 +115,16 @@ def test_task_record_accepts_arbitrary_business_keys():
     assert values_for(record) == record.inputs
 
 
-def test_task_record_rejects_credential_namespace():
+def test_task_inputs_and_formats_reject_credential_namespace():
     with pytest.raises(ValidationError, match="task_input_key_invalid"):
         TaskInputRecord(case_id="unsafe", inputs={"credential.password": "secret"})
+    with pytest.raises(ValidationError, match="task_input_key_invalid"):
+        TaskInstruction(
+            name="Protected input format",
+            objective="Handle a business input.",
+            completion_conditions=["The work is complete."],
+            input_formats={"credential.password": {"type": "integer"}},
+        )
 
 
 def test_input_key_vocabulary_is_normalized_at_one_boundary():

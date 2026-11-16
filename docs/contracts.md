@@ -19,6 +19,8 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | `ActionPlan`과 화면 입력 계획 | `brain/graph/execution.py`, `screen_batch.py` | `screen_decision`, `selection`, `engine` | 로그인과 일반 행동을 같은 순서 실행기로 전달. `ScreenFillPlan`은 입력과 현재 화면의 후속 행동을 함께 표현 |
 | 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `screen_decision`, `memory_retrieval` | 관찰 필드는 현재 영역 참조로 증거 bbox를 연결하고, 행동은 별도 이름·입력 key·point로 실행 |
 | 정보 수집 요청·결과 | `brain/task_instruction.py`, `screen_memory.collected_result`, `notebook.remember` | engine, context_recall, 결과 소비자 | `result_keys`로 읽을 항목만 선언하고 누적 관찰에서 값·출처·누락 항목을 파생. 종료 시 로컬 `task-result.json` 저장 |
+| 교육의 입력 형식 | `TaskInstruction.input_formats`, `TaskInputFormat` | `input_binding.resolve_task_inputs`, 모델 문맥 | 실행 입력 키별 number/integer와 목표 질량 단위를 선언. 원문은 보존하고 공통 실행값을 정규화 |
+| 숫자·질량 단위 정규화 | `sawon_runtime/normalization.py` | `brain/input_binding.py`, `pipeline/normalize.py` | 기존 보수적 숫자 파싱·질량 환산을 공유. GUI는 정규화한 숫자 문자열을 전달 |
 | 현재 화면 모델 입력 | `brain/visual/frame.py`의 `frame_input` | `context_recall`, 화면 판단, 관찰 녹화기 | 현재 OCR·후보 영역·포함 텍스트를 한 번 투영. 내부 마커 번호를 모델 계약에 노출하지 않음 |
 | 교육 단계 관찰 결과 | `brain/task_instruction.py`의 `ObservedStepResult` | `screen_mapping`, `screen_decision`, `cache/methods`, engine | 현재 모델 응답의 교육 완료를 실행 상태에 반영. 편찬물의 과거 결과는 현재 응답으로 복원하지 않음 |
 | 선택 결과의 요청 문맥 | `brain/graph/screen_decision.py`의 `ScreenSelection.prepared` | `decide_screen` → `ground_screen_response` | 같은 판단에서 확장한 교육 상세를 빈 행동 보완에 전달. 거절 후 재계획은 기존 prepared 사용. 턴 간 영구 상태가 아님 |
@@ -58,6 +60,23 @@ OCR 줄 조각이 아닌 source별 완성된 업무 값을 반환한다. 줄바�
 명시적으로 지워진 원본에는 입력값이 없으며, 빈 문자열로 전달하지 않는다. 참조하지 않는 수집
 사실은 입력 의무가 되지 않는다. 같은 응답에서 읽기와 입력을 선택하면 검증 시 현재 읽기를
 미리 해석하고, 실행 전에는 기존 관찰 반영 경계에서 그 읽기를 메모에 저장한다.
+
+`TaskInstruction.input_formats`는 정확한 실행 입력 키를 대상으로 한다. 예를 들어
+`collected_result.gross_weight_kg: {"type": "number", "unit": "KG"}`와
+`collected_result.packages.count: {"type": "integer"}`를 선언할 수 있다. 기본값은 빈 딕셔너리다.
+`resolve_task_inputs`는 제공 입력과 수집 참조를 연결한 뒤 같은 실행 뷰에 형식을 적용한다.
+`315.8 KG` 또는 `315800 G`는 KG 선언에서 `315.8`이 되고, `24.0`은 integer 선언에서 `24`가 된다.
+단위가 없는 숫자는 교육에 선언한 목표 단위로 해석한다. 단위 변환은 기존 질량 단위 목록을
+사용하며, 수치·포맷 계산은 Decimal로 수행하고 GUI에는 문자열을 보낸다.
+
+원본 `screen_nodes`·`collected_result`·provenance와 `record.inputs`는 이 변환으로 갱신하지 않는다.
+현재 선언에 맞게 해석할 수 없는 수치·단위는 실행 뷰에서 제외하여 기존 입력 미확보 경로를
+사용한다. 원문 문자열로 대신 실행하지 않으며 다른 입력의 해석은 유지한다. 선언이 없는 키는
+기존 문자열을 그대로 사용한다. 모델 판단·메서드 결합·현재 응답 preview·실행은 같은
+`screen_input_values`를 사용한다. 따라서 탐색과 기억인출에 별도 숫자 변환기를 두지 않는다.
+
+형식 선언은 교육 파일의 일부이므로 바꾸면 원문 바이트의 계약 SHA도 바뀐다. 현재 방법은
+새 교육과 같은 SHA로 편찬한 산출물을 사용하며 과거 산출물의 SHA를 소급 변경하지 않는다.
 
 원본 Gmail 관찰의 `source="quantity"`와 목적지 Calc 필드·행동의
 `source="collected_result.quantity"`는 다르다. 목적지의 빈칸·입력 결과·전달 기록이 원본 사실을

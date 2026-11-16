@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from brain.observe.values import normalize
 from brain.task_instruction import COLLECTED_INPUT_PREFIX
+from sawon_runtime.normalization import normalize_numeric_input
 
 if TYPE_CHECKING:
     from brain.task_instruction import TaskInstruction
@@ -44,10 +45,21 @@ def resolve_task_inputs(
     corrections current without copying source facts into the supplied record.
     """
     sources = collected_input_sources(task)
-    return {
+    values = {
         **{key: value for key, value in supplied.items() if key not in sources},
         **{source: collected[key] for source, key in sources.items() if key in collected},
     }
+    for key, specification in task.input_formats.items():
+        if key not in values:
+            continue
+        try:
+            values[key] = normalize_numeric_input(
+                values[key], integer=specification.type == "integer", unit=specification.unit
+            )
+        except ValueError:
+            # Preserve the source reading; the existing unavailable-input path owns recovery.
+            del values[key]
+    return values
 
 
 def allowed_input_surfaces(
