@@ -689,11 +689,6 @@ def retain_screen_observation(
                 **prepared.state,
                 "recovery": {
                     "reason": "incomplete_observation",
-                    "instruction": (
-                        "Return the current named fields, their source keys and observed values, "
-                        "and remaining actions together. Include every action target in fields. "
-                        "Do not infer current values from past memory or repeat satisfied inputs."
-                    ),
                     "required_sources": [item["source"] for item in absent],
                     "current_observation": (
                         response.mapping.model_dump(exclude_unset=True)
@@ -1582,30 +1577,15 @@ def validate_or_replan(
             "screen_match_action_target_uncertain",
         }:
             if str(error) == "screen_match_action_surface_mismatch":
-                correction_instruction = (
-                    "Re-read the CURRENT screen and return a corrected interpretation and "
-                    "plan. For every step, name its actual visible field and select its "
-                    "current region refs. "
-                    "A caption alone may be clicked but cannot serve as a writable input. "
-                    "Fill and keyboard actions must target the actual input control. "
-                    "Use the exact semantic field name in steps[].target."
-                )
                 artifact_kind = "action-surface-correction"
                 correction_check = "action_surface_corrected"
             else:
-                correction_instruction = (
-                    "The proposed action target will be disabled by local visual confidence. "
-                    "Re-read the whole CURRENT screen and choose another confidently grounded "
-                    "action. If the selected taught step's expected result is already visible, "
-                    "advance to the next applicable taught step instead of repeating it."
-                )
                 artifact_kind = "uncertain-target-correction"
                 correction_check = "uncertain_action_target_corrected"
             correction_state = {
                 **prepared.state,
                 "correction": {
                     "error": str(error),
-                    "instruction": correction_instruction,
                     "rejected_fields": [
                         control.visual_description
                         for control in response.controls
@@ -1636,33 +1616,10 @@ def validate_or_replan(
             )
             return corrected
         interpretation = response.interpretation()
-        correction_instruction = (
-            "Return current named fields and a task plan matching the supplied capability "
-            "and execution contract. Preserve current readings and correct the rejected action."
-        )
-        if str(error) == "screen_match_step_not_executable":
-            correction_instruction += (
-                " Every click or double_click step MUST include an original-image [x,y] point "
-                "inside its intended CURRENT visible target. Every fill step MUST use "
-                "action=fill, intent=fill or credential, and a notebook input key as source."
-            )
-        elif str(error) == "screen_match_model_point_required":
-            correction_instruction += (
-                " Every step MUST include an original-image [x,y] point inside its named "
-                "CURRENT visible control, including fill."
-            )
-        elif str(error) == "screen_match_completion_decision_required":
-            correction_instruction += (
-                " Runtime evidence reports that all required inputs have been verified. Do not "
-                "stop with work described as in progress. Re-evaluate the CURRENT visible proof "
-                "and either return operation=complete with completion_evidence mapped to a user "
-                "completion condition, or return the one executable action still required."
-            )
         correction_state = {
             **prepared.state,
             "correction": {
                 "error": str(error),
-                "instruction": correction_instruction,
             },
         }
         plan = _call_screen_decision(
@@ -1749,12 +1706,6 @@ def ground_screen_response(
                             **recovery_state,
                             "recovery": {
                                 "reason": "missing_actions",
-                                "instruction": (
-                                    "The current observation is already available. Choose the next "
-                                    "unfinished action using the user task and education. Do not "
-                                    "repeat observed matching inputs or discard the current "
-                                    "evidence."
-                                ),
                                 "matched_inputs": [item.field for item in response.evidence],
                                 "current_observation": current_observation,
                             },

@@ -1,5 +1,6 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
+GUI schema descriptions remove preventive advice; enum/shape/validation are unchanged (2026-11-16).
 ScreenMatch/ScreenPlan separate observation regions from action points/targets (2026-11-16).
 MatchAction-family points use capture bounds rather than evidence bounds (2026-11-16).
 Locally derived OCR text IDs have no arbitrary count cap (2026-11-08).
@@ -129,8 +130,8 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
             TargetedMatchAction,
             "0e9016e1f3c5ea9ceae293f02c63b82e497a9f2a48438f55b50e166297b559c9",
         ),
-        (ScreenPlan, "4a701662bd38688b6401467298ddbdeb2e5ec2e9a8745ee4e4b6aaec7f564f73"),
-        (ScreenMatch, "4a701662bd38688b6401467298ddbdeb2e5ec2e9a8745ee4e4b6aaec7f564f73"),
+        (ScreenPlan, "2319f62ccd7f4d6945172b1c6d4e5dce0b374ac61f93053a8aaf4541063c2a46"),
+        (ScreenMatch, "2319f62ccd7f4d6945172b1c6d4e5dce0b374ac61f93053a8aaf4541063c2a46"),
         (Decision, "4f361687bf9a556d6439945786cb2f959c502506cdd09be48c800f88645bb028"),
         (
             WireActDecision,
@@ -138,15 +139,15 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
         ),
         (
             DecisionResponse,
-            "b520181e74c6113ea70c85acbf3d6599ccda90302a60a79ffe3d542dd9ddfded",
+            "3a24a644d8dca99c11537ebad7f7f65f8f5f703d9eb368c66bfd5f0633d91e08",
         ),
         (
             SaveReviewResponse,
-            "6f5134c53bcf6ea939684db9a4f245b22af4d730d789dcad439f8ba8d496a1ec",
+            "80d15fa59f1d163e505cd24c25a402fbd012c598406c7c634b975797da421875",
         ),
         (
             ScreenFillPlan,
-            "f063c8e6891ff28a3ac9cf5c48190ea9981a43718b4c4babe2b3b4e23306ed1b",
+            "71b42d9d4c26fd54aa2e386c6b4a21889df257df67c674f961ebb8dfd6864018",
         ),
         (
             ActionTransition,

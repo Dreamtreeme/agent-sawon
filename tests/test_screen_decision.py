@@ -309,7 +309,6 @@ def test_synthetic_mixed_actions_use_image_points_and_report_outside_capture(
         assert detail["target_bbox"] == [20, 30, 200, 40]
         assert detail["point"] == [400, 150] and detail["image_size"] == [400, 200]
         assert detail["plan_delivery"] == "not_dispatched" and detail["delivered_actions"] == 0
-        assert "none of its actions" in feedback["required_response"]
     assert model.prompts == []
     assert not [e for e in brain.log.read_all() if e.kind == "act"]
 
@@ -2926,15 +2925,12 @@ def test_synthetic_education_expansion_survives_empty_action_recovery(tmp_path, 
         if event.kind == "model_call"
     ]
     assert purposes == ["screen_decision", "education_retrieval", "missing_actions_recovery"]
-    for purpose, prompt in zip(purposes, model.prompts, strict=True):
-        assert "give a concise decision rationale in Korean" in prompt, purpose
-        assert (
-            "In observed_step_results[].observed_result, briefly identify the visible\n"
-            "evidence and any prior-memory information" in prompt
-        ), purpose
     initial, expanded, recovered = [
         json.loads(prompt[len(CONTEXT_MAPPING_RULES) :]) for prompt in model.prompts
     ]
+    for purpose, state in zip(purposes, (initial, expanded, recovered), strict=True):
+        assert state["notebook"]["inputs"] == brain.input_values, purpose
+        assert state["task_contract_sha256"] == brain.task_instruction_sha256, purpose
     assert [step["id"] for step in initial["taught_procedure_progress"]["steps"]] == [
         "login",
         "open-query",
@@ -3007,16 +3003,13 @@ def test_synthetic_fallback_education_survives_empty_action_recovery(tmp_path, r
         "education_retrieval",
         "missing_actions_recovery",
     ]
-    for event, prompt in zip(calls, model.prompts, strict=True):
-        purpose = event.payload["context"]["purpose"]
-        assert "give a concise decision rationale in Korean" in prompt, purpose
-        assert (
-            "In observed_step_results[].observed_result, briefly identify the visible\n"
-            "evidence and any prior-memory information" in prompt
-        ), purpose
     initial, expanded, recovered = [
         json.loads(prompt[len(CONTEXT_MAPPING_RULES) :]) for prompt in model.prompts
     ]
+    for event, state in zip(calls, (initial, expanded, recovered), strict=True):
+        purpose = event.payload["context"]["purpose"]
+        assert state["notebook"]["inputs"] == brain.input_values, purpose
+        assert state["task_contract_sha256"] == brain.task_instruction_sha256, purpose
     assert "save-record" not in {
         step["id"] for step in initial["taught_procedure_progress"]["steps"]
     }
@@ -3214,7 +3207,7 @@ def test_semantic_model_mapping_becomes_observation_and_coordinate_method(
         == "hbl_no"
     )
     # The final provider prompt keeps current OCR connected to the detector box.
-    assert model.prompts[0].startswith("Choose the next screen action")
+    assert model.prompts[0].startswith(CONTEXT_MAPPING_RULES)
     assert '"id_namespace"' not in model.prompts[0]
     prompted_frame = json.loads(model.prompts[0][len(CONTEXT_MAPPING_RULES) :])["screen"]
     assert prompted_frame["text_regions"] == [
@@ -3835,8 +3828,8 @@ def test_mapping_preserves_review_and_retrieval_purpose_and_ignores_unused_grid(
     state["screen"] = frame_input(screen)
     prompt = mapping_prompt(state)
     payload = json.loads(prompt[len(CONTEXT_MAPPING_RULES) :])
-    assert "already delivered" in payload["review_instruction"]
-    assert "not another retrieval" in payload["education_instruction"]
+    assert payload["post_action_review"] == state["post_action_review"]
+    assert payload["taught_procedure_progress"] == state["taught_procedure_progress"]
     recalled = payload["screen"]["retrieved_procedure"][0]["steps"][0]
     assert recalled["action"] == "scroll" and recalled["direction"] == "up"
     assert "keys" not in recalled and "source" not in recalled
@@ -3971,7 +3964,7 @@ def test_query_result_is_remembered_then_next_action_is_selected(tmp_path, recor
     assert brain._select_node() == "review"
     assert brain._review_node() == "execution"
     assert len(model.prompts) == 2
-    assert "query_result_observed" in model.prompts[-1]
-    assert "do not use duplicate_clear/duplicate_found" in " ".join(
-        model.prompts[-1].lower().split()
-    )
+    state = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
+    feedback = state["notebook"]["recent_feedback"][-1]
+    assert feedback["check"] == "query_result_observed"
+    assert feedback["operation"] == operation

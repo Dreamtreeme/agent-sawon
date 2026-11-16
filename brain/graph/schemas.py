@@ -215,12 +215,7 @@ class WireDuplicateDecision(WireDecisionBase):
     operation: Literal["duplicate_clear", "duplicate_found"]
     intent: Literal["verify"]
     action: None = None
-    grid_ref: NonemptyRef = Field(
-        description=(
-            "String ref of the CURRENT observed result table control, required even "
-            "when it contains zero rows. Empty results do not mean a missing grid."
-        )
-    )
+    grid_ref: NonemptyRef = Field(description="String ref of the observed result table control.")
     evidence: list[WireEvidence] = Field(default_factory=list, max_length=0)
 
 

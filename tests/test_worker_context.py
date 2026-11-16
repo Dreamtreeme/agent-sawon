@@ -44,12 +44,26 @@ def test_screen_matching_receives_current_execution_context(tmp_path, record, ph
     assert matched["execution"] == expected
     if phase == "save_result":
         assert "instructions" not in matched["execution"]["save_review"]
-        assert matched["execution"]["guidance"].count("SAVE RESULT REVIEW:") == 1
-        proof_context = brain._execution_context(
-            saved_record_review=brain.saved_evidence.snapshot(brain.values)
-        )
-        assert "Verify the saved record using CURRENT query-row" in proof_context["guidance"]
-        assert proof_context["guidance"].count("SAVE RESULT REVIEW:") == 1
+        assert matched["execution"]["save_review"]["schema_mapping"] == {
+            "result": "save_result",
+            "evidence_refs": "message_targets",
+            "next_decision": "steps",
+        }
+        proof = brain.saved_evidence.snapshot(brain.values)
+        proof_context = brain._execution_context(saved_record_review=proof)
+        assert proof_context["saved_record_review"] == {
+            key: proof[key]
+            for key in (
+                "identity_field",
+                "record_id",
+                "query_row_seen",
+                "confirmed_fields",
+                "missing_fields",
+                "conflict",
+                "detail_identity_observed",
+            )
+        }
+        assert proof_context["save_review"] == matched["execution"]["save_review"]
 
 
 def test_generic_task_context_has_no_legacy_query_input_gate(tmp_path, record):
@@ -67,7 +81,7 @@ def test_generic_task_context_has_no_legacy_query_input_gate(tmp_path, record):
     assert "query_input" not in context
     assert context["remaining_inputs"] == sorted(brain.values)
     assert "remaining_fields" not in context
-    assert context["guidance"] == "Use the user task description as the workflow."
+    assert {"fill", "navigate"} <= set(context["allowed_intents"])
 
 
 def test_synthetic_window_delivery_keeps_target_in_next_model_request(tmp_path, record):
@@ -322,5 +336,5 @@ def test_pending_login_proposes_post_authentication_work_without_resubmitting_cr
     assert proposed["conditional"]
     assert "credential" not in proposed["allowed_intents"]
     assert "login" not in proposed["allowed_intents"]
-    assert "Use the user task description" in proposed["guidance"]
+    assert proposed["last_delivered_actions"][0]["intent"] == "login"
     assert brain._decision_policy().facts.available_credential_sources

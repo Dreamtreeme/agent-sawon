@@ -16,27 +16,11 @@ SAVE_RESULT_ACTIONS = {
 }
 
 
-SAVE_REVIEW_GUIDANCE = """
-SAVE RESULT REVIEW: the last command was delivered, but saving is NOT proven.
-Read CURRENT visible messages and controls, not the previous action's intention.
-Return result=rejected for a validation/error message, confirmation_required for
-a save confirmation awaiting action, ready_for_query when the current screen
-permits verification of the attempted save without a visible error/confirmation,
-or unknown if you cannot tell. Cite CURRENT evidence_refs supporting your result.
-A generic OK button alone does not prove successful saving.
-For rejection, repair_fields names ONLY flat ShipmentRecord fields explicitly
-implicated by the error. An optional/detail-row error is not a record-field error:
-use repair_fields=[] and stop instead of inventing detail values or repeating save.
-Choose next_decision in the SAME response, avoiding another planning call:
-- rejected: dismiss the error by meaning (navigate/cancel/wait), or stop. The runtime
-  returns to entry and un-verifies only repair_fields; field entry is replanned later.
-- confirmation_required: confirm_save on a current confirmation control, or stop.
-- ready_for_query: dismiss a completed-save notice using navigate, navigate toward the query,
-  enter its identifier, or stop. confirm_save is only for a pending save confirmation,
-  not acknowledgement of a message reporting that saving already happened.
-The pending-state policy is superseded ONLY after runtime validation of this review.
-Do not claim completion, refill data, submit search before query input is verified,
-or infer persistence from a delivered click. Fresh final query proof is still required.
+SAVE_REVIEW_GUIDANCE = """Save result response:
+result: rejected, confirmation_required, ready_for_query, or unknown.
+evidence_refs: observed message/control references.
+repair_fields: record fields identified in a save error.
+next_decision: the next workflow decision.
 """
 
 

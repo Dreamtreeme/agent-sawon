@@ -519,14 +519,6 @@ class ScreenScanner:
                         request,
                         correction={
                             "error": "required_control_missing_after_refinement",
-                            "instruction": (
-                                "Local refinement did not find the required control extent. "
-                                "Do not request the same refinement again and do not relabel OCR "
-                                "text as an input. Classify only grounded CURRENT controls, "
-                                "including a visible scroll or navigation affordance that could "
-                                "expose the missing control. Set needs_refinement=false; preserve "
-                                "the missing-control fact in uncertainties."
-                            ),
                         },
                     )
                     continue
@@ -728,8 +720,6 @@ class ScreenScanner:
                             for c in meanings.controls
                             if c.id in {m.id for m in markers}
                         ],
-                        "instruction": "Correct the IDs/relationships using the original evidence. "
-                        "Do not invent missing extents. Report uncertainty if not grounded.",
                     },
                 )
         atomic_write_json(folder / "meanings.json", meanings.model_dump(mode="json"))
