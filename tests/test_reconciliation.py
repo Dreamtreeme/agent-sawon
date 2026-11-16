@@ -1,5 +1,7 @@
-"""Current pixels, rather than action rituals, drive workflow state."""
+"""Observation facts and explicitly selected input delivery."""
 
+import pytest
+from sawon_interfaces import ActionResult
 from test_brain import element as raw_element
 from test_brain import record as record
 from test_screen_decision import setup_brain
@@ -49,27 +51,42 @@ def test_unique_current_query_input_is_a_fact_but_result_cells_are_not(record):
     assert generic.query_input.source == "invoice.number"
 
 
-def test_matching_visible_fill_is_removed_before_dispatch(tmp_path, record):
+@pytest.mark.parametrize("intent", ["fill", "query_input"])
+def test_synthetic_matching_observation_preserves_requested_input(tmp_path, record, intent):
+    """Replay the S1 mismatch: a model reports the value and also requests a write."""
     brain, _, _, _, _, _ = setup_brain(tmp_path, record, [])
+    screen_kind = "query" if intent == "query_input" else "editor"
     observed = scene(
-        "editor",
+        screen_kind,
         [raw_element("e1", "edit", value=brain.values["hbl_no"])],
     )
     brain.observation = observed
+    brain.relay.current = observed.wire
+    brain.reconciled_observation = reconcile_observation(observed, brain.input_values)
     decision = Decision(
-        screen_kind="editor",
+        screen_kind=screen_kind,
         operation="act",
-        intent="fill",
+        intent=intent,
         subgoal="Fill current form",
-        reason="Current model mapping",
+        reason="The input is empty; enter the supplied value.",
         action=Choice(type="set_text", ref="e1", source="hbl_no"),
     )
+    sent = []
 
-    reconciled = brain._reconcile_action_plan(ActionPlan.single(decision))
+    def act(action):
+        sent.append(action.root)
+        return ActionResult(
+            action_id=action.root.action_id,
+            ok=True,
+            duration_ms=0,
+            post_obs_id=brain.relay.current.obs_id,
+        )
 
-    assert not reconciled.actions
-    assert "hbl_no" in brain._observed_inputs()
-    assert any(
-        event.payload.get("check") == "observed_actions_already_satisfied"
-        for event in brain.log.read_all()
-    )
+    brain.relay.act = act
+
+    assert brain._execute_plan(ActionPlan.single(decision)) == "observation"
+    assert len(sent) == 1
+    assert sent[0].type == "set_text"
+    assert sent[0].text == brain.values["hbl_no"]
+    assert brain.pending is not None
+    assert brain.pending["choice"].source == "hbl_no"

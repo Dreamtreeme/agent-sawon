@@ -2004,71 +2004,6 @@ class Brain:
                 },
             )
 
-    def _reconcile_action_plan(self, plan: ActionPlan) -> ActionPlan:
-        """Drop writes whose model-grounded current target already has the goal value."""
-
-        assert self.observation is not None
-        by_ref = {item.ref: item for item in self.observation.elements}
-        remaining = []
-        satisfied = []
-        for planned in plan.actions:
-            decision = planned.decision
-            choice = decision.action
-            if (
-                choice is None
-                or choice.type not in {"set_text", "type_text"}
-                or choice.source not in self.input_values
-            ):
-                remaining.append(planned)
-                continue
-            target = by_ref.get(choice.ref)
-            if (
-                target is None
-                or not target.enabled
-                or not field_matches(choice.source, target.value, self.input_values)
-            ):
-                remaining.append(planned)
-                continue
-            accepted = False
-            if decision.intent == "query_input":
-                fact = self.reconciled_observation
-                accepted = bool(
-                    fact is not None
-                    and fact.query_input is not None
-                    and fact.query_input.ref == target.ref
-                )
-            elif decision.intent == "fill":
-                accepted = self._record_verified_field(choice.source, target)
-            if not accepted:
-                remaining.append(planned)
-                continue
-            satisfied.append(
-                {"intent": decision.intent, "source": choice.source, "ref": target.ref}
-            )
-
-        if not satisfied:
-            return plan
-        self.log.append(
-            "verify",
-            payload={
-                "ok": True,
-                "check": "observed_actions_already_satisfied",
-                "obs_id": str(self.observation.obs_id),
-                "actions": satisfied,
-                "dispatched": False,
-            },
-        )
-        self.feedback.append(
-            {
-                "ok": True,
-                "phase": self.phase,
-                "check": "observed_actions_already_satisfied",
-                "sources": [item["source"] for item in satisfied],
-            }
-        )
-        audit = {**plan.audit, "already_satisfied": satisfied}
-        return replace(plan, actions=tuple(remaining), audit=audit)
-
     def _wire_action(
         self,
         choice: Choice,
@@ -2237,7 +2172,6 @@ class Brain:
 
     def _execute_plan(self, plan: ActionPlan) -> WorkerNode:
         assert self.observation is not None
-        plan = self._reconcile_action_plan(plan)
         if not plan.actions:
             self.log.append(
                 "select",
