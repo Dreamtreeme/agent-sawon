@@ -44,6 +44,7 @@ _VOLATILE_KEYS = {
     "screenshot",
 }
 _DIAGNOSTIC_NOTEBOOK_KEYS = {
+    "observation_number",
     "recent_feedback",
     "recent_turns",
     "scratchpad",

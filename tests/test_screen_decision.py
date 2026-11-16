@@ -2249,9 +2249,22 @@ def test_synthetic_unseen_pending_input_does_not_interrupt_structural_navigation
 def test_empty_action_recovery_preserves_education_and_current_observed_values(
     tmp_path, record, decision_work_counts
 ):
-    initial = named_response(steps=[])
+    initial = named_response(screen_path=["Registration"], steps=[])
     initial["fields"]["Reference"]["value"] = record.fields.hbl_no.value
+    initial["fields"].update(
+        {
+            "Saved notice": {
+                "role": "text",
+                "source": None,
+                "value": "Saved #1",
+                "enabled": False,
+                "bbox": [0, 100, 100, 20],
+            },
+            "Results": {"role": "table", "table_state": "rows", "bbox": [0, 130, 200, 50]},
+        }
+    )
     recovered = named_response(
+        screen_path=initial["screen_path"],
         fields={**initial["fields"], "Continue": {"role": "button", "bbox": [250, 15, 80, 30]}},
         steps=[{"target": "Continue", "action": "click", "intent": "navigate", "point": [280, 30]}],
     )
@@ -2260,13 +2273,31 @@ def test_empty_action_recovery_preserves_education_and_current_observed_values(
             Path(__file__).resolve().parents[1] / "examples/shipment-user-taught-task.json"
         ).read_bytes()
     )
-    brain, model, *_ = setup_brain(tmp_path, record, [initial, recovered], task_instruction=taught)
+    brain, model, *_ = setup_brain(
+        tmp_path,
+        record,
+        [initial, recovered, named_response(fields={}, steps=[], operation="stop")],
+        task_instruction=taught,
+    )
     brain._observe()
     assert len(model.prompts) == 2
     first, second = [json.loads(p[len(CONTEXT_MAPPING_RULES) :]) for p in model.prompts]
     assert second["task"] == first["task"]
     assert second["taught_procedure_progress"] == first["taught_procedure_progress"]
     assert second["recovery"]["matched_inputs"] == ["hbl_no"]
+    controls = second["notebook"]["screen_tree"]["children"]["Registration"]["controls"]
+    assert controls["Saved notice"]["last_observation"] == {
+        "value": "Saved #1",
+        "observation_number": 1,
+    }
+    assert controls["Saved notice"]["observed_properties"]["enabled"] == {
+        "value": False,
+        "observation_number": 1,
+    }
+    assert controls["Results"]["observed_properties"]["table_state"] == {
+        "value": "rows",
+        "observation_number": 1,
+    }
     assert "hbl_no" in brain._observed_inputs()
     assert brain.visual_proposal.mapping.fields["Reference"].value == record.fields.hbl_no.value
     assert brain.visual_proposal.steps[0].intent == "navigate"
@@ -2277,6 +2308,12 @@ def test_empty_action_recovery_preserves_education_and_current_observed_values(
         "sanitize_unused_controls": 2,
         "recall_context": 1,
     }
+    brain._observe()
+    next_request = json.loads(model.prompts[-1][len(CONTEXT_MAPPING_RULES) :])
+    assert next_request["notebook"]["observation_number"] == 2
+    next_controls = next_request["notebook"]["screen_tree"]["children"]["Registration"]["controls"]
+    for name in ("Saved notice", "Results"):
+        assert next_controls[name] == controls[name], "A new capture must not refresh old facts."
 
 
 @pytest.mark.parametrize("operation", ["act", "stop"])

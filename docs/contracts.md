@@ -184,6 +184,13 @@ relay는 단일 행동과 배치에서 같은 물리 입력 함수를 사용하�
 진행된 사실이며 `completed=false`는 단계 전체가 미완료라는 뜻이다. 부분 사실을 무효화하지
 않는다. 명시적인 완료만 기존 완료 ID에 반영한다. 행동 선택·전달만으로
 완료를 추론하거나 전체 업무 성공으로 바꾸지 않는다. 기존 응답은 빈 목록으로 읽는다.
+
+입력·수집 source가 없는 컨트롤도 명시적으로 읽은 값은 같은 `last_observation` 형식으로
+보존한다. `observed_properties`는 명시한 table_state·enabled·focused·parent를 속성별 값과
+관찰 ID·순번으로 보존한다. 빈 문자열·false·null도 명시한 관찰이며, 생략은 기존 값과 기존
+순번을 유지한다. 모델용 트리는 값과 순번을 전달하고 과거 좌표·ID는 현재 대상으로 노출하지
+않는다. `notebook.observation_number`로 현재 관찰 순번을 제공한다. 이 컨트롤 사실은 입력
+검증·수집 결과를 만들어내지 않으며, 행동만 있는 실행용 임시 대상도 관찰 사실이 되지 않는다.
 화면 캐시는 전체 판단 문맥이 일치할 때 행동 구조를 재사용하며 과거 관찰값과 완료 판단은
 현재 응답에서 제거한다. `MethodActionGroup`과 `MethodCompletion`의 `observed_step_results`는
 편찬 기록에 남지만 `MethodLibrary.bind_with_context`·`bind_completion_with_context`는 이를

@@ -415,7 +415,7 @@ def test_synthetic_saved_detail_partial_result_is_recalled_with_prior_readings(t
 
 def test_synthetic_memory_uses_explicit_model_bindings_and_preserves_unseen_values():
     from brain.graph.screen_mapping import ScreenMapping
-    from brain.graph.screen_memory import remember_screen
+    from brain.graph.screen_memory import recall_screen_tree, remember_screen
 
     nodes = {}
     values = {"reference": "EXPECTED", "other": "OTHER"}
@@ -427,11 +427,22 @@ def test_synthetic_memory_uses_explicit_model_bindings_and_preserves_unseen_valu
                 "role": "text",
                 "bbox": [10, 10, 40, 20],
                 "value": "READ",
-            }
+                "enabled": False,
+            },
+            "Save status": {
+                "role": "text",
+                "bbox": [10, 40, 100, 20],
+                "value": "Saved: 1",
+            },
         },
     )
     node = remember_screen(nodes, mapping, values, "frame-1", observation_number=1)
     assert node["fields"]["reference"]["last_observation"]["value"] == "READ"
+    assert node["controls"]["Save status"]["last_observation"] == {
+        "value": "Saved: 1",
+        "observation_id": "frame-1",
+        "observation_number": 1,
+    }
     # Hidden/omitted readings do not clear a fact; an explicit blank does.
     for label, fields, expected in [
         ("offscreen", {}, "READ"),
@@ -450,6 +461,12 @@ def test_synthetic_memory_uses_explicit_model_bindings_and_preserves_unseen_valu
         remember_screen(nodes, update, values, label, observation_number=2)
         assert node["fields"]["reference"]["last_observation"]["value"] == expected, label
         assert node["fields"]["reference"]["label"] == "Ref", label
+        assert node["fields"]["reference"]["observed_properties"]["enabled"] == {
+            "value": False,
+            "observation_id": "frame-1",
+            "observation_number": 1,
+        }, label
+        assert node["controls"]["Save status"]["last_observation"]["observation_number"] == 1, label
         if label == "unread":
             assert node["fields"]["reference"]["role"] == "edit"
             assert node["fields"]["reference"]["bbox"] == [10, 25, 40, 20]
@@ -477,6 +494,7 @@ def test_synthetic_memory_uses_explicit_model_bindings_and_preserves_unseen_valu
     other = remember_screen(nodes, unmapped, values, "frame-3", observation_number=3)
     assert other["fields"] == {}
     assert "Ref" in other["controls"]
+    assert "last_observation" not in other["controls"]["Ref"]
     assert node["fields"]["reference"]["last_observation"]["value"] == ""
     # Reusing an input source in another screen must retain that screen's own label.
     remember_screen(
@@ -491,6 +509,163 @@ def test_synthetic_memory_uses_explicit_model_bindings_and_preserves_unseen_valu
     )
     assert other["fields"]["reference"]["label"] == "Other Ref"
     assert node["fields"]["reference"]["label"] == "Ref"
+    recalled = recall_screen_tree(nodes)["children"]["Editor"]
+    assert recalled["fields"]["reference"]["observed_properties"]["enabled"] == {
+        "value": False,
+        "observation_number": 1,
+    }
+    assert recalled["controls"]["Save status"]["last_observation"] == {
+        "value": "Saved: 1",
+        "observation_number": 1,
+    }
+
+
+def test_synthetic_control_observations_preserve_each_property_and_its_provenance():
+    # Synthetic partial observations, not model responses replayed from the private pilots.
+    from brain.graph.screen_mapping import ScreenMapping
+    from brain.graph.screen_memory import (
+        collected_result,
+        recall_screen_tree,
+        remember_input_delivery,
+        remember_screen,
+    )
+    from brain.graph.screen_memory import (
+        observed_inputs as matching_inputs,
+    )
+
+    nodes, values = {}, {"reference": "EXPECTED"}
+    path = ["ERP", "Result"]
+
+    def observe(number, properties, *, screen_path=path):
+        return remember_screen(
+            nodes,
+            ScreenMapping(
+                screen_path=screen_path,
+                fields={"Result": {"role": "table", "bbox": [10, 10, 80, 20], **properties}},
+            ),
+            values,
+            f"frame-{number}",
+            observation_number=number,
+            result_keys=["requested_result"],
+        )
+
+    node = observe(
+        1,
+        {
+            "value": "Saved: 1",
+            "table_state": "rows",
+            "enabled": True,
+            "focused": True,
+            "parent": "Panel",
+        },
+    )
+    control = node["controls"]["Result"]
+    observe(2, {"enabled": False})
+    assert control["last_observation"] == {
+        "value": "Saved: 1",
+        "observation_id": "frame-1",
+        "observation_number": 1,
+    }
+    assert control["observed_properties"] == {
+        key: {"value": value, "observation_id": f"frame-{number}", "observation_number": number}
+        for key, value, number in [
+            ("table_state", "rows", 1),
+            ("enabled", False, 2),
+            ("focused", True, 1),
+            ("parent", "Panel", 1),
+        ]
+    }
+    observe(3, {"value": "", "table_state": None, "focused": False, "parent": None})
+    assert control["last_observation"] == {
+        "value": "",
+        "observation_id": "frame-3",
+        "observation_number": 3,
+    }
+    assert control["observed_properties"] == {
+        key: {"value": value, "observation_id": f"frame-{number}", "observation_number": number}
+        for key, value, number in [
+            ("table_state", None, 3),
+            ("enabled", False, 2),
+            ("focused", False, 3),
+            ("parent", None, 3),
+        ]
+    }
+    unchanged = deepcopy(control)
+    remember_screen(
+        nodes,
+        ScreenMapping(
+            screen_path=path,
+            fields={},
+            steps=[
+                {
+                    "action": "click",
+                    "target": "Unobserved action",
+                    "intent": "navigate",
+                    "point": [100, 100],
+                }
+            ],
+        ),
+        values,
+        "frame-4",
+        observation_number=4,
+    )
+    assert control == unchanged
+    assert "Unobserved action" not in node["controls"]
+    other = observe(5, {"value": "OTHER", "table_state": "empty"}, screen_path=["ERP", "Other"])
+    assert other["controls"]["Result"]["last_observation"]["value"] == "OTHER"
+    assert control == unchanged
+    remember_input_delivery(
+        nodes,
+        path,
+        "reference",
+        "EXPECTED",
+        target={"label": "Input", "role": "edit", "bbox": [100, 100, 80, 20]},
+        observation_id="frame-5",
+        observation_number=5,
+    )
+    assert matching_inputs(nodes, values) == {}
+    assert pending_screen_inputs(nodes) == {"reference"}
+    assert collected_result(nodes, ["requested_result"])["values"] == {}
+    assert "last_observation" not in node["fields"]["reference"]
+    assert control == unchanged
+    default = observe(6, {})["controls"]["Result"]
+    assert default["last_observation"] == unchanged["last_observation"]
+    assert default["observed_properties"] == unchanged["observed_properties"]
+    default_node = observe(7, {}, screen_path=["ERP", "Defaults"])
+    assert "last_observation" not in default_node["controls"]["Result"]
+    assert "observed_properties" not in default_node["controls"]["Result"]
+    remember_screen(
+        nodes,
+        ScreenMapping(
+            screen_path=path,
+            fields={
+                "Password": {
+                    "role": "edit",
+                    "source": "credential.password",
+                    "value": "SYNTHETIC SECRET",
+                    "bbox": [100, 50, 80, 20],
+                }
+            },
+        ),
+        values,
+        "frame-8",
+        observation_number=8,
+    )
+    assert "last_observation" not in node["controls"]["Password"]
+    assert "SYNTHETIC SECRET" not in json.dumps(nodes)
+    before_projection = deepcopy(nodes)
+    tree = recall_screen_tree(nodes)
+    projected = tree["children"]["ERP"]["children"]["Result"]["controls"]["Result"]
+    assert projected["last_observation"] == {"value": "", "observation_number": 3}
+    assert projected["observed_properties"]["enabled"] == {"value": False, "observation_number": 2}
+    assert projected["observed_properties"]["table_state"] == {
+        "value": None,
+        "observation_number": 3,
+    }
+    assert "bbox" not in json.dumps(tree) and "observation_id" not in json.dumps(tree)
+    projected["last_observation"]["value"] = "MUTATED"
+    projected["observed_properties"]["enabled"]["value"] = True
+    assert nodes == before_projection
 
 
 def test_synthetic_116_screen_tree_keeps_delivered_inputs_across_scrolls(tmp_path, record):

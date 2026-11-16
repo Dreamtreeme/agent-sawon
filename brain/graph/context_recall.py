@@ -42,6 +42,7 @@ def recall_context(request: ScreenDecisionRequest, *, projected_screen: dict | N
     context_layers = request.context_layers
 
     notebook = {
+        "observation_number": request.observation_number,
         "phase": request.phase,
         "checkpoint": request.policy.current_step,
         # 누적 raw feedback 대신 정제된 스크래치패드와 최근 N턴 버퍼를 주입한다.

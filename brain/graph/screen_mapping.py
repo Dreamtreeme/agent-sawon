@@ -548,6 +548,9 @@ screen_path and fields.source/value update that node's memory; the runtime does 
 bindings from your next action or equal input values. Matching sources and readings are notebook
 evidence, not a separate evidence list. Explicit empty values record visible empty fields;
 omitted fields retain earlier memory, including readings that moved offscreen.
+Non-input controls also retain explicit values and observed_properties such as table_state,
+enabled, focused and parent. Each fact keeps its own observation_number; notebook.observation_number
+identifies this capture. Omission does not refresh an old fact or make a historical control visible.
 Combine new readings with the node's observed_step_results, including partial facts when
 completed=false: the whole step has work left, but established partial observations remain true.
 last_observation is what was read; delivery is what was successfully sent.

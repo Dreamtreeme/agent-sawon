@@ -85,6 +85,7 @@ def test_visual_match_cache_key_ignores_run_metadata_but_keeps_action_context():
             "markers": [{"id": 7, "source": "ocr", "bbox": [1, 2, 3, 4], "confidence": 0.91}],
         },
         "notebook": {
+            "observation_number": 10,
             "inputs": {"hbl_no": "SEED-A", "shipper": "A"},
             "verified_inputs": ["hbl_no"],
             "recent_turns": [{"target_summary": "click:e-run-a"}],
@@ -99,6 +100,7 @@ def test_visual_match_cache_key_ignores_run_metadata_but_keeps_action_context():
             "markers": [{"id": 7, "source": "ocr", "bbox": [1, 2, 3, 4], "confidence": 0.87}],
         },
         "notebook": {
+            "observation_number": 20,
             "inputs": {"hbl_no": "SEED-B", "shipper": "B"},
             "verified_inputs": ["hbl_no"],
             "recent_turns": [{"target_summary": "click:e-run-b"}],

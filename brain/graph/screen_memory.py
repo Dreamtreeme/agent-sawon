@@ -52,9 +52,18 @@ def remember_screen(
             bbox=list(field.bbox),
             observation_id=observation_id,
         )
-        if field.source in sources and "value" in field.model_fields_set:
+        if (field.source in sources or field.source is None) and "value" in field.model_fields_set:
             entry["last_observation"] = {
                 "value": field.value,
+                "observation_id": observation_id,
+                "observation_number": observation_number,
+            }
+        for attribute, value in field.model_dump(
+            include={"table_state", "enabled", "focused", "parent"}, exclude_unset=True
+        ).items():
+            # Each explicit property owns its provenance; omissions cannot renew old facts.
+            entry.setdefault("observed_properties", {})[attribute] = {
+                "value": value,
                 "observation_id": observation_id,
                 "observation_number": observation_number,
             }
@@ -139,6 +148,20 @@ def remember_input_delivery(
     }
 
 
+def _recall_entry(field: dict) -> dict:
+    """Project observed facts and their order without exposing old geometry or capture IDs."""
+    entry = {"role": field["role"]}
+    for fact in ("last_observation", "delivery"):
+        if fact in field:
+            entry[fact] = {key: field[fact][key] for key in ("value", "observation_number")}
+    if "observed_properties" in field:
+        entry["observed_properties"] = {
+            attribute: {key: fact[key] for key in ("value", "observation_number")}
+            for attribute, fact in field["observed_properties"].items()
+        }
+    return entry
+
+
 def recall_screen_tree(nodes: Mapping[str, dict]) -> dict:
     """Derive a model view from the one state index; no refs/bboxes imply current visibility."""
     tree = {"fields": {}, "controls": {}, "children": {}}
@@ -149,22 +172,9 @@ def recall_screen_tree(nodes: Mapping[str, dict]) -> dict:
                 name, {"fields": {}, "controls": {}, "children": {}}
             )
         for source, field in node["fields"].items():
-            entry = {
-                "label": field["label"],
-                "role": field["role"],
-            }
-            observed = field.get("last_observation")
-            if observed is not None:
-                entry["last_observation"] = {
-                    key: observed[key] for key in ("value", "observation_number")
-                }
-            if "delivery" in field:
-                entry["delivery"] = {
-                    key: field["delivery"][key] for key in ("value", "observation_number")
-                }
-            branch["fields"][source] = entry
+            branch["fields"][source] = {"label": field["label"], **_recall_entry(field)}
         branch["controls"] = {
-            name: {"role": field["role"]} for name, field in node.get("controls", {}).items()
+            name: _recall_entry(field) for name, field in node.get("controls", {}).items()
         }
         if "observed_step_results" in node:
             branch["observed_step_results"] = {
