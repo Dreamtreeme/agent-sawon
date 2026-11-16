@@ -520,11 +520,13 @@ Response data:
 screen_path names the window and tab/subview. fields are named entries with role, source,
 region_refs and value. source links a field to an input or result key; null represents another
 control. value is the screen reading. Several regions may describe one wrapped business value.
+For each fact read for task.result_keys, include a named field whose source is that result key
+and whose value is the full reading. notebook.collected_result is populated from these fields.
 region_refs lists refs from control_regions, text_regions or memory_fields; the runtime derives bbox
 from them. Action points use original image pixels independently of field evidence geometry.
 The runtime merges returned fields and observed_step_results into the screen tree before
 executing the steps. An explicit empty value updates a field; omission retains its prior reading.
-observed_step_results supplies step_id, observed_result and completed for education outcomes.
+observed_step_results records education progress with step_id, observed_result and completed.
 completion_evidence, message_targets, grid and row reference named fields.
 steps is an ordered action list. Each action has an intent describing its business purpose:
 - fill uses target, point and source; the executor supplies the source's value.
