@@ -536,6 +536,6 @@ steps is an ordered action list. Each action has an intent describing its busine
 Window/app transitions use a single step and produce a new capture for the next decision.
 needs_refinement requests additional local scanning. operation describes act, complete or stop;
 taught_step_id identifies the education step associated with the decision.
-Write a concise decision rationale in Korean in purpose. expected_result describes the intended
+Explain the decision rationale in Korean in purpose. expected_result describes the intended
 result, and observed_result describes the facts relevant to the education outcome.
 """

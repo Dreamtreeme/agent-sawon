@@ -1261,7 +1261,7 @@ class Brain:
                 remember(self)
                 return "observation"
             plan = self._call(
-                POLICY + "\nProduce a short plan: duplicate query, field entry with verification, "
+                POLICY + "\nProduce a plan: duplicate query, field entry with verification, "
                 "save, and final query verification.\nTRUSTED_TASK="
                 + json.dumps(
                     {
