@@ -293,7 +293,7 @@ class Brain:
         """Available supplied inputs and taught references to this run's readings."""
         if self.task_instruction is None:
             return self.values
-        return screen_input_values(self.values, self.task_instruction, self.screen_nodes)
+        return screen_input_values(self.record, self.task_instruction, self.screen_nodes)
 
     @property
     def identity_input_key(self) -> str | None:

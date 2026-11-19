@@ -69,6 +69,15 @@ class TaskInputFormat(BaseModel):
 
     type: Literal["number", "integer"]
     unit: str | None = Field(default=None, min_length=1, max_length=40)
+    count_unit_from: str | None = Field(default=None, min_length=1, max_length=120)
+
+    @model_validator(mode="after")
+    def validate_count_unit(self):
+        if self.count_unit_from is not None:
+            _validate_input_keys([self.count_unit_from])
+            if self.type != "integer" or self.unit is not None:
+                raise ValueError("count_unit_from requires an integer without a mass unit")
+        return self
 
 
 class TaskInstruction(BaseModel):
@@ -125,12 +134,21 @@ class TaskInstruction(BaseModel):
         return self
 
 
-class ReceiptInputSource(BaseModel):
+class ReceiptFactSource(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     fact_key: str
     receipt_id: int = Field(gt=0)
     source: str
+
+
+class ReceiptUnitReference(ReceiptFactSource):
+    plan_id: int = Field(gt=0)
+    value: str = Field(min_length=1)
+
+
+class ReceiptInputSource(ReceiptFactSource):
     memo_label: str | None = None
+    unit_reference: ReceiptUnitReference | None = None
 
 
 class PlanInputProvenance(BaseModel):

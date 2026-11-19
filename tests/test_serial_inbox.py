@@ -9,7 +9,8 @@ import pytest
 from test_brain import ScriptedModel
 
 from brain import run
-from brain.task_instruction import TaskInputRecord
+from brain.graph.screen_memory import screen_input_values
+from brain.task_instruction import TaskInputRecord, TaskInstruction
 from pipeline.inbox import collect, desktop_turn, main, pending, record_plan, run_worker
 from pipeline.inbox_sources import SourceItem, read_chat, read_mail
 from sawon_runtime.storage import atomic_write_json
@@ -135,7 +136,10 @@ def test_worker_from_revised_plan_binds_sources_before_dispatch_and_deducts_cost
                     "id": "entry",
                     "instruction": "Enter quantity",
                     "completion": "Count entered",
-                    "actions": [{"verb": "fill", "target": "Quantity", "input_key": "count"}],
+                    "actions": [
+                        {"verb": "fill", "target": "Quantity", "input_key": "count"},
+                        {"verb": "fill", "target": "Package unit", "input_key": "unit"},
+                    ],
                 }
             ],
         },
@@ -143,7 +147,10 @@ def test_worker_from_revised_plan_binds_sources_before_dispatch_and_deducts_cost
     amendment = tmp_path / "amend.json"
     edit_taught = json.loads(task.read_bytes())
     edit_taught["name"] = "Edit an existing shipment"
-    edit_taught["procedure"][0]["actions"][0]["input_key"] = "box_total"
+    edit_taught["procedure"][0]["actions"] = [
+        {"verb": "fill", "target": "Quantity", "input_key": "box_total"}
+    ]
+    edit_taught["input_formats"] = {"box_total": {"type": "integer", "count_unit_from": "unit"}}
     atomic_write_json(amendment, edit_taught)
     with desktop_turn(state) as db:
         (mail,) = collect(db, [SourceItem("email", "desk", "m", "Ship A-17", b"Ship A-17")])
@@ -152,11 +159,17 @@ def test_worker_from_revised_plan_binds_sources_before_dispatch_and_deducts_cost
         first = record_plan(db, [mail], initial)
         (chat,) = collect(db, [SourceItem("kakao_message", "room", "c", "32 boxes", b"32 boxes")])
         count = {"key": "box_total", "value": "32", "receipt_id": chat}
-        revised = {**initial, "supersedes_plan_id": first, "facts": [identity, count]}
+        unit = {"key": "package_kind", "value": "CTNS", "receipt_id": mail}
+        revised = {**initial, "supersedes_plan_id": first, "facts": [identity, count, unit]}
         plan = record_plan(db, [chat], revised)
 
     def model_factory(_config, *, run_log, env_path):
-        reply = {"bindings": [{"input_key": "count", "fact_key": "box_total"}]}
+        reply = {
+            "bindings": [
+                {"input_key": "count", "fact_key": "box_total"},
+                {"input_key": "unit", "fact_key": "package_kind"},
+            ]
+        }
         return ScriptedModel(run_log, [reply], price=Decimal("0.03"))
 
     worker = Mock()
@@ -202,31 +215,41 @@ def test_worker_from_revised_plan_binds_sources_before_dispatch_and_deducts_cost
     worker.assert_called_once()
     dispatched = worker.call_args.kwargs
     saved = TaskInputRecord.model_validate_json((case / "record.json").read_bytes())
-    assert saved == dispatched["record"] and saved.inputs == {"reference": "A-17", "count": "32"}
+    assert saved == dispatched["record"]
+    assert saved.inputs == {"reference": "A-17", "count": "32", "unit": "CTNS"}
     assert dispatched["settings"].task_path == task
     assert dispatched["settings"].max_cost_usd == 0.47 and dispatched["goal"] == revised["goal"]
     assert saved.provenance.plan_id == plan and saved.provenance.work_id == "A"
     assert {
         key: (source.fact_key, source.receipt_id, source.source)
         for key, source in saved.provenance.inputs.items()
-    } == {"reference": ("reference", mail, "email"), "count": ("box_total", chat, "kakao_message")}
+    } == {
+        "reference": ("reference", mail, "email"),
+        "count": ("box_total", chat, "kakao_message"),
+        "unit": ("package_kind", mail, "email"),
+    }
+
+    def correct(db, previous, quantity):
+        (receipt,) = collect(
+            db, [SourceItem("kakao_message", "room", quantity, quantity, quantity.encode())]
+        )
+        decision = {
+            **revised,
+            "supersedes_plan_id": previous,
+            "facts": [
+                identity,
+                {**count, "value": quantity, "receipt_id": receipt},
+                {**unit, "value": "PLT", "receipt_id": receipt},
+            ],
+        }
+        return record_plan(db, [receipt], decision), receipt
+
     with desktop_turn(state) as db:
         row = db.execute("SELECT stage,worker_exit FROM plans WHERE id=?", (plan,)).fetchone()
         assert tuple(row) == ("exited", 0)
         previous = plan
-        for quantity in ("41", "45"):
-            (receipt,) = collect(
-                db, [SourceItem("kakao_message", "room", quantity, quantity, quantity.encode())]
-            )
-            previous = record_plan(
-                db,
-                [receipt],
-                {
-                    **revised,
-                    "supersedes_plan_id": previous,
-                    "facts": [identity, {**count, "value": quantity, "receipt_id": receipt}],
-                },
-            )
+        for quantity in ("41", "45 CTNS"):
+            previous, receipt = correct(db, previous, quantity)
     # Two corrections before dispatch still edit the successfully registered ancestor.
     next_case = tmp_path / "amended-case"
     command[command.index("--plan") + 1] = str(previous)
@@ -235,6 +258,37 @@ def test_worker_from_revised_plan_binds_sources_before_dispatch_and_deducts_cost
     assert main() == 0
     amended = worker.call_args.kwargs
     assert amended["settings"].task_path == amendment
-    assert amended["record"].inputs == {"box_total": "45", "reference": "A-17"}
+    assert amended["record"].inputs == {"box_total": "45 CTNS", "reference": "A-17"}
     assert amended["record"].provenance.inputs["reference"].receipt_id == mail
     assert amended["record"].provenance.inputs["box_total"].receipt_id == receipt
+    reference = amended["record"].provenance.inputs["box_total"].unit_reference
+    assert (reference.value, reference.fact_key, reference.plan_id, reference.receipt_id) == (
+        "CTNS",
+        "package_kind",
+        plan,
+        mail,
+    )
+
+    # The successful quantity-only amendment carried PLT in its decision and wrote no unit.
+    # Both following amendments must still use the unit actually dispatched in the original record.
+    for quantity in ("23 PLT", "23 CTNS"):
+        with desktop_turn(state) as db:
+            previous, _ = correct(db, previous, quantity)
+        command[command.index("--plan") + 1] = str(previous)
+        command[command.index(f"--case-dir={next_case}")] = f"--case-dir={tmp_path / quantity}"
+        next_case = tmp_path / quantity
+        monkeypatch.setattr(sys, "argv", [*command, "--max-cost-usd=0"])
+        if quantity == "23 PLT":
+            with pytest.raises(ValueError, match="Invalid format for taught inputs: box_total"):
+                main()
+            assert worker.call_count == 2
+        else:
+            assert main() == 0
+            loaded = TaskInputRecord.model_validate_json((next_case / "record.json").read_bytes())
+            assert loaded.inputs == {"reference": "A-17", "box_total": "23 CTNS"}
+            assert loaded.provenance.inputs["box_total"].unit_reference == reference
+            taught = TaskInstruction.model_validate_json(amendment.read_bytes())
+            assert screen_input_values(loaded, taught, {}) == {
+                "reference": "A-17",
+                "box_total": "23",
+            }

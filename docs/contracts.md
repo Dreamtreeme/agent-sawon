@@ -51,7 +51,7 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | `ActionPlan`과 화면 입력 계획 | `brain/graph/execution.py`, `screen_batch.py` | `screen_decision`, `selection`, `engine` | 로그인과 일반 행동을 같은 순서 실행기로 전달. `ScreenFillPlan`은 입력과 현재 화면의 후속 행동을 함께 표현 |
 | 화면 의미 매핑 | `brain/graph/screen_mapping.py` | `screen_decision`, `memory_retrieval` | 관찰 필드는 현재 영역 참조로 증거 bbox를 연결하고, 행동은 별도 이름·입력 key·point로 실행 |
 | 정보 수집 요청·결과 | `brain/task_instruction.py`, `screen_memory.collected_result`, `notebook.remember` | engine, context_recall, 결과 소비자 | `result_keys`로 읽을 항목만 선언하고 누적 관찰에서 값·출처·누락 항목을 파생. 종료 시 로컬 `task-result.json` 저장 |
-| 교육의 입력 형식 | `TaskInstruction.input_formats`, `TaskInputFormat` | `input_binding.resolve_task_inputs`, 모델 문맥 | 실행 입력 키별 number/integer와 목표 질량 단위를 선언. 원문은 보존하고 공통 실행값을 정규화 |
+| 교육의 입력 형식 | `TaskInstruction.input_formats`, `TaskInputFormat` | `input_binding.resolve_task_inputs`, 모델 문맥 | 정수·수치, 목표 질량 단위, 포장 수량에 대조할 단위 출처를 선언하고 실행값을 정규화 |
 | 숫자·질량 단위 정규화 | `sawon_runtime/normalization.py` | `brain/input_binding.py`, `pipeline/normalize.py` | 기존 보수적 숫자 파싱·질량 환산을 공유. GUI는 정규화한 숫자 문자열을 전달 |
 | 현재 화면 모델 입력 | `brain/visual/frame.py`의 `frame_input` | `context_recall`, 화면 판단, 관찰 녹화기 | 현재 OCR·후보 영역·포함 텍스트를 한 번 투영. 내부 마커 번호를 모델 계약에 노출하지 않음 |
 | 교육 단계 관찰 결과 | `brain/task_instruction.py`의 `ObservedStepResult` | `screen_mapping`, `screen_decision`, `cache/methods`, engine | 현재 모델 응답의 교육 완료를 실행 상태에 반영. 편찬물의 과거 결과는 현재 응답으로 복원하지 않음 |
@@ -105,6 +105,12 @@ OCR 줄 조각이 아닌 source별 완성된 업무 값을 반환한다. 줄바�
 `collected_result.packages.count: {"type": "integer"}`를 선언할 수 있다. 기본값은 빈 딕셔너리다.
 `resolve_task_inputs`는 제공 입력과 수집 참조를 연결한 뒤 같은 실행 뷰에 형식을 적용한다.
 `315.8 KG` 또는 `315800 G`는 KG 선언에서 `315.8`이 되고, `24.0`은 integer 선언에서 `24`가 된다.
+수량 정정 교육은 `packages.count`에 `{"type":"integer","count_unit_from":"packages.unit"}`을 선언한다.
+수신함에서 정정을 인계할 때는 같은 업무에서 포장 단위를 마지막으로 입력한 정상 종료 실행의 레코드를 읽는다.
+수량 출처의 `unit_reference`에 해당 계획 ID, 원문 ID, 사실 키, 출처와 단위 원문을 남긴다.
+정정 원문 `22 CTNS`와 기존 단위가 같은 포장 종류면 수량 칸에 `22`를 보낸다.
+종류가 다르거나 접미 단위를 확인할 수 없으면 인계를 중단한다. 단위 없는 정수는 그대로 사용할 수 있다.
+포장 단위 참조는 수량 변환에만 쓰이며 화면의 입력 항목은 교육이 지정한 쓰기 키로 한정된다.
 단위가 없는 숫자는 교육에 선언한 목표 단위로 해석한다. 단위 변환은 기존 질량 단위 목록을
 사용하며, 수치·포맷 계산은 Decimal로 수행하고 GUI에는 문자열을 보낸다.
 

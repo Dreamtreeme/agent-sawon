@@ -276,7 +276,7 @@ def _bind_worker_inputs(
     from brain.settings import BrainSettings
     from brain.task_instruction import TaskInstruction
     from models.accounting import read_model_accounting
-    from pipeline.inbox_binding import prepare_record
+    from pipeline.inbox_binding import prepare_record, previously_written_units
     from sawon_runtime.storage import RunLog, atomic_write_json
 
     options = worker_parser(require_record=False).parse_args(command)
@@ -286,15 +286,18 @@ def _bind_worker_inputs(
         raise ValueError("The worker case directory already exists")
     settings = BrainSettings.load(options.config)
     task_path = options.task or settings.task_path
-    if after_dispatch_task is not None:
+    applied = []
+    if decision.get("supersedes_plan_id") is not None:
         applied = db.execute(
             _PLAN_LINEAGE
-            + """SELECT 1 FROM plans JOIN lineage USING(id)
-                  WHERE id!=? AND stage='exited' AND worker_exit=0 LIMIT 1""",
-            (plan, plan),
-        ).fetchone()
-        if applied:
-            task_path = after_dispatch_task
+            + """SELECT id, worker_args FROM plans JOIN lineage USING(id)
+                  WHERE id!=? AND stage='exited' AND worker_exit=0
+                    AND json_extract(decision, '$.work_id')=?
+                  ORDER BY id DESC""",
+            (plan, plan, decision.get("work_id")),
+        ).fetchall()
+    if applied and after_dispatch_task is not None:
+        task_path = after_dispatch_task
     if task_path is None:
         raise ValueError("Plan binding requires a taught task")
     task = TaskInstruction.model_validate_json(task_path.read_bytes())
@@ -311,6 +314,7 @@ def _bind_worker_inputs(
     log = RunLog(destination / run_id, case_id=run_id, agent_id="inbox-input-binding")
     record = prepare_record(
         decision=decision,
+        unit_references=previously_written_units(applied, task, decision.get("work_id")),
         plan_id=plan,
         receipts={r["id"]: dict(r) for r in rows},
         task=task,

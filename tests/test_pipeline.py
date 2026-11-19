@@ -345,6 +345,9 @@ def test_declared_numeric_inputs_reuse_document_parsing_and_unit_semantics():
         with pytest.raises(ValueError, match=reason) as error:
             normalize_numeric_input(raw, integer=integer, unit=unit)
         assert str(error.value) == reason, label
+    assert normalize_numeric_input("22 cartons", integer=True, count_unit="CTNS") == "22"
+    with pytest.raises(ValueError, match="invalid_integer"):
+        normalize_numeric_input("22.5 CTNS", integer=True, count_unit="CTNS")
 
 
 def test_container_code_checkdigit():

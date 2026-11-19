@@ -27,7 +27,6 @@ from brain.cache.pattern_matching import ScreenPatternDocument
 from brain.demo_learning.methods import read_screen
 from brain.graph.screen_mapping import ScreenMapping
 from brain.graph.screen_memory import screen_input_values
-from brain.observe.values import values_for
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from brain.vocabulary import SCROLL_DIRECTION_KEYS
 from models.accounting import read_model_accounting
@@ -231,7 +230,7 @@ def _case_values(case_dir: Path) -> dict[str, str]:
     task = TaskInstruction.model_validate_json((case_dir / "task-instruction.json").read_bytes())
     notebook_path = case_dir / "task-notebook.json"
     nodes = _read(notebook_path).get("screen_nodes", {}) if notebook_path.exists() else {}
-    return screen_input_values(values_for(record), task, nodes)
+    return screen_input_values(record, task, nodes)
 
 
 def read_memory_candidates(

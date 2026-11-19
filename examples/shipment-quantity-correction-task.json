@@ -2,7 +2,7 @@
   "name": "기등록 House B/L 포장 수량 정정",
   "objective": "업무에서 지정한 House B/L의 기존 저장 건을 찾아 포장 수량을 정정하고, 저장 후 같은 건을 다시 열어 확인한다.",
   "identity_input_key": "hbl_no",
-  "input_formats": {"packages.count": {"type": "integer"}},
+  "input_formats": {"packages.count": {"type": "integer", "count_unit_from": "packages.unit"}},
   "requirements": [
     "House B/L 번호와 일치하는 결과가 한 건일 때 그 행을 열고 저장 번호를 확인한다.",
     "결과가 없거나 여러 행이 일치하면 조회 결과를 보고하고 종료한다.",

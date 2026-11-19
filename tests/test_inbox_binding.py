@@ -6,8 +6,8 @@ import pytest
 
 from brain.task_instruction import TaskInstruction
 from models.base import MeasuredModelClient, ProviderReply, TokenUsage
-from pipeline.inbox_binding import prepare_record
-from sawon_runtime.storage import RunLog
+from pipeline.inbox_binding import prepare_record, previously_written_units
+from sawon_runtime.storage import RunLog, atomic_write_json
 
 
 @pytest.fixture
@@ -133,6 +133,57 @@ def test_all_canonical_keys_need_no_model_configuration(preparation):
         "collected_result.seen": "Local reading",
     }
     assert not preparation["log"].read_all()
+
+
+def test_missing_dispatch_cannot_supply_a_unit_from_older_record(preparation, model, tmp_path):
+    task = TaskInstruction.model_validate_json(
+        Path("examples/shipment-quantity-correction-task.json").read_bytes()
+    )
+    old = tmp_path / "registered.json"
+    atomic_write_json(
+        old,
+        {
+            "case_id": "registered",
+            "origin": "inbox_plan",
+            "inputs": {"packages.unit": "CTNS"},
+            "provenance": {
+                "plan_id": 1,
+                "work_id": "shipping",
+                "inputs": {
+                    "packages.unit": {
+                        "fact_key": "package_kind",
+                        "receipt_id": 101,
+                        "source": "email",
+                    }
+                },
+            },
+        },
+    )
+    rows = [
+        (2, json.dumps(["--record", str(tmp_path / "missing.json")])),
+        (1, json.dumps([f"--record={old}"])),
+    ]
+    references = previously_written_units(rows, task, "shipping")
+    assert references == {}
+    preparation.update(
+        task=task,
+        decision={
+            "work_id": "shipping",
+            "facts": [
+                {"key": "hbl_no", "value": "S-41", "receipt_id": 101},
+                {"key": "packages.count", "value": "22 CTNS", "receipt_id": 102},
+                {"key": "packages.unit", "value": "CTNS", "receipt_id": 102},
+            ],
+        },
+        unit_references=references,
+    )
+    with pytest.raises(ValueError, match="Invalid format for taught inputs: packages.count"):
+        prepare_record(**preparation)
+    preparation["decision"]["facts"][1]["value"] = "22"
+    record = prepare_record(**preparation)
+    assert record.inputs == {"hbl_no": "S-41", "packages.count": "22"}
+    assert record.provenance.inputs["packages.count"].unit_reference is None
+    assert not model[1]
 
 
 @pytest.mark.parametrize(

@@ -30,11 +30,16 @@ class PassthroughScanner:
             "collected_result.hbl_no",
             {
                 "collected_result.gross_weight_kg": {"type": "number", "unit": "KG"},
-                "collected_result.packages.count": {"type": "integer", "unit": None},
+                "collected_result.packages.count": {"type": "integer"},
             },
         ),
+        (
+            "shipment-quantity-correction-task.json",
+            "hbl_no",
+            {"packages.count": {"type": "integer", "count_unit_from": "packages.unit"}},
+        ),
     ],
-    ids=["existing-untyped-task", "collected-numeric-inputs"],
+    ids=["existing-untyped-task", "collected-numeric-inputs", "amendment-count-unit"],
 )
 def test_example_tasks_preserve_identity_and_execution_input_formats(
     example, identity, input_formats
@@ -44,7 +49,9 @@ def test_example_tasks_preserve_identity_and_execution_input_formats(
     )
 
     assert task.identity_input_key == identity
-    assert {key: value.model_dump() for key, value in task.input_formats.items()} == input_formats
+    assert {
+        key: value.model_dump(exclude_none=True) for key, value in task.input_formats.items()
+    } == input_formats
     assert set(task.input_formats) <= {
         action.input_key
         for step in task.procedure

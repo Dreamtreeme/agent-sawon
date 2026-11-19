@@ -1,10 +1,34 @@
-"""Conservative numeric parsing and declared mass-unit conversion."""
+"""Numeric parsing and shared units for documents and execution inputs."""
 
 from __future__ import annotations
 
 import re
 import unicodedata
 from decimal import Decimal, InvalidOperation
+
+_PACKAGE_UNITS = {
+    "CT": "CT",
+    "CTN": "CT",
+    "CTNS": "CT",
+    "CARTON": "CT",
+    "CARTONS": "CT",
+    "PK": "PK",
+    "PKG": "PK",
+    "PKGS": "PK",
+    "PACKAGE": "PK",
+    "PACKAGES": "PK",
+    "PLT": "PLT",
+    "PALLET": "PLT",
+    "PALLETS": "PLT",
+    "PC": "PC",
+    "PCS": "PC",
+    "PIECE": "PC",
+    "PIECES": "PC",
+    "BOX": "BOX",
+    "BOXES": "BOX",
+    "BAG": "BAG",
+    "BAGS": "BAG",
+}
 
 _WEIGHT_UNITS = {
     "KG": Decimal(1),
@@ -44,18 +68,31 @@ def convert_mass(value: Decimal, source_unit: str, target_unit: str) -> Decimal:
     return value * _mass_factor(source_unit) / _mass_factor(target_unit)
 
 
-def normalize_numeric_input(raw: str, *, integer: bool = False, unit: str | None = None) -> str:
-    """Format a numeric reading for the declared input type and target mass unit."""
+def package_unit(unit: str) -> str:
+    try:
+        return _PACKAGE_UNITS[unicodedata.normalize("NFKC", unit).strip().upper().rstrip(".")]
+    except KeyError as exc:
+        raise ValueError("unknown_package_unit") from exc
+
+
+def normalize_numeric_input(
+    raw: str, *, integer: bool = False, unit: str | None = None, count_unit: str | None = None
+) -> str:
+    """Format a numeric reading using the declared mass unit or the recorded count unit."""
     text = unicodedata.normalize("NFKC", raw).strip()
-    if unit is None:
+    with_unit = re.fullmatch(r"(.*?)\s*([A-Za-z]+\.?)", text)
+    if with_unit is None:
         value = number(text)
-    else:
-        with_unit = re.fullmatch(r"(.*?)\s*([A-Za-z]+\.?)", text)
-        if with_unit is None:
-            value = number(text)
+        if unit is not None:
             _mass_factor(unit)
-        else:
-            value = convert_mass(number(with_unit[1]), with_unit[2], unit)
+    elif unit is not None:
+        value = convert_mass(number(with_unit[1]), with_unit[2], unit)
+    elif count_unit is not None:
+        if package_unit(with_unit[2]) != package_unit(count_unit):
+            raise ValueError("unmatched_input_unit")
+        value = number(with_unit[1])
+    else:
+        raise ValueError("ambiguous_or_invalid_number")
     if integer and value != value.to_integral_value():
         raise ValueError("invalid_integer")
     formatted = format(value, "f")

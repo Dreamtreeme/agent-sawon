@@ -1,6 +1,8 @@
 """Bind stored, receipt-backed plan facts to the inputs of a taught task."""
 
+import argparse
 import json
+from collections.abc import Iterable
 from decimal import Decimal
 from pathlib import Path
 
@@ -9,6 +11,7 @@ from brain.task_instruction import (
     COLLECTED_INPUT_PREFIX,
     PlanInputProvenance,
     ReceiptInputSource,
+    ReceiptUnitReference,
     TaskInputRecord,
     TaskInstruction,
 )
@@ -28,6 +31,50 @@ class InputBinding(FrozenModel):
 
 class BindingReply(FrozenModel):
     bindings: list[InputBinding]
+
+
+def previously_written_units(
+    applied: Iterable[tuple[int, str | None]], task: TaskInstruction, work_id: str
+) -> dict[str, ReceiptUnitReference]:
+    """Read declared unit inputs from this work's successful dispatches, newest first."""
+    needed = {spec.count_unit_from for spec in task.input_formats.values() if spec.count_unit_from}
+    found = {}
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
+    parser.add_argument("--record", type=Path)
+    for plan_id, worker_args in applied:
+        if not needed:
+            break
+        try:
+            args = json.loads(worker_args or "[]")
+            if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+                break
+            options, _ = parser.parse_known_args(args)
+            if options.record is None:
+                break
+            record = TaskInputRecord.model_validate_json(options.record.read_bytes())
+        except (argparse.ArgumentError, OSError, ValueError):
+            # An unreadable dispatch could have changed a unit from any earlier record.
+            break
+        provenance = record.provenance
+        if (
+            record.origin != "inbox_plan"
+            or provenance is None
+            or (provenance.plan_id != plan_id or provenance.work_id != work_id)
+        ):
+            break
+        for key in needed.intersection(record.inputs):
+            needed.remove(key)
+            if not record.inputs[key].strip():
+                continue
+            source = provenance.inputs[key]
+            found[key] = ReceiptUnitReference(
+                plan_id=plan_id,
+                fact_key=source.fact_key,
+                receipt_id=source.receipt_id,
+                source=source.source,
+                value=record.inputs[key],
+            )
+    return found
 
 
 def _select_bindings(
@@ -88,6 +135,7 @@ def prepare_record(
     model_config: Path,
     env_path: Path | None,
     max_cost_usd: Decimal,
+    unit_references: dict[str, ReceiptUnitReference] | None = None,
 ) -> TaskInputRecord:
     """Create the worker's raw inputs and save the source of each execution value."""
     if not max_cost_usd.is_finite() or max_cost_usd < 0:
@@ -132,17 +180,23 @@ def prepare_record(
     sources = {}
     for key in targets:
         fact = facts[bindings[key]]
+        spec = task.input_formats.get(key)
         sources[key] = ReceiptInputSource(
             fact_key=fact.key,
             receipt_id=fact.receipt_id,
             source=receipts[fact.receipt_id]["source"],
             memo_label=fact.label,
+            unit_reference=(
+                unit_references.get(spec.count_unit_from)
+                if unit_references and spec and spec.count_unit_from
+                else None
+            ),
         )
     provenance = PlanInputProvenance(plan_id=plan_id, work_id=work_id, inputs=sources)
     record = TaskInputRecord(
         case_id=log.case_id, inputs=inputs, origin="inbox_plan", provenance=provenance
     )
-    execution = resolve_task_inputs(record.inputs, task, {})
+    execution = resolve_task_inputs(record, task, {})
     invalid = inputs.keys() - execution.keys()
     if invalid:
         raise ValueError(f"Invalid format for taught inputs: {', '.join(sorted(invalid))}")

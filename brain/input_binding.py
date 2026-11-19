@@ -11,8 +11,8 @@ without modifying the supplied inputs or treating destination blanks as source f
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from brain.observe.values import normalize
-from brain.task_instruction import COLLECTED_INPUT_PREFIX
+from brain.observe.values import RecordInput, normalize, values_for
+from brain.task_instruction import COLLECTED_INPUT_PREFIX, TaskInputRecord
 from sawon_runtime.normalization import normalize_numeric_input
 
 if TYPE_CHECKING:
@@ -37,13 +37,16 @@ def collected_input_sources(task: "TaskInstruction") -> dict[str, str]:
 
 
 def resolve_task_inputs(
-    supplied: Mapping[str, str], task: "TaskInstruction", collected: Mapping[str, str]
+    supplied: Mapping[str, str] | RecordInput, task: "TaskInstruction", collected: Mapping[str, str]
 ) -> dict[str, str]:
     """Derive available writes from supplied inputs and taught references to readings.
 
     Missing/deleted readings have no executable value. Recomputing this view keeps
     corrections current without copying source facts into the supplied record.
     """
+    provenance = supplied.provenance if isinstance(supplied, TaskInputRecord) else None
+    if not isinstance(supplied, Mapping):
+        supplied = values_for(supplied)
     sources = collected_input_sources(task)
     values = {
         **{key: value for key, value in supplied.items() if key not in sources},
@@ -52,9 +55,19 @@ def resolve_task_inputs(
     for key, specification in task.input_formats.items():
         if key not in values:
             continue
+        count_unit = None
+        if specification.count_unit_from and provenance:
+            binding = provenance.inputs.get(key)
+            if binding and binding.unit_reference:
+                count_unit = binding.unit_reference.value
+        elif specification.count_unit_from:
+            count_unit = values.get(specification.count_unit_from)
         try:
             values[key] = normalize_numeric_input(
-                values[key], integer=specification.type == "integer", unit=specification.unit
+                values[key],
+                integer=specification.type == "integer",
+                unit=specification.unit,
+                count_unit=count_unit,
             )
         except ValueError:
             # Preserve the source reading; the existing unavailable-input path owns recovery.

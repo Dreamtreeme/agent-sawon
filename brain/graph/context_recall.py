@@ -107,7 +107,10 @@ def recall_context(request: ScreenDecisionRequest, *, projected_screen: dict | N
     # teaching. Repeating every distant step here wastes context and lets stale
     # routes compete with the current screen.
     state["task"] = {
-        **request.task_instruction.model_dump(mode="json", exclude={"procedure"}),
+        **request.task_instruction.model_dump(
+            mode="json",
+            exclude={"procedure": True, "input_formats": {"__all__": {"count_unit_from"}}},
+        ),
         "procedure": [],
     }
     # The digest is the user-education contract boundary.  Two companies can

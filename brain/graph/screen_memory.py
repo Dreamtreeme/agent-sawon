@@ -7,7 +7,7 @@ from collections.abc import Collection, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from brain.input_binding import resolve_task_inputs
-from brain.observe.values import field_matches
+from brain.observe.values import RecordInput, field_matches
 
 if TYPE_CHECKING:
     from brain.task_instruction import TaskInstruction
@@ -103,7 +103,7 @@ def collected_result(nodes: Mapping[str, dict], result_keys: Sequence[str]) -> d
 
 
 def screen_input_values(
-    supplied: Mapping[str, str],
+    supplied: Mapping[str, str] | RecordInput,
     task: TaskInstruction,
     nodes: Mapping[str, dict],
     mapping: ScreenMapping | None = None,

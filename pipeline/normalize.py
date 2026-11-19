@@ -7,33 +7,9 @@ import unicodedata
 
 from sawon_interfaces import PackageCount
 
-from sawon_runtime.normalization import convert_mass, number
+from sawon_runtime.normalization import convert_mass, number, package_unit
 
 from .schemas import FieldName
-
-_PACKAGE_UNITS = {
-    "CT": "CT",
-    "CTN": "CT",
-    "CTNS": "CT",
-    "CARTON": "CT",
-    "CARTONS": "CT",
-    "PK": "PK",
-    "PKG": "PK",
-    "PKGS": "PK",
-    "PACKAGE": "PK",
-    "PACKAGES": "PK",
-    "PLT": "PLT",
-    "PALLET": "PLT",
-    "PALLETS": "PLT",
-    "PC": "PC",
-    "PCS": "PC",
-    "PIECE": "PC",
-    "PIECES": "PC",
-    "BOX": "BOX",
-    "BOXES": "BOX",
-    "BAG": "BAG",
-    "BAGS": "BAG",
-}
 
 
 def normalized_text(value: str) -> str:
@@ -52,11 +28,10 @@ def normalize_value(
         parsed = number(text)
         if name == "gross_weight_kg":
             return float(convert_mass(parsed, chosen_unit, "KG"))
-        if chosen_unit not in _PACKAGE_UNITS:
-            raise ValueError("unknown_package_unit")
+        canonical_unit = package_unit(chosen_unit)
         if parsed != parsed.to_integral_value() or parsed <= 0:
             raise ValueError("invalid_package_count")
-        return PackageCount(count=int(parsed), unit=_PACKAGE_UNITS[chosen_unit])
+        return PackageCount(count=int(parsed), unit=canonical_unit)
     if name in {"hbl_no", "mbl_no", "container_no", "pol", "pod"}:
         return unicodedata.normalize("NFKC", value).strip().upper()
     return text
