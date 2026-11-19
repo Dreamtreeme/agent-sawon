@@ -13,9 +13,17 @@
 방의 대화를 임시 파일에 내보내고, `chat_messages`는 표식이 있는 메시지의 원문 바이트를
 `kakao_message` 항목으로 만든다. [inbox](../pipeline/inbox.py)는 메일, 카톡 순서로 각 출처의
 원문을 저장하고 `(source, channel, source_key)` 단위로 재수집을 식별한다. 원문과 판단용
-텍스트, 이를 반영한 계획 ID를 한 PC의 전용 상태 디렉터리에 보관한다. 실행별 노트북과
-연결되는 지점은 저장된 계획의 업무 목표로 호출하는 기존 작업자다. 원문 식별, 계획 인계,
-종료 기록의 의미는 [순차 수신 절차](serial-inbox.md)를 따른다.
+텍스트, 이를 반영한 계획 ID를 한 PC의 전용 상태 디렉터리에 보관한다.
+
+`plan-next`는 같은 `desktop_turn` 안에서 `pending`을 읽고, 미처리 원문이 있을 때만
+모델에 해당 판단용 텍스트와 실행 전 계획을 전달한다. 모델 요청·응답 계약은
+`pipeline/inbox_planning.py`, 수신 상태 저장은 `pipeline/inbox.py`가 소유한다. 모델이 선택한
+업무 한 건의 목표와 사실(`key`, `value`, `receipt_id`)을 `record_plan`으로 저장한다.
+단독 참고 자료는 `inbox_references`에 원문 ID와 이유를 남기고 미처리 목록에서 제외한다.
+대기 판단은 원문을 미처리 상태로 남긴다. 실행 전 정정은
+`supersedes_plan_id`로 이전 계획을 연결하고 변경되지 않은 사실과 출처를 유지한다.
+계획 저장 후 작업자 호출은 별도 `worker` 명령이 담당한다. 이 명령은 저장된 목표와
+운영자가 제공한 실행 인자를 기존 작업자에게 전달한다. [순차 수신 절차](serial-inbox.md)
 
 단계 명칭과 실제 구현 범위는 [화면 처리 용어](runtime-terminology.md)를 따른다.
 Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변경을 뜻하지 않는다.

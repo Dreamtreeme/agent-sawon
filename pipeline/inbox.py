@@ -8,10 +8,12 @@ import sqlite3
 import sys
 from collections.abc import Iterable, Iterator
 from contextlib import closing, contextmanager
+from decimal import Decimal
 from email import policy
 from email.parser import BytesHeaderParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 import portalocker
 
@@ -38,6 +40,9 @@ def desktop_turn(state: Path) -> Iterator[sqlite3.Connection]:
                 kind TEXT NOT NULL, new_text TEXT NOT NULL,
                 collected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 plan_id INTEGER REFERENCES plans(id), UNIQUE(source, channel, source_key)
+            );
+            CREATE TABLE IF NOT EXISTS inbox_references (
+                receipt_id INTEGER PRIMARY KEY REFERENCES receipts(id), reason TEXT NOT NULL
             );
         """)
         yield db
@@ -77,7 +82,9 @@ def collect(
 def pending(db: sqlite3.Connection) -> list[dict]:
     rows = db.execute("""
         SELECT id,source,channel,source_key,collected_at,kind,new_text
-        FROM receipts WHERE plan_id IS NULL AND kind != 'baseline' ORDER BY id
+        FROM receipts WHERE plan_id IS NULL AND kind != 'baseline'
+          AND NOT EXISTS (SELECT 1 FROM inbox_references WHERE receipt_id = receipts.id)
+        ORDER BY id
     """)
     return [dict(row) for row in rows]
 
@@ -160,6 +167,74 @@ def record_plan(db: sqlite3.Connection, ids: list[int], decision: dict) -> int:
     return int(plan.lastrowid)
 
 
+def plan_next(db: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    """Record one model decision against the same locked snapshot it was given."""
+    receipts = pending(db)
+    if not receipts:
+        return {"status": "empty", "plan_id": None, "model_calls": 0}
+
+    from models.accounting import read_model_accounting
+    from pipeline.inbox_planning import Reference, Wait, choose
+    from sawon_runtime.storage import RunLog
+
+    unstarted = [
+        {"id": row["id"], "decision": json.loads(row["decision"])}
+        for row in db.execute("SELECT id,decision FROM plans WHERE stage='planned' ORDER BY id")
+    ]
+    run_id = uuid4().hex
+    log = RunLog(args.state / "planning" / run_id, case_id=run_id, agent_id="inbox-planner")
+    selection = choose(
+        receipts,
+        unstarted,
+        log=log,
+        model_config=args.model_config,
+        env_path=args.env_path,
+        max_cost_usd=args.max_cost_usd,
+    )
+    result = {
+        "plan_id": None,
+        "run_id": run_id,
+        "model_calls": read_model_accounting(log).model_calls,
+    }
+    if isinstance(selection, Wait):
+        return {**result, "status": "wait", "reason": selection.reason}
+    ids = selection.receipt_ids
+    selected = set(ids)
+    if not ids or len(selected) != len(ids) or not selected <= {r["id"] for r in receipts}:
+        raise ValueError("Select distinct receipts from this pending turn")
+    if isinstance(selection, Reference):
+        with db:
+            db.executemany(
+                "INSERT INTO inbox_references(receipt_id,reason) VALUES (?,?)",
+                [(receipt_id, selection.reason) for receipt_id in ids],
+            )
+        return {**result, "status": "reference", "receipt_ids": ids}
+
+    if any(f.receipt_id not in selected for f in selection.facts):
+        raise ValueError("Each new fact must cite a receipt selected for this work")
+    decision = selection.model_dump(exclude={"kind", "receipt_ids"}, exclude_none=True)
+    if selection.supersedes_plan_id is not None:
+        prior = next(
+            (p["decision"] for p in unstarted if p["id"] == selection.supersedes_plan_id), None
+        )
+        if prior is None:
+            raise ValueError("Only an existing unstarted plan can be superseded")
+        if prior.get("work_id"):
+            decision["work_id"] = prior["work_id"]
+        changed_keys = {f.key for f in selection.facts}
+        if isinstance(prior.get("facts"), list):
+            inherited = [
+                fact
+                for fact in prior["facts"]
+                if isinstance(fact, dict)
+                and isinstance(fact.get("key"), str)
+                and fact["key"] not in changed_keys
+            ]
+            decision["facts"] = inherited + decision["facts"]
+    plan_id = record_plan(db, ids, decision)
+    return {**result, "status": "planned", "plan_id": plan_id, "receipt_ids": ids}
+
+
 def run_worker(db: sqlite3.Connection, plan: int, arguments: list[str]) -> int:
     from brain.run import main as run_case
 
@@ -215,6 +290,12 @@ def main() -> int:
     live.add_argument("--ocr-config", type=Path, required=True)
     commands.add_parser("pending", help="Show unplanned text and source IDs")
     commands.add_parser("plans", help="Show recorded decisions, source IDs and worker status")
+    planner = commands.add_parser(
+        "plan-next", help="Use pending source texts to plan one work item"
+    )
+    planner.add_argument("--model-config", type=Path, default=Path("config/models.toml"))
+    planner.add_argument("--env-path", type=Path, help="Explicit .env for a paid model")
+    planner.add_argument("--max-cost-usd", type=Decimal, default=Decimal("3"))
     link = commands.add_parser("record-plan", help="Associate source IDs with a JSON decision")
     link.add_argument("--receipts", nargs="+", type=int, required=True)
     link.add_argument("--file", type=Path, required=True)
@@ -246,6 +327,8 @@ def main() -> int:
             output = collect_live(db, args)
         elif args.command == "pending":
             output = pending(db)
+        elif args.command == "plan-next":
+            output = plan_next(db, args)
         elif args.command == "plans":
             output = []
             for row in db.execute("SELECT * FROM plans ORDER BY id"):
