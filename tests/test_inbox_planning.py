@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 
 from models.base import MeasuredModelClient, ProviderReply, TokenUsage
-from pipeline.inbox import collect, desktop_turn, main, pending
+from pipeline.inbox import collect, desktop_turn, main, pending, run_worker
 from pipeline.inbox_sources import SourceItem, read_mail_bytes
 
 
@@ -146,6 +146,65 @@ def test_correction_replaces_unstarted_plan_and_keeps_source_of_unchanged_fact(p
     assert (new["id"], new["stage"], new["receipt_ids"]) == (second, "planned", [3])
     facts = {fact["key"]: fact for fact in new["decision"]["facts"]}
     assert facts == {"hbl_no": original["facts"][0], "packages": corrected_fact}
+
+
+def test_correction_after_success_retains_exit_and_revises_only_the_current_version(
+    planner, monkeypatch
+):
+    state, replies, prompts, turn = planner
+    seed_pair(state)
+    original = work()
+    unit = {"key": "package_unit", "value": "CTNS", "receipt_id": 2}
+    original["facts"].append(unit)
+    replies.append(original)
+    first = turn("plan-next")["plan_id"]
+    monkeypatch.setattr("brain.run.main", lambda _: 0)
+    correction = chat("correction", "T-71: change the registered quantity to 18 CTNS.")
+    with desktop_turn(state) as db:
+        assert run_worker(db, first, []) == 0
+        assert collect(db, [correction]) == [3]
+
+    fact = {"key": "packages", "value": "18 CTNS", "receipt_id": 3}
+    change = {
+        **original,
+        "goal": "Find TEST456, change its quantity to 18 CTNS, save and reopen.",
+        "reason": "T-71 was already registered.",
+        "receipt_ids": [3],
+        "facts": [fact, {**unit, "receipt_id": 3}],
+        "supersedes_plan_id": first,
+    }
+    replies.append(change)
+    second = turn("plan-next")["plan_id"]
+    context = json.loads(prompts[-1].split("\n\n")[-1])
+    (candidate,) = context["plans"]
+    assert (candidate["id"], candidate["stage"]) == (first, "exited")
+    old, revised = turn("plans")
+    assert (old["stage"], old["worker_exit"], old["receipt_ids"]) == ("exited", 0, [1, 2])
+    assert old["decision"]["facts"] == original["facts"]
+    assert revised["receipt_ids"] == [3] and revised["decision"]["supersedes_plan_id"] == first
+    assert revised["decision"]["work_id"] == old["decision"]["work_id"]
+    assert {f["key"]: f for f in revised["decision"]["facts"]} == {
+        "hbl_no": original["facts"][0],
+        "packages": fact,
+        "package_unit": unit,
+    }
+    with desktop_turn(state) as db:
+        assert collect(db, [correction]) == []
+    assert turn("plan-next")["model_calls"] == 0
+
+    with desktop_turn(state) as db:
+        collect(db, [chat("second-correction", "T-71: update the registered count to 19 CTNS.")])
+    replies.append({**change, "receipt_ids": [4], "facts": [{**fact, "receipt_id": 4}]})
+    with pytest.raises(ValueError, match="current"):
+        turn("plan-next")
+    context = json.loads(prompts[-1].split("\n\n")[-1])
+    (current,) = context["plans"]
+    assert (current["id"], current["stage"], current["decision"]["goal"]) == (
+        second,
+        "planned",
+        change["goal"],
+    )
+    assert len(turn("plans")) == 2 and [r["id"] for r in turn("pending")] == [4]
 
 
 @pytest.mark.parametrize(

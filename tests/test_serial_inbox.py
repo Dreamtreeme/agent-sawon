@@ -140,6 +140,11 @@ def test_worker_from_revised_plan_binds_sources_before_dispatch_and_deducts_cost
             ],
         },
     )
+    amendment = tmp_path / "amend.json"
+    edit_taught = json.loads(task.read_bytes())
+    edit_taught["name"] = "Edit an existing shipment"
+    edit_taught["procedure"][0]["actions"][0]["input_key"] = "box_total"
+    atomic_write_json(amendment, edit_taught)
     with desktop_turn(state) as db:
         (mail,) = collect(db, [SourceItem("email", "desk", "m", "Ship A-17", b"Ship A-17")])
         identity = {"key": "reference", "value": "A-17", "receipt_id": mail}
@@ -171,6 +176,8 @@ def test_worker_from_revised_plan_binds_sources_before_dispatch_and_deducts_cost
         str(state),
         "worker",
         "--from-plan",
+        "--after-dispatch-task",
+        str(amendment),
         "--plan",
         str(plan),
         "--",
@@ -196,6 +203,7 @@ def test_worker_from_revised_plan_binds_sources_before_dispatch_and_deducts_cost
     dispatched = worker.call_args.kwargs
     saved = TaskInputRecord.model_validate_json((case / "record.json").read_bytes())
     assert saved == dispatched["record"] and saved.inputs == {"reference": "A-17", "count": "32"}
+    assert dispatched["settings"].task_path == task
     assert dispatched["settings"].max_cost_usd == 0.47 and dispatched["goal"] == revised["goal"]
     assert saved.provenance.plan_id == plan and saved.provenance.work_id == "A"
     assert {
@@ -205,3 +213,28 @@ def test_worker_from_revised_plan_binds_sources_before_dispatch_and_deducts_cost
     with desktop_turn(state) as db:
         row = db.execute("SELECT stage,worker_exit FROM plans WHERE id=?", (plan,)).fetchone()
         assert tuple(row) == ("exited", 0)
+        previous = plan
+        for quantity in ("41", "45"):
+            (receipt,) = collect(
+                db, [SourceItem("kakao_message", "room", quantity, quantity, quantity.encode())]
+            )
+            previous = record_plan(
+                db,
+                [receipt],
+                {
+                    **revised,
+                    "supersedes_plan_id": previous,
+                    "facts": [identity, {**count, "value": quantity, "receipt_id": receipt}],
+                },
+            )
+    # Two corrections before dispatch still edit the successfully registered ancestor.
+    next_case = tmp_path / "amended-case"
+    command[command.index("--plan") + 1] = str(previous)
+    command[command.index(f"--case-dir={case}")] = f"--case-dir={next_case}"
+    monkeypatch.setattr(sys, "argv", [*command, "--max-cost-usd=0"])
+    assert main() == 0
+    amended = worker.call_args.kwargs
+    assert amended["settings"].task_path == amendment
+    assert amended["record"].inputs == {"box_total": "45", "reference": "A-17"}
+    assert amended["record"].provenance.inputs["reference"].receipt_id == mail
+    assert amended["record"].provenance.inputs["box_total"].receipt_id == receipt

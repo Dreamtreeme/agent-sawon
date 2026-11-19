@@ -1,0 +1,71 @@
+{
+  "name": "기등록 House B/L 포장 수량 정정",
+  "objective": "업무에서 지정한 House B/L의 기존 저장 건을 찾아 포장 수량을 정정하고, 저장 후 같은 건을 다시 열어 확인한다.",
+  "identity_input_key": "hbl_no",
+  "input_formats": {"packages.count": {"type": "integer"}},
+  "requirements": [
+    "House B/L 번호와 일치하는 결과가 한 건일 때 그 행을 열고 저장 번호를 확인한다.",
+    "결과가 없거나 여러 행이 일치하면 조회 결과를 보고하고 종료한다.",
+    "수정 대상은 포장 수량 한 칸이다. 단위와 나머지 선적 항목은 기존 값을 유지한다."
+  ],
+  "completion_conditions": [
+    "저장 후 House B/L 번호로 조회한 결과가 한 건이고, 상세 화면의 저장 번호가 수정 전과 같으며 포장 수량이 정정값과 일치한다. 재조회한 기본·추가 정보 두 탭에서 보존된 선적값을 확인한다."
+  ],
+  "procedure": [
+    {
+      "id": "login",
+      "instruction": "로그인 화면이면 사용자명과 비밀번호를 입력하고 로그인한다.",
+      "completion": "House B/L 조회가 있는 업무 메뉴가 보인다.",
+      "actions": [
+        {"verb": "fill", "target": "사용자명 입력 칸", "input_key": "credential.username"},
+        {"verb": "fill", "target": "비밀번호 입력 칸", "input_key": "credential.password"},
+        {"verb": "activate", "target": "로그인 버튼"}
+      ]
+    },
+    {
+      "id": "find-existing",
+      "instruction": "House B/L 조회에서 요청의 번호를 검색한다. 일치하는 행이 한 건이면 그 행을 두 번 클릭해 상세 화면을 열고 저장 번호를 확인한다.",
+      "completion": "요청 번호와 일치하는 기존 상세 화면에 저장 번호가 보인다.",
+      "actions": [
+        {"verb": "activate", "target": "House B/L 조회 버튼"},
+        {"verb": "fill", "target": "House B/L 번호 검색 칸", "input_key": "hbl_no"},
+        {"verb": "activate", "target": "조회 버튼"},
+        {"verb": "activate", "target": "일치하는 조회 결과 행"},
+        {"verb": "verify", "target": "기존 상세 화면의 저장 번호"}
+      ]
+    },
+    {
+      "id": "correct-quantity",
+      "instruction": "상세 화면의 개수 / 단위 영역에서 포장 수량 칸을 정정값으로 바꾼다.",
+      "completion": "포장 수량 칸에 요청한 정정값이 보인다.",
+      "actions": [
+        {"verb": "fill", "target": "개수 / 단위 영역의 수량 입력 칸", "input_key": "packages.count", "surface": "direct_input"}
+      ]
+    },
+    {
+      "id": "save-record",
+      "instruction": "기존 건의 저장 버튼을 누르고 확인 창에서 동의한 뒤 저장 완료 안내를 확인한다.",
+      "completion": "변경 내용을 저장했다는 안내가 보인다.",
+      "actions": [
+        {"verb": "activate", "target": "저장 버튼"},
+        {"verb": "activate", "target": "저장 확인 창의 예 버튼"},
+        {"verb": "verify", "target": "저장 완료 안내"}
+      ]
+    },
+    {
+      "id": "requery-saved-record",
+      "instruction": "저장 안내와 상세 창을 닫고 House B/L 조회에서 같은 번호로 다시 조회한다. 결과 한 행을 두 번 클릭해 상세 화면의 저장 번호와 포장 수량을 확인하고, 기본 정보와 추가 정보 탭을 차례로 열어 저장된 나머지 항목을 살펴본다.",
+      "completion": "재조회한 기존 건의 저장 번호와 정정한 포장 수량, 두 탭의 선적값이 확인된다.",
+      "actions": [
+        {"verb": "activate", "target": "저장 완료 안내 확인 버튼"},
+        {"verb": "activate", "target": "상세 화면의 닫기 버튼"},
+        {"verb": "fill", "target": "House B/L 번호 검색 칸", "input_key": "hbl_no"},
+        {"verb": "activate", "target": "조회 버튼"},
+        {"verb": "activate", "target": "일치하는 조회 결과 행"},
+        {"verb": "verify", "target": "기존 저장 번호와 포장 수량", "input_key": "packages.count"},
+        {"verb": "activate", "target": "추가 정보 탭"},
+        {"verb": "verify", "target": "추가 정보 탭의 저장된 선적값"}
+      ]
+    }
+  ]
+}

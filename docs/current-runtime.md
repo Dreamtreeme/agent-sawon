@@ -24,10 +24,11 @@ Luna, Gemini, Jev와 replay 어댑터는 비교·재생 코드일 수 있으며 
 
 ## 실행 경로
 
-`pipeline.inbox plan-next`는 저장된 미처리 원문과 시작 전 계획을 읽고 모델 판단 한 건을
+`pipeline.inbox plan-next`는 저장된 미처리 원문과 각 업무의 실행 전 또는 정상 종료한 최신 계획을 읽고 모델 판단 한 건을
 기록한다. 선택된 원문 ID, 업무 목표, 사실별 값과 출처가 수신함에 남는다. 미처리 원문이
 없으면 모델 호출은 0회다. ERP 실행은 별도 `worker` 명령에서 시작한다. `--from-plan`을
 사용하면 교육의 업무 입력 키에 계획 사실을 연결해 작업자에게 값과 원문 ID를 함께 인계한다.
+이전 버전이 정상 종료한 정정 업무에는 `--after-dispatch-task`로 지정한 교육을 적용할 수 있다.
 [수신부터 업무 계획까지](serial-inbox.md)
 
 정보 수집 업무는 `TaskInstruction.result_keys`에 결과 항목만 선언한다. 검색어 등 공급 입력과

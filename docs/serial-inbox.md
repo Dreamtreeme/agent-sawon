@@ -62,7 +62,7 @@ $state = '.\cases\desk\state'
 
 ### 모델로 다음 업무 계획하기
 
-`collect` 또는 `collect-live`가 끝난 뒤 같은 상태 경로에서 `plan-next`를 실행한다. 모델은 미처리 원문의 판단용 텍스트와 아직 시작하지 않은 계획을 대조해 이번에 진행할 업무를 한 건 고른다. 미처리 원문이 없으면 모델 호출 없이 끝난다. 모델이 추가 자료를 기다리기로 하면 원문을 미처리 상태로 남긴다.
+`collect` 또는 `collect-live`가 끝난 뒤 같은 상태 경로에서 `plan-next`를 실행한다. 모델은 미처리 원문을 기존 업무의 최신 계획과 대조한다. 비교 대상에는 실행 전 계획과 작업자가 정상 종료한 계획이 들어간다. 미처리 원문이 없으면 모델 호출 없이 끝난다. 모델이 추가 자료를 기다리기로 하면 원문을 미처리 상태로 남긴다.
 
 ```powershell
 & $py -m pipeline.inbox --state $state plan-next --env-path .\.env
@@ -71,7 +71,7 @@ $state = '.\cases\desk\state'
 
 `--model-config`의 기본값은 `config/models.toml`이고 `--max-cost-usd`의 기본값은 3달러다. 유료 공급자를 사용할 때는 `--env-path`로 키가 있는 파일을 지정한다. [모델 설정](../config/models.toml) · [모델 클라이언트](../models/factory.py)
 
-계획에는 업무 목표와 원문에서 읽은 사실을 기록한다. 각 사실의 `key`, `value`, `receipt_id`를 보면 어떤 원문이 그 값을 제공했는지 알 수 있다. 예를 들어 선적 A의 수량을 24에서 30으로 고치는 카톡이 작업자 시작 전에 도착하면, 새 계획은 `supersedes_plan_id`로 이전 계획을 가리킨다. 수량의 출처는 정정 카톡으로 바뀌고, 바뀌지 않은 사실은 이전 출처와 함께 이어진다. 최초 메일과 이전 계획은 이력에 남는다.
+계획에는 업무 목표와 원문에서 읽은 사실을 기록한다. 각 사실의 `key`, `value`, `receipt_id`를 보면 어떤 원문이 그 값을 제공했는지 알 수 있다. 선적 A의 수량을 24에서 30으로 고치는 카톡이 도착하면, 정정 계획은 같은 업무 ID에서 `supersedes_plan_id`로 이전 버전을 가리킨다. 수량의 출처는 정정 카톡으로 바뀌고, 나머지 사실은 이전 출처와 함께 이어진다. 최초 등록을 실행한 버전에는 당시 종료 상태와 작업자 기록이 남는다.
 
 작업 요청이 없는 단독 참고 자료는 `reference`로 기록되어 미처리 목록에서 빠진다. 이때 `plan_id`는 `null`이다. 다른 업무가 미처리로 남아 있으면 같은 상태 경로에서 `plan-next`를 다시 실행한다.
 
@@ -96,7 +96,19 @@ $state = '.\cases\desk\state'
 
 입력 결합이 끝난 뒤 계획을 `started`로 기록하고 작업자를 호출한다. 정상 복귀하면 종료 코드를 기록한다. 중단돼 `started`가 남은 계획은 `plans`의 case 경로와 실제 저장 결과를 대조해 후속 계획을 정한다. ERP 저장 성공은 독립 채점과 재조회로 확인한다. [작업자 CLI](../brain/run.py)
 
-주기 실행과 ERP 등록이 끝난 업무의 자동 정정은 후속 구현 범위다. 별도 계정에서 새로 보낸 메시지의 실제 도착은 아래 절차로 검증할 항목이다.
+등록 후 포장 수량 정정까지 처리하는 시험에서는 같은 작업자 명령에 두 교육을 지정한다. `$planId`에는 이번 `plan-next`가 반환한 계획 번호를 넣고 매 실행마다 새 `$caseDir`을 사용한다.
+
+```powershell
+& $py -m pipeline.inbox --state $state worker --plan $planId --from-plan `
+  --after-dispatch-task .\examples\shipment-quantity-correction-task.json -- `
+  --task $task --case-dir $caseDir --relay-url $relay `
+  --config .\config\brain.visual.toml --model-config .\config\models.toml `
+  --visual-ocr-config .\config\pipeline.toml --env-path .\.env --max-cost-usd 3
+```
+
+처음 등록하거나 아직 등록을 실행하기 전에 정정이 오면 기본 교육을 쓴다. 앞선 버전에 정상 종료 이력이 있으면 정정 교육으로 House B/L을 조회해 기존 한 행의 수량을 바꾸고 같은 건을 다시 연다. 이 예제 교육의 수정 대상은 포장 수량이다. 다른 종류의 정정은 해당 업무용 교육이 필요하다. [포장 수량 정정 교육](../examples/shipment-quantity-correction-task.json)
+
+주기 실행과 별도 발신 계정에서 보낸 메시지의 실제 도착은 별도 검증 대상이다.
 
 ## 실제 계정으로 수신 조건 준비
 

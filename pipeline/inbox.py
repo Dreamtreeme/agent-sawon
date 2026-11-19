@@ -142,6 +142,16 @@ def collect_live(db: sqlite3.Connection, args: argparse.Namespace) -> dict:
     return {"gmail": gmail_result, "kakao": kakao_result}
 
 
+_REVISION_CANDIDATES = """
+    SELECT p.id, p.stage, p.decision FROM plans AS p
+     WHERE (p.stage='planned' OR (p.stage='exited' AND p.worker_exit=0))
+       AND NOT EXISTS (
+           SELECT 1 FROM plans AS next
+            WHERE json_extract(next.decision, '$.supersedes_plan_id')=p.id
+       )
+"""
+
+
 def record_plan(db: sqlite3.Connection, ids: list[int], decision: dict) -> int:
     if not ids or len(set(ids)) != len(ids) or not decision:
         raise ValueError("Supply distinct receipt IDs and a nonempty plan object")
@@ -151,11 +161,11 @@ def record_plan(db: sqlite3.Connection, ids: list[int], decision: dict) -> int:
             previous = decision["supersedes_plan_id"]
             if type(previous) is not int:
                 raise ValueError("supersedes_plan_id must be an integer")
-            replaced = db.execute(
-                "UPDATE plans SET stage='superseded' WHERE id=? AND stage='planned'", (previous,)
-            )
-            if replaced.rowcount != 1:
-                raise ValueError("Only an existing unstarted plan can be superseded")
+            prior = db.execute(_REVISION_CANDIDATES + " AND p.id=?", (previous,)).fetchone()
+            if prior is None:
+                raise ValueError("A revision needs the current planned or successfully exited plan")
+            if prior["stage"] == "planned":
+                db.execute("UPDATE plans SET stage='superseded' WHERE id=?", (previous,))
         plan = db.execute("INSERT INTO plans(decision) VALUES(?)", (encoded,))
         for receipt in ids:
             linked = db.execute(
@@ -177,15 +187,15 @@ def plan_next(db: sqlite3.Connection, args: argparse.Namespace) -> dict:
     from pipeline.inbox_planning import Reference, Wait, choose
     from sawon_runtime.storage import RunLog
 
-    unstarted = [
-        {"id": row["id"], "decision": json.loads(row["decision"])}
-        for row in db.execute("SELECT id,decision FROM plans WHERE stage='planned' ORDER BY id")
+    current = [
+        {"id": row["id"], "stage": row["stage"], "decision": json.loads(row["decision"])}
+        for row in db.execute(_REVISION_CANDIDATES + " ORDER BY p.id")
     ]
     run_id = uuid4().hex
     log = RunLog(args.state / "planning" / run_id, case_id=run_id, agent_id="inbox-planner")
     selection = choose(
         receipts,
-        unstarted,
+        current,
         log=log,
         model_config=args.model_config,
         env_path=args.env_path,
@@ -215,28 +225,48 @@ def plan_next(db: sqlite3.Connection, args: argparse.Namespace) -> dict:
     decision = selection.model_dump(exclude={"kind", "receipt_ids"}, exclude_none=True)
     if selection.supersedes_plan_id is not None:
         prior = next(
-            (p["decision"] for p in unstarted if p["id"] == selection.supersedes_plan_id), None
+            (p["decision"] for p in current if p["id"] == selection.supersedes_plan_id), None
         )
         if prior is None:
-            raise ValueError("Only an existing unstarted plan can be superseded")
+            raise ValueError("A revision needs the current planned or successfully exited plan")
         if prior.get("work_id"):
             decision["work_id"] = prior["work_id"]
-        changed_keys = {f.key for f in selection.facts}
         if isinstance(prior.get("facts"), list):
-            inherited = [
-                fact
+            existing = {
+                fact["key"]: fact
                 for fact in prior["facts"]
-                if isinstance(fact, dict)
-                and isinstance(fact.get("key"), str)
-                and fact["key"] not in changed_keys
+                if isinstance(fact, dict) and isinstance(fact.get("key"), str)
+            }
+            changes = [
+                fact
+                for fact in decision["facts"]
+                if existing.get(fact["key"], {}).get("value") != fact["value"]
             ]
-            decision["facts"] = inherited + decision["facts"]
+            changed_keys = {fact["key"] for fact in changes}
+            decision["facts"] = [fact for key, fact in existing.items() if key not in changed_keys]
+            decision["facts"].extend(changes)
     plan_id = record_plan(db, ids, decision)
     return {**result, "status": "planned", "plan_id": plan_id, "receipt_ids": ids}
 
 
+_PLAN_LINEAGE = """
+    WITH RECURSIVE lineage(id) AS (
+        SELECT ?
+        UNION
+        SELECT json_extract(p.decision, '$.supersedes_plan_id')
+          FROM plans p JOIN lineage ON p.id=lineage.id
+         WHERE json_extract(p.decision, '$.supersedes_plan_id') IS NOT NULL
+    )
+"""
+
+
 def _bind_worker_inputs(
-    db: sqlite3.Connection, plan: int, decision: dict, command: list[str], destination: Path
+    db: sqlite3.Connection,
+    plan: int,
+    decision: dict,
+    command: list[str],
+    destination: Path,
+    after_dispatch_task: Path | None,
 ) -> list[str]:
     from brain.run import worker_parser
     from brain.settings import BrainSettings
@@ -252,6 +282,15 @@ def _bind_worker_inputs(
         raise ValueError("The worker case directory already exists")
     settings = BrainSettings.load(options.config)
     task_path = options.task or settings.task_path
+    if after_dispatch_task is not None:
+        applied = db.execute(
+            _PLAN_LINEAGE
+            + """SELECT 1 FROM plans JOIN lineage USING(id)
+                  WHERE id!=? AND stage='exited' AND worker_exit=0 LIMIT 1""",
+            (plan, plan),
+        ).fetchone()
+        if applied:
+            task_path = after_dispatch_task
     if task_path is None:
         raise ValueError("Plan binding requires a taught task")
     task = TaskInstruction.model_validate_json(task_path.read_bytes())
@@ -259,18 +298,9 @@ def _bind_worker_inputs(
     cap = configured if options.max_cost_usd is None else Decimal(str(options.max_cost_usd))
     if not cap.is_finite() or not 0 <= cap <= configured:
         raise ValueError("Worker budget must be within the configured case cap")
-    # A revision keeps earlier facts linked to receipts on its superseded plans.
+    # Each version's inherited facts still cite the receipts linked to its predecessors.
     rows = db.execute(
-        """
-        WITH RECURSIVE lineage(id) AS (
-            SELECT ?
-            UNION
-            SELECT json_extract(p.decision, '$.supersedes_plan_id')
-              FROM plans p JOIN lineage ON p.id=lineage.id
-             WHERE json_extract(p.decision, '$.supersedes_plan_id') IS NOT NULL
-        )
-        SELECT id,source FROM receipts WHERE plan_id IN (SELECT id FROM lineage)
-    """,
+        _PLAN_LINEAGE + "SELECT id,source FROM receipts WHERE plan_id IN (SELECT id FROM lineage)",
         (plan,),
     )
     run_id = f"plan-{plan}-{uuid4().hex}"
@@ -290,11 +320,14 @@ def _bind_worker_inputs(
         raise ValueError("Input binding cost could not be covered by the worker budget")
     path = log.case_dir / "record.json"
     atomic_write_json(path, record)
-    budget_option = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
-    budget_option.add_argument("--max-cost-usd")
-    _, remaining = budget_option.parse_known_args(command)
+    supplied_options = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    supplied_options.add_argument("--max-cost-usd")
+    supplied_options.add_argument("--task")
+    _, remaining = supplied_options.parse_known_args(command)
     return [
         *remaining,
+        "--task",
+        str(task_path.resolve()),
         "--record",
         str(path.resolve()),
         "--max-cost-usd",
@@ -303,7 +336,12 @@ def _bind_worker_inputs(
 
 
 def run_worker(
-    db: sqlite3.Connection, plan: int, arguments: list[str], *, input_dir: Path | None = None
+    db: sqlite3.Connection,
+    plan: int,
+    arguments: list[str],
+    *,
+    input_dir: Path | None = None,
+    after_dispatch_task: Path | None = None,
 ) -> int:
     from brain.run import main as run_case
 
@@ -316,7 +354,9 @@ def run_worker(
         raise ValueError("A runnable plan needs a goal")
     command = [*arguments, "--goal", goal]
     if input_dir is not None:
-        command = _bind_worker_inputs(db, plan, decision, command, input_dir)
+        command = _bind_worker_inputs(db, plan, decision, command, input_dir, after_dispatch_task)
+    elif after_dispatch_task is not None:
+        raise ValueError("--after-dispatch-task requires --from-plan")
     # Commit before dispatch. An interrupted run keeps its evidence for reconciliation.
     with db:
         db.execute(
@@ -376,6 +416,11 @@ def main() -> int:
     worker.add_argument(
         "--from-plan", action="store_true", help="Bind receipt-backed facts to the task inputs"
     )
+    worker.add_argument(
+        "--after-dispatch-task",
+        type=Path,
+        help="Education for editing work previously completed in this plan's lineage",
+    )
     worker.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     with desktop_turn(args.state) as db:
@@ -432,6 +477,7 @@ def main() -> int:
                 args.plan,
                 arguments,
                 input_dir=args.state / "worker-inputs" if args.from_plan else None,
+                after_dispatch_task=args.after_dispatch_task,
             )
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
