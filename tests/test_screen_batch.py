@@ -86,7 +86,7 @@ class CountingScanner(SyntheticScanner):
             )
         return scene
 
-    def rebind_action(self, scene, target, fresh, *, planned_point=None, max_phash_distance=16):
+    def rebind_action(self, scene, target, fresh, *, planned_point=None):
         """The synthetic relay exposes its current local detections directly."""
         matches = [
             item
@@ -103,7 +103,6 @@ class CountingScanner(SyntheticScanner):
             point=(x + width / 2, y + height / 2),
             bbox=tuple(map(int, current.bbox)),
             method="synthetic_local_rebind",
-            phash_distance=0,
         )
 
 

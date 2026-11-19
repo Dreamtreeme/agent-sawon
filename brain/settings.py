@@ -61,7 +61,6 @@ class BrainSettings(BaseModel):
     visual_screen_fill: bool = False
     visual_model_led_semantics: bool = False
     visual_model_only_review: bool = False
-    visual_action_phash_distance: int = Field(default=16, ge=0, le=64)
     screen_matching: bool
     task_path: Path | None = None
     visual_detector: DetectorSettings = Field(default_factory=DetectorSettings)

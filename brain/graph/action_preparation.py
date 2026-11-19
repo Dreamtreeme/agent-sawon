@@ -82,7 +82,6 @@ class ActionWiringRequest:
     values: Mapping[str, str]
     planned_point: tuple[float, float] | None = None
     fresh_observation: Observation | None = None
-    max_phash_distance: int = 16
     screen_batch: bool = False
     log_renewal: bool = True
 
@@ -103,9 +102,9 @@ def _rebind_visual_point(
     old_point: tuple[float, float],
     *,
     same_content: bool,
-) -> tuple[tuple[float, float], str, int]:
+) -> tuple[tuple[float, float], str]:
     if same_content:
-        return old_point, "exact_capture", 0
+        return old_point, "exact_capture"
     if services.rebind_action is None:
         raise ValueError("visual_screen_changed_before_action")
     try:
@@ -114,7 +113,6 @@ def _rebind_visual_point(
             target,
             fresh,
             planned_point=old_point,
-            max_phash_distance=request.max_phash_distance,
         )
     except ValueError as error:
         services.log.append(
@@ -128,7 +126,7 @@ def _rebind_visual_point(
             },
         )
         raise ValueError("visual_screen_changed_before_action") from error
-    return binding.point, binding.method, binding.phash_distance
+    return binding.point, binding.method
 
 
 def _log_visual_renewal(
@@ -141,7 +139,6 @@ def _log_visual_renewal(
     *,
     same_content: bool,
     binding_method: str,
-    phash_distance: int,
 ) -> None:
     if not request.log_renewal:
         return
@@ -161,7 +158,6 @@ def _log_visual_renewal(
             "origin_changed": new_shot.geometry.origin != old_shot.geometry.origin,
             "same_content": same_content,
             "binding_method": binding_method,
-            "phash_distance": phash_distance,
         },
     )
 
@@ -222,7 +218,7 @@ def _fresh_visual_target(
         )
         raise ValueError("visual_screen_changed_before_action")
 
-    point, binding_method, phash_distance = _rebind_visual_point(
+    point, binding_method = _rebind_visual_point(
         request,
         services,
         scene,
@@ -240,7 +236,6 @@ def _fresh_visual_target(
         new_shot,
         same_content=same_content,
         binding_method=binding_method,
-        phash_distance=phash_distance,
     )
     return (
         {

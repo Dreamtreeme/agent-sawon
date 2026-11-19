@@ -695,8 +695,11 @@ viewport·pHash 기준은 유지합니다. 관계없는 관찰 필드는 저장 
 공급자 원문은 `models/base.py`가 `diagnostics/model-<call_id>.json`에 보관하며,
 `model_call` 이벤트의 `call_id`, `context`, `response_artifact`로 추적한다.
 
-화면 비교 거절은 `brain/visual/scanning.py`가 실제 비교한 두 캡처와 pHash·거리·기준을
-기록한다. bench의 `relay/service.py`와 `relay/api.py`는 relay artifact 디렉터리의
+실행 직전 같은 창에서 캡처 내용이 달라지면 현재 OCR에서 선택한 대상의 글자를 찾고,
+입력칸은 라벨과 현재 컨트롤의 위치를 함께 사용한다. 같은 재캡처를 쓰는 배치는 OCR과 탐지 결과를
+공유한다. 대상을 특정할 수 없으면 `brain/visual/scanning.py`가 계획 시점과 실행 직전의
+두 캡처, 대상, 계획 좌표와 재결합 실패 이유를 기록한다.
+bench의 `relay/service.py`와 `relay/api.py`는 relay artifact 디렉터리의
 `diagnostics/<id>/rejection.json`에 요청과 이유를 기록한다. relay는 현재 pHash를 판정에
 사용하지 않으므로 값은 null과 미사용 사유로 표시한다. HTTP 오류 응답에는 원문을 노출하지 않는다.
 진단 파일·이벤트 저장 실패는 기존 거절·재시도·종료 결과를 변경하지 않는다. 다만 기존 필수
@@ -746,7 +749,7 @@ ORB는 긴 변 최대 960px, 특징점 최대 1,200개, Hamming 최근접 비율
 `unknown`은 관찰은 했지만 구조 변화가 불확실한 경우다. `unchecked`(관찰 전)와 달리
 after obs ID와 독립적으로 확인한 사실을 보존한다. 별도 사실이 없다면 기억 실행 검토에
 `success=None`을 전달하고 해당 행동을 성공한 캐시로 승격하지 않는다.
-입력 검증·저장 결과·완료 검토와 pHash 기반 기억 인출·좌표 재결합 계약은 바꾸지 않는다.
+pHash는 관찰의 탐지 기하 재사용과 편찬된 기억의 후보 선택에 사용한다.
 
 관찰은 직전 행동의 구조 변화와 현재 화면을 모델에게 함께 전달한다. 다음 행동은 그 관찰에서
 생성된 모델 계획을 사용한다. 무변화·같은 대상 재선택·과거 화면으로의 복귀를 별도 실패

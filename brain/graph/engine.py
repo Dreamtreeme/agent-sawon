@@ -2035,7 +2035,6 @@ class Brain:
                 values=self.input_values,
                 planned_point=planned.point if planned is not None else None,
                 fresh_observation=fresh_observation,
-                max_phash_distance=self.settings.visual_action_phash_distance,
                 screen_batch=screen_batch,
                 log_renewal=log_renewal,
             ),

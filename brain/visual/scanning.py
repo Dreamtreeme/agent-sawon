@@ -107,7 +107,6 @@ class ScreenScanner:
         self.on_capture = on_capture
         self._catalog: _SceneCatalog | None = None
         self._catalogs: dict[tuple, _SceneCatalog] = {}
-        self._action_captures: dict[str, Path] = {}
         self._action_catalogs: dict[str, tuple[Path, list[OcrBlock], list[Marker]]] = {}
 
     def close(self) -> None:
@@ -330,64 +329,18 @@ class ScreenScanner:
         fresh: Observation,
         *,
         planned_point: tuple[float, float] | None = None,
-        max_phash_distance: int = 16,
     ) -> ActionTargetBinding:
         """Renew one action target from fresh local OCR/detection without a semantic model call."""
         if fresh.blocked_reason or fresh.screenshot is None or fresh.screenshot.geometry is None:
             raise ValueError("visual_fresh_capture_unusable")
         key = str(fresh.obs_id)
-        old_path = self.case_dir / "visual" / str(scene.obs_id) / "capture.png"
-        if not old_path.is_file():
-            raise ValueError("visual_planned_capture_missing")
-        path = self._action_captures.get(key)
-        if path is None:
-            folder = self.case_dir / "action-renewal" / key
-            path = self.relay.screenshot(fresh, folder / "capture.png")
-            self._action_captures[key] = path
-        old_hash, fresh_hash = perceptual_hash(old_path), perceptual_hash(path)
-        distance = hash_distance(old_hash, fresh_hash)
-        if distance > max_phash_distance:
-            record_rejection(
-                self.log,
-                "perception.rebind_action.phash",
-                ValueError("visual_scene_family_changed"),
-                response=target,
-                captures=(old_path, path),
-                context={
-                    "old_phash": str(old_hash),
-                    "fresh_phash": str(fresh_hash),
-                    "distance": distance,
-                    "max_distance": max_phash_distance,
-                },
-            )
-            raise ValueError("visual_scene_family_changed")
-        if (fresh.screenshot.width, fresh.screenshot.height) == (
-            scene.screenshot.width,
-            scene.screenshot.height,
-        ):
-            x, y, width, height = target.bbox
-            point = planned_point or (x + width / 2, y + height / 2)
-            self.log.append(
-                "verify",
-                payload={
-                    "stage": "local_action_rebind_route",
-                    "obs_id": key,
-                    "method": "phash_same_layout",
-                    "phash_distance": distance,
-                    "ocr_and_detection_skipped": True,
-                    "model_called": False,
-                },
-            )
-            return ActionTargetBinding(
-                point=point,
-                bbox=tuple(map(int, target.bbox)),
-                method="phash_same_layout",
-                phash_distance=distance,
-            )
         cached = self._action_catalogs.get(key)
         if cached is None:
             started = perf_counter()
             shot = fresh.screenshot
+            path = self.relay.screenshot(
+                fresh, self.case_dir / "action-renewal" / key / "capture.png"
+            )
             page = RenderedPage(
                 document="action-renewal",
                 kind="hbl",
@@ -425,13 +378,10 @@ class ScreenScanner:
             return rebind_action_target(
                 scene,
                 target,
-                old_capture=old_path,
-                fresh_capture=path,
                 fresh_size=(fresh.screenshot.width, fresh.screenshot.height),
                 blocks=blocks,
                 markers=markers,
                 planned_point=planned_point,
-                max_phash_distance=max_phash_distance,
             )
         except ValueError as error:
             record_rejection(
@@ -439,13 +389,8 @@ class ScreenScanner:
                 "perception.rebind_action.target",
                 error,
                 response=target,
-                captures=(old_path, path),
-                context={
-                    "old_phash": str(old_hash),
-                    "fresh_phash": str(fresh_hash),
-                    "distance": distance,
-                    "max_distance": max_phash_distance,
-                },
+                captures=(self.case_dir / "visual" / str(scene.obs_id) / "capture.png", path),
+                context={"planned_point": planned_point, "fresh_observation": key},
             )
             raise
 

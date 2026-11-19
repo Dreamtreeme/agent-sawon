@@ -9,7 +9,7 @@ import pytest
 from PIL import Image, ImageDraw
 from sawon_interfaces import CaptureGeometry, Observation, Screenshot, UIElement, WindowInfo
 
-from brain.visual.action_rebind import hash_distance, perceptual_hash, rebind_action_target
+from brain.visual.action_rebind import rebind_action_target
 from brain.visual.markers import Marker
 from brain.visual.scanning import ScreenScanner
 from brain.visual.scene import SceneObservation
@@ -54,8 +54,7 @@ def same_form_images(tmp_path):
     return old_path, fresh_path
 
 
-def test_input_rebinds_to_resized_local_control_without_a_model(tmp_path):
-    old_path, fresh_path = same_form_images(tmp_path)
+def test_input_rebinds_to_resized_local_control_without_a_model():
     label = UIElement(ref="e1", role="text", name="사용자", bbox=(10, 40, 70, 20))
     target = UIElement(
         ref="e2", role="edit", name="사용자", label_hint="사용자", bbox=(100, 40, 200, 30)
@@ -64,15 +63,12 @@ def test_input_rebinds_to_resized_local_control_without_a_model(tmp_path):
     result = rebind_action_target(
         scene,
         target,
-        old_capture=old_path,
-        fresh_capture=fresh_path,
         fresh_size=(600, 240),
         blocks=[OcrBlock(id=0, text="사용자", confidence=1, bbox=(15, 48, 105, 24))],
         markers=[Marker(id=0, bbox=(150, 48, 300, 36), source="omniparser", confidence=1)],
     )
     assert result.method == "ocr_label_local_control"
     assert result.point == (300, 66)
-    assert result.phash_distance <= 16
 
 
 @pytest.mark.parametrize(
@@ -86,16 +82,13 @@ def test_input_rebinds_to_resized_local_control_without_a_model(tmp_path):
     ids=["inside-caption", "outside-unchanged", "outside-moved", "outside-scaled"],
 )
 def test_click_rebinds_to_current_ocr_caption_and_preserves_relative_point(
-    tmp_path, caption, planned_point, expected
+    caption, planned_point, expected
 ):
-    old_path, fresh_path = same_form_images(tmp_path)
     target = UIElement(ref="e2", role="button", name="저장", bbox=(100, 100, 80, 30))
     scene = SceneObservation(wire=wire(), elements=[target])
     result = rebind_action_target(
         scene,
         target,
-        old_capture=old_path,
-        fresh_capture=fresh_path,
         fresh_size=(600, 240),
         blocks=[OcrBlock(id=0, text="저장", confidence=1, bbox=caption)],
         markers=[],
@@ -105,71 +98,65 @@ def test_click_rebinds_to_current_ocr_caption_and_preserves_relative_point(
     assert result.point == expected
 
 
-def test_changed_scene_family_is_rejected_before_reusing_visible_caption(tmp_path):
-    old_path, fresh_path = same_form_images(tmp_path)
-    with Image.open(fresh_path) as source:
-        changed = source.copy()
-    ImageDraw.Draw(changed).rectangle((0, 0, 599, 150), fill="black")
-    changed.save(fresh_path)
-    distance = hash_distance(perceptual_hash(old_path), perceptual_hash(fresh_path))
-    assert distance > 16
-    target = UIElement(ref="e2", role="button", name="저장", bbox=(100, 100, 80, 30))
-    scene = SceneObservation(wire=wire(), elements=[target])
-    with pytest.raises(ValueError, match="visual_scene_family_changed"):
-        rebind_action_target(
-            scene,
-            target,
-            old_capture=old_path,
-            fresh_capture=fresh_path,
-            fresh_size=(600, 240),
-            blocks=[OcrBlock(id=0, text="저장", confidence=1, bbox=(150, 120, 120, 36))],
-            markers=[],
-        )
-
-
-def test_perception_rejection_preserves_the_two_compared_images_and_hashes(tmp_path):
-    old_path, fresh_path = same_form_images(tmp_path)
-    with Image.open(fresh_path) as source:
-        changed = source.copy()
-    ImageDraw.Draw(changed).rectangle((0, 0, 599, 150), fill="black")
-    changed.save(fresh_path)
-    target = UIElement(ref="e2", role="button", name="Save", bbox=(100, 100, 80, 30))
+@pytest.mark.parametrize(
+    "intended,visible,fresh_x,expected",
+    [("새 건 등록", "새건등록", 180, (220, 115)), ("예", "확인", 100, None)],
+    ids=["moved-register-button", "confirmation-replaced-yes"],
+)
+def test_rebind_on_same_size_frames_uses_current_caption(
+    tmp_path, intended, visible, fresh_x, expected
+):
+    target = UIElement(ref="e2", role="button", name=intended, bbox=(100, 100, 80, 30))
     scene = SceneObservation(wire=wire(), elements=[target])
     planned = tmp_path / "visual" / str(scene.obs_id) / "capture.png"
     planned.parent.mkdir(parents=True)
-    planned.write_bytes(old_path.read_bytes())
+    old_image = Image.new("RGB", (400, 200), "white")
+    ImageDraw.Draw(old_image).rectangle((100, 100, 179, 129), outline="black")
+    old_image.save(planned)
     log = RunLog(tmp_path, case_id="rejected-pair", agent_id="test")
-    captures = []
+    fresh_path = tmp_path / "fresh.png"
+    fresh_image = Image.new("RGB", (400, 200), "white")
+    draw = ImageDraw.Draw(fresh_image)
+    draw.rectangle((fresh_x, 100, fresh_x + 79, 129), outline="black")
+    if expected is not None:
+        draw.rectangle((0, 0, 399, 94), fill="black")
+    else:
+        draw.text((fresh_x + 5, 105), "OK", fill="black")
+    fresh_image.save(fresh_path)
 
     class Relay:
         def screenshot(self, observation, path):
-            captures.append(observation.obs_id)
             path.parent.mkdir(parents=True)
             path.write_bytes(fresh_path.read_bytes())
             return path
 
-    # Neither OCR, detector nor model should be reached on this branch.
+    class Ocr:
+        def read(self, page):
+            assert page.image_path.read_bytes() == fresh_path.read_bytes()
+            return [OcrBlock(id=0, text=visible, confidence=1, bbox=(fresh_x, 100, 80, 30))]
+
+    class Detector:
+        def read(self, page):
+            return []
+
     perception = ScreenScanner(
-        Relay(), None, tmp_path, log, None, detector=None, model_led_semantics=True
+        Relay(), Ocr(), tmp_path, log, None, detector=Detector(), model_led_semantics=True
     )
-    fresh = wire(600, 240)
-    with pytest.raises(ValueError, match="^visual_scene_family_changed$"):
+    fresh = wire()
+    if expected is not None:
+        assert perception.rebind_action(scene, target, fresh).point == expected
+        return
+    with pytest.raises(ValueError, match="^visual_target_anchor_missing$"):
         perception.rebind_action(scene, target, fresh)
-    assert captures == [fresh.obs_id]
     event = log.read_all()[-1]
     preserved = json.loads(Path(event.payload["artifact"]).read_text(encoding="utf-8"))
     assert [Path(item["copy"]).read_bytes() for item in preserved["captures"]] == [
-        old_path.read_bytes(),
+        planned.read_bytes(),
         fresh_path.read_bytes(),
     ]
-    context = preserved["context"]
-    assert int(context["old_phash"]) == perceptual_hash(old_path)
-    assert int(context["fresh_phash"]) == perceptual_hash(fresh_path)
-    assert context["distance"] > context["max_distance"] == 16
 
 
-def test_duplicate_caption_does_not_guess_a_coordinate(tmp_path):
-    old_path, fresh_path = same_form_images(tmp_path)
+def test_duplicate_caption_does_not_guess_a_coordinate():
     target = UIElement(ref="e2", role="button", name="상세", bbox=(100, 100, 80, 30))
     scene = SceneObservation(wire=wire(), elements=[target])
     blocks = [
@@ -180,8 +167,6 @@ def test_duplicate_caption_does_not_guess_a_coordinate(tmp_path):
         rebind_action_target(
             scene,
             target,
-            old_capture=old_path,
-            fresh_capture=fresh_path,
             fresh_size=(600, 240),
             blocks=blocks,
             markers=[],

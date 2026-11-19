@@ -21,7 +21,6 @@ class ActionTargetBinding:
     point: tuple[float, float]
     bbox: tuple[int, int, int, int]
     method: str
-    phash_distance: int
 
 
 def perceptual_hash(path: Path, *, size: int = 32, low_frequency: int = 8) -> int:
@@ -100,18 +99,12 @@ def rebind_action_target(
     scene: SceneObservation,
     target: UIElement,
     *,
-    old_capture: Path,
-    fresh_capture: Path,
     fresh_size: tuple[int, int],
     blocks: list[OcrBlock],
     markers: list[Marker],
     planned_point: tuple[float, float] | None = None,
-    max_phash_distance: int = 16,
 ) -> ActionTargetBinding:
     """Find one current target from its visible text and local control geometry."""
-    distance = hash_distance(perceptual_hash(old_capture), perceptual_hash(fresh_capture))
-    if distance > max_phash_distance:
-        raise ValueError("visual_scene_family_changed")
     anchors = {
         compact_normalize(target.name),
         compact_normalize(target.label_hint),
@@ -121,11 +114,13 @@ def rebind_action_target(
     text_matches = _matching_text(blocks, anchors)
     role = target.role.casefold()
     if role not in {"edit", "combobox"}:
+        if not text_matches:
+            raise ValueError("visual_target_anchor_missing")
         if len(text_matches) != 1:
             raise ValueError("visual_target_anchor_ambiguous")
         box = text_matches[0].bbox
         return ActionTargetBinding(
-            relative_point(target.bbox, box, planned_point), box, "ocr_text_anchor", distance
+            relative_point(target.bbox, box, planned_point), box, "ocr_text_anchor"
         )
 
     if len(text_matches) != 1:
@@ -170,5 +165,5 @@ def rebind_action_target(
         raise ValueError("visual_input_control_ambiguous")
     box = candidates[0][1].bbox
     return ActionTargetBinding(
-        relative_point(target.bbox, box, planned_point), box, "ocr_label_local_control", distance
+        relative_point(target.bbox, box, planned_point), box, "ocr_label_local_control"
     )
