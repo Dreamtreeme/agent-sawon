@@ -13,7 +13,7 @@ from brain.observe.values import compact_normalize
 from sawon_runtime.visual import OcrBlock
 
 from .markers import Marker
-from .scene import SceneObservation
+from .scene import SceneObservation, overlap
 
 
 @dataclass(frozen=True)
@@ -55,17 +55,6 @@ def _center(box: tuple[int, int, int, int]) -> tuple[float, float]:
     return box[0] + box[2] / 2, box[1] + box[3] / 2
 
 
-def _old_label(scene: SceneObservation, target: UIElement, anchors: set[str]) -> UIElement | None:
-    matches = [
-        item
-        for item in scene.elements
-        if item.ref != target.ref
-        and item.role.casefold() in {"text", "label", "cell", "header", "headeritem"}
-        and compact_normalize(item.name) in anchors
-    ]
-    return matches[0] if len(matches) == 1 else None
-
-
 def _matching_text(blocks: list[OcrBlock], anchors: set[str]) -> list[OcrBlock]:
     exact = [block for block in blocks if compact_normalize(block.text) in anchors]
     if exact:
@@ -105,15 +94,14 @@ def rebind_action_target(
     planned_point: tuple[float, float] | None = None,
 ) -> ActionTargetBinding:
     """Find one current target from its visible text and local control geometry."""
-    anchors = {
-        compact_normalize(target.name),
-        compact_normalize(target.label_hint),
-    } - {"", "[redacted]"}
-    if not anchors:
-        raise ValueError("visual_target_has_no_local_anchor")
-    text_matches = _matching_text(blocks, anchors)
-    role = target.role.casefold()
-    if role not in {"edit", "combobox"}:
+    if target.role.casefold() not in {"edit", "combobox"}:
+        anchors = {compact_normalize(target.name), compact_normalize(target.label_hint)} - {
+            "",
+            "[redacted]",
+        }
+        if not anchors:
+            raise ValueError("visual_target_has_no_local_anchor")
+        text_matches = _matching_text(blocks, anchors)
         if not text_matches:
             raise ValueError("visual_target_anchor_missing")
         if len(text_matches) != 1:
@@ -123,47 +111,28 @@ def rebind_action_target(
             relative_point(target.bbox, box, planned_point), box, "ocr_text_anchor"
         )
 
-    if len(text_matches) != 1:
-        raise ValueError("visual_input_label_ambiguous")
-    label = text_matches[0]
-    old_label = _old_label(scene, target, anchors)
-    old_width, old_height = scene.screenshot.width, scene.screenshot.height
     fresh_width, fresh_height = fresh_size
-    scale_x, scale_y = fresh_width / old_width, fresh_height / old_height
-    target_center = _center(target.bbox)
-    if old_label is None:
-        expected = target_center[0] * scale_x, target_center[1] * scale_y
-    else:
-        old_label_center = _center(old_label.bbox)
-        fresh_label_center = _center(label.bbox)
-        expected = (
-            fresh_label_center[0] + (target_center[0] - old_label_center[0]) * scale_x,
-            fresh_label_center[1] + (target_center[1] - old_label_center[1]) * scale_y,
-        )
-    expected_width = max(1, target.bbox[2] * scale_x)
-    expected_height = max(1, target.bbox[3] * scale_y)
+    scale_x = fresh_width / scene.screenshot.width
+    scale_y = fresh_height / scene.screenshot.height
+    x, y = planned_point or _center(target.bbox)
+    point = (x * scale_x, y * scale_y)
     candidates = []
     for marker in markers:
-        if marker.source not in {"omniparser"}:
-            continue
-        x, y, width, height = marker.bbox
-        if width * height > fresh_width * fresh_height * 0.5:
-            continue
-        center = _center(marker.bbox)
-        center_error = math.hypot(
-            (center[0] - expected[0]) / max(30, expected_width),
-            (center[1] - expected[1]) / max(20, expected_height),
-        )
-        shape_error = abs(math.log(max(1, width) / expected_width)) + abs(
-            math.log(max(1, height) / expected_height)
-        )
-        candidates.append((center_error + shape_error * 0.35, marker))
-    candidates.sort(key=lambda item: item[0])
-    if not candidates or candidates[0][0] > 2.5:
+        left, top, width, height = marker.bbox
+        if (
+            marker.source == "omniparser"
+            and width * height <= fresh_width * fresh_height * 0.5
+            and left <= point[0] < left + width
+            and top <= point[1] < top + height
+        ):
+            candidates.append(marker.bbox)
+    if not candidates:
         raise ValueError("visual_input_control_not_found")
-    if len(candidates) > 1 and candidates[1][0] - candidates[0][0] < 0.12:
-        raise ValueError("visual_input_control_ambiguous")
-    box = candidates[0][1].bbox
-    return ActionTargetBinding(
-        relative_point(target.bbox, box, planned_point), box, "ocr_label_local_control"
-    )
+    if len(candidates) > 1:
+        left, top, width, height = target.bbox
+        projected = (left * scale_x, top * scale_y, width * scale_x, height * scale_y)
+        ranked = sorted(((overlap(projected, box), box) for box in candidates), reverse=True)
+        if ranked[0][0] - ranked[1][0] < 0.12:
+            raise ValueError("visual_input_control_ambiguous")
+        return ActionTargetBinding(point, ranked[0][1], "selected_input_region")
+    return ActionTargetBinding(point, candidates[0], "selected_input_region")

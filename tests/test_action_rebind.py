@@ -54,21 +54,75 @@ def same_form_images(tmp_path):
     return old_path, fresh_path
 
 
-def test_input_rebinds_to_resized_local_control_without_a_model():
-    label = UIElement(ref="e1", role="text", name="사용자", bbox=(10, 40, 70, 20))
-    target = UIElement(
-        ref="e2", role="edit", name="사용자", label_hint="사용자", bbox=(100, 40, 200, 30)
-    )
-    scene = SceneObservation(wire=wire(), elements=[label, target])
+@pytest.mark.parametrize(
+    ("role", "observed_box", "readings", "other_boxes"),
+    [
+        (
+            "edit",
+            (100, 40, 200, 30),
+            [
+                ("House B/L", (15, 42, 82, 18)),
+                ("번호", (15, 60, 40, 18)),
+                ("House B/L", (150, 120, 82, 18)),
+            ],
+            [(130, 35, 155, 74)],
+        ),
+        ("combobox", (100, 40, 200, 30), [], []),
+        ("edit", (170, 55, 1, 1), [("House B/L 번호", (15, 48, 80, 24))], []),
+        ("edit", (10, 40, 65, 30), [("House B/L 번호", (15, 48, 80, 24))], []),
+    ],
+    ids=[
+        "split-caption-table-header-and-overlapping-controls",
+        "no-visible-caption",
+        "point-only-fill",
+        "point-outside-observed-label",
+    ],
+)
+def test_resized_input_preserves_model_selected_point(role, observed_box, readings, other_boxes):
+    target = UIElement(ref="e2", role=role, name="House B/L 번호", bbox=observed_box)
+    scene = SceneObservation(wire=wire(), elements=[target])
+    fresh_box = (150, 48, 300, 36)
     result = rebind_action_target(
         scene,
         target,
         fresh_size=(600, 240),
-        blocks=[OcrBlock(id=0, text="사용자", confidence=1, bbox=(15, 48, 105, 24))],
-        markers=[Marker(id=0, bbox=(150, 48, 300, 36), source="omniparser", confidence=1)],
+        blocks=[
+            OcrBlock(id=i, text=text, confidence=1, bbox=bbox)
+            for i, (text, bbox) in enumerate(readings)
+        ],
+        markers=[
+            Marker(id=i, bbox=box, source="omniparser", confidence=1)
+            for i, box in enumerate([*other_boxes, fresh_box])
+        ],
+        planned_point=(170, 55),
     )
-    assert result.method == "ocr_label_local_control"
-    assert result.point == (300, 66)
+    assert result.bbox == fresh_box
+    assert result.point == (255, 66)
+
+
+@pytest.mark.parametrize(
+    ("boxes", "error"),
+    [
+        ([], "visual_input_control_not_found"),
+        ([(100, 90, 200, 30)], "visual_input_control_not_found"),
+        ([(50, 40, 200, 30), (150, 40, 200, 30)], "visual_input_control_ambiguous"),
+    ],
+    ids=["input-disappeared", "only-next-field-remains", "equally-plausible-inputs"],
+)
+def test_input_rebinding_requires_a_current_control_even_when_its_caption_remains(boxes, error):
+    target = UIElement(ref="e2", role="edit", name="수량", bbox=(100, 40, 200, 30))
+    scene = SceneObservation(wire=wire(), elements=[target])
+    with pytest.raises(ValueError, match=error):
+        rebind_action_target(
+            scene,
+            target,
+            fresh_size=(400, 200),
+            blocks=[OcrBlock(id=0, text="수량", confidence=1, bbox=(10, 40, 70, 20))],
+            markers=[
+                Marker(id=i, bbox=box, source="omniparser", confidence=1)
+                for i, box in enumerate(boxes)
+            ],
+        )
 
 
 @pytest.mark.parametrize(

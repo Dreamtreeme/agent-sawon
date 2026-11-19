@@ -701,10 +701,11 @@ viewport·pHash 기준은 유지합니다. 관계없는 관찰 필드는 저장 
 공급자 원문은 `models/base.py`가 `diagnostics/model-<call_id>.json`에 보관하며,
 `model_call` 이벤트의 `call_id`, `context`, `response_artifact`로 추적한다.
 
-실행 직전 같은 창에서 캡처 내용이 달라지면 현재 OCR에서 선택한 대상의 글자를 찾고,
-입력칸은 라벨과 현재 컨트롤의 위치를 함께 사용한다. 같은 재캡처를 쓰는 배치는 OCR과 탐지 결과를
-공유한다. 대상을 특정할 수 없으면 `brain/visual/scanning.py`가 계획 시점과 실행 직전의
-두 캡처, 대상, 계획 좌표와 재결합 실패 이유를 기록한다.
+실행 직전 같은 창에서 캡처 내용이 달라지면 입력칸(`edit`, `combobox`)은 모델이 선택한
+점을 현재 캡처 크기로 환산하고, 그 점을 포함한 탐지 영역에 연결한다. 여러 영역이 겹치면
+계획 시점의 대상 영역과 겹치는 정도로 구별한다. 버튼은 현재 OCR에서 선택한 문구를 찾는다.
+같은 재캡처를 쓰는 배치는 OCR과 탐지 결과를 공유한다. 대상을 특정할 수 없으면
+`brain/visual/scanning.py`가 계획 시점과 실행 직전의 두 캡처, 대상, 계획 좌표와 실패 이유를 기록한다.
 bench의 `relay/service.py`와 `relay/api.py`는 relay artifact 디렉터리의
 `diagnostics/<id>/rejection.json`에 요청과 이유를 기록한다. relay는 현재 pHash를 판정에
 사용하지 않으므로 값은 null과 미사용 사유로 표시한다. HTTP 오류 응답에는 원문을 노출하지 않는다.
