@@ -627,9 +627,7 @@ def test_synthetic_changed_button_screen_reaches_model_before_any_click(tmp_path
     brain, model, relay, ocr, *_ = setup_brain(tmp_path, record, [fill_then_save, open_details])
     # A synthetic cache hit would select the list heading instead of the details button.
     remembered = ScreenMapping.model_validate(click("Save", [12, 70, 35, 14], [29, 77]))
-    cached = ScreenMatch.model_validate(
-        {**remembered.local_payload({}), "mapping": remembered}
-    ).model_dump(mode="json")
+    cached = {**remembered.local_payload({}), "mapping": remembered.model_dump(exclude_unset=True)}
     brain.visual_match_cache.enabled = True
     brain.visual_match_cache.lookup = lambda key: (key, cached) if model.prompts else None
     editor = [OcrBlock(id=1, text="Save", bbox=(278, 20, 35, 14), confidence=1)]
