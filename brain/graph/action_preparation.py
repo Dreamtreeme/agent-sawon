@@ -93,6 +93,14 @@ class ActionWiringServices:
     rebind_action: Callable[..., Any] | None = None
 
 
+class ScreenDecisionRequired(ValueError):
+    """The pending target needs a model decision on this newly observed frame."""
+
+    def __init__(self, observation: Observation):
+        super().__init__("screen_changed_before_click")
+        self.observation = observation
+
+
 def _rebind_visual_point(
     request: ActionWiringRequest,
     services: ActionWiringServices,
@@ -111,6 +119,11 @@ def _rebind_visual_point(
             x * fresh.screenshot.width / scene.screenshot.width,
             y * fresh.screenshot.height / scene.screenshot.height,
         ), "scroll_viewport"
+    if request.choice.type not in {"set_text", "type_text"} or target.role.casefold() not in {
+        "edit",
+        "combobox",
+    }:
+        raise ScreenDecisionRequired(fresh)
     if services.rebind_action is None:
         raise ValueError("visual_screen_changed_before_action")
     try:

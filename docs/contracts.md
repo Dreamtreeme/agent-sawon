@@ -704,10 +704,14 @@ viewport·pHash 기준은 유지합니다. 관계없는 관찰 필드는 저장 
 공급자 원문은 `models/base.py`가 `diagnostics/model-<call_id>.json`에 보관하며,
 `model_call` 이벤트의 `call_id`, `context`, `response_artifact`로 추적한다.
 
-실행 직전 같은 창에서 캡처 내용이 달라지면 입력칸(`edit`, `combobox`)은 모델이 선택한
-점을 현재 캡처 크기로 환산하고, 그 점을 포함한 탐지 영역에 연결한다. 여러 영역이 겹치면
-계획 시점의 대상 영역과 겹치는 정도로 구별한다. 버튼은 현재 OCR에서 선택한 문구를 찾는다.
-같은 재캡처를 쓰는 배치는 OCR과 탐지 결과를 공유한다. 대상을 특정할 수 없으면
+실행 직전 같은 창에서 캡처 내용이 달라지면 클릭·더블클릭을 보류한다.
+실행 노드는 해당 캡처를 `WorkerState.observation.pending_model_frame`에 넣고, 관찰 노드는
+이 캡처의 이미지와 OCR을 화면 모델에 전달해 다음 행동을 결정한 뒤 보관한 캡처를 해제한다.
+모델은 기존 계획에서 실제로 전달된 행동과 이번에 보류한 행동을 구분해 받는다. 같은 내용의 새 캡처는
+기존에 선택한 좌표를 사용한다. 텍스트를 입력할 때는 모델이 고른 점을 현재 캡처 크기로
+환산하고 그 점을 포함하는 입력칸(`edit`, `combobox`)에 연결한다. 여러 영역이 겹치면
+계획 시점의 대상 영역과 겹치는 정도로 구별한다. 같은 재캡처를 쓰는 입력 배치는 탐지 결과를
+공유한다. 입력칸을 특정할 수 없으면
 `brain/visual/scanning.py`가 계획 시점과 실행 직전의 두 캡처, 대상, 계획 좌표와 실패 이유를 기록한다.
 bench의 `relay/service.py`와 `relay/api.py`는 relay artifact 디렉터리의
 `diagnostics/<id>/rejection.json`에 요청과 이유를 기록한다. relay는 현재 pHash를 판정에

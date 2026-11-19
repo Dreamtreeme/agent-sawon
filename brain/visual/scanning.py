@@ -17,7 +17,7 @@ from .action_rebind import (
     ActionTargetBinding,
     hash_distance,
     perceptual_hash,
-    rebind_action_target,
+    rebind_input_point,
 )
 from .detector import ControlDetector, DetectorSettings, OmniParserDetector
 from .frame import window_context
@@ -107,7 +107,7 @@ class ScreenScanner:
         self.on_capture = on_capture
         self._catalog: _SceneCatalog | None = None
         self._catalogs: dict[tuple, _SceneCatalog] = {}
-        self._action_catalogs: dict[str, tuple[Path, list[OcrBlock], list[Marker]]] = {}
+        self._action_catalogs: dict[str, tuple[Path, list[Marker]]] = {}
 
     def close(self) -> None:
         try:
@@ -330,7 +330,7 @@ class ScreenScanner:
         *,
         planned_point: tuple[float, float] | None = None,
     ) -> ActionTargetBinding:
-        """Renew one action target from fresh local OCR/detection without a semantic model call."""
+        """Verify a planned text input against the current local detections."""
         if fresh.blocked_reason or fresh.screenshot is None or fresh.screenshot.geometry is None:
             raise ValueError("visual_fresh_capture_unusable")
         key = str(fresh.obs_id)
@@ -360,7 +360,7 @@ class ScreenScanner:
             markers = build_markers(
                 blocks, boxes, shot.width, shot.height, settings=self.merge_settings
             )
-            cached = (path, blocks, markers)
+            cached = (path, markers)
             self._action_catalogs[key] = cached
             self.log.append(
                 "verify",
@@ -373,13 +373,12 @@ class ScreenScanner:
                     "model_called": False,
                 },
             )
-        path, blocks, markers = cached
+        path, markers = cached
         try:
-            return rebind_action_target(
+            return rebind_input_point(
                 scene,
                 target,
                 fresh_size=(fresh.screenshot.width, fresh.screenshot.height),
-                blocks=blocks,
                 markers=markers,
                 planned_point=planned_point,
             )

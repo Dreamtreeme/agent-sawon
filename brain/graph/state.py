@@ -28,6 +28,7 @@ class ObservationState(TypedDict):
     """관찰 책임 노드가 소유하는 현재 환경 관찰 데이터."""
 
     current: Observation | None
+    pending_model_frame: Observation | None
     sequence: int
     reconciled: ReconciledObservation | None
 
@@ -133,6 +134,7 @@ def create_worker_state(*, rolling_buffer_size: int = 3) -> WorkerState:
     return {
         "observation": {
             "current": None,
+            "pending_model_frame": None,
             "sequence": 0,
             "reconciled": None,
         },

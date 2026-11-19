@@ -383,6 +383,7 @@ class ScreenDecisionRequest:
     observation_number: int = 0
     memo_labels: dict[str, str] = field(default_factory=dict)
     memo_title: str = ""
+    require_model: bool = False
 
     def model_prompt(self, context: dict) -> str:
         return mapping_prompt(context, memo_labels=self.memo_labels, memo_title=self.memo_title)
@@ -1316,6 +1317,8 @@ def match_screen_pattern(
     allow_method: bool = True,
 ) -> tuple[ScreenMatch | None, tuple[str, dict] | None]:
     """Bind an existing procedure or cached plan to current context before model selection."""
+    if request.require_model:
+        return None, None
     screen = request.screen
     method_proposal = request.proposal if allow_method else None
     if allow_method and method_proposal is None and "correction" not in screen:

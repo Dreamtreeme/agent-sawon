@@ -605,6 +605,93 @@ def named_response(**overrides):
     }
 
 
+def test_synthetic_changed_button_screen_reaches_model_before_any_click(tmp_path, record):
+    """Synthetic relay changes the editor into a list while the first decision is in flight."""
+    from sawon_interfaces import ActionBatchResult, ActionResult
+
+    from sawon_runtime.visual import OcrBlock
+
+    def click(name, box, point):
+        return named_response(
+            fields={name: {"role": "button", "bbox": box}},
+            steps=[{"target": name, "action": "click", "intent": "navigate", "point": point}],
+        )
+
+    save = click("Save", [270, 15, 90, 30], [310, 30])
+    fill = named_response()
+    fill_then_save = named_response(
+        fields={**fill["fields"], **save["fields"]},
+        steps=[{**fill["steps"][0], "intent": "fill"}, *save["steps"]],
+    )
+    open_details = click("Open details", [270, 105, 90, 30], [310, 120])
+    brain, model, relay, ocr, *_ = setup_brain(tmp_path, record, [fill_then_save, open_details])
+    # A synthetic cache hit would select the list heading instead of the details button.
+    remembered = ScreenMapping.model_validate(click("Save", [12, 70, 35, 14], [29, 77]))
+    cached = ScreenMatch.model_validate(
+        {**remembered.local_payload({}), "mapping": remembered}
+    ).model_dump(mode="json")
+    brain.visual_match_cache.enabled = True
+    brain.visual_match_cache.lookup = lambda key: (key, cached) if model.prompts else None
+    editor = [OcrBlock(id=1, text="Save", bbox=(278, 20, 35, 14), confidence=1)]
+    listing = [
+        OcrBlock(id=1, text="Save", bbox=(12, 70, 35, 14), confidence=1),  # Column heading.
+        OcrBlock(id=2, text="Open details", bbox=(278, 112, 74, 16), confidence=1),
+    ]
+    delivered = []
+
+    def observe():
+        changed = bool(model.prompts)
+        relay.color = "gray" if changed else "white"
+        relay.current = wire().model_copy(update={"screen_hash": ("b" if changed else "a") * 40})
+        return relay.current
+
+    def act(action):
+        delivered.append((len(model.prompts), action.root.target.image_point))
+        return ActionResult(
+            action_id=action.root.action_id,
+            ok=True,
+            post_obs_id=relay.current.obs_id,
+            duration_ms=1,
+        )
+
+    def act_batch(batch):
+        return ActionBatchResult(
+            batch_id=batch.batch_id, ok=True, duration_ms=1, results=[act(a) for a in batch.actions]
+        )
+
+    relay.observe, relay.act, relay.act_batch = observe, act, act_batch
+    ocr.read = lambda page: listing if relay.current.screen_hash == "b" * 40 else editor
+
+    def run_turn():
+        brain._observe()
+        assert brain._select_node() == "review"
+        assert brain._review_node() == "execution"
+        assert brain._act_node() == "observation"
+
+    brain.saved_evidence.begin("previously-observed")
+    run_turn()
+    assert delivered == []
+    assert brain.saved_evidence.origin_obs_id == "previously-observed"
+    run_turn()
+    requests = [json.loads(prompt[len(CONTEXT_MAPPING_RULES) :]) for prompt in model.prompts]
+    assert [[item["text"] for item in r["screen"]["text_regions"]] for r in requests] == [
+        ["Save"],
+        ["Save", "Open details"],
+    ]
+    result = requests[1]["notebook"]["recent_feedback"][-1]["execution_result"]
+    assert result["delivered_actions"] == []
+    assert (result["undispatched_action"]["action"], result["undispatched_action"]["target"]) == (
+        "click",
+        "Save",
+    )
+    calls = [e.payload for e in brain.log.read_all() if e.kind == "model_call"]
+    for call, intensity in zip(calls, [255, 128], strict=True):
+        assert call["image_count"] == 1
+        with Image.open(call["context"]["frame"]) as frame:
+            assert frame.getpixel((399, 199)) == (intensity,) * 3
+    assert delivered == [(2, (310, 120))]
+
+
 @pytest.mark.parametrize("source", ["model", "method", "replanned"])
 def test_synthetic_unchanged_plan_is_not_prepared_or_grounded_twice(
     tmp_path, record, decision_work_counts, source

@@ -1,15 +1,21 @@
-"""Execution-time target rebinding uses fresh local visual evidence."""
+"""Fresh captures preserve a chosen point or return the screen for a model decision."""
 
-import json
+from dataclasses import replace
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from PIL import Image, ImageDraw
 from sawon_interfaces import CaptureGeometry, Observation, Screenshot, UIElement, WindowInfo
 
-from brain.visual.action_rebind import rebind_action_target
+from brain.graph.action_preparation import (
+    ActionWiringRequest,
+    ActionWiringServices,
+    ScreenDecisionRequired,
+    wire_action,
+)
+from brain.graph.schemas import Choice, Decision
+from brain.visual.action_rebind import rebind_input_point
 from brain.visual.markers import Marker
 from brain.visual.scanning import ScreenScanner
 from brain.visual.scene import SceneObservation
@@ -55,41 +61,23 @@ def same_form_images(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("role", "observed_box", "readings", "other_boxes"),
+    "role,observed_box,other_boxes",
     [
-        (
-            "edit",
-            (100, 40, 200, 30),
-            [
-                ("House B/L", (15, 42, 82, 18)),
-                ("번호", (15, 60, 40, 18)),
-                ("House B/L", (150, 120, 82, 18)),
-            ],
-            [(130, 35, 155, 74)],
-        ),
-        ("combobox", (100, 40, 200, 30), [], []),
-        ("edit", (170, 55, 1, 1), [("House B/L 번호", (15, 48, 80, 24))], []),
-        ("edit", (10, 40, 65, 30), [("House B/L 번호", (15, 48, 80, 24))], []),
+        ("edit", (100, 40, 200, 30), [(130, 35, 155, 74)]),
+        ("combobox", (100, 40, 200, 30), []),
+        ("edit", (170, 55, 1, 1), []),
+        ("edit", (10, 40, 65, 30), []),
     ],
-    ids=[
-        "split-caption-table-header-and-overlapping-controls",
-        "no-visible-caption",
-        "point-only-fill",
-        "point-outside-observed-label",
-    ],
+    ids=["overlapping-controls", "combobox", "point-only-fill", "point-outside-observed-label"],
 )
-def test_resized_input_preserves_model_selected_point(role, observed_box, readings, other_boxes):
+def test_resized_input_preserves_model_selected_point(role, observed_box, other_boxes):
     target = UIElement(ref="e2", role=role, name="House B/L 번호", bbox=observed_box)
     scene = SceneObservation(wire=wire(), elements=[target])
     fresh_box = (150, 48, 300, 36)
-    result = rebind_action_target(
+    result = rebind_input_point(
         scene,
         target,
         fresh_size=(600, 240),
-        blocks=[
-            OcrBlock(id=i, text=text, confidence=1, bbox=bbox)
-            for i, (text, bbox) in enumerate(readings)
-        ],
         markers=[
             Marker(id=i, bbox=box, source="omniparser", confidence=1)
             for i, box in enumerate([*other_boxes, fresh_box])
@@ -109,15 +97,14 @@ def test_resized_input_preserves_model_selected_point(role, observed_box, readin
     ],
     ids=["input-disappeared", "only-next-field-remains", "equally-plausible-inputs"],
 )
-def test_input_rebinding_requires_a_current_control_even_when_its_caption_remains(boxes, error):
+def test_input_rebinding_requires_a_current_control(boxes, error):
     target = UIElement(ref="e2", role="edit", name="수량", bbox=(100, 40, 200, 30))
     scene = SceneObservation(wire=wire(), elements=[target])
     with pytest.raises(ValueError, match=error):
-        rebind_action_target(
+        rebind_input_point(
             scene,
             target,
             fresh_size=(400, 200),
-            blocks=[OcrBlock(id=0, text="수량", confidence=1, bbox=(10, 40, 70, 20))],
             markers=[
                 Marker(id=i, bbox=box, source="omniparser", confidence=1)
                 for i, box in enumerate(boxes)
@@ -126,105 +113,52 @@ def test_input_rebinding_requires_a_current_control_even_when_its_caption_remain
 
 
 @pytest.mark.parametrize(
-    "caption,planned_point,expected",
+    "role,choice_data",
     [
-        ((150, 120, 120, 36), (120, 115), (180, 138)),
-        ((100, 100, 80, 30), (200, 150), (200, 150)),
-        ((140, 120, 80, 30), (200, 150), (240, 170)),
-        ((150, 120, 120, 36), (200, 150), (300, 180)),
+        ("button", {"type": "click"}),
+        ("edit", {"type": "double_click"}),
+        ("table", {"type": "key", "keys": "enter"}),
+        ("cell", {"type": "set_text", "source": "quantity"}),
     ],
-    ids=["inside-caption", "outside-unchanged", "outside-moved", "outside-scaled"],
 )
-def test_click_rebinds_to_current_ocr_caption_and_preserves_relative_point(
-    caption, planned_point, expected
-):
-    target = UIElement(ref="e2", role="button", name="저장", bbox=(100, 100, 80, 30))
+def test_changed_capture_hands_old_target_back_for_a_model_decision(tmp_path, role, choice_data):
+    target = UIElement(ref="e2", role=role, name="저장", bbox=(100, 100, 80, 30))
     scene = SceneObservation(wire=wire(), elements=[target])
-    result = rebind_action_target(
+    fresh = wire().model_copy(update={"screen_hash": "c" * 40})
+    choice = Choice(ref=target.ref, **choice_data)
+    decision = Decision(
+        screen_kind="editor",
+        operation="act",
+        intent="navigate",
+        subgoal="Continue",
+        reason="Use the selected target",
+        action=choice,
+    )
+    request = ActionWiringRequest(
         scene,
-        target,
-        fresh_size=(600, 240),
-        blocks=[OcrBlock(id=0, text="저장", confidence=1, bbox=caption)],
-        markers=[],
-        planned_point=planned_point,
+        choice,
+        decision,
+        {},
+        {"quantity": "1"},
+        planned_point=(120, 115),
+        fresh_observation=fresh,
     )
-    assert result.method == "ocr_text_anchor"
-    assert result.point == expected
 
+    def unexpected_local_rebind(*args, **kwargs):
+        pytest.fail("A local selector received the model's click target")
 
-@pytest.mark.parametrize(
-    "intended,visible,fresh_x,expected",
-    [("새 건 등록", "새건등록", 180, (220, 115)), ("예", "확인", 100, None)],
-    ids=["moved-register-button", "confirmation-replaced-yes"],
-)
-def test_rebind_on_same_size_frames_uses_current_caption(
-    tmp_path, intended, visible, fresh_x, expected
-):
-    target = UIElement(ref="e2", role="button", name=intended, bbox=(100, 100, 80, 30))
-    scene = SceneObservation(wire=wire(), elements=[target])
-    planned = tmp_path / "visual" / str(scene.obs_id) / "capture.png"
-    planned.parent.mkdir(parents=True)
-    old_image = Image.new("RGB", (400, 200), "white")
-    ImageDraw.Draw(old_image).rectangle((100, 100, 179, 129), outline="black")
-    old_image.save(planned)
-    log = RunLog(tmp_path, case_id="rejected-pair", agent_id="test")
-    fresh_path = tmp_path / "fresh.png"
-    fresh_image = Image.new("RGB", (400, 200), "white")
-    draw = ImageDraw.Draw(fresh_image)
-    draw.rectangle((fresh_x, 100, fresh_x + 79, 129), outline="black")
-    if expected is not None:
-        draw.rectangle((0, 0, 399, 94), fill="black")
-    else:
-        draw.text((fresh_x + 5, 105), "OK", fill="black")
-    fresh_image.save(fresh_path)
-
-    class Relay:
-        def screenshot(self, observation, path):
-            path.parent.mkdir(parents=True)
-            path.write_bytes(fresh_path.read_bytes())
-            return path
-
-    class Ocr:
-        def read(self, page):
-            assert page.image_path.read_bytes() == fresh_path.read_bytes()
-            return [OcrBlock(id=0, text=visible, confidence=1, bbox=(fresh_x, 100, 80, 30))]
-
-    class Detector:
-        def read(self, page):
-            return []
-
-    perception = ScreenScanner(
-        Relay(), Ocr(), tmp_path, log, None, detector=Detector(), model_led_semantics=True
+    services = ActionWiringServices(
+        None, RunLog(tmp_path, case_id="rebind", agent_id="test"), unexpected_local_rebind
     )
-    fresh = wire()
-    if expected is not None:
-        assert perception.rebind_action(scene, target, fresh).point == expected
-        return
-    with pytest.raises(ValueError, match="^visual_target_anchor_missing$"):
-        perception.rebind_action(scene, target, fresh)
-    event = log.read_all()[-1]
-    preserved = json.loads(Path(event.payload["artifact"]).read_text(encoding="utf-8"))
-    assert [Path(item["copy"]).read_bytes() for item in preserved["captures"]] == [
-        planned.read_bytes(),
-        fresh_path.read_bytes(),
-    ]
+    with pytest.raises(ScreenDecisionRequired) as captured:
+        wire_action(request, services)
+    assert captured.value.observation is fresh
 
-
-def test_duplicate_caption_does_not_guess_a_coordinate():
-    target = UIElement(ref="e2", role="button", name="상세", bbox=(100, 100, 80, 30))
-    scene = SceneObservation(wire=wire(), elements=[target])
-    blocks = [
-        OcrBlock(id=0, text="상세", confidence=1, bbox=(150, 120, 80, 30)),
-        OcrBlock(id=1, text="상세", confidence=1, bbox=(350, 120, 80, 30)),
-    ]
-    with pytest.raises(ValueError, match="visual_target_anchor_ambiguous"):
-        rebind_action_target(
-            scene,
-            target,
-            fresh_size=(600, 240),
-            blocks=blocks,
-            markers=[],
-        )
+    same_frame = fresh.model_copy(update={"screen_hash": scene.screen_hash})
+    new_action = wire_action(replace(request, fresh_observation=same_frame), services).root
+    assert new_action.type == choice.type
+    assert new_action.target.image_point == (120, 115)
+    assert new_action.target.capture_id == same_frame.screenshot.geometry.capture_id
 
 
 def test_perception_reuses_one_local_catalog_and_never_calls_semantic_model(tmp_path):

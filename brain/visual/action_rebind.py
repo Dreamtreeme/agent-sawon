@@ -1,4 +1,4 @@
-"""Rebind a planned visual target to a fresh capture using local evidence only."""
+"""Project input points into the current capture and compare visual memory frames."""
 
 from __future__ import annotations
 
@@ -8,9 +8,6 @@ from pathlib import Path
 
 from PIL import Image
 from sawon_interfaces import UIElement
-
-from brain.observe.values import compact_normalize
-from sawon_runtime.visual import OcrBlock
 
 from .markers import Marker
 from .scene import SceneObservation, overlap
@@ -55,21 +52,6 @@ def _center(box: tuple[int, int, int, int]) -> tuple[float, float]:
     return box[0] + box[2] / 2, box[1] + box[3] / 2
 
 
-def _matching_text(blocks: list[OcrBlock], anchors: set[str]) -> list[OcrBlock]:
-    exact = [block for block in blocks if compact_normalize(block.text) in anchors]
-    if exact:
-        return exact
-    return [
-        block
-        for block in blocks
-        if any(
-            len(anchor) >= 2
-            and (anchor in compact_normalize(block.text) or compact_normalize(block.text) in anchor)
-            for anchor in anchors
-        )
-    ]
-
-
 def relative_point(
     old_box: tuple[float, float, float, float],
     new_box: tuple[int, int, int, int],
@@ -84,33 +66,15 @@ def relative_point(
     return new_box[0] + new_box[2] * ratio_x, new_box[1] + new_box[3] * ratio_y
 
 
-def rebind_action_target(
+def rebind_input_point(
     scene: SceneObservation,
     target: UIElement,
     *,
     fresh_size: tuple[int, int],
-    blocks: list[OcrBlock],
     markers: list[Marker],
     planned_point: tuple[float, float] | None = None,
 ) -> ActionTargetBinding:
-    """Find one current target from its visible text and local control geometry."""
-    if target.role.casefold() not in {"edit", "combobox"}:
-        anchors = {compact_normalize(target.name), compact_normalize(target.label_hint)} - {
-            "",
-            "[redacted]",
-        }
-        if not anchors:
-            raise ValueError("visual_target_has_no_local_anchor")
-        text_matches = _matching_text(blocks, anchors)
-        if not text_matches:
-            raise ValueError("visual_target_anchor_missing")
-        if len(text_matches) != 1:
-            raise ValueError("visual_target_anchor_ambiguous")
-        box = text_matches[0].bbox
-        return ActionTargetBinding(
-            relative_point(target.bbox, box, planned_point), box, "ocr_text_anchor"
-        )
-
+    """Verify the model's point still falls inside a detected input region."""
     fresh_width, fresh_height = fresh_size
     scale_x = fresh_width / scene.screenshot.width
     scale_y = fresh_height / scene.screenshot.height

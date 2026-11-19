@@ -60,6 +60,7 @@ from .action_preparation import (
     ActionGuardRequest,
     ActionWiringRequest,
     ActionWiringServices,
+    ScreenDecisionRequired,
     validate_action_guard,
     wire_action,
 )
@@ -154,6 +155,7 @@ execution_policy describes the current phase, available choices and observed fac
 
 class Brain:
     observation = state_property("observation", "current")
+    pending_model_frame = state_property("observation", "pending_model_frame")
     observation_number = state_property("observation", "sequence")
     reconciled_observation = state_property("observation", "reconciled")
     decision = state_property("decision", "current")
@@ -357,6 +359,7 @@ class Brain:
             current_screen_path=self.current_screen_path,
             observation_id=observation_id or str(getattr(self.observation, "obs_id", "")),
             observation_number=self.observation_number,
+            require_model=self.pending_model_frame is not None,
             execution_contract=contract,
             required_verification=tuple(required_verification(self.pending)),
             post_action_review=post_action_review,
@@ -1185,14 +1188,18 @@ class Brain:
         )
 
     def _observe(self) -> Observation:
-        observation = redact(self.relay.observe(), self.secrets)
+        wire = self.pending_model_frame
+        observation = redact(wire if wire is not None else self.relay.observe(), self.secrets)
         # The scanner may request recovery before the final observation is committed.
         self.observation_number += 1
         self.visual_proposal = None
         self.visual_plan_error = None
-        if not observation.blocked_reason:
-            observation = self.screen_scanner.scan(observation)
-            self.visual_proposal_obs_id = observation.obs_id
+        try:
+            if not observation.blocked_reason:
+                observation = self.screen_scanner.scan(observation)
+                self.visual_proposal_obs_id = observation.obs_id
+        finally:
+            self.pending_model_frame = None
         self.observation = observation
         self.review = None
         # One response observes the pending action's outcome and plans from it.
@@ -2170,8 +2177,14 @@ class Brain:
                 fresh_observation=fresh,
                 log_renewal=not batch or index == 0,
             )
-            if self.settings.screen_matching and isinstance(self.observation, SceneObservation):
-                self.saved_evidence.after_action(decision, self.observation)
+            if (
+                self.settings.screen_matching
+                and isinstance(self.observation, SceneObservation)
+                and (not batch or index + 1 == len(plan.actions))
+            ):
+                # The relay dispatches a batch only after every action has been wired.
+                for ready in plan.actions if batch else (planned,):
+                    self.saved_evidence.after_action(ready.decision, self.observation)
                 self.review = None
             yield PreparedAction(planned, action)
 
@@ -2261,6 +2274,22 @@ class Brain:
                     result.response.model_dump(mode="json") if result.response is not None else None
                 ),
             }
+            if isinstance(result.error, ScreenDecisionRequired):
+                assert self.decision is not None
+                self.pending_model_frame = result.error.observation
+                execution_result.update(
+                    undispatched_action=describe_action(self.decision, self.observation),
+                    previous_obs_id=str(self.observation.obs_id),
+                    current_obs_id=str(self.pending_model_frame.obs_id),
+                )
+                feedback = {
+                    "reason": str(result.error),
+                    "phase": self.phase,
+                    "execution_result": execution_result,
+                }
+                self.feedback.append(feedback)
+                self.log.append("verify", payload={"check": str(result.error), **feedback})
+                return "observation"
             if isinstance(result.error, GuardStop):
                 if str(result.error) == "relay_action_failed":
                     return self._fail("relay_action_failed", execution_result=execution_result)
