@@ -1,0 +1,21 @@
+{
+  "untouched": {"hbl_no": "HSF261116002", "before_count": 30},
+  "amend": {"hbl_no": "HSF261118003", "before_count": 18, "after_count": 22},
+  "create": {
+    "hbl_no": "HSF261119004",
+    "mbl_no": "BSHB2611190043",
+    "shipper": "DAEHWA COMPONENTS CO., LTD.",
+    "consignee": "HINODE INDUSTRIAL CO., LTD.",
+    "description": "POLYMER GEAR COVER",
+    "pol": "BUSAN",
+    "pod": "KOBE",
+    "packages": {"count": 18, "unit": "CTNS"},
+    "gross_weight_kg": 198.4,
+    "container_no": "HSLU6318070"
+  },
+  "messages": {
+    "new_subject": "[대화부품] 출고의뢰 1119-04 기어 커버 선적",
+    "correction_body": "대화부품 수출팀입니다. 앞서 등록한 고베행 가이드 플레이트 건(Master B/L BSHB2611180036), 출고장에서 최종 집계한 포장 수량이 22 CTNS입니다. 18 CTNS로 입력된 수량을 정정해 주세요. 나머지 선적 내용은 그대로입니다.",
+    "reference_body": "대화부품 수출팀입니다. 오사카행 HSF261116002 건은 현지 창고 점심시간이 내일 12시부터 13시까지라고 합니다. 참고로 공유드립니다. 기존 선적 서류는 그대로입니다."
+  }
+}

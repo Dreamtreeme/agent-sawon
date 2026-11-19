@@ -1,0 +1,23 @@
+From: shipping@daehwa.example.invalid
+To: operations@forwarder.example.invalid
+Date: Wed, 18 Nov 2026 09:10:00 +0900
+Message-ID: <request-1118-03@daehwa.example.invalid>
+Subject: [대화부품] 출고의뢰 1118-03 고베 건
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+안녕하세요, 대화부품 수출팀입니다.
+고베행 가이드 플레이트의 포장이 끝나 선적 등록을 부탁드립니다.
+
+House B/L: HSF261118003
+Master B/L: BSHB2611180036
+송하인: DAEHWA COMPONENTS CO., LTD.
+수하인: HINODE INDUSTRIAL CO., LTD.
+품명: STEEL GUIDE PLATE
+선적항: BUSAN
+도착항: KOBE
+포장 수량: 18
+포장 단위: CTNS
+총중량: 246.6 KG
+컨테이너 번호: HSLU6318064

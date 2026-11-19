@@ -1,0 +1,12 @@
+{
+  "hbl_no": "HSF261118003",
+  "mbl_no": "BSHB2611180036",
+  "shipper": "DAEHWA COMPONENTS CO., LTD.",
+  "consignee": "HINODE INDUSTRIAL CO., LTD.",
+  "description": "STEEL GUIDE PLATE",
+  "pol": "BUSAN",
+  "pod": "KOBE",
+  "packages": {"count": 18, "unit": "CTNS"},
+  "gross_weight_kg": 246.6,
+  "container_no": "HSLU6318064"
+}

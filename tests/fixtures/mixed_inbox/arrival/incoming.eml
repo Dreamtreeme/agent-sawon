@@ -1,0 +1,23 @@
+From: shipping@daehwa.example.invalid
+To: operations@forwarder.example.invalid
+Date: Thu, 19 Nov 2026 14:20:00 +0900
+Message-ID: <request-1119-04@daehwa.example.invalid>
+Subject: [대화부품] 출고의뢰 1119-04 기어 커버 선적
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+안녕하세요, 대화부품 수출팀입니다.
+이번에 새로 출고하는 기어 커버 선적입니다. 아래 내용으로 등록 부탁드립니다.
+
+House B/L: HSF261119004
+Master B/L: BSHB2611190043
+송하인: DAEHWA COMPONENTS CO., LTD.
+수하인: HINODE INDUSTRIAL CO., LTD.
+품명: POLYMER GEAR COVER
+선적항: BUSAN
+도착항: KOBE
+포장 수량: 18
+포장 단위: CTNS
+총중량: 198.4 KG
+컨테이너 번호: HSLU6318070
