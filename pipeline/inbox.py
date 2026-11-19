@@ -235,16 +235,88 @@ def plan_next(db: sqlite3.Connection, args: argparse.Namespace) -> dict:
     return {**result, "status": "planned", "plan_id": plan_id, "receipt_ids": ids}
 
 
-def run_worker(db: sqlite3.Connection, plan: int, arguments: list[str]) -> int:
+def _bind_worker_inputs(
+    db: sqlite3.Connection, plan: int, decision: dict, command: list[str], destination: Path
+) -> list[str]:
+    from brain.run import worker_parser
+    from brain.settings import BrainSettings
+    from brain.task_instruction import TaskInstruction
+    from models.accounting import read_model_accounting
+    from pipeline.inbox_binding import prepare_record
+    from sawon_runtime.storage import RunLog, atomic_write_json
+
+    options = worker_parser(require_record=False).parse_args(command)
+    if options.record is not None or options.prepared_case:
+        raise ValueError("--from-plan supplies its own record for a new worker case")
+    if options.case_dir.exists():
+        raise ValueError("The worker case directory already exists")
+    settings = BrainSettings.load(options.config)
+    task_path = options.task or settings.task_path
+    if task_path is None:
+        raise ValueError("Plan binding requires a taught task")
+    task = TaskInstruction.model_validate_json(task_path.read_bytes())
+    configured = Decimal(str(settings.max_cost_usd))
+    cap = configured if options.max_cost_usd is None else Decimal(str(options.max_cost_usd))
+    if not cap.is_finite() or not 0 <= cap <= configured:
+        raise ValueError("Worker budget must be within the configured case cap")
+    # A revision keeps earlier facts linked to receipts on its superseded plans.
+    rows = db.execute(
+        """
+        WITH RECURSIVE lineage(id) AS (
+            SELECT ?
+            UNION
+            SELECT json_extract(p.decision, '$.supersedes_plan_id')
+              FROM plans p JOIN lineage ON p.id=lineage.id
+             WHERE json_extract(p.decision, '$.supersedes_plan_id') IS NOT NULL
+        )
+        SELECT id,source FROM receipts WHERE plan_id IN (SELECT id FROM lineage)
+    """,
+        (plan,),
+    )
+    run_id = f"plan-{plan}-{uuid4().hex}"
+    log = RunLog(destination / run_id, case_id=run_id, agent_id="inbox-input-binding")
+    record = prepare_record(
+        decision=decision,
+        plan_id=plan,
+        receipts={r["id"]: dict(r) for r in rows},
+        task=task,
+        log=log,
+        model_config=options.model_config,
+        env_path=options.env_path,
+        max_cost_usd=cap,
+    )
+    spent = read_model_accounting(log)
+    if spent.unknown or spent.known_usd > cap:
+        raise ValueError("Input binding cost could not be covered by the worker budget")
+    path = log.case_dir / "record.json"
+    atomic_write_json(path, record)
+    budget_option = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    budget_option.add_argument("--max-cost-usd")
+    _, remaining = budget_option.parse_known_args(command)
+    return [
+        *remaining,
+        "--record",
+        str(path.resolve()),
+        "--max-cost-usd",
+        str(cap - spent.known_usd),
+    ]
+
+
+def run_worker(
+    db: sqlite3.Connection, plan: int, arguments: list[str], *, input_dir: Path | None = None
+) -> int:
     from brain.run import main as run_case
 
     row = db.execute("SELECT decision,stage FROM plans WHERE id=?", (plan,)).fetchone()
     if row is None or row["stage"] != "planned":
         raise ValueError(f"Plan {plan} is missing or no longer awaiting dispatch")
-    goal = json.loads(row["decision"]).get("goal")
+    decision = json.loads(row["decision"])
+    goal = decision.get("goal")
     if not isinstance(goal, str) or not goal.strip():
         raise ValueError("A runnable plan needs a goal")
     command = [*arguments, "--goal", goal]
+    if input_dir is not None:
+        command = _bind_worker_inputs(db, plan, decision, command, input_dir)
     # Commit before dispatch. An interrupted run keeps its evidence for reconciliation.
     with db:
         db.execute(
@@ -301,6 +373,9 @@ def main() -> int:
     link.add_argument("--file", type=Path, required=True)
     worker = commands.add_parser("worker", help="Hold the PC turn for one normal brain.run")
     worker.add_argument("--plan", type=int, required=True)
+    worker.add_argument(
+        "--from-plan", action="store_true", help="Bind receipt-backed facts to the task inputs"
+    )
     worker.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     with desktop_turn(args.state) as db:
@@ -352,7 +427,12 @@ def main() -> int:
             arguments = args.arguments[1:] if args.arguments[:1] == ["--"] else args.arguments
             if not arguments or "--help" in arguments or "-h" in arguments:
                 parser.error("Provide ordinary brain.run case arguments after --")
-            return run_worker(db, args.plan, arguments)
+            return run_worker(
+                db,
+                args.plan,
+                arguments,
+                input_dir=args.state / "worker-inputs" if args.from_plan else None,
+            )
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
 

@@ -20,9 +20,9 @@ from pipeline.handoff import validate_prepared_case
 from sawon_runtime.storage import CaseStatus, RunLog, StateStore, atomic_write_json
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--record", type=Path, required=True)
+def worker_parser(*, require_record: bool = True) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=require_record)
+    parser.add_argument("--record", type=Path, required=require_record)
     parser.add_argument("--case-dir", type=Path, required=True)
     parser.add_argument("--relay-url", required=True)
     parser.add_argument("--goal", required=True)
@@ -37,6 +37,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--max-cost-usd", type=float, help="Lower total case budget, including preparation calls"
     )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = worker_parser()
     args = parser.parse_args(argv)
 
     if args.max_cost_usd is not None and (

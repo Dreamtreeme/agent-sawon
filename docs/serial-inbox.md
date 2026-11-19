@@ -83,9 +83,20 @@ $state = '.\cases\desk\state'
 
 ### 계획을 ERP 작업자에게 전달하기
 
-운영자는 `plans`에서 실행할 계획 ID를 확인한 뒤 `worker --plan <ID> --` 뒤에 기존 작업자의 실행 인자를 붙인다. 업무 목표는 저장한 계획의 `goal`에서 가져온다. record, task, 새 case 경로, relay와 모델 설정은 운영자가 제공한다. 정상 복귀하면 종료 코드를 기록한다. 중단돼 `started`가 남은 계획은 `plans`의 case 경로와 실제 저장 결과를 대조해 후속 계획을 정한다. 같은 계획 ID로 작업자를 두 번 시작하지 않는다. ERP 저장 성공은 기존 독립 채점이나 재조회로 확인한다. [작업자 CLI](../brain/run.py)
+계획 사실을 입력으로 쓸 때는 `worker --from-plan`에 계획 번호, ERP 교육 파일과 새 실행 경로를 지정한다. 아래 예시에서 `$relay`는 실행 중인 ERP 전용 relay 주소, `$task`는 해당 회사의 ERP 입력 절차와 입력 키를 선언한 JSON 경로다. 로그인 정보는 기존 작업자의 실행 환경에서 공급한다.
 
-주기 실행, 계획에서 작업자 입력을 자동으로 만드는 절차, ERP 등록이 끝난 업무의 자동 정정은 후속 구현 범위다. 별도 계정에서 새로 보낸 메시지의 실제 도착은 아래 절차로 검증할 항목이다.
+```powershell
+& $py -m pipeline.inbox --state $state worker --plan 1 --from-plan -- `
+  --task $task --case-dir .\cases\desk\erp-01 --relay-url $relay `
+  --config .\config\brain.visual.toml --model-config .\config\models.toml `
+  --visual-ocr-config .\config\pipeline.toml --env-path .\.env --max-cost-usd 3
+```
+
+입력 키와 계획 사실 키가 같으면 바로 연결한다. 명칭이 다른 입력은 모델이 교육의 필드 이름을 보고 기존 사실 키를 고른다. 코드는 선택된 원래 값과 출처를 복사하고 교육의 숫자·단위 형식을 적용할 수 있는지 확인한다. `<state>/worker-inputs/<실행 ID>/input-provenance.json`에는 원문 값과 실행값이 나란히 남는다. 작업자 case의 `record.json`에는 같은 입력과 사실별 원문 ID가 보존된다. 미리 만든 레코드를 전달할 때는 기존 `worker --plan <ID> -- --record ...` 형식을 쓴다.
+
+입력 결합이 끝난 뒤 계획을 `started`로 기록하고 작업자를 호출한다. 정상 복귀하면 종료 코드를 기록한다. 중단돼 `started`가 남은 계획은 `plans`의 case 경로와 실제 저장 결과를 대조해 후속 계획을 정한다. ERP 저장 성공은 독립 채점과 재조회로 확인한다. [작업자 CLI](../brain/run.py)
+
+주기 실행과 ERP 등록이 끝난 업무의 자동 정정은 후속 구현 범위다. 별도 계정에서 새로 보낸 메시지의 실제 도착은 아래 절차로 검증할 항목이다.
 
 ## 실제 계정으로 수신 조건 준비
 

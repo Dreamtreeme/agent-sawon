@@ -3,7 +3,7 @@
 from collections.abc import Iterable
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 COLLECTED_INPUT_PREFIX = "collected_result."
 
@@ -110,6 +110,20 @@ class TaskInstruction(BaseModel):
         return self
 
 
+class ReceiptInputSource(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    fact_key: str
+    receipt_id: int = Field(gt=0)
+    source: str
+
+
+class PlanInputProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    plan_id: int = Field(gt=0)
+    work_id: str
+    inputs: dict[str, ReceiptInputSource]
+
+
 class TaskInputRecord(BaseModel):
     """Arbitrary business input keys supplied by the user or an upstream extractor."""
 
@@ -121,9 +135,21 @@ class TaskInputRecord(BaseModel):
         str,
         str,
     ] = Field(max_length=200)
-    origin: Literal["manual"] = "manual"
+    origin: Literal["manual", "inbox_plan"] = "manual"
+    provenance: PlanInputProvenance | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize(self, serialize_fields):
+        fields = serialize_fields(self)
+        if self.provenance is None:
+            fields.pop("provenance", None)
+        return fields
 
     @model_validator(mode="after")
     def safe_input_keys(self):
         _validate_input_keys(self.inputs)
+        if self.origin == "inbox_plan" and (
+            self.provenance is None or self.provenance.inputs.keys() != self.inputs.keys()
+        ):
+            raise ValueError("Inbox plan inputs require a receipt source for every field")
         return self

@@ -1,12 +1,18 @@
 import argparse
 import json
+import sys
+from decimal import Decimal
+from unittest.mock import Mock
 
 import portalocker
 import pytest
+from test_brain import ScriptedModel
 
 from brain import run
-from pipeline.inbox import collect, desktop_turn, pending, record_plan, run_worker
-from pipeline.inbox_sources import read_chat, read_mail
+from brain.task_instruction import TaskInputRecord
+from pipeline.inbox import collect, desktop_turn, main, pending, record_plan, run_worker
+from pipeline.inbox_sources import SourceItem, read_chat, read_mail
+from sawon_runtime.storage import atomic_write_json
 
 
 def test_mail_and_chat_correction_survive_restart_and_plan_together(tmp_path):
@@ -111,3 +117,91 @@ def test_correction_can_replace_an_unstarted_plan_and_preserves_original(tmp_pat
             (first, "superseded"),
             (second, "planned"),
         ]
+
+
+def test_worker_from_revised_plan_binds_sources_before_dispatch_and_deducts_cost(
+    tmp_path, monkeypatch
+):
+    state, case, task = tmp_path / "state", tmp_path / "case", tmp_path / "task.json"
+    atomic_write_json(
+        task,
+        {
+            "name": "Register a shipment",
+            "objective": "Save and reopen the order",
+            "identity_input_key": "reference",
+            "completion_conditions": ["Saved order matches"],
+            "procedure": [
+                {
+                    "id": "entry",
+                    "instruction": "Enter quantity",
+                    "completion": "Count entered",
+                    "actions": [{"verb": "fill", "target": "Quantity", "input_key": "count"}],
+                }
+            ],
+        },
+    )
+    with desktop_turn(state) as db:
+        (mail,) = collect(db, [SourceItem("email", "desk", "m", "Ship A-17", b"Ship A-17")])
+        identity = {"key": "reference", "value": "A-17", "receipt_id": mail}
+        initial = {"work_id": "A", "goal": "Register A", "facts": [identity]}
+        first = record_plan(db, [mail], initial)
+        (chat,) = collect(db, [SourceItem("kakao_message", "room", "c", "32 boxes", b"32 boxes")])
+        count = {"key": "box_total", "value": "32", "receipt_id": chat}
+        revised = {**initial, "supersedes_plan_id": first, "facts": [identity, count]}
+        plan = record_plan(db, [chat], revised)
+
+    def model_factory(_config, *, run_log, env_path):
+        reply = {"bindings": [{"input_key": "count", "fact_key": "box_total"}]}
+        return ScriptedModel(run_log, [reply], price=Decimal("0.03"))
+
+    worker = Mock()
+    worker.return_value.run.return_value = run.Result(
+        status="success",
+        reason="test",
+        steps=0,
+        elapsed_ms=0,
+    )
+    monkeypatch.setattr("pipeline.inbox_binding.create_model_client", model_factory)
+    monkeypatch.setattr(run, "create_model_client", model_factory)
+    monkeypatch.setattr(run, "Brain", worker)
+    monkeypatch.setenv("SAWON_RELAY_TOKEN", "local-test")
+    command = [
+        "pipeline.inbox",
+        "--state",
+        str(state),
+        "worker",
+        "--from-plan",
+        "--plan",
+        str(plan),
+        "--",
+        f"--task={task}",
+        f"--case-dir={case}",
+        "--relay-url=http://127.0.0.1",
+        "--config=config/brain.visual.toml",
+        "--model-config=config/models.toml",
+        "--visual-ocr-config=config/pipeline.toml",
+    ]
+    monkeypatch.setattr(sys, "argv", [*command, "--max-cost-usd=0"])
+    with pytest.raises(ValueError, match="cost cap"):
+        main()
+    with desktop_turn(state) as db:
+        row = db.execute("SELECT stage,worker_args FROM plans WHERE id=?", (plan,)).fetchone()
+        assert tuple(row) == ("planned", None)
+    worker.assert_not_called()
+    assert not case.exists()
+
+    monkeypatch.setattr(sys, "argv", [*command, "--max-cost-usd=0.50"])
+    assert main() == 0
+    worker.assert_called_once()
+    dispatched = worker.call_args.kwargs
+    saved = TaskInputRecord.model_validate_json((case / "record.json").read_bytes())
+    assert saved == dispatched["record"] and saved.inputs == {"reference": "A-17", "count": "32"}
+    assert dispatched["settings"].max_cost_usd == 0.47 and dispatched["goal"] == revised["goal"]
+    assert saved.provenance.plan_id == plan and saved.provenance.work_id == "A"
+    assert {
+        key: (source.fact_key, source.receipt_id, source.source)
+        for key, source in saved.provenance.inputs.items()
+    } == {"reference": ("reference", mail, "email"), "count": ("box_total", chat, "kakao_message")}
+    with desktop_turn(state) as db:
+        row = db.execute("SELECT stage,worker_exit FROM plans WHERE id=?", (plan,)).fetchone()
+        assert tuple(row) == ("exited", 0)

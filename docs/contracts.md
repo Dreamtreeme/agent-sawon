@@ -22,8 +22,12 @@
 단독 참고 자료는 `inbox_references`에 원문 ID와 이유를 남기고 미처리 목록에서 제외한다.
 대기 판단은 원문을 미처리 상태로 남긴다. 실행 전 정정은
 `supersedes_plan_id`로 이전 계획을 연결하고 변경되지 않은 사실과 출처를 유지한다.
-계획 저장 후 작업자 호출은 별도 `worker` 명령이 담당한다. 이 명령은 저장된 목표와
-운영자가 제공한 실행 인자를 기존 작업자에게 전달한다. [순차 수신 절차](serial-inbox.md)
+계획 저장 후 `worker --from-plan`은 [입력 결합](../pipeline/inbox_binding.py)을 호출한다.
+교육의 업무 입력 키에 대응하는 계획 사실을 선택하고 그 값을 `TaskInputRecord.inputs`로 복사한다.
+계획에서 만든 레코드는 `origin=inbox_plan`이고, `provenance`에 계획 ID, 업무 ID, 입력별
+사실 키·원문 ID·출처 종류를 담는다. 작업자의 case에 보관한 레코드도 같은 출처를 가진다.
+원문의 숫자와 단위는 실행 시 기존 교육 형식으로 정규화한다. 결합 비용을 차감한 예산과
+계획의 목표가 기존 작업자로 전달된다. [순차 수신 절차](serial-inbox.md)
 
 단계 명칭과 실제 구현 범위는 [화면 처리 용어](runtime-terminology.md)를 따른다.
 Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변경을 뜻하지 않는다.
