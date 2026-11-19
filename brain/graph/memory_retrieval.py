@@ -224,14 +224,14 @@ class MemoryRetrieval:
 
     def _binding_values(self) -> dict[str, str]:
         """Expose credential source availability without exposing credential values."""
-        return {
-            **self.task_context.inputs,
-            **{
-                source: "[CREDENTIAL]"
-                for source, value in self.task_context.credentials.items()
-                if value
-            },
-        }
+        inputs = self.task_context.inputs
+        values = inputs.copy() if isinstance(inputs, dict) else dict(inputs)
+        values.update(
+            (source, "[CREDENTIAL]")
+            for source, value in self.task_context.credentials.items()
+            if value
+        )
+        return values
 
     def _remaining_groups(self, method: LearnedMethod) -> list[MethodActionGroup]:
         """Read route progress from deliveries and explicit recovery in this run."""

@@ -10,6 +10,7 @@ from test_brain import ScriptedModel
 
 from brain import run
 from brain.graph.screen_memory import screen_input_values
+from brain.observe.values import field_matches
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from pipeline.inbox import collect, desktop_turn, main, pending, record_plan, run_worker
 from pipeline.inbox_sources import SourceItem, read_chat, read_mail
@@ -268,6 +269,10 @@ def test_worker_from_revised_plan_binds_sources_before_dispatch_and_deducts_cost
         plan,
         mail,
     )
+    inputs = screen_input_values(amended["record"], TaskInstruction.model_validate(edit_taught), {})
+    preview = screen_input_values(inputs, TaskInstruction.model_validate(edit_taught), {})
+    assert field_matches("box_total", "45 cartons", preview)
+    assert not field_matches("box_total", "45 PLT", preview)
 
     # The successful quantity-only amendment carried PLT in its decision and wrote no unit.
     # Both following amendments must still use the unit actually dispatched in the original record.

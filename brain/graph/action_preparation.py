@@ -105,6 +105,12 @@ def _rebind_visual_point(
 ) -> tuple[tuple[float, float], str]:
     if same_content:
         return old_point, "exact_capture"
+    if is_wheel_scroll(request.choice.type, request.choice.keys):
+        x, y = old_point
+        return (
+            x * fresh.screenshot.width / scene.screenshot.width,
+            y * fresh.screenshot.height / scene.screenshot.height,
+        ), "scroll_viewport"
     if services.rebind_action is None:
         raise ValueError("visual_screen_changed_before_action")
     try:

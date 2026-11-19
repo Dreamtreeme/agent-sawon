@@ -465,6 +465,53 @@ def test_synthetic_observed_input_view_tracks_source_update_and_explicit_blank(t
         assert brain.values == record.inputs == {}
 
 
+def test_synthetic_requeried_fields_use_the_taught_numeric_format(tmp_path):
+    from test_window_actions import setup_window_brain
+
+    from brain.demo_learning.memory_compilation import _case_values
+    from sawon_runtime.storage import atomic_write_json
+
+    record = TaskInputRecord(
+        case_id="synthetic-readback",
+        inputs={"pallet_count": "1,000", "weight": "1500 G", "reference": "001"},
+    )
+    task = TaskInstruction(
+        name="Synthetic pallet receipt",
+        objective="Requery the receipt",
+        completion_conditions=["Saved values match"],
+        input_formats={
+            "pallet_count": {"type": "integer"},
+            "weight": {"type": "number", "unit": "KG"},
+        },
+    )
+    brain, _, relay, _ = setup_window_brain(tmp_path, record, [], task_instruction=task)
+    atomic_write_json(brain.case_dir / "record.json", record)
+    expected = {"pallet_count": "1000", "weight": "1.5", "reference": "001"}
+    assert brain.input_values == expected
+    for number, (displayed, matched) in enumerate(
+        [
+            (
+                {"pallet_count": "１,０００", "weight": "1500 g", "reference": "1"},
+                {"pallet_count", "weight"},
+            ),
+            ({"pallet_count": "10,00", "weight": "1.500000001", "reference": "001"}, {"reference"}),
+            ({"pallet_count": "1000.5", "weight": "1.5 CTNS", "reference": "1"}, set()),
+        ],
+        start=1,
+    ):
+        mapping = reading(["ERP", "Requery"], displayed)
+        brain.observation = relay.observe()
+        brain.observation_number = number
+        brain._remember_model_task_evidence(
+            SimpleNamespace(mapping=mapping, observed_step_results=[])
+        )
+        assert set(brain._observed_inputs()) == matched, displayed
+        # The compiler rebuilds the execution inputs from the saved record and education.
+        inputs = _case_values(brain.case_dir)
+        evidence = mapping.local_payload({"markers": [], "ocr": []}, inputs)["evidence"]
+        assert {item["field"] for item in evidence} == matched, displayed
+
+
 def synthetic_observed_quantity_fill(quantity=None):
     """Wire reply for a synthetic view showing an older order beside the write destination."""
     fields = [

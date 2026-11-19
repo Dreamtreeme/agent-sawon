@@ -441,9 +441,12 @@ def test_synthetic_mixed_actions_use_image_points_and_report_outside_capture(
     assert not [e for e in brain.log.read_all() if e.kind == "act"]
 
 
-@pytest.mark.parametrize("direction,delta", [("up", 600), ("down", -600)])
+@pytest.mark.parametrize(
+    "direction,delta,size,point",
+    [("up", 600, (400, 200), (300, 150)), ("down", -600, (600, 240), (450, 180))],
+)
 def test_synthetic_explicit_scroll_reaches_wire_without_preliminary_click(
-    tmp_path, record, direction, delta
+    tmp_path, record, direction, delta, size, point
 ):
     # Synthetic 120: fake model, real observation/decision/coordinate/wire conversion.
     data = named_response(
@@ -451,7 +454,7 @@ def test_synthetic_explicit_scroll_reaches_wire_without_preliminary_click(
             {
                 "action": "scroll",
                 "direction": direction,
-                "target": "Reference",
+                "target": "Work history scroll area",
                 "intent": "navigate",
                 "point": [300, 150],
             }
@@ -461,14 +464,23 @@ def test_synthetic_explicit_scroll_reaches_wire_without_preliminary_click(
     brain._observe()
     assert len(brain.visual_proposal.steps) == 1
     assert brain._select_node() == "review"
+    fresh = wire()
+    fresh = fresh.model_copy(
+        update={
+            "screen_hash": "b" * 40,
+            "screenshot": fresh.screenshot.model_copy(update={"width": size[0], "height": size[1]}),
+        }
+    )
     action = brain._wire_action(
         brain.decision.action,
         brain.decision,
-        fresh_observation=brain.observation.wire,
+        fresh_observation=fresh,
         log_renewal=False,
     ).root
     assert action.type == "scroll" and action.wheel_delta == delta
-    assert action.target.image_point == (300, 150)  # Outside the field, inside the viewport.
+    assert action.target.image_point == point  # Outside the field, inside the current viewport.
+    assert action.target.capture_id == fresh.screenshot.geometry.capture_id
+    assert action.obs_id == fresh.obs_id
     assert brain.action_plan is None
     assert len(model.prompts) == 1
 

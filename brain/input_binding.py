@@ -11,9 +11,8 @@ without modifying the supplied inputs or treating destination blanks as source f
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from brain.observe.values import RecordInput, normalize, values_for
+from brain.observe.values import RecordInput, TaskInputValues, normalize, values_for
 from brain.task_instruction import COLLECTED_INPUT_PREFIX, TaskInputRecord
-from sawon_runtime.normalization import normalize_numeric_input
 
 if TYPE_CHECKING:
     from brain.task_instruction import TaskInstruction
@@ -38,37 +37,35 @@ def collected_input_sources(task: "TaskInstruction") -> dict[str, str]:
 
 def resolve_task_inputs(
     supplied: Mapping[str, str] | RecordInput, task: "TaskInstruction", collected: Mapping[str, str]
-) -> dict[str, str]:
+) -> TaskInputValues:
     """Derive available writes from supplied inputs and taught references to readings.
 
     Missing/deleted readings have no executable value. Recomputing this view keeps
     corrections current without copying source facts into the supplied record.
     """
-    provenance = supplied.provenance if isinstance(supplied, TaskInputRecord) else None
+    receipt_units = supplied.receipt_units if isinstance(supplied, TaskInputValues) else None
+    if isinstance(supplied, TaskInputRecord) and supplied.provenance is not None:
+        receipt_units = {
+            key: binding.unit_reference.value
+            for key, binding in supplied.provenance.inputs.items()
+            if binding.unit_reference is not None
+        }
     if not isinstance(supplied, Mapping):
         supplied = values_for(supplied)
     sources = collected_input_sources(task)
-    values = {
-        **{key: value for key, value in supplied.items() if key not in sources},
-        **{source: collected[key] for source, key in sources.items() if key in collected},
-    }
-    for key, specification in task.input_formats.items():
+    values = TaskInputValues(
+        {
+            **{key: value for key, value in supplied.items() if key not in sources},
+            **{source: collected[key] for source, key in sources.items() if key in collected},
+        },
+        task.input_formats,
+        receipt_units,
+    )
+    for key in task.input_formats:
         if key not in values:
             continue
-        count_unit = None
-        if specification.count_unit_from and provenance:
-            binding = provenance.inputs.get(key)
-            if binding and binding.unit_reference:
-                count_unit = binding.unit_reference.value
-        elif specification.count_unit_from:
-            count_unit = values.get(specification.count_unit_from)
         try:
-            values[key] = normalize_numeric_input(
-                values[key],
-                integer=specification.type == "integer",
-                unit=specification.unit,
-                count_unit=count_unit,
-            )
+            values[key] = values.numeric_text(key, values[key])
         except ValueError:
             # Preserve the source reading; the existing unavailable-input path owns recovery.
             del values[key]

@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from brain.graph.screen_mapping import ScreenMappingWire
+from brain.task_instruction import TaskInstruction
 from brain.visual.frame import frame_input
 
 
@@ -274,6 +275,50 @@ def test_unused_large_list_can_only_select_current_geometry_and_cannot_return_a_
     with pytest.raises(ValidationError, match="bbox"):
         ScreenMatch.model_validate_json(json.dumps(invented))
     missing = deepcopy(raw)
-    missing["fields"][1]["region_refs"] = ["control:99"]
+    missing["fields"][1]["region_refs"] = ["control:1", "control:99"]
+    mapping = ScreenMappingWire.model_validate(missing).resolve(projected)
+    assert list(mapping.fields) == ["Continue"]
+    screen = {}
+    plan = mapping.local_payload(screen)
+    assert plan["steps"] == [
+        {**raw["steps"][0], "source": None, "target": plan["controls"][0]["id"]}
+    ]
+    assert plan["controls"][0]["visual_description"] == "Continue"
+    assert plan["evidence"] == []
+
+
+@pytest.mark.parametrize(
+    ("field_attributes", "dependencies"),
+    [
+        ({"result_key": "quantity", "value": "30"}, {}),
+        ({}, {"completion_evidence": [{"condition_index": 0, "target": "Notice"}]}),
+        (
+            {},
+            {
+                "fields": [
+                    {"name": "Cell", "role": "edit", "parent": "Notice", "region_refs": ["text:0"]}
+                ]
+            },
+        ),
+    ],
+    ids=["original-business-reading", "completion-evidence", "observed-parent"],
+)
+def test_missing_regions_cannot_supply_business_facts_or_referenced_controls(
+    field_attributes, dependencies
+):
+    projected = {"text_regions": [{"ref": "text:0", "bbox": [100, 15, 150, 30]}]}
+    field = {
+        "name": "Notice",
+        "role": "text",
+        "region_refs": ["text:0", "text:99"],
+        **field_attributes,
+    }
+    response = {**dependencies, "fields": [field, *dependencies.get("fields", [])]}
+    task = TaskInstruction(
+        name="Read quantity",
+        objective="Collect the displayed quantity",
+        completion_conditions=["Quantity is known"],
+        result_keys=["quantity"],
+    )
     with pytest.raises(ValueError, match="screen_mapping_region_ref_unknown"):
-        ScreenMappingWire.model_validate(missing).resolve(projected)
+        ScreenMappingWire.model_validate(response).resolve(projected, task=task)

@@ -442,11 +442,26 @@ class ScreenMappingWire(ScreenMapping):
         result_keys = set(task.result_keys) if task is not None else set()
         read_references = collected_input_sources(task) if task is not None else {}
         memo_sources = {label: key for key, label in (memo_labels or {}).items()}
+        referenced_fields = {
+            self.grid,
+            self.row,
+            *self.message_targets,
+            *self.repair_fields,
+            *(item.target for item in self.completion_evidence),
+            *(step.target for step in self.steps if not isinstance(step, WindowAction)),
+            *(field.parent for field in self.fields),
+        }
         fields = {}
         for field in self.fields:
             try:
                 boxes = [regions[ref] for ref in field.region_refs]
             except KeyError as error:
+                if (
+                    field.source is None
+                    and field.result_key is None
+                    and field.name not in referenced_fields
+                ):
+                    continue
                 raise ValueError("screen_mapping_region_ref_unknown") from error
             left = min(box[0] for box in boxes)
             top = min(box[1] for box in boxes)
