@@ -1,17 +1,21 @@
 # 상태와 저장소 계약 지도
 
-기준일: 2026-11-16
+기준일: 2026-11-19
 
 이 문서는 런타임 상태와 계층 간 인터페이스의 기준 위치를 한 곳에 모읍니다. 설명과 구현이
 다르면 해당 계약을 소유한 코드와 이 문서를 같은 변경에서 맞춥니다.
 
 ## 계약 소유권
 
-실행 간 수신 원문의 소유자는 [inbox_sources](../pipeline/inbox_sources.py)와
-[inbox](../pipeline/inbox.py)다. 수신 파일의 원본과 판단용 텍스트, 이를 반영한 계획 ID를
-한 PC의 전용 상태 디렉터리에 저장한다. 실행별 노트북과 연결되는 지점은 저장된 계획의
-업무 목표로 호출하는 기존 작업자다. 원문 ID, 계획 인계, 종료 기록의 의미는
-[순차 수신 절차](serial-inbox.md)를 따른다.
+실행 간 수신 원문 계약은 [inbox_sources](../pipeline/inbox_sources.py)의 `SourceItem`이다.
+[gmail_inbox](../pipeline/gmail_inbox.py)는 OAuth 또는 커넥터 호스트에서 받은 RFC 메일 원본을
+파일 수집과 같은 파서에 전달한다. [kakao_inbox](../pipeline/kakao_inbox.py)는 relay로 지정한
+방의 대화를 임시 파일에 내보내고, `chat_messages`는 표식이 있는 메시지의 원문 바이트를
+`kakao_message` 항목으로 만든다. [inbox](../pipeline/inbox.py)는 메일, 카톡 순서로 각 출처의
+원문을 저장하고 `(source, channel, source_key)` 단위로 재수집을 식별한다. 원문과 판단용
+텍스트, 이를 반영한 계획 ID를 한 PC의 전용 상태 디렉터리에 보관한다. 실행별 노트북과
+연결되는 지점은 저장된 계획의 업무 목표로 호출하는 기존 작업자다. 원문 식별, 계획 인계,
+종료 기록의 의미는 [순차 수신 절차](serial-inbox.md)를 따른다.
 
 단계 명칭과 실제 구현 범위는 [화면 처리 용어](runtime-terminology.md)를 따른다.
 Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변경을 뜻하지 않는다.

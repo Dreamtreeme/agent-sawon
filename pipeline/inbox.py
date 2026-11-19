@@ -1,11 +1,17 @@
 """One PC's serial inbox and handoff to the existing GUI worker."""
 
 import argparse
+import hashlib
 import json
+import os
 import sqlite3
+import sys
 from collections.abc import Iterable, Iterator
 from contextlib import closing, contextmanager
+from email import policy
+from email.parser import BytesHeaderParser
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import portalocker
 
@@ -76,6 +82,59 @@ def pending(db: sqlite3.Connection) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def collect_live(db: sqlite3.Connection, args: argparse.Namespace) -> dict:
+    from brain.relay import HttpRelay
+    from pipeline.gmail_inbox import connector_gmail_items, gmail_items
+    from pipeline.inbox_sources import chat_messages
+    from pipeline.kakao_inbox import export_kakao_chat
+    from pipeline.ocr import PaddleOcrEngine
+    from pipeline.schemas import PipelineSettings
+
+    def save(items: Iterable[SourceItem]) -> dict:
+        keys = []
+        raw_hashes = []
+
+        def observed():
+            for item in items:
+                keys.append(hashlib.sha256(item.key.encode("utf-8")).hexdigest())
+                raw_hashes.append(hashlib.sha256(item.raw).hexdigest())
+                yield item
+
+        added = collect(db, observed())
+        return {
+            "read": len(keys),
+            "source_key_hashes": keys,
+            "raw_sha256": raw_hashes,
+            "new_receipt_ids": added,
+        }
+
+    query = 'in:inbox subject:"' + args.mail_subject.replace('"', " ") + '"'
+    mail = (
+        connector_gmail_items(sys.stdin, args.mailbox)
+        if args.gmail_raw_stdin
+        else gmail_items(args.gmail_token, query, args.mailbox)
+    )
+    headers = BytesHeaderParser(policy=policy.default)
+    gmail_result = save(
+        item
+        for item in mail
+        if str(headers.parsebytes(item.raw).get("Subject", "")) == args.mail_subject
+    )
+    relay = HttpRelay(args.relay_url, os.environ.get("SAWON_RELAY_TOKEN", ""))
+    relay.health()
+    # The whole-room export and OCR captures live only inside this private turn.
+    with TemporaryDirectory(prefix="sawon-chat-") as folder:
+        destination = Path(folder) / "conversation.txt"
+        ocr = PaddleOcrEngine(PipelineSettings.load(args.ocr_config))
+        export_kakao_chat(relay, args.room_title, destination, ocr=ocr, self_chat=args.self_chat)
+        kakao_result = save(
+            chat_messages(
+                destination, room_title=args.room_title, channel=args.room, marker=args.chat_marker
+            )
+        )
+    return {"gmail": gmail_result, "kakao": kakao_result}
+
+
 def record_plan(db: sqlite3.Connection, ids: list[int], decision: dict) -> int:
     if not ids or len(set(ids)) != len(ids) or not decision:
         raise ValueError("Supply distinct receipt IDs and a nonempty plan object")
@@ -138,6 +197,22 @@ def main() -> int:
     scan.add_argument(
         "--baseline-chat", action="store_true", help="Skip existing text on first import"
     )
+    live = commands.add_parser(
+        "collect-live", help="Read scoped Gmail originals, then export a chat"
+    )
+    auth = live.add_mutually_exclusive_group(required=True)
+    auth.add_argument("--gmail-token", type=Path, help="Authorized-user Gmail read-only OAuth file")
+    auth.add_argument(
+        "--gmail-raw-stdin", action="store_true", help="Read fresh connector id/raw JSON"
+    )
+    live.add_argument("--mailbox", required=True, help="Stable name of the receiving mailbox")
+    live.add_argument("--mail-subject", required=True, help="Exact subject of the target mail")
+    live.add_argument("--room", required=True, help="Stable name of the designated conversation")
+    live.add_argument("--room-title", required=True, help="KakaoTalk's actual chat window title")
+    live.add_argument("--self-chat", action="store_true", help="Allow the self-profile navigation")
+    live.add_argument("--chat-marker", required=True, help="Text identifying requested messages")
+    live.add_argument("--relay-url", required=True)
+    live.add_argument("--ocr-config", type=Path, required=True)
     commands.add_parser("pending", help="Show unplanned text and source IDs")
     commands.add_parser("plans", help="Show recorded decisions, source IDs and worker status")
     link = commands.add_parser("record-plan", help="Associate source IDs with a JSON decision")
@@ -167,6 +242,8 @@ def main() -> int:
                 if item is not None:
                     added.extend(collect(db, [item], baseline_chat=args.baseline_chat))
             output = {"new_receipt_ids": added}
+        elif args.command == "collect-live":
+            output = collect_live(db, args)
         elif args.command == "pending":
             output = pending(db)
         elif args.command == "plans":

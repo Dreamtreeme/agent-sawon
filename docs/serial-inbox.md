@@ -23,6 +23,30 @@ Gmail 수집 → 카톡 수집 → 새 원문과 기존 업무 대조 → ERP �
 
 수신 Gmail에서 대상 메일을 열어 **메일 다운로드**로 원본 `.eml`을 시험 전용 폴더에 저장한다. Windows 카카오톡에서는 지정한 시험방의 **대화 내보내기**로 TXT를 저장한다. 같은 파일 형식의 합성 자료로도 수집 경계를 점검할 수 있다. 수집기의 `collected_at`은 PC가 파일을 가져온 UTC 시각이다. 실제 메시지 도착 시각의 근거는 수신 측에서 별도로 남긴다. [Gmail 원본 다운로드](https://support.google.com/mail/answer/9261412?hl=ko) · [카카오톡 Windows 대화 안내](https://cs.kakao.com/helps_html/1073209354?locale=ko)
 
+## 실제 수신함과 시험방 한 차례 읽기
+
+`collect-live`는 한 차례의 PC 사용권을 얻어 Gmail 원문을 수집하고, 이어서 한국어 Windows 카카오톡의 지정한 방을 연다. Gmail에서는 `--mail-subject`와 제목이 일치하는 수신 메일을 읽는다. 카톡에서는 relay와 로컬 OCR로 방 창과 저장 대화상자를 찾아 대화를 임시 TXT로 내보낸다. 방 제목을 확인한 뒤 본문에 `--chat-marker`가 있는 메시지만 원문 블록 단위로 DB에 보관한다.
+
+시작 전에 카톡에 로그인하고 `kakaotalk` 앱과 해당 창이 등록된 relay를 구동한다. 예제의 relay 포트를 실제 값으로 바꾸고, 실행 중인 relay에 대응하는 `SAWON_RELAY_TOKEN`과 로컬 OCR 설정을 준비한다. `--room-title`은 실제 창 제목이고, `--room`과 `--mailbox`는 다음 점검에도 유지할 출처 이름이다. ‘나와의 채팅’ 프로필을 통해 들어가는 시험은 `--self-chat`을 추가한다. [relay 설정 예](../examples/relay.mail-chat-erp.yaml) · [OCR 설정](../config/pipeline.toml)
+
+```powershell
+$py = '.\.venv\Scripts\python.exe'
+$state = '.\cases\desk\state'
+$sources = @(
+  '--mailbox', 'desk', '--mail-subject', '선적 A 등록 요청',
+  '--room', 'trial-supplier', '--room-title', '시험 거래처', '--chat-marker', '선적 A',
+  '--relay-url', 'http://127.0.0.1:8790', '--ocr-config', '.\config\pipeline.toml'
+)
+& $py -m pipeline.inbox --state $state collect-live @sources --gmail-token .\cases\desk\credentials\gmail-authorized-user.json
+```
+
+Gmail 인증은 다음 두 방식 중 하나를 사용한다.
+
+- **로컬 OAuth** — 수신 계정이 `gmail.readonly` 권한을 승인해 발급한 authorized-user JSON을 `--gmail-token`으로 전달한다. 수집기는 Gmail API의 `users.messages.list` 검색 결과를 끝까지 확인하고 각 메일을 `users.messages.get(format=raw)`로 가져온다. [Gmail 목록 조회](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list) · [Gmail 원문 조회](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/get)
+- **인증된 커넥터 호스트** — 호스트가 매 점검마다 같은 수신함·제목 조건으로 새로 검색하고 각 ID의 `raw` 응답을 읽는다. 호스트가 JSON 배열 `[{"id":"<Gmail 메시지 ID>","raw":"<base64url 원문>"}]`을 표준 입력으로 전달할 때 위 명령에서 `--gmail-token <경로>` 대신 `--gmail-raw-stdin`을 쓴다. 검색 결과가 없으면 `[]`을 전달한다. CLI는 이 경우 호스트가 넘긴 원문에서 메일 제목을 대조한다.
+
+같은 상태 경로와 조건으로 두 번 실행한다. 각 출처의 `read`는 이번에 읽은 대상 건수, `source_key_hashes`는 식별자의 해시, `raw_sha256`은 이번에 읽은 원문 바이트의 해시, `new_receipt_ids`는 새로 저장된 행이다. 두 번째 점검에서 같은 식별자와 원문이 읽히고 추가 행이 0건인지 확인한다. Gmail 저장 후 카톡 단계가 중단되면 이미 저장된 메일은 유지되며 다음 점검이 이어받는다. 로컬 `collect`의 카톡 이력은 방 전체 스냅샷이고 `collect-live`의 카톡 이력은 개별 메시지다. 두 방식의 카톡 행 개수는 별도로 비교한다.
+
 ## 한 차례 실행
 
 한 PC에서는 아래 명령에 같은 `--state` 경로를 사용한다. 이 경로의 잠금은 수집, 계획 기록, 작업자 한 건이 겹치는 것을 막는다. 별도 실행한 bench나 일반 GUI 프로그램까지 통제하지는 않는다. 입력 폴더에는 대상 메일만 두고, 한 방의 내보내기 파일을 늘 같은 `--room` 이름으로 연결한다.
@@ -47,13 +71,13 @@ $state = '.\cases\desk\state'
 
 작업 실행은 `worker --plan 1 --` 뒤에 기존 [brain.run](../brain/run.py)의 실행 인자를 붙인다. 업무 목표는 저장한 계획의 `goal`에서 가져온다. 작업자의 record, task, 새 case 경로, relay와 모델 설정은 운영자가 제공한다. 정상 복귀하면 종료 코드를 기록한다. 중단돼 `started`가 남은 계획은 `plans`의 case 경로와 실제 저장 결과를 대조해 후속 계획을 정한다. 같은 계획 ID로 작업자를 두 번 시작하지 않는다. ERP 저장 성공은 기존 독립 채점이나 재조회로 확인한다.
 
-이 계층의 첫 구현은 내보낸 원문 인수와 명시적 계획 인계까지다. 자동 수신·내보내기, 주기 호출, 관련 업무 검색과 메인 모델의 계획 생성은 후속 연결 지점이다.
+현재 CLI는 지정한 출처를 한 차례 읽고, 명시적으로 작성한 계획을 기존 작업자에게 인계한다. 주기 호출, 관련 업무 검색과 메인 모델의 계획 생성은 후속 연결 지점이다.
 
 ## 실제 계정으로 수신 조건 준비
 
 1. 수신 PC에 시험용 Gmail과 카카오톡을 로그인한다. 발신에는 수신자와 구별되는 별도의 시험 계정을 사용한다. 두 카카오 계정만 참여하는 비공개 일반 채팅방을 만들고 수신 PC에서 방과 발신자 표시를 확인한다.
 2. 발신 기기에서 메일의 받는 주소를 확인하고 Gmail의 **보내기 예약**을 선택한다. 시간대는 Asia/Seoul로 맞춘다. Google은 실제 발송이 예약 시각보다 몇 분 늦을 수 있다고 안내한다. [Gmail 예약 발송](https://support.google.com/mail/answer/9214606?co=GENIE.Platform%3DDesktop&hl=ko)
 3. 발신자의 같은 시험방에서 **예약 메시지**로 정정 내용을 나중 시각에 등록한다. 수신 PC에서는 발신 계정으로 창을 전환할 필요가 없다. 예약 시각, 실제 도착 시각, 에이전트가 본문을 읽은 시각을 구분해 기록한다. [카카오톡 예약 메시지](https://pc.kakao.com/talk/notices/ko/2731?agent=win32)
-4. 처음에는 지정한 방 하나만 확인한다. 수신 메일의 발신 주소·원문과 카톡방의 발신자·본문을 대조하고, ERP 저장 결과는 독립적으로 재조회한다. 실수신 검증은 별도 진행 예정이며 이번 문서 작성에서 실제 메시지 발송이나 예약은 수행하지 않았다.
+4. 처음에는 지정한 방 하나만 확인한다. 수신 메일의 발신 주소·원문과 카톡방의 발신자·본문을 대조하고, ERP 저장 결과는 독립적으로 재조회한다. 기존 합성 자료를 실제 계정에서 읽은 검증과, 별도 계정에서 방금 보낸 메시지가 도착한 검증은 따로 기록한다.
 
 발신 기기를 코드로 구성할 때 Gmail은 발신 계정이 승인한 OAuth 권한으로 `messages.send`를 사용할 수 있다. 카카오톡 친구 메시지 API에는 같은 서비스에 가입한 사용자, 동의·권한, 수신자 선택과 템플릿 조건이 있다. 개인 카톡방 대화 이력을 가져오는 공개 API는 제공되지 않는다. 일반 사용자 간 대화 수신을 검증할 때는 별도 발신 계정의 예약 메시지가 준비하기 쉽다. [Gmail API](https://developers.google.com/workspace/gmail/api/guides/sending) · [카카오 메시지 API](https://developers.kakao.com/docs/ko/kakaotalk-message/common) · [카카오 개발팀의 대화 조회 안내](https://devtalk.kakao.com/t/api/135418)
