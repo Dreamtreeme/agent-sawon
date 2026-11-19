@@ -11,7 +11,7 @@ from test_brain import FakeRelay, ScriptedModel
 from brain.graph.context_recall import recall_context
 from brain.graph.engine import Brain
 from brain.graph.schemas import DecisionResponse
-from brain.graph.screen_mapping import ScreenMapping
+from brain.graph.screen_mapping import ScreenMapping, ScreenMappingWire
 from brain.graph.screen_memory import collected_result, remember_screen
 from brain.task_instruction import TaskInputRecord, TaskInstruction
 from sawon_runtime.storage import RunLog
@@ -112,14 +112,51 @@ def test_synthetic_two_app_readings_complete_without_supplied_business_values(tm
 def test_synthetic_collected_result_preserves_provenance_and_explicit_blank():
     nodes = {}
     keys = ["reference"]
+    task = TaskInstruction(
+        name="Collect reference",
+        objective="Read the reference",
+        result_keys=keys,
+        completion_conditions=["Reference found"],
+    )
+    # Prior recordings used source alone. New observations with no collection role or
+    # conflicting roles must not overwrite that reading, even when they display other values.
+    wire_fields = [
+        {"name": "Archived reading", "source": "reference", "value": "FIRST"},
+        {"name": "Destination", "source": "reference", "result_key": None, "value": "OTHER"},
+        {
+            "name": "Ambiguous",
+            "source": "collected_result.reference",
+            "result_key": "reference",
+            "value": "CONFLICT",
+        },
+        {"name": "Unrequested", "result_key": "unrequested", "value": "IGNORED"},
+    ]
+    mapping = ScreenMappingWire.model_validate(
+        {
+            "screen_path": ["Chat"],
+            "fields": [
+                {"role": "text", "region_refs": [f"text:{i}"], **field}
+                for i, field in enumerate(wire_fields)
+            ],
+        }
+    ).resolve(
+        {
+            "text_regions": [
+                {"ref": f"text:{i}", "bbox": [0, i * 20, 100, 16]} for i in range(len(wire_fields))
+            ]
+        },
+        task=task,
+    )
     remember_screen(
         nodes,
-        reading(["Chat"], {"reference": "FIRST", "unrequested": "IGNORED"}),
+        mapping,
         {},
         "frame-1",
         observation_number=1,
         result_keys=keys,
     )
+    assert nodes['["Chat"]']["fields"]["reference"]["label"] == "Archived reading"
+    assert collected_result(nodes, keys)["values"] == {"reference": "FIRST"}
     remember_screen(
         nodes,
         reading(["Mail"], {"reference": "UPDATED"}),
@@ -270,18 +307,27 @@ def test_synthetic_graph_reads_unsupplied_mail_quantity_then_fills_and_saves_she
 
     quantity = "27"
     reference = "collected_result.quantity"
-    mail = reading(["Mail", "Synthetic order"], {"quantity": quantity}).model_dump()
-    mail.update(
-        screen_kind="query",
-        steps=[{"action": "focus_window", "handle": 2, "intent": "navigate"}],
-        observed_step_results=[
+    mail = {
+        "screen_path": ["Mail", "Synthetic order"],
+        "screen_kind": "query",
+        "fields": [
+            {
+                "name": "Order quantity",
+                "role": "text",
+                "region_refs": ["text:0"],
+                "result_key": "quantity",
+                "value": quantity,
+            }
+        ],
+        "steps": [{"action": "focus_window", "handle": 2, "intent": "navigate"}],
+        "observed_step_results": [
             {
                 "step_id": "read-mail",
                 "observed_result": "Read the order quantity",
                 "completed": True,
             }
         ],
-    )
+    }
     sheet = {
         "screen_kind": "editor",
         "screen_path": ["Calc", "Synthetic ledger"],
@@ -420,22 +466,33 @@ def test_synthetic_observed_input_view_tracks_source_update_and_explicit_blank(t
 
 
 def synthetic_observed_quantity_fill(quantity=None):
-    """A synthetic composite screen exposes a source reading and destination cell together."""
-    fields = {
-        "Quantity cell": {
+    """Wire reply for a synthetic view showing an older order beside the write destination."""
+    fields = [
+        {
+            "name": "Earlier order quantity",
+            "role": "text",
+            "region_refs": ["text:0"],
+            "value": "115",
+        },
+        {
+            "name": "Quantity cell",
             "role": "cell",
-            "bbox": [10, 50, 100, 20],
+            "region_refs": ["control:0"],
             "source": "collected_result.quantity",
             "value": "",
-        }
-    }
+        },
+    ]
     if quantity is not None:
-        fields["Mail quantity"] = {
-            "role": "text",
-            "bbox": [10, 10, 100, 20],
-            "source": "quantity",
-            "value": quantity,
-        }
+        fields.insert(
+            0,
+            {
+                "name": "Current order quantity",
+                "role": "text",
+                "region_refs": ["text:1"],
+                "result_key": "collected_result.quantity",
+                "value": quantity,
+            },
+        )
     return {
         "screen_kind": "editor",
         "screen_path": ["Synthetic combined view"],
@@ -444,7 +501,7 @@ def synthetic_observed_quantity_fill(quantity=None):
             {
                 "action": "fill",
                 "target": "Quantity cell",
-                "point": [40, 60],
+                "point": [140, 30],
                 "intent": "fill",
                 "source": "collected_result.quantity",
             }
@@ -458,10 +515,12 @@ def test_synthetic_graph_read_and_fill_in_same_response_resolves_new_reading(tmp
     from sawon_interfaces import ActionResult
     from test_window_actions import setup_window_brain
 
+    from pipeline.schemas import OcrBlock
+
     quantity = "43"
     raw_quantity = "43.0"
     fill = synthetic_observed_quantity_fill(raw_quantity)
-    stop = {**fill, "operation": "stop", "steps": []}
+    stop = {**fill, "operation": "stop", "fields": [], "steps": []}
     record = TaskInputRecord(
         case_id="synthetic-same-response-source", inputs={"query.email": "Synthetic order"}
     )
@@ -474,6 +533,10 @@ def test_synthetic_graph_read_and_fill_in_same_response_resolves_new_reading(tmp
     brain, model, relay, _ = setup_window_brain(
         tmp_path, record, [fill, stop], task_instruction=task
     )
+    brain.screen_scanner.ocr.read = lambda page: [
+        OcrBlock(id=1, text="Earlier order: 115", bbox=(10, 20, 80, 15), confidence=1),
+        OcrBlock(id=2, text=f"Current order: {raw_quantity}", bbox=(10, 50, 90, 15), confidence=1),
+    ]
     sent = []
 
     def act(action):
@@ -497,9 +560,11 @@ def test_synthetic_graph_read_and_fill_in_same_response_resolves_new_reading(tmp
     assert sent[0].text == quantity
     assert brain.values == record.inputs == {"query.email": "Synthetic order"}
     assert brain.input_values == {**record.inputs, "collected_result.quantity": quantity}
-    assert collected_result(brain.screen_nodes, ["quantity"])["values"] == {
-        "quantity": raw_quantity
-    }
+    collected = collected_result(brain.screen_nodes, ["quantity"])
+    assert collected["values"] == {"quantity": raw_quantity}
+    assert [row["label"] for row in collected["provenance"]["quantity"]] == [
+        "Current order quantity"
+    ]
     assert not any(event.payload.get("guard") == "input_scope" for event in brain.log.read_all()), (
         "The new reading must be available during plan validation, not only during execution"
     )
@@ -507,6 +572,7 @@ def test_synthetic_graph_read_and_fill_in_same_response_resolves_new_reading(tmp
         "collected_result.quantity"
     ]
     assert destination["delivery"]["value"] == quantity
+    assert destination["last_observation"]["value"] == ""
 
 
 def test_synthetic_graph_missing_source_reading_never_dispatches_empty_text(tmp_path):

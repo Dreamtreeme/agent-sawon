@@ -43,8 +43,15 @@ core가 bench 구현에서 직접 import할 수 있는 것은 `sawon_interfaces`
 
 `TaskInputRecord.inputs`는 사용자나 이전 추출 과정이 제공한 입력이며 비어 있을 수 있다.
 검색어·자료 위치를 입력으로 제공할 수 있지만, 화면에서 찾아야 할 정답은 사전 입력하지 않는다.
-`TaskInstruction.result_keys`는 수집할 결과의 source 이름이며 값이 아니다. 모델이 현재 화면에서
-읽어 `fields[].source/value`로 반환한 해당 항목은 기존 `screen_nodes`에 보존한다. 결과 키를
+`TaskInstruction.result_keys`는 수집할 결과 키를 선언한다. 모델은 대상 자료에서 읽은 항목을
+`fields[].result_key/value`로 반환한다. 입력칸에 표시된 내용은 `fields[].source/value`로
+반환한다. 현재 응답은 각 필드의 `result_key`를 명시하며 입력칸과 일반 컨트롤에는 null을 쓴다.
+`ScreenMappingWire.resolve`는 명시적 읽기에 한해 교육의 결과 키와 그 키를 가리키는
+`fill.input_key`를 같은 원본 키로 해석한다. 두 역할을 동시에 지정하거나 읽기 키의 근거가
+없으면 해당 항목의 화면 위치와 관찰값만 보존한다. 입력칸 관찰이 원본과 같은 키를 쓰면 이
+관찰만으로 원본이나 입력 검증을 확정하지 않는다. 행동의 `fill.source`는 독립적으로 해석한다.
+이전 공급자 응답에서 `result_key` 자체가 빠진 경우에는 당시의 `source` 해석을 유지한다.
+이후 내부 `ScreenField.source`와 기존 `screen_nodes`가 귀속된 관찰을 보존한다. 결과 키를
 실행 입력 `values`나 verified/remaining 입력 집합에 무조건 추가하지 않는다. 수집 응답은
 OCR 줄 조각이 아닌 source별 완성된 업무 값을 반환한다. 줄바꿈을 종합하고 주변 설명문을
 제외하는 판단은 모델이 수행하며 코드가 날짜·주소의 형태를 추측하거나 문장을 파싱하지 않는다.
@@ -78,8 +85,9 @@ OCR 줄 조각이 아닌 source별 완성된 업무 값을 반환한다. 줄바�
 형식 선언은 교육 파일의 일부이므로 바꾸면 원문 바이트의 계약 SHA도 바뀐다. 현재 방법은
 새 교육과 같은 SHA로 편찬한 산출물을 사용하며 과거 산출물의 SHA를 소급 변경하지 않는다.
 
-원본 Gmail 관찰의 `source="quantity"`와 목적지 Calc 필드·행동의
-`source="collected_result.quantity"`는 다르다. 목적지의 빈칸·입력 결과·전달 기록이 원본 사실을
+모델 응답에서 Gmail의 원본 수량은 `result_key="quantity"`, Calc 입력칸과 입력 행동은
+`source="collected_result.quantity"`로 연결한다. 내부 `ScreenField.source`에는 각각
+`quantity`와 `collected_result.quantity`가 기록된다. 목적지의 빈칸·입력 결과·전달 기록이 원본 사실을
 덮어쓰지 않으며, 원본의 정정·명시적 빈값은 다음 해석에 반영된다. 새 상태 저장소나 앱별
 입력기는 만들지 않는다. 이 계약은 I1의 현재 실행 연결이며, 새 자료의 전체 기억 재사용과
 편찬 시 과거 업무값 제거는 C0 이후 별도 검증한다.
@@ -353,8 +361,8 @@ proof_kind=`executed_route_and_matching_terminal_screen`으로 기록한다.
 `ProgressState.screen_nodes`는 화면 트리의 단일 상태 저장소이며 경로의 JSON 문자열로
 인덱싱한다. 노드는 path·업무 키별 fields·이름별 controls를 보관하고, 관찰값은 각 필드의
 `last_observation` 한 곳에 둔다. 전역 observed_inputs나 노드별 별도 복사본은 두지 않는다.
-`screen_memory.remember_screen()`은 모델의 `screen_path`, 명시적 `fields[].source`,
-`fields[].value`를 이번 관찰의 기억 갱신으로 적용한다. 모델은 이전 `screen_tree`, 전달한 행동과
+`screen_memory.remember_screen()`은 모델이 선택한 `screen_path`와 내부 매핑으로 변환한
+`ScreenField.source/value`를 이번 관찰의 기억 갱신으로 적용한다. 모델은 이전 `screen_tree`, 전달한 행동과
 현재 이미지/OCR을 함께 받는다. 코드는 방문한 부모/자식 경로를 만들고 해당 항목만 병합한다.
 기억 연결은 정확한 업무 입력 키를 사용하며 다음 fill 행동, 같은 입력 문자열, 마커/OCR 투영에서
 다시 추론하지 않는다. 명시적 빈 값은 빈칸 관찰로 기록하고 생략된 값은 기존 관찰을 유지한다.

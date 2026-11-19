@@ -1792,7 +1792,9 @@ def decide_screen(
                 if schema in {ScreenMatch, ScreenPlan}:
                     mapped = original_call(prompt, schema, page=page)
                     mapping = (
-                        mapped.pending_mapping.resolve(prepared.state["screen"])
+                        mapped.pending_mapping.resolve(
+                            prepared.state["screen"], task=request.task_instruction
+                        )
                         if mapped.pending_mapping is not None
                         else mapped.mapping
                     )

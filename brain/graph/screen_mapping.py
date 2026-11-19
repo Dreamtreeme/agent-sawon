@@ -9,8 +9,9 @@ from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from brain.input_binding import collected_input_sources
 from brain.observe.values import field_matches
-from brain.task_instruction import ObservedStepResult
+from brain.task_instruction import ObservedStepResult, TaskInstruction
 from brain.visual.scene import contains
 from brain.vocabulary import (
     ACTION_CONTROL_ROLES,
@@ -406,6 +407,12 @@ class ScreenMapping(BaseModel):
 
 class NamedScreenField(ScreenFieldSemantics):
     name: str
+    source: str | None = Field(
+        default=None, description="Input key of the destination being observed; null otherwise"
+    )
+    result_key: str | None = Field(
+        default=None, description="Requested business fact read from its source; null otherwise"
+    )
     region_refs: list[str] = Field(
         min_length=1,
         description="Current screen region refs identifying this control or its visible evidence",
@@ -417,13 +424,17 @@ class ScreenMappingWire(ScreenMapping):
 
     fields: list[NamedScreenField]
 
-    def resolve(self, projected_frame: dict) -> ScreenMapping:
-        """Copy geometry from the exact frame snapshot supplied with this response."""
+    def resolve(
+        self, projected_frame: dict, *, task: TaskInstruction | None = None
+    ) -> ScreenMapping:
+        """Resolve this frame's geometry and the education's observation bindings."""
         regions = {
             region["ref"]: region["bbox"]
             for key in ("control_regions", "text_regions", "memory_fields")
             for region in projected_frame.get(key, [])
         }
+        result_keys = set(task.result_keys) if task is not None else set()
+        read_references = collected_input_sources(task) if task is not None else {}
         fields = {}
         for field in self.fields:
             try:
@@ -434,8 +445,19 @@ class ScreenMappingWire(ScreenMapping):
             top = min(box[1] for box in boxes)
             right = max(box[0] + box[2] for box in boxes)
             bottom = max(box[1] + box[3] for box in boxes)
+            attributes = field.model_dump(
+                exclude={"name", "region_refs", "result_key"}, exclude_unset=True
+            )
+            if field.result_key is not None:
+                key = field.result_key
+                reading = key if key in result_keys else read_references.get(key)
+                attributes["source"] = reading if field.source is None else None
+            elif "result_key" in field.model_fields_set and field.source in result_keys:
+                # A destination observation cannot stand in for an original reading.
+                # Archived provider replies predate result_key and used source for both roles.
+                attributes["source"] = None
             fields[field.name] = {
-                **field.model_dump(exclude={"name", "region_refs"}, exclude_unset=True),
+                **attributes,
                 "bbox": [left, top, right - left, bottom - top],
             }
         return ScreenMapping.model_validate(
@@ -464,13 +486,17 @@ class ScreenMappingWire(ScreenMapping):
         "$defs/NamedKeyAction/properties/target": "",
         "$defs/NamedKeyAction/properties/point": [],
         "$defs/NamedScreenField/properties/source": "",
+        "$defs/NamedScreenField/properties/result_key": "",
         "$defs/NamedScreenField/properties/parent": "",
         "$defs/NamedScreenField/properties/table_state": "",
     }
 
     @classmethod
     def model_json_schema(cls, *args, **kwargs):
-        return compact_provider_schema(super().model_json_schema(*args, **kwargs))
+        schema = compact_provider_schema(super().model_json_schema(*args, **kwargs))
+        # Current replies distinguish an explicit null from archived source-only observations.
+        schema["$defs"]["NamedScreenField"]["required"].append("result_key")
+        return schema
 
 
 def mapping_prompt(context: dict) -> str:
@@ -485,8 +511,9 @@ def observation_prompt(projected_frame: dict) -> str:
         "controls and their OCR; text_regions contain OCR text. region_refs select these regions "
         "and the runtime supplies their geometry. Several regions can represent a wrapped value. "
         "parent names a containing field, focused describes input focus, and table_state describes "
-        "table contents as empty, rows or uncertain. This observation response uses source=null, "
-        "steps=[] and operation=act. needs_refinement requests additional local scanning.\n"
+        "table contents as empty, rows or uncertain. This observation uses result_key=null, "
+        "source=null, steps=[] and operation=act. "
+        "needs_refinement requests additional local scanning.\n"
         + json.dumps({"screen": projected_frame}, ensure_ascii=False)
     )
 
@@ -501,8 +528,6 @@ titles. screen.available_apps provides registered app IDs and names.
 notebook.inputs contains the supplied business values; available_credentials lists credential
 sources for fill actions. task.result_keys names facts to collect.
 notebook.collected_result contains collected values, their provenance and missing_keys.
-For collected_result.<key> input sources, the executor uses that collected value; the original
-reading uses source=<key>.
 notebook.screen_tree organizes accumulated fields and controls by screen_path and child views.
 last_observation records a reading; delivery records an acknowledged input. observed_properties
 contains table_state, enabled, focused and parent facts. Each fact has an observation_number;
@@ -517,11 +542,15 @@ retrieves further procedure details. method_memory contains remembered procedure
 selects a method and resume_group_id selects its next group.
 
 Response data:
-screen_path names the window and tab/subview. fields are named entries with role, source,
-region_refs and value. source links a field to an input or result key; null represents another
-control. value is the screen reading. Several regions may describe one wrapped business value.
-For each fact read for task.result_keys, include a named field whose source is that result key
-and whose value is the full reading. notebook.collected_result is populated from these fields.
+screen_path names the window and tab/subview. For each named field, value is the current screen
+reading. Choose its link according to what the observed region represents:
+- A fact in the requested material: result_key is the matching task.result_keys entry, source
+  is null. This is the original source key in the education. Return the full value read for
+  this task; the runtime stores it in notebook.collected_result with its screen provenance.
+- A destination showing its current contents: source is its taught input key (for example
+  collected_result.<key>), result_key is null. The fill action uses the same input key.
+- Other visible controls and unrelated material: both links are null.
+Several regions may describe one wrapped business value.
 region_refs lists refs from control_regions, text_regions or memory_fields; the runtime derives bbox
 from them. Action points use original image pixels independently of field evidence geometry.
 The runtime merges returned fields and observed_step_results into the screen tree before

@@ -1,5 +1,6 @@
 """Shared GUI vocabulary stays identical to the pre-consolidation contracts.
 
+ScreenMatch/ScreenPlan distinguish original result readings from destination inputs (2026-11-19).
 GUI schema descriptions remove preventive advice; enum/shape/validation are unchanged (2026-11-16).
 ScreenMatch/ScreenPlan separate observation regions from action points/targets (2026-11-16).
 MatchAction-family points use capture bounds rather than evidence bounds (2026-11-16).
@@ -130,8 +131,8 @@ def test_action_intent_contracts_keep_existing_ordered_tuple_subsets():
             TargetedMatchAction,
             "0e9016e1f3c5ea9ceae293f02c63b82e497a9f2a48438f55b50e166297b559c9",
         ),
-        (ScreenPlan, "2319f62ccd7f4d6945172b1c6d4e5dce0b374ac61f93053a8aaf4541063c2a46"),
-        (ScreenMatch, "2319f62ccd7f4d6945172b1c6d4e5dce0b374ac61f93053a8aaf4541063c2a46"),
+        (ScreenPlan, "fe2cf90a95c6ff4b8f738b739efaf28e0a70859f899bb54bfb362d2b8e3dac16"),
+        (ScreenMatch, "fe2cf90a95c6ff4b8f738b739efaf28e0a70859f899bb54bfb362d2b8e3dac16"),
         (Decision, "4f361687bf9a556d6439945786cb2f959c502506cdd09be48c800f88645bb028"),
         (
             WireActDecision,
