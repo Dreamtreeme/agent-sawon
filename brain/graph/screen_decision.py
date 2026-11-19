@@ -381,6 +381,11 @@ class ScreenDecisionRequest:
     current_screen_path: list[str] = field(default_factory=list)
     observation_id: str = ""
     observation_number: int = 0
+    memo_labels: dict[str, str] = field(default_factory=dict)
+    memo_title: str = ""
+
+    def model_prompt(self, context: dict) -> str:
+        return mapping_prompt(context, memo_labels=self.memo_labels, memo_title=self.memo_title)
 
 
 @dataclass(frozen=True)
@@ -686,7 +691,7 @@ def retain_screen_observation(
     recovered = _call_screen_decision(
         services,
         "target_grounding" if absent else "input_evidence_recovery",
-        mapping_prompt(
+        request.model_prompt(
             {
                 **prepared.state,
                 "recovery": {
@@ -938,6 +943,13 @@ def _validate_step_contract(
             step.action == "fill"
             and step.intent in {"credential", "fill"}
             and step.source is not None
+        ):
+            raise ValueError("screen_match_step_not_executable")
+        if (
+            request.memo_labels
+            and step.action == "fill"
+            and step.source not in request.values
+            and step.source not in request.available_credentials
         ):
             raise ValueError("screen_match_step_not_executable")
         control = controls.get(step.target)
@@ -1430,7 +1442,7 @@ def select_screen_response(
         plan = _call_screen_decision(
             services,
             "grounded_screen_plan",
-            mapping_prompt(prepared.state),
+            request.model_prompt(prepared.state),
             ScreenPlan,
             page=page,
         )
@@ -1461,7 +1473,7 @@ def select_screen_response(
                 if request.workflow_flags.get("save_issued")
                 else "screen_decision"
             ),
-            mapping_prompt(prepared.state),
+            request.model_prompt(prepared.state),
             ScreenMatch,
             page=page,
         )
@@ -1477,7 +1489,7 @@ def select_screen_response(
         response = _call_screen_decision(
             services,
             "grounded_screen_plan",
-            mapping_prompt(prepared.state),
+            request.model_prompt(prepared.state),
             ScreenMatch,
             page=page,
         )
@@ -1530,7 +1542,7 @@ def select_screen_response(
         response = _call_screen_decision(
             services,
             "education_retrieval",
-            mapping_prompt(expanded),
+            request.model_prompt(expanded),
             ScreenMatch,
             page=page,
         )
@@ -1554,7 +1566,7 @@ def select_screen_response(
         response = _call_screen_decision(
             services,
             "image_recovery",
-            mapping_prompt(prepared.state),
+            request.model_prompt(prepared.state),
             ScreenMatch,
             page=page,
         )
@@ -1620,7 +1632,7 @@ def validate_or_replan(
             corrected = _call_screen_decision(
                 services,
                 "replan_after_rejection",
-                mapping_prompt(correction_state),
+                request.model_prompt(correction_state),
                 ScreenMatch,
                 page=request.page,
             )
@@ -1649,7 +1661,7 @@ def validate_or_replan(
         plan = _call_screen_decision(
             services,
             "replan_after_rejection",
-            mapping_prompt(correction_state),
+            request.model_prompt(correction_state),
             ScreenPlan,
             page=request.page,
         )
@@ -1725,7 +1737,7 @@ def ground_screen_response(
                 completion = _call_screen_decision(
                     services,
                     "missing_actions_recovery",
-                    mapping_prompt(
+                    request.model_prompt(
                         {
                             **recovery_state,
                             "recovery": {
@@ -1793,7 +1805,9 @@ def decide_screen(
                     mapped = original_call(prompt, schema, page=page)
                     mapping = (
                         mapped.pending_mapping.resolve(
-                            prepared.state["screen"], task=request.task_instruction
+                            prepared.state["screen"],
+                            task=request.task_instruction,
+                            memo_labels=request.memo_labels,
                         )
                         if mapped.pending_mapping is not None
                         else mapped.mapping

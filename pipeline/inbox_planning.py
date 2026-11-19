@@ -23,8 +23,15 @@ type SourceId = Annotated[int, Field(strict=True, gt=0)]
 
 class Fact(FrozenModel):
     key: Text
+    label: Text | None = None
     value: Text
     receipt_id: SourceId
+
+
+class PlannedFact(Fact):
+    """New plans name each item for the worker; previously stored facts can omit the label."""
+
+    label: Text
 
 
 class Work(FrozenModel):
@@ -33,7 +40,7 @@ class Work(FrozenModel):
     goal: Text
     reason: Text
     receipt_ids: list[SourceId] = Field(min_length=1)
-    facts: list[Fact]
+    facts: list[PlannedFact]
     supersedes_plan_id: SourceId | None = None
 
 
@@ -93,6 +100,8 @@ work: 함께 처리할 새 원문의 ID만 receipt_ids에 넣고, 업무를 식�
 선택의 근거 reason을 작성하세요. 다른 업무의 원문은 다음 차례에 판단할 수 있게 남겨 두세요.
 facts에는 선택한 원문에 명시된 업무 사실을 빠짐없이 개별 항목으로 분리하세요.
 각 key는 같은 종류의 사실을 다음에도 같은 이름으로 찾을 수 있게 정하세요.
+label에는 담당자가 업무 메모에서 읽을 짧은 항목명을 쓰세요.
+서로 다른 사실은 역할이 드러나는 이름으로 구분하고 정정 시 같은 사실의 항목명은 이어 쓰세요.
 value에는 원문의 값과 단위, 표기를 유지하고 receipt_id에는 그 값을 확인한 원문의 ID를 쓰세요.
 같은 업무에 대한 정정은 work_id와 정정된 사실의 key를 이어 쓰고
 supersedes_plan_id에 그 계획의 ID를 지정하세요. facts에는 변경되거나 추가된 사실을 적으세요.

@@ -242,6 +242,10 @@ def plan_next(db: sqlite3.Connection, args: argparse.Namespace) -> dict:
                 for fact in decision["facts"]
                 if existing.get(fact["key"], {}).get("value") != fact["value"]
             ]
+            for fact in changes:
+                prior_label = existing.get(fact["key"], {}).get("label")
+                if prior_label:
+                    fact["label"] = prior_label
             changed_keys = {fact["key"] for fact in changes}
             decision["facts"] = [fact for key, fact in existing.items() if key not in changed_keys]
             decision["facts"].extend(changes)

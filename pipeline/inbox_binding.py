@@ -30,23 +30,6 @@ class BindingReply(FrozenModel):
     bindings: list[InputBinding]
 
 
-def _input_targets(task: TaskInstruction) -> dict[str, list[str]]:
-    targets: dict[str, list[str]] = {}
-    reserved = ("credential.", COLLECTED_INPUT_PREFIX)
-    for step in task.procedure:
-        for action in step.actions:
-            key = action.input_key
-            if action.verb == "fill" and key and not key.startswith(reserved):
-                labels = targets.setdefault(key, [])
-                if action.target not in labels:
-                    labels.append(action.target)
-    if task.identity_input_key and not task.identity_input_key.startswith(reserved):
-        targets.setdefault(task.identity_input_key, [])
-    if not targets:
-        raise ValueError("The task must declare business input keys to bind from a plan")
-    return targets
-
-
 def _select_bindings(
     *,
     targets: dict[str, list[str]],
@@ -61,7 +44,7 @@ def _select_bindings(
         "task": task.name,
         "objective": task.objective,
         "inputs_to_bind": targets,
-        "facts": [fact.model_dump() for fact in facts.values()],
+        "facts": [fact.model_dump(exclude_none=True) for fact in facts.values()],
     }
     prompt = """교육의 각 입력 키를 같은 의미의 계획 사실에 연결하세요.
 inputs_to_bind의 값은 해당 입력을 사용하는 화면 대상 이름입니다.
@@ -114,7 +97,13 @@ def prepare_record(
         raise ValueError("The plan must identify its work")
     if not isinstance(decision.get("facts"), list) or not decision["facts"]:
         raise ValueError("The plan must contain receipt-backed facts")
-    targets = _input_targets(task)
+    targets = {
+        key: names
+        for key, names in task.input_targets().items()
+        if not key.startswith(("credential.", COLLECTED_INPUT_PREFIX))
+    }
+    if not targets:
+        raise ValueError("The task must declare business input keys to bind from a plan")
     facts: dict[str, Fact] = {}
     for item in decision["facts"]:
         fact = Fact.model_validate(item)
@@ -147,6 +136,7 @@ def prepare_record(
             fact_key=fact.key,
             receipt_id=fact.receipt_id,
             source=receipts[fact.receipt_id]["source"],
+            memo_label=fact.label,
         )
     provenance = PlanInputProvenance(plan_id=plan_id, work_id=work_id, inputs=sources)
     record = TaskInputRecord(
@@ -156,7 +146,7 @@ def prepare_record(
     invalid = inputs.keys() - execution.keys()
     if invalid:
         raise ValueError(f"Invalid format for taught inputs: {', '.join(sorted(invalid))}")
-    manifest = provenance.model_dump()
+    manifest = provenance.model_dump(exclude_none=True)
     for key, source in manifest["inputs"].items():
         source.update(raw_value=inputs[key], execution_value=execution[key])
     atomic_write_json(log.case_dir / "input-provenance.json", manifest)

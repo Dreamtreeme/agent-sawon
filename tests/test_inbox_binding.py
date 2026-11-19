@@ -36,6 +36,7 @@ def preparation(tmp_path):
                 },
             ],
             "input_formats": {"weight": {"type": "number", "unit": "KG"}},
+            "result_keys": ["seen"],
         }
     )
     return {
@@ -81,18 +82,28 @@ def model(monkeypatch):
 
 def test_binding_selects_keys_copies_values_and_preserves_both_receipts(preparation, model):
     bindings, prompts = model
+    preparation["decision"]["facts"][0]["label"] = "의뢰 번호"
+    preparation["decision"]["facts"][1]["label"] = "총중량"
     bindings.extend({"input_key": key, "fact_key": "Gross"} for key in ("weight", "weight_copy"))
     record = prepare_record(**preparation)
     log = preparation["log"]
     assert record.case_id == log.case_id
     assert record.inputs == {"reference": "S-41", "weight": "2,500 g", "weight_copy": "2,500 g"}
     assert record.origin == "inbox_plan" and record.provenance.plan_id == 3
+    assert record.memo_labels(preparation["task"]) == {
+        "reference": "의뢰 번호",
+        "weight": "총중량 · Gross mass (kg)",
+        "weight_copy": "총중량 · Receipt mass",
+        "credential.username": "User",
+        "collected_result.seen": "Local reading",
+    }
     assert record.provenance.inputs["weight"].fact_key == "Gross"
     assert record.provenance.inputs["weight"].receipt_id == 102
     proof = json.loads((log.case_dir / "input-provenance.json").read_text(encoding="utf-8"))
     assert (proof["plan_id"], proof["work_id"]) == (3, "shipping")
     assert proof["inputs"]["weight"] == {
         "fact_key": "Gross",
+        "memo_label": "총중량",
         "receipt_id": 102,
         "source": "kakao_message",
         "raw_value": "2,500 g",
@@ -114,6 +125,13 @@ def test_all_canonical_keys_need_no_model_configuration(preparation):
     preparation.update(model_config=Path("absent.toml"), max_cost_usd=Decimal(0))
     record = prepare_record(**preparation)
     assert record.inputs["weight"] == "2,500 g"
+    assert record.memo_labels(preparation["task"]) == {
+        "reference": "업무 식별 정보",
+        "weight": "Gross mass (kg)",
+        "weight_copy": "Receipt mass",
+        "credential.username": "User",
+        "collected_result.seen": "Local reading",
+    }
     assert not preparation["log"].read_all()
 
 

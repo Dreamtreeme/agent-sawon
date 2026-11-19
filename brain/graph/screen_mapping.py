@@ -24,6 +24,8 @@ from brain.vocabulary import (
 )
 from models.schema import compact_provider_schema
 
+from .work_memo import memo_prompt_context
+
 
 class ScreenFieldSemantics(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -425,7 +427,11 @@ class ScreenMappingWire(ScreenMapping):
     fields: list[NamedScreenField]
 
     def resolve(
-        self, projected_frame: dict, *, task: TaskInstruction | None = None
+        self,
+        projected_frame: dict,
+        *,
+        task: TaskInstruction | None = None,
+        memo_labels: Mapping[str, str] | None = None,
     ) -> ScreenMapping:
         """Resolve this frame's geometry and the education's observation bindings."""
         regions = {
@@ -435,6 +441,7 @@ class ScreenMappingWire(ScreenMapping):
         }
         result_keys = set(task.result_keys) if task is not None else set()
         read_references = collected_input_sources(task) if task is not None else {}
+        memo_sources = {label: key for key, label in (memo_labels or {}).items()}
         fields = {}
         for field in self.fields:
             try:
@@ -452,6 +459,8 @@ class ScreenMappingWire(ScreenMapping):
                 key = field.result_key
                 reading = key if key in result_keys else read_references.get(key)
                 attributes["source"] = reading if field.source is None else None
+            elif memo_sources and field.source is not None:
+                attributes["source"] = memo_sources.get(field.source)
             elif "result_key" in field.model_fields_set and field.source in result_keys:
                 # A destination observation cannot stand in for an original reading.
                 # Archived provider replies predate result_key and used source for both roles.
@@ -460,9 +469,14 @@ class ScreenMappingWire(ScreenMapping):
                 **attributes,
                 "bbox": [left, top, right - left, bottom - top],
             }
-        return ScreenMapping.model_validate(
-            {**self.model_dump(exclude={"fields"}, exclude_unset=True), "fields": fields}
-        )
+        payload = self.model_dump(exclude={"fields"}, exclude_unset=True)
+        if memo_sources:
+            for action in payload.get("steps", []):
+                if action.get("source") is not None:
+                    action["source"] = memo_sources.get(action["source"])
+            if self.repair_fields:
+                payload["repair_fields"] = [memo_sources.get(s, s) for s in self.repair_fields]
+        return ScreenMapping.model_validate({**payload, "fields": fields})
 
     anthropic_unions: ClassVar[dict[str, dict[str, Any]]] = {
         "properties/steps/items": {
@@ -499,7 +513,12 @@ class ScreenMappingWire(ScreenMapping):
         return schema
 
 
-def mapping_prompt(context: dict) -> str:
+def mapping_prompt(
+    context: dict, *, memo_labels: dict[str, str] | None = None, memo_title: str = ""
+) -> str:
+    if memo_labels:
+        context = memo_prompt_context(context, memo_labels, memo_title)
+        return WORK_MEMO_MAPPING_RULES + json.dumps(context, ensure_ascii=False)
     return CONTEXT_MAPPING_RULES + json.dumps(context, ensure_ascii=False)
 
 
@@ -518,16 +537,14 @@ def observation_prompt(projected_frame: dict) -> str:
     )
 
 
-CONTEXT_MAPPING_RULES = """Plan GUI work from the user's task, education, screen and notebook.
+_MAPPING_TEMPLATE = """Plan GUI work from the user's task, education, screen and notebook.
 Return ScreenMapping JSON containing observations and the next decision.
 
 Input data:
 screen provides image_size, OCR text_regions, control_regions and optional memory_fields.
 screen.active_window identifies the captured window; screen.windows lists window handles and
 titles. screen.available_apps provides registered app IDs and names.
-notebook.inputs contains the supplied business values; available_credentials lists credential
-sources for fill actions. task.result_keys names facts to collect.
-notebook.collected_result contains collected values, their provenance and missing_keys.
+{input_guidance}
 notebook.screen_tree organizes accumulated fields and controls by screen_path and child views.
 last_observation records a reading; delivery records an acknowledged input. observed_properties
 contains table_state, enabled, focused and parent facts. Each fact has an observation_number;
@@ -547,8 +564,7 @@ reading. Choose its link according to what the observed region represents:
 - A fact in the requested material: result_key is the matching task.result_keys entry, source
   is null. This is the original source key in the education. Return the full value read for
   this task; the runtime stores it in notebook.collected_result with its screen provenance.
-- A destination showing its current contents: source is its taught input key (for example
-  collected_result.<key>), result_key is null. The fill action uses the same input key.
+- A destination showing its current contents: {destination_guidance}
 - Other visible controls and unrelated material: both links are null.
 Several regions may describe one wrapped business value.
 region_refs lists refs from control_regions, text_regions or memory_fields; the runtime derives bbox
@@ -570,3 +586,29 @@ taught_step_id identifies the education step associated with the decision.
 Explain the decision rationale in Korean in purpose. expected_result describes the intended
 result, and observed_result describes the facts relevant to the education outcome.
 """
+
+CONTEXT_MAPPING_RULES = _MAPPING_TEMPLATE.format(
+    input_guidance=(
+        "notebook.inputs contains the available business inputs; available_credentials lists "
+        "credential sources. task.result_keys names facts to collect. notebook.collected_result "
+        "contains their readings, provenance and missing_keys."
+    ),
+    destination_guidance=(
+        "source is the exact input named in the education; result_key is null. "
+        "The fill action uses the same input."
+    ),
+)
+
+WORK_MEMO_MAPPING_RULES = _MAPPING_TEMPLATE.format(
+    input_guidance=(
+        "The central planner selected notebook.work_memo for this job. Its items are named "
+        "business facts and their current values. Match these items to visible fields using "
+        "their meaning. Login uses the names listed in available_credentials."
+    ),
+    destination_guidance=(
+        "source is the displayed item name from the selected memo (or the taught credential "
+        "or current reading); result_key is null. A fill can simply target this field by its "
+        "exact name with source=null. For a fill without a linked field, give the item name "
+        "in the step's source. The runtime supplies its value."
+    ),
+)

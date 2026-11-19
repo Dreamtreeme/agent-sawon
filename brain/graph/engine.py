@@ -377,6 +377,12 @@ class Brain:
             taught_procedure_progress=self._taught_procedure_progress(),
             task_instruction=self.task_instruction,
             task_instruction_sha256=self.task_instruction_sha256,
+            memo_labels=self.record.memo_labels(self.task_instruction)
+            if isinstance(self.record, TaskInputRecord)
+            else {},
+            memo_title=self.record.provenance.work_id
+            if isinstance(self.record, TaskInputRecord) and self.record.provenance
+            else "",
             policy=policy,
             grounded_interpretation=interpretation,
             proposal=proposal,

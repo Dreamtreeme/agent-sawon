@@ -597,6 +597,96 @@ def test_synthetic_graph_missing_source_reading_never_dispatches_empty_text(tmp_
     assert collected_result(brain.screen_nodes, ["quantity"])["missing_keys"] == ["quantity"]
 
 
+def test_inbox_memo_item_binds_observation_and_fill_to_selected_plan(tmp_path):
+    from sawon_interfaces import ActionResult
+    from test_window_actions import setup_window_brain
+
+    from brain.graph.screen_mapping import WORK_MEMO_MAPPING_RULES
+
+    key = "execute_port_42"
+    task = TaskInstruction.model_validate(
+        {
+            "name": "Register shipment",
+            "objective": "Record the port shown in the selected work memo",
+            "completion_conditions": ["The shipment is saved"],
+            "procedure": [
+                {
+                    "id": "enter",
+                    "instruction": "Enter the port",
+                    "completion": "The port is visible",
+                    "actions": [{"verb": "fill", "target": "Port of Loading", "input_key": key}],
+                }
+            ],
+        }
+    )
+    record = TaskInputRecord.model_validate(
+        {
+            "case_id": "synthetic-work-memo",
+            "origin": "inbox_plan",
+            "inputs": {key: "BUSAN"},
+            "provenance": {
+                "plan_id": 4,
+                "work_id": "출고 04",
+                "inputs": {
+                    key: {
+                        "fact_key": "port_fact_09",
+                        "receipt_id": 5,
+                        "source": "email",
+                        "memo_label": "선적항",
+                    }
+                },
+            },
+        }
+    )
+    fill = {
+        "screen_kind": "editor",
+        "screen_path": ["Shipment"],
+        "fields": [
+            {
+                "name": "Port of Loading",
+                "role": "edit",
+                "region_refs": ["control:0"],
+                "value": "",
+                "source": "선적항",
+                "result_key": None,
+            }
+        ],
+        "steps": [
+            {
+                "action": "fill",
+                "intent": "fill",
+                "target": "Port of Loading",
+                "point": [140, 30],
+                "source": None,
+            }
+        ],
+        "taught_step_id": "enter",
+    }
+    stop = {**fill, "operation": "stop", "steps": [], "fields": []}
+    brain, model, relay, _ = setup_window_brain(
+        tmp_path, record, [fill, stop], task_instruction=task
+    )
+    writes = []
+
+    def act(action):
+        writes.append((action.root.type, action.root.text))
+        return ActionResult(
+            action_id=action.root.action_id,
+            ok=True,
+            post_obs_id=relay.observe().obs_id,
+            duration_ms=1,
+        )
+
+    relay.act = act
+    assert brain.run().reason == "model_requested_stop"
+    assert writes == [("set_text", "BUSAN")]
+    assert brain.screen_nodes['["Shipment"]']["fields"][key]["delivery"]["value"] == "BUSAN"
+    for prompt in model.prompts:
+        assert key not in prompt and "port_fact_09" not in prompt
+        view = json.loads(prompt.removeprefix(WORK_MEMO_MAPPING_RULES))
+        assert view["notebook"]["work_memo"] == {"name": "출고 04", "items": {"선적항": "BUSAN"}}
+
+
 def test_synthetic_graph_collects_mail_and_chat_registers_then_requeries_erp(tmp_path):
     """Synthetic existing fake model/scanner/window relay run the real graph, without GUI/API.
 

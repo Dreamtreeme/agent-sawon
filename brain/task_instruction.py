@@ -1,5 +1,6 @@
 """User-authored task intent and input data without application routes or coordinates."""
 
+from collections import Counter
 from collections.abc import Iterable
 from typing import Literal
 
@@ -95,6 +96,20 @@ class TaskInstruction(BaseModel):
     )
     input_formats: dict[str, TaskInputFormat] = Field(default_factory=dict)
 
+    def input_targets(self) -> dict[str, list[str]]:
+        """Taught screen labels for each write source and the record's identity."""
+        targets: dict[str, list[str]] = {}
+        for step in self.procedure:
+            for action in step.actions:
+                key = action.input_key
+                if action.verb == "fill" and key:
+                    names = targets.setdefault(key, [])
+                    if action.target not in names:
+                        names.append(action.target)
+        if self.identity_input_key:
+            targets.setdefault(self.identity_input_key, [])
+        return targets
+
     @model_validator(mode="after")
     def unique_nonempty_items(self):
         for attribute in ("requirements", "completion_conditions", "constraints", "result_keys"):
@@ -115,6 +130,7 @@ class ReceiptInputSource(BaseModel):
     fact_key: str
     receipt_id: int = Field(gt=0)
     source: str
+    memo_label: str | None = None
 
 
 class PlanInputProvenance(BaseModel):
@@ -137,6 +153,39 @@ class TaskInputRecord(BaseModel):
     ] = Field(max_length=200)
     origin: Literal["manual", "inbox_plan"] = "manual"
     provenance: PlanInputProvenance | None = None
+
+    def memo_labels(self, task: TaskInstruction) -> dict[str, str]:
+        """Human item names for the exact inputs and receipts selected by the central plan."""
+        if self.origin != "inbox_plan" or self.provenance is None:
+            return {}
+        targets = task.input_targets()
+        labels = {}
+        for key in sorted(self.inputs):
+            names = targets.get(key, [])
+            fallback = "업무 식별 정보" if key == task.identity_input_key else "업무 항목"
+            labels[key] = (self.provenance.inputs[key].memo_label or "").strip() or (
+                names[0] if names else fallback
+            )
+        counts = Counter(labels.values())
+        for key, names in targets.items():
+            reading = key.startswith(COLLECTED_INPUT_PREFIX) and (
+                key.removeprefix(COLLECTED_INPUT_PREFIX) in task.result_keys
+            )
+            if key not in labels and names and (key.startswith("credential.") or reading):
+                labels[key] = names[0]
+        unique = {}
+        used = set()
+        for key, name in labels.items():
+            if key in self.inputs and counts[name] > 1 and targets.get(key):
+                name = f"{name} · {targets[key][0]}"
+            candidate = name
+            ordinal = 1
+            while candidate in used:
+                ordinal += 1
+                candidate = f"{name} ({ordinal})"
+            unique[key] = candidate
+            used.add(candidate)
+        return unique
 
     @model_serializer(mode="wrap")
     def serialize(self, serialize_fields):

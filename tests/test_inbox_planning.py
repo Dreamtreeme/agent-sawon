@@ -70,8 +70,8 @@ def work():
         "reason": "Mail and the packing message share T-71.",
         "receipt_ids": [1, 2],
         "facts": [
-            {"key": "hbl_no", "value": "TEST456", "receipt_id": 1},
-            {"key": "packages", "value": "12 CTNS", "receipt_id": 2},
+            {"key": "hbl_no", "label": "House B/L 번호", "value": "TEST456", "receipt_id": 1},
+            {"key": "packages", "label": "포장 수량", "value": "12 CTNS", "receipt_id": 2},
         ],
         "supersedes_plan_id": None,
     }
@@ -128,14 +128,14 @@ def test_correction_replaces_unstarted_plan_and_keeps_source_of_unchanged_fact(p
     first = turn("plan-next")["plan_id"]
     with desktop_turn(state) as db:
         assert collect(db, [chat("correction", "T-71 correction: use 18 CTNS.")]) == [3]
-    corrected_fact = {"key": "packages", "value": "18 CTNS", "receipt_id": 3}
+    corrected_fact = {"key": "packages", "label": "포장 수량", "value": "18 CTNS", "receipt_id": 3}
     replies.append(
         {
             **original,
             "receipt_ids": [3],
             "goal": "Register T-71 with TEST456 and 18 CTNS, then reopen by House B/L.",
             "reason": "The sender corrected the package count before registration.",
-            "facts": [corrected_fact],
+            "facts": [{**corrected_fact, "label": "변경된 포장 개수"}],
             "supersedes_plan_id": first,
         }
     )
@@ -154,7 +154,7 @@ def test_correction_after_success_retains_exit_and_revises_only_the_current_vers
     state, replies, prompts, turn = planner
     seed_pair(state)
     original = work()
-    unit = {"key": "package_unit", "value": "CTNS", "receipt_id": 2}
+    unit = {"key": "package_unit", "label": "포장 단위", "value": "CTNS", "receipt_id": 2}
     original["facts"].append(unit)
     replies.append(original)
     first = turn("plan-next")["plan_id"]
@@ -164,7 +164,7 @@ def test_correction_after_success_retains_exit_and_revises_only_the_current_vers
         assert run_worker(db, first, []) == 0
         assert collect(db, [correction]) == [3]
 
-    fact = {"key": "packages", "value": "18 CTNS", "receipt_id": 3}
+    fact = {"key": "packages", "label": "포장 수량", "value": "18 CTNS", "receipt_id": 3}
     change = {
         **original,
         "goal": "Find TEST456, change its quantity to 18 CTNS, save and reopen.",
