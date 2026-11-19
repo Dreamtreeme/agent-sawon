@@ -54,7 +54,19 @@ Set-Location agent-sawon
 `-Gui`는 실제 화면 중계에 필요한 bench의 `relay` extra를 설치합니다.
 화면 실행이 필요 없는 개발 환경에서는 `-Gui`를 생략할 수 있습니다.
 
-### Mock ERP 한 건 실행
+### 저장한 선적을 이어서 열기
+
+core 루트의 PowerShell에서 일상용 Mock ERP를 엽니다.
+
+```powershell
+& ..\agent-sawon-bench\scripts\start_mock_erp.ps1
+```
+
+창을 닫고 다음 날 같은 명령으로 열어도 선적은 `agent-sawon-bench/data/erp.db`에 남습니다.
+로그인 후 **House B/L 조회**에서 번호를 입력하고 **조회**를 누릅니다. 번호를 비우고 **조회**를 누르면 전체 목록을 볼 수 있습니다.
+등록 후 도착한 정정도 이 DB를 사용하는 ERP에서 처리합니다.
+
+### 독립된 Mock ERP에서 한 건 평가하기
 
 아래 명령은 **core 루트**에서 실행합니다. 먼저 GPU 경로와 `.env`를 준비합니다.
 시드 0의 교육 `company-000.json`과 합성 수기 record를 사용하므로 문서 추출은 생략합니다.

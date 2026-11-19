@@ -85,6 +85,8 @@ $state = '.\cases\desk\state'
 
 계획 사실을 입력으로 쓸 때는 `worker --from-plan`에 계획 번호, ERP 교육 파일과 새 실행 경로를 지정한다. 아래 예시에서 `$relay`는 실행 중인 ERP 전용 relay 주소, `$task`는 해당 회사의 ERP 입력 절차와 입력 키를 선언한 JSON 경로다. 로그인 정보는 기존 작업자의 실행 환경에서 공급한다.
 
+같은 선적을 여러 날에 걸쳐 처리할 때는 core 루트에서 `& ..\agent-sawon-bench\scripts\start_mock_erp.ps1`로 ERP를 열고 이 인스턴스에 relay를 연결한다. 수신 원문·계획은 같은 `--state`에, 선적과 저장 번호는 bench의 `data/erp.db`에 누적된다. 각 작업자의 `--case-dir`은 매번 새로 지정해 그때의 화면과 로그를 보존한다. 독립 채점용 하네스는 실행별 DB를 사용한다.
+
 ```powershell
 & $py -m pipeline.inbox --state $state worker --plan 1 --from-plan -- `
   --task $task --case-dir .\cases\desk\erp-01 --relay-url $relay `
