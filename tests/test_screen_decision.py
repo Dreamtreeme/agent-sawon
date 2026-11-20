@@ -216,7 +216,8 @@ def matching_contract(brain, screen=None):
     return brain._screen_decision_request(screen, None), services
 
 
-def test_synthetic_memory_reads_new_source_before_window_replay(tmp_path):
+@pytest.mark.parametrize("rebased", [False, True], ids=["legacy-bindings", "pruned-entry"])
+def test_synthetic_memory_reads_new_source_before_window_replay(tmp_path, rebased):
     """Synthetic A-to-B reading uses the real memory, decision, notebook and relay boundaries."""
     from sawon_interfaces import ActionResult, WindowInfo
 
@@ -299,6 +300,13 @@ def test_synthetic_memory_reads_new_source_before_window_replay(tmp_path):
         task_contract_sha256=brain.task_instruction_sha256,
     )
     assert method is not None
+    if rebased:
+        # The preceding frame only identified the search box. The retained step
+        # still needs to read the current quantity before switching windows.
+        group = method.action_groups[0].model_copy(
+            update={"field_sources": {"Search": "query"}, "read_result_keys": ["quantity"]}
+        )
+        method = method.model_copy(update={"action_groups": [group]})
     brain.method_library.enabled = True
     brain.method_library.upsert(method)
     request, services = matching_contract(brain, screen)
@@ -313,6 +321,8 @@ def test_synthetic_memory_reads_new_source_before_window_replay(tmp_path):
     current = decide_screen(request, services).response
 
     assert len(model.prompts) == 1
+    prompt = json.loads(model.prompts[0].removeprefix(CONTEXT_MAPPING_RULES))
+    assert prompt["method_memory"]["current_read_result_keys"] == ["quantity"]
     assert current.mapping.fields["Quantity"].value == "25"
     assert current.steps[0].handle == 22
     assert not any(e.payload.get("check") == "visual_match_cache" for e in brain.log.read_all())

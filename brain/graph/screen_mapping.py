@@ -572,6 +572,9 @@ execution.last_action_observation describes structural screen movement.
 taught_procedure_progress contains education details and progress. requested_instruction_ids
 retrieves further procedure details. method_memory contains remembered procedures; method_id
 selects a method and resume_group_id selects its next group.
+method_memory.app_guides describes past navigation in the visible app. Use relevant steps with
+this task's inputs, current screen targets and requested readings. current_read_result_keys
+lists missing facts to read from this frame for the current route.
 
 Response data:
 screen_path names the window and tab/subview. For each named field, value is the current screen

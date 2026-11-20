@@ -65,6 +65,8 @@ Python 모듈 이름 변경은 `WorkerState` 키나 공개 실행 계약의 변�
 | 교육 단계 관찰 결과 | `brain/task_instruction.py`의 `ObservedStepResult` | `screen_mapping`, `screen_decision`, `cache/methods`, engine | 현재 모델 응답의 교육 완료를 실행 상태에 반영. 편찬물의 과거 결과는 현재 응답으로 복원하지 않음 |
 | 선택 결과의 요청 문맥 | `brain/graph/screen_decision.py`의 `ScreenSelection.prepared` | `decide_screen` → `ground_screen_response` | 같은 판단에서 확장한 교육 상세를 빈 행동 보완에 전달. 거절 후 재계획은 기존 prepared 사용. 턴 간 영구 상태가 아님 |
 | 기억 편찬 응답 | `brain/demo_learning/memory_compilation.py`의 `MemoryAssembly` / `MemoryGroupSelection` | 모델 클라이언트, `compile_memory` | 후보 ID로 전달 행동을 선택하고 `field_renames`로 잘못된 필드 이름을 교정. context_anchors는 첫 8개를 보존하고 초과분 경고 기록 |
+| 앱 사용법 | `brain/cache/methods.py`의 `LearnedMethod.app_guides` | 편찬기 → 기억 라이브러리 → 다른 교육의 `method_memory.app_guides` | 원본 읽기까지 관찰한 탐색 동작을 등록 앱별로 제공한다. 화면 판단 모델이 현재 지시에서 검색어와 읽을 항목을 정하고 현재 화면에서 대상을 선택한다. |
+| 같은 업무에서 새로 읽을 항목 | `MethodActionGroup.read_result_keys` | 편찬기 → `MemoryRetrieval.required_result_keys` → 화면 판단 | 클릭 생략으로 진입 화면을 바꿀 때도 해당 업무의 읽기 목표를 유지한다. 이전 형식의 메서드는 저장된 필드 연결을 사용한다. |
 | 인출된 화면·행동과 저장 결과 | `brain/cache/methods.py`의 `MethodAction`, `MethodActionGroup`, `MethodCompletion` | `method_from_match`, `compile_memory`, `MemoryRetrieval._restore_structure`, `screen_decision` | 화면 경로·행동 좌표·필드 기하·입력 키와 앱·창 선택자를 결합. 과거 필드 값과 창 handle은 저장·복원하지 않음 |
 | 문맥 구성(Context Recall) | `brain/graph/context_recall.py`의 `recall_context` | `DecisionPromptContext.state` | 캐시·모델이 필요할 때 이번 실행의 이력·누적 증거·남은 입력·진행 상태를 한 번 조립. 선택·모델 호출·상태 변경 없음 |
 | 화면 트리 기억 | `brain/graph/screen_memory.py`, `ProgressState.screen_nodes` | engine, context_recall, notebook | 방문한 경로별 필드·컨트롤 발견과 입력 전달 이력을 누적. 모델용 트리는 같은 상태에서 파생하며 과거 좌표를 포함하지 않음 |
@@ -191,6 +193,16 @@ process/title 규칙은 relay의 실행 설정에 두며 모델이 실행 경로
 승격은 실제 전달 그룹 선택 → 정제·중복 제거 → 남은 경로 연결 순서로 수행한다.
 기억 라이브러리는 파일 내용이 바뀐 때만 JSON을 다시 검증한다. 파일 읽기와 잠금은 유지하여
 동일 크기·수정 시각의 외부 변경도 확인한다. 선택한 메서드는 결합기로 직접 전달한다.
+
+전체 행동 경로의 인출에는 교육 목표와 교육 SHA가 모두 일치해야 한다. 다른 교육에서는 현재
+전경 창의 프로세스·앱 제목 구간과 등록 앱 목록에서 한 앱을 식별하고, 그 앱의 사용법을 기존
+화면 판단 요청에 참고자료로 실어 보낸다. 사용법에는 시연된 동작 종류, 컨트롤 역할과
+검색처럼 근거가 확인된 대상의 용도를 담는다. 자료별 결과 행, 현재 입력값과 클릭 위치는 이번 화면에서
+결정한다. 사용법을 제시해도 작업자의 전달 이력과 완료 상태는 실행·검토 노드에서 갱신한다.
+앱 사용법이 없는 기존 편찬물도 같은 업무에서 읽을 수 있다. 다른 교육에서 사용할 앱 사용법을
+만들 때는 성공 실행의 기록으로 다시 편찬한다. 독립된 원문 읽기가 마지막 화면에 있으면
+현재 화면 모델이 읽기와 완료를 함께 판단한다. 정제 과정에서 필수 원문을 읽을 수 있었던
+앱 방문 전체가 끊기면 편찬기는 누락된 항목을 보고한다.
 
 ## 상태 수명
 

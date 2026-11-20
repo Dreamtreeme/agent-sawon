@@ -21,6 +21,7 @@ from brain.cache.methods import (
     merge_method_contents,
     method_completion_from_match,
     method_from_match,
+    registered_app_id,
     screen_similarity_distance,
 )
 from brain.task_instruction import TaskInstruction
@@ -403,12 +404,13 @@ class MemoryRetrieval:
             "blocked_method_ids": sorted(self.state.blocked_method_ids),
         }
 
-    def prompt_context(self) -> dict:
-        """Expose only reusable groups that can affect the next decisions."""
+    def prompt_context(self, screen: dict | None = None) -> dict:
+        """Supply the task's route or app guidance for a decision on the current frame."""
         task = self.task_context.task
         objective = None if task is None else task.objective
         methods = []
-        for method in self.library.methods():
+        library_methods = self.library.methods()
+        for method in library_methods:
             if self.state.active_method_id not in {None, method.id}:
                 continue
             if (
@@ -461,7 +463,7 @@ class MemoryRetrieval:
                     "groups": groups,
                 }
             )
-        return {
+        context = {
             "methods": methods,
             "active_method_id": self.state.active_method_id,
             "slot_bindings": {
@@ -474,6 +476,18 @@ class MemoryRetrieval:
                 for event in self.state.history[-2:]
             ],
         }
+        if task and screen and not any(method["groups"] for method in methods):
+            app_id = registered_app_id(screen)
+            guides = []
+            for stored in library_methods:
+                for guide in stored.app_guides:
+                    if guide.app_id == app_id and guide not in guides:
+                        guides.append(guide)
+            if guides:
+                context["app_guides"] = [
+                    guide.model_dump(mode="json", exclude_none=True) for guide in guides
+                ]
+        return context
 
     def retrieve_screen_memory(self, screen: dict) -> dict | None:
         """Retrieve matching work knowledge without selecting actions or advancing this run."""
@@ -663,13 +677,15 @@ class MemoryRetrieval:
         return response
 
     def required_result_keys(self) -> set[str]:
-        """Read the current bound group's source goals from its existing field bindings."""
+        """Read this group's acquisition goals, including pre-guide artifacts."""
         pending = self.state.pending
         task = self.task_context.task
         if pending is None or task is None:
             return set()
         method = pending["method"]
         group = next(group for group in method.action_groups if group.id == pending["group_id"])
+        if group.read_result_keys is not None:
+            return set(task.result_keys).intersection(group.read_result_keys)
         sources = group_input_sources(method, group, self.state.bindings.get(method.id, {}))
         return set(task.result_keys).intersection(sources.values())
 

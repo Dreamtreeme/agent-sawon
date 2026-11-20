@@ -339,7 +339,7 @@ class MemoryRetriever(Protocol):
     @property
     def recovery_required(self) -> bool: ...
 
-    def prompt_context(self) -> dict: ...
+    def prompt_context(self, screen: dict | None = None) -> dict: ...
 
     def match_pattern(self, screen: dict) -> ScreenMatch | None: ...
 
@@ -1290,7 +1290,7 @@ def build_decision_prompt(
     # snapshot timing so later recovery prompts and cache keys stay unchanged.
     screen = frame_input(request.screen)
     methods = services.memory_retrieval
-    method_memory = methods.prompt_context() if methods.enabled else None
+    method_memory = methods.prompt_context(request.screen) if methods.enabled else None
 
     def assemble_state():
         state = recall_context(request, projected_screen=screen)
@@ -1357,12 +1357,21 @@ def select_screen_response(
         else set()
     )
     if read_sources:
+        current_readings = sorted(read_sources)
+        read_context = {
+            **prepared.state,
+            "method_memory": {
+                **prepared.state.get("method_memory", {}),
+                "current_read_result_keys": current_readings,
+            },
+        }
+        prepared = replace(prepared, state_factory=lambda: read_context)
         services.log.append(
             "select",
             payload={
                 "check": "method_result_reading",
                 "method_id": method_proposal.method_id,
-                "sources": sorted(read_sources),
+                "sources": current_readings,
                 "frame": str(page.image_path) if page is not None else None,
             },
         )

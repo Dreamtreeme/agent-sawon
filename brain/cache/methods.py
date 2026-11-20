@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
 from math import log
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
 import portalocker
@@ -33,7 +34,7 @@ from brain.visual.scene import (
     overlap,
     same_control_region,
 )
-from brain.vocabulary import SCROLL_DIRECTION_KEYS
+from brain.vocabulary import SCROLL_DIRECTION_KEYS, ControlRole, KeyInput, ScrollDirection
 from sawon_runtime.storage import atomic_write_json
 
 # Historical completion targets can bind through label-to-control geometry.
@@ -46,6 +47,43 @@ class MethodSlot(BaseModel):
     name: str
     description: str
     source_key: str
+
+
+class AppNavigationStep(BaseModel):
+    """A demonstrated UI gesture the current screen model can use as guidance."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    action: Literal["fill", "key", "click", "double_click", "scroll"]
+    role: ControlRole | None = None
+    target: Literal["search", "matching_item"] | None = None
+    keys: list[KeyInput] = Field(default_factory=list)
+    direction: ScrollDirection | None = None
+
+
+class AppNavigationGuide(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    app_id: str
+    steps: list[AppNavigationStep] = Field(min_length=1)
+
+
+def registered_app_id(screen: dict) -> str | None:
+    """Identify a registered app from its foreground process or application title segment."""
+    window = screen.get("active_window") or {}
+    if not window or screen.get("blocked_reason"):
+        return None
+    process = PureWindowsPath(window.get("process") or "").stem.casefold()
+    parts = re.split(r"\s+[-–—]\s+", (window.get("title") or "").strip().casefold())
+    # A hosted app can precede its browser's name, e.g. “subject - Gmail - Google Chrome”.
+    app_title = parts[-1]
+    if len(parts) > 1 and process and app_title.split()[-1:] == [process]:
+        app_title = parts[-2]
+    names = {process, app_title} - {""}
+    matches = {
+        app["id"]
+        for app in screen.get("available_apps", [])
+        if names.intersection({app["id"].casefold(), app["name"].casefold()})
+    }
+    return matches.pop() if len(matches) == 1 else None
 
 
 class MethodTarget(BaseModel):
@@ -140,6 +178,8 @@ class MethodActionGroup(BaseModel):
     # Screen memory includes passive fields, not just the next action's targets.
     observed_fields: list[MethodTarget] = Field(default_factory=list)
     field_sources: dict[str, str] = Field(default_factory=dict)
+    # Older artifacts infer these from the entry frame's field bindings.
+    read_result_keys: list[str] | None = None
     save_result: (
         Literal["rejected", "confirmation_required", "ready_for_query", "unknown"] | None
     ) = None
@@ -148,6 +188,14 @@ class MethodActionGroup(BaseModel):
     repair_fields: list[str] = Field(default_factory=list)
 
     _discard_source_readings = model_validator(mode="before")(_discard_legacy_field_values)
+
+    @model_serializer(mode="wrap")
+    def serialize_group(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        if self.read_result_keys is None:
+            # Group IDs in existing execution progress hash the serialized group.
+            data.pop("read_result_keys", None)
+        return data
 
 
 class MethodCompletionTarget(BaseModel):
@@ -181,6 +229,7 @@ class LearnedMethod(BaseModel):
     artifact_kind: Literal["runtime_trace", "warm_compiled"] = "runtime_trace"
     slots: list[MethodSlot] = Field(default_factory=list)
     action_groups: list[MethodActionGroup] = Field(min_length=1)
+    app_guides: list[AppNavigationGuide] = Field(default_factory=list)
     completion: MethodCompletion | None = None
     source_transitions: list[str] = Field(default_factory=list)
     revision: int = Field(default=1, ge=1)
@@ -224,6 +273,7 @@ def merge_method_contents(
         "action_groups": list(groups.values()),
         "slots": list({slot.name: slot for slot in previous.slots + incoming.slots}.values()),
         "completion": incoming.completion or previous.completion,
+        "app_guides": incoming.app_guides or previous.app_guides,
     }
 
 
@@ -331,6 +381,7 @@ def compile_method_candidate(
                         target.model_dump(mode="json") for target in compiled.observed_fields
                     ],
                     "field_sources": compiled.field_sources,
+                    "read_result_keys": compiled.read_result_keys,
                     "observed_step_results": [
                         (result.step_id, result.completed)
                         for result in compiled.observed_step_results

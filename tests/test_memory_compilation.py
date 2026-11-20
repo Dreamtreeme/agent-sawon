@@ -1,5 +1,6 @@
 import hashlib
 import json
+from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -915,6 +916,12 @@ def test_synthetic_collected_values_and_window_actions_survive_trace_compilation
         "\n".join(json.dumps(event) for event in events), encoding="utf-8"
     )
 
+    # The reading and the outgoing window action share this frame. Only the durable
+    # notebook records the field: the delivered focus_window response has fields={}.
+    atomic_write_json(
+        case / "task-result.json",
+        {"provenance": {"quantity": [{"observation_id": "obs-3", "value": collected_value}]}},
+    )
     loaded_source, loaded = read_memory_candidates(case)
     assert loaded_source["values"] == {
         "query.email": search_value,
@@ -950,6 +957,11 @@ def test_synthetic_collected_values_and_window_actions_survive_trace_compilation
         {"old_name": search_name, "new_name": f"Find {search_value}"}
     ]
     compiled = compile_memory(loaded_source, loaded, assembly, method_id="synthetic-multi-app")
+    assert compiled.action_groups[2].read_result_keys == ["quantity"]
+    assert [s.model_dump(exclude_defaults=True) for s in compiled.app_guides[0].steps] == [
+        {"action": "fill", "role": "edit", "target": "search"},
+        {"action": "key", "keys": ["enter"]},
+    ]
     assert compiled.purpose == "Process {query.email}, quantity {collected_result.quantity}"
     assert compiled.action_groups[1].purpose == "Use {query.email}"
     assert (
@@ -991,6 +1003,53 @@ def test_synthetic_collected_values_and_window_actions_survive_trace_compilation
     assert bound.fields["Find {query.email}"]["source"] == "query.email"
     assert search_value not in compiled.model_dump_json()
     assert f'"{collected_value}"' not in compiled.model_dump_json()
+
+    # Synthetic c014/c015 omission: discard BOTH body clicks, one of which first
+    # read the quantity. The next retained action leaves the source application.
+    clicks = []
+    for offset, fields in enumerate(
+        (
+            {},
+            {
+                "Quantity": {
+                    "role": "text",
+                    "bbox": [20, 20, 50, 12],
+                    "source": "quantity",
+                    "value": collected_value,
+                }
+            },
+        ),
+        start=1,
+    ):
+        clicks.append(
+            replace(
+                loaded[2],
+                candidate_id=f"body-{offset}",
+                trace_index=loaded[1].trace_index + offset,
+                response={
+                    "fields": fields,
+                    "steps": [
+                        {
+                            "action": "click",
+                            "target": "Body",
+                            "intent": "navigate",
+                            "point": [30, 40],
+                        }
+                    ],
+                },
+            )
+        )
+    pruned = compile_memory(
+        {**loaded_source, "passive_readings": []},
+        [*loaded[:2], *clicks, *loaded[2:]],
+        assembly,
+        method_id="pruned-body",
+    )
+    outgoing = pruned.action_groups[2]
+    assert [step.action for step in outgoing.actions] == ["focus_window"]
+    assert "quantity" not in outgoing.field_sources.values()
+    assert outgoing.read_result_keys == ["quantity"]
+    assert pruned.app_guides == compiled.app_guides
 
 
 def test_synthetic_completion_survives_recorded_trace_compilation_without_old_values(tmp_path):

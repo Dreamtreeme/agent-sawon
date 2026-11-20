@@ -9,6 +9,7 @@ import logging
 import math
 from dataclasses import dataclass, replace
 from decimal import Decimal
+from itertools import groupby
 from pathlib import Path
 from uuid import uuid4
 
@@ -16,19 +17,23 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from sawon_interfaces import ShipmentRecord
 
 from brain.cache.methods import (
+    AppNavigationGuide,
+    AppNavigationStep,
     LearnedMethod,
     MethodActionGroup,
     MethodDocument,
     MethodSlot,
     action_group_from_match,
     method_completion_from_match,
+    registered_app_id,
 )
 from brain.cache.pattern_matching import ScreenPatternDocument
 from brain.demo_learning.methods import read_screen
 from brain.graph.screen_mapping import ScreenMapping
 from brain.graph.screen_memory import screen_input_values
-from brain.task_instruction import TaskInputRecord, TaskInstruction
-from brain.vocabulary import SCROLL_DIRECTION_KEYS
+from brain.task_instruction import COLLECTED_INPUT_PREFIX, TaskInputRecord, TaskInstruction
+from brain.visual.scene import contains
+from brain.vocabulary import CONTROL_ROLE_VALUES, KEY_INPUT_VALUES, SCROLL_DIRECTION_KEYS
 from models.accounting import read_model_accounting
 from models.base import ModelClient
 from models.budget import CallBudget
@@ -143,6 +148,12 @@ sources, coordinates, or markers. Return retained candidate IDs in execution ord
 reuses recorded points only under matching viewport and screen similarity. context_anchors must
 exclude instance values, transient messages, dates, and counters.
 
+source_readings identifies business facts read on the observed frame before its action.
+Keep the demonstrated navigation needed to reach that source. A click after a reading can be
+removed independently of the reading. Distinguish a fresh source reading from later references
+to an already collected value. Reusable app navigation ends on reaching the source; the current
+task determines which item to open and what facts to read there.
+
 fields contains the recorded semantic labels, input sources and control geometry; ocr contains
 the visible text and its geometry. Action targets refer to these field names when available.
 Compare a control's label with the text at its location and the subsequent observed result.
@@ -233,6 +244,16 @@ def _case_values(case_dir: Path) -> dict[str, str]:
     return screen_input_values(record, task, nodes)
 
 
+def _source_readings(response: dict, keys: set[str]) -> list[str]:
+    return sorted(
+        {
+            field["source"]
+            for field in response.get("fields", {}).values()
+            if field.get("source") in keys and str(field.get("value") or "").strip()
+        }
+    )
+
+
 def read_memory_candidates(
     case_dir: Path, visual_cache: Path | None = None
 ) -> tuple[dict, list[MemoryCandidate]]:
@@ -267,8 +288,8 @@ def read_memory_candidates(
         json.loads(line)
         for line in (case_dir / "run_log.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    window_context = {}
-    for event in events:
+    window_context, observation_order = {}, {}
+    for index, event in enumerate(events):
         payload = event.get("payload", {})
         if event.get("kind") != "observe" or not (snapshot := payload.get("snapshot")):
             continue
@@ -277,6 +298,7 @@ def read_memory_candidates(
         window_context[payload["obs_id"]] = {
             key: wire[key] for key in ("active_window", "windows", "available_apps") if key in wire
         }
+        observation_order.setdefault(payload["obs_id"], index)
     plans = _recorded_plans(case_dir, events)
     action_order = {
         event["payload"]["action"]["action_id"]: seq
@@ -455,6 +477,35 @@ def read_memory_candidates(
             )
         completion = {"screen": final_screen, "response": final_response}
         break
+    # A reading can be accepted separately from an action on the very same capture.
+    # Keep its position and app identity without copying the source document's values.
+    passive_readings = []
+    result_path = case_dir / "task-result.json"
+    if result_path.is_file():
+        supplied = {
+            (item.obs_id, key)
+            for item in candidates
+            for key in _source_readings(item.response, set(task.result_keys))
+        }
+        by_frame: dict[str, set[str]] = {}
+        for key, readings in _read(result_path).get("provenance", {}).items():
+            for reading in readings:
+                frame = reading.get("observation_id")
+                if (
+                    key in task.result_keys
+                    and frame in observation_order
+                    and (frame, key) not in supplied
+                    and str(reading.get("value") or "").strip()
+                ):
+                    by_frame.setdefault(frame, set()).add(key)
+        for frame, keys in by_frame.items():
+            passive_readings.append(
+                {
+                    "trace_index": observation_order[frame],
+                    "screen": window_context[frame],
+                    "keys": sorted(keys),
+                }
+            )
     return {
         "source_case": str(case_dir.resolve()),
         "nonexecuted_plans": nonexecuted,
@@ -464,6 +515,7 @@ def read_memory_candidates(
         "task_sha256": _task_contract_sha256(case_dir),
         "values": _case_values(case_dir),
         "completion": completion,
+        "passive_readings": passive_readings,
     }, candidates
 
 
@@ -507,6 +559,9 @@ def memory_assembly_prompt(source: dict, candidates: list[MemoryCandidate]) -> s
         summaries.append(
             {
                 "candidate_id": candidate.candidate_id,
+                "source_readings": _source_readings(
+                    response, set(source["task"].get("result_keys", []))
+                ),
                 "trace_index": candidate.trace_index,
                 "previous_candidate_id": candidates[index - 1].candidate_id if index else None,
                 "screen_kind": response.get("screen_kind", "unknown"),
@@ -576,6 +631,10 @@ def memory_assembly_prompt(source: dict, candidates: list[MemoryCandidate]) -> s
     payload = {
         "task": source["task"],
         "candidates": summaries,
+        "passive_source_readings": [
+            {"trace_index": item["trace_index"], "source_readings": item["keys"]}
+            for item in source.get("passive_readings", [])
+        ],
         "nonexecuted_plans": [
             {**plan, "purpose": _redact(plan.get("purpose") or "", values)}
             for plan in source.get("nonexecuted_plans", [])
@@ -683,6 +742,173 @@ def _rebase_entry_observation(
     return _identify_group(group.model_copy(update=updates))
 
 
+def _navigation_steps(
+    group: MethodActionGroup, taught_inputs: set[str], search_inputs: set[str]
+) -> list[AppNavigationStep]:
+    """Project demonstrated navigation without instance text, action points or source slots."""
+    roles = {target.name: target.role for target in group.targets}
+    steps = []
+    for action in group.actions:
+        role = roles.get(action.target)
+        role = role if role in CONTROL_ROLE_VALUES else None
+        if action.action == "fill":
+            key = action.slot
+            if key not in taught_inputs or key.startswith(("credential.", COLLECTED_INPUT_PREFIX)):
+                continue
+            steps.append(
+                AppNavigationStep(
+                    action="fill", role=role, target="search" if key in search_inputs else None
+                )
+            )
+        elif action.intent in {"navigate", "search", "select_tab", "select_option", "query_input"}:
+            if action.action in {"click", "double_click"}:
+                in_results = (
+                    group.screen_kind == "query"
+                    and action.point
+                    and any(
+                        field.role in {"row", "table"}
+                        and field.bbox
+                        and contains(field.bbox, (*action.point, 0, 0), margin=0)
+                        for field in group.observed_fields
+                    )
+                )
+                steps.append(
+                    AppNavigationStep(
+                        action=action.action,
+                        role=role,
+                        target="matching_item" if role == "row" or in_results else None,
+                    )
+                )
+            elif action.action == "key" and action.keys in KEY_INPUT_VALUES:
+                direction = next(
+                    (k for k, v in SCROLL_DIRECTION_KEYS.items() if v == action.keys), None
+                )
+                steps.append(
+                    AppNavigationStep(action="scroll", direction=direction)
+                    if direction
+                    else AppNavigationStep(action="key", keys=[action.keys], role=role)
+                )
+    return steps
+
+
+@dataclass(frozen=True)
+class _ReadingFrame:
+    order: int
+    owner: str
+    app: str | None
+    readings: set[str]
+    candidate_id: str | None = None
+    terminal: bool = False
+
+
+def _reading_frame(
+    order: int,
+    screen: dict,
+    response: dict,
+    readings: list[str],
+    *,
+    candidate_id: str | None = None,
+    terminal: bool = False,
+) -> _ReadingFrame:
+    app = registered_app_id(screen)
+    window = screen.get("active_window") or {}
+    path = response.get("screen_path") or screen.get("screen_path") or []
+    owner = app or str(window.get("handle") or (path[0] if path else order))
+    return _ReadingFrame(order, owner, app, set(readings), candidate_id, terminal)
+
+
+def _compile_reading_visits(
+    source: dict, candidates: list[MemoryCandidate], kept: dict[str, MethodActionGroup]
+) -> tuple[dict[str, list[str]], list[AppNavigationGuide], set[str]]:
+    """Stop guide capture at fresh evidence; keep read goals even across a pruned click."""
+    result_keys = set(source["task"].get("result_keys", []))
+    if not result_keys:
+        return {}, [], set()
+    frames = [
+        _reading_frame(
+            item.trace_index,
+            item.screen,
+            item.response,
+            _source_readings(item.response, result_keys),
+            candidate_id=item.candidate_id,
+        )
+        for item in candidates
+    ]
+    frames.extend(
+        _reading_frame(item["trace_index"], item["screen"], {}, item["keys"])
+        for item in source.get("passive_readings", [])
+    )
+    if final := source.get("completion"):
+        frames.append(
+            _reading_frame(
+                max(frame.order for frame in frames) + 1,
+                final["screen"],
+                final["response"],
+                _source_readings(final["response"], result_keys),
+                terminal=True,
+            )
+        )
+    frames.sort(key=lambda frame: frame.order)
+    taught_inputs = (
+        set(TaskInstruction.model_validate(source["task"]).input_targets())
+        & source["values"].keys()
+    )
+    # A discarded repeated search can identify what a retained fill was used for,
+    # without replaying that search or retaining a historic text/control label.
+    search_inputs: dict[str, set[str]] = {}
+    for item in candidates:
+        if app := registered_app_id(item.screen):
+            actions = item.response["steps"]
+            for index, action in enumerate(actions):
+                if action["intent"] in {"search", "query_input"}:
+                    key = action.get("source") or item.response.get("fields", {}).get(
+                        action.get("target"), {}
+                    ).get("source")
+                    if (
+                        not key
+                        and action.get("keys") == "enter"
+                        and index
+                        and actions[index - 1]["action"] == "fill"
+                    ):
+                        key = actions[index - 1].get("source")
+                    if key in taught_inputs:
+                        search_inputs.setdefault(app, set()).add(key)
+    seen: set[str] = set()
+    obligations, guides = {}, []
+    terminal_read: set[str] = set()
+    for _, visit in groupby(frames, key=lambda frame: frame.owner):
+        pending: set[str] = set()
+        steps: list[AppNavigationStep] = []
+        recorded_read = False
+        for frame in visit:
+            fresh = frame.readings - seen
+            if fresh:
+                seen.update(fresh)
+                pending.update(fresh)
+                if frame.app and steps and not recorded_read:
+                    guide = AppNavigationGuide(app_id=frame.app, steps=steps)
+                    if guide not in guides:
+                        guides.append(guide)
+                recorded_read = True
+            if frame.terminal and pending:
+                # Let ordinary current-screen review read the terminal document.
+                terminal_read.update(pending)
+                pending.clear()
+            if frame.candidate_id not in kept:
+                continue
+            group = kept[frame.candidate_id]
+            if pending:
+                obligations[frame.candidate_id] = sorted(pending)
+                pending.clear()
+            if frame.app and not recorded_read:
+                steps.extend(
+                    _navigation_steps(group, taught_inputs, search_inputs.get(frame.app, set()))
+                )
+        if pending:
+            raise ValueError("warm_method_missing_read_boundary:" + ",".join(sorted(pending)))
+    return obligations, guides, terminal_read
+
+
 def compile_memory(
     source: dict,
     candidates: list[MemoryCandidate],
@@ -721,7 +947,7 @@ def compile_memory(
         for source_key in sorted(selected_sources)
     ]
     groups = []
-    previous_id = None
+    selected_observations = {}
     refs = []
     ordered = sorted(candidates, key=lambda candidate: candidate.trace_index)
     positions = {candidate.candidate_id: index for index, candidate in enumerate(ordered)}
@@ -756,6 +982,7 @@ def compile_memory(
             raise ValueError(
                 "warm_method_candidate_could_not_be_compiled:" + candidate.candidate_id
             )
+        selected_observations[candidate.candidate_id] = group
         if entry is not candidate:
             # The model removed a contiguous span. Its first before-screen becomes
             # this action's entry; each frame's IDs are resolved in its own fragment.
@@ -785,7 +1012,6 @@ def compile_memory(
         group = group.model_copy(
             update={
                 "trace_index": candidate.trace_index,
-                "predecessor_group_ids": [] if previous_id is None else [previous_id],
                 "observed_step_results": [
                     result.model_copy(
                         update={
@@ -797,8 +1023,19 @@ def compile_memory(
             }
         )
         groups.append(group)
-        previous_id = group.id
         refs.append(f"{source['source_case']}/visual/{candidate.obs_id}:{candidate.cache_key}")
+    obligations, app_guides, terminal_read = _compile_reading_visits(
+        source, ordered, selected_observations
+    )
+    confirmed_keys = {key for keys in obligations.values() for key in keys} | terminal_read
+    for index, candidate in enumerate(selected):
+        group = groups[index]
+        read_keys = obligations.get(candidate.candidate_id, [])
+        if read_keys or confirmed_keys.intersection(group.field_sources.values()):
+            group = _identify_group(group.model_copy(update={"read_result_keys": read_keys}))
+        groups[index] = group.model_copy(
+            update={"predecessor_group_ids": [groups[index - 1].id] if index else []}
+        )
     if source_receipt is not None:
         refs.append(source_receipt)
     method = LearnedMethod(
@@ -809,9 +1046,10 @@ def compile_memory(
         artifact_kind="warm_compiled",
         slots=slots,
         action_groups=groups,
+        app_guides=app_guides,
         source_transitions=refs,
     )
-    if completion := source.get("completion"):
+    if not terminal_read and (completion := source.get("completion")):
         method = (
             method_completion_from_match(
                 completion["screen"],
