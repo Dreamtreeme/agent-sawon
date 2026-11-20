@@ -500,6 +500,26 @@ def test_completion_recipe_binds_review_structure_without_copying_prior_readings
     assert "ORDER-B" not in stored
 
 
+def test_readback_receipt_is_completion_evidence_without_becoming_a_reusable_input():
+    response = {
+        "operation": "complete",
+        "fields": {
+            "저장 번호": {
+                "role": "text",
+                "source": "saved_number",
+                "value": "3",
+                "bbox": [1, 2, 30, 12],
+            }
+        },
+        "completion_evidence": [{"condition_index": 0, "target": "저장 번호"}],
+    }
+    method = method_completion_from_match({}, response, learned(), {"hbl_no": "TEST-A"})
+    assert method is not None and method.completion is not None
+    (target,) = method.completion.targets
+    assert target.slot is None and target.condition_indexes == [0]
+    assert all(s.source_key != "saved_number" for s in method.slots)
+
+
 def test_synthetic_completion_keeps_user_condition_anchor_without_an_input_source(tmp_path):
     # Synthetic replies cover both a separate status anchor and a status-only completion.
     # An input-key binding is not required to remember where the model saw task completion.

@@ -740,7 +740,10 @@ def method_completion_from_match(
             for name, field in mapping.fields.items()
             if field.source
             and "value" in field.model_fields_set
-            and (values is None or field_matches(field.source, field.value, values))
+            and (
+                values is None
+                or (field.source in values and field_matches(field.source, field.value, values))
+            )
         ]
     else:
         selected_fields = screen.get("selected_fields", {})
