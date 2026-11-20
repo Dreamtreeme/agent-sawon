@@ -121,10 +121,19 @@ def _chat_boundaries(
     yield offset, day, None
 
 
-def chat_messages(path: Path, *, room_title: str, channel: str, marker: str) -> list[SourceItem]:
-    """Retain only matching message blocks from an explicitly named Korean Windows room."""
-    if not room_title.strip() or not marker.strip() or not channel.strip():
-        raise ValueError("Room title, channel and marker are required")
+def chat_messages(
+    path: Path,
+    *,
+    room_title: str,
+    channel: str,
+    marker: str | None = None,
+    on_date: date | None = None,
+) -> list[SourceItem]:
+    """Retain message blocks for the selected marker or local date in the named room."""
+    if not room_title.strip() or not channel.strip():
+        raise ValueError("Room title and channel are required")
+    if (marker is None and on_date is None) or (marker is not None and not marker.strip()):
+        raise ValueError("Supply a nonempty chat marker or a collection date")
     raw = path.read_bytes()
     transcript, encoding = _decode_chat(raw)
     lines = transcript.splitlines(keepends=True)
@@ -134,12 +143,12 @@ def chat_messages(path: Path, *, room_title: str, channel: str, marker: str) -> 
     matches = []
     occurrences: Counter[str] = Counter()
     for (start, day, header), (end, _, _) in pairwise(_chat_boundaries(lines, encoding)):
-        if header is None:
+        if header is None or (on_date is not None and day != on_date.isoformat()):
             continue
         block = raw[start:end]
         normalized = "\n".join(block.decode(encoding).splitlines()).rstrip("\n")
         body = normalized[header.end() :]
-        if marker not in body:
+        if marker is not None and marker not in body:
             continue
         sender, period, hour, minute = header.groups()
         timestamp = f"{day} {int(hour) % 12 + 12 * (period == '오후'):02}:{minute}"

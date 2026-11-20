@@ -1,0 +1,16 @@
+{
+  "name": "중단된 선적 저장 결과 조회",
+  "objective": "기존 선적의 House B/L을 ERP에서 조회하고 상세 화면에 실제로 저장된 값을 읽는다.",
+  "identity_input_key": "hbl_no",
+  "requirements": [
+    "조회 화면에서 해당 번호를 검색하고, House B/L이 일치하는 행 수를 matching_rows에 숫자로 기록한다. 한 행이면 상세창을 열어 저장번호를 saved_number에 숫자로 기록한다.",
+    "기본 정보와 추가 정보 탭에서 읽은 필드값을 지정한 read 항목별로 기록한다. 조회 결과가 없거나 여러 건이면 그 상태를 보고하고 종료한다."
+  ],
+  "constraints": ["조회와 상세 열람만 수행한다. 업무 데이터의 등록·편집·저장·전송은 하지 않는다."],
+  "completion_conditions": ["일치하는 행 수, 상세의 저장번호와 요청된 값의 출처가 이번 조회 화면의 관찰에 기록되었다."],
+  "procedure": [
+    {"id":"login","instruction":"로그인 화면이면 계정과 비밀번호를 입력한 뒤 비밀번호 칸에 포커스가 있을 때 Enter 키로 로그인한다.","completion":"업무 메뉴나 조회 화면이 보인다.","actions":[{"verb":"fill","target":"사용자명","input_key":"credential.username"},{"verb":"fill","target":"비밀번호","input_key":"credential.password"},{"verb":"activate","target":"비밀번호 입력 후 Enter 키"}]},
+    {"id":"lookup","instruction":"House B/L 조회를 열고 검색 칸에 번호를 입력한 뒤 Enter 키로 검색한다. 같은 번호의 결과 행 수를 읽고 한 행이면 두 번 클릭해 상세를 연다.","completion":"조회한 건의 상세가 열리거나 검색 결과를 확인했다.","actions":[{"verb":"activate","target":"House B/L 조회"},{"verb":"fill","target":"House B/L 검색 칸","input_key":"hbl_no"},{"verb":"activate","target":"검색 칸에서 Enter 키"},{"verb":"activate","target":"일치한 행"}]},
+    {"id":"read","instruction":"저장번호를 확인하고 기본 정보·추가 정보 탭을 차례로 읽어 요청된 값을 기록한다.","completion":"현재 저장된 값과 저장번호를 확인했다."}
+  ]
+}

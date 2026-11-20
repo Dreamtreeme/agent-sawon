@@ -10,23 +10,27 @@
 실행 간 수신 원문 계약은 [inbox_sources](../pipeline/inbox_sources.py)의 `SourceItem`이다.
 [gmail_inbox](../pipeline/gmail_inbox.py)는 OAuth 또는 커넥터 호스트에서 받은 RFC 메일 원본을
 파일 수집과 같은 파서에 전달한다. [kakao_inbox](../pipeline/kakao_inbox.py)는 relay로 지정한
-방의 대화를 임시 파일에 내보내고, `chat_messages`는 표식이 있는 메시지의 원문 바이트를
+방의 대화를 임시 파일에 내보내고, `chat_messages`는 지정한 본문 표식 또는 한국 날짜에 해당하는 메시지의 원문 바이트를
 `kakao_message` 항목으로 만든다. [inbox](../pipeline/inbox.py)는 메일, 카톡 순서로 각 출처의
 원문을 저장하고 `(source, channel, source_key)` 단위로 재수집을 식별한다. 원문과 판단용
 텍스트, 이를 반영한 계획 ID를 한 PC의 전용 상태 디렉터리에 보관한다.
 
 `plan-next`는 같은 `desktop_turn` 안에서 `pending`을 읽고, 미처리 원문이 있을 때만
-모델에 해당 판단용 텍스트와 아직 후속 정정본이 없는 실행 전·정상 종료 계획을 전달한다. 모델 요청·응답 계약은
+모델에 해당 판단용 텍스트와 아직 후속 정정본이 없는 실행 전·정상 종료·저장 재확인 계획을 전달한다. 모델 요청·응답 계약은
 `pipeline/inbox_planning.py`, 수신 상태 저장은 `pipeline/inbox.py`가 소유한다. 모델이 선택한
 업무 한 건의 목표와 사실(`key`, `value`, `receipt_id`)을 `record_plan`으로 저장한다.
 단독 참고 자료는 `inbox_references`에 원문 ID와 이유를 남기고 미처리 목록에서 제외한다.
-대기 판단은 원문을 미처리 상태로 남긴다. 정정은 같은 업무 ID에서
+대기 판단은 원문을 미처리 상태로 남긴다. `inbox_wait`는 직전 보류 판단의 요청 해시·사유·실행 ID를 보관한다.
+같은 입력의 재점검은 그 사유와 `waiting_run_id`를 반환하고, 새 원문이나 후보 변화가 생기면 모델이 다시 판단한다. 정정은 같은 업무 ID에서
 `supersedes_plan_id`로 이전 계획을 연결하고 변경되지 않은 사실과 출처를 유지한다.
 새 원문이 같은 사실 키에 같은 값 문자열을 다시 제시해도 기존 사실의 원문 ID를 유지한다.
 정정 원문 자체는 새 계획의 수신 이력에 남는다.
 실행 전 버전은 `superseded`로 전환하고 이미 정상 종료한 버전에는 당시 종료 기록을 유지한다.
-작업자에 `--after-dispatch-task`를 지정하면 이전 버전에 정상 종료 이력이 있을 때
+작업자에 `--after-dispatch-task`를 지정하면 이전 버전에 정상 종료 또는 저장 재확인 이력이 있을 때
 해당 교육을 입력 결합과 화면 실행에 함께 사용한다.
+[중단 후 재조회](../pipeline/inbox_recovery.py)는 원래 작업자의 `stage`와 `worker_exit`를 보존한다.
+새 GUI 조회에서 일치 행 1건, 저장번호와 원 입력값을 확인하면 `inbox_reconciliations`에 계획 ID·조회 case·저장번호를 기록한다.
+`inbox_plan_state.effective_stage`는 이 경우 `reconciled`이고, 후속 정정은 그 계획을 선행 업무로 사용할 수 있다.
 계획 저장 후 `worker --from-plan`은 [입력 결합](../pipeline/inbox_binding.py)을 호출한다.
 교육의 업무 입력 키에 대응하는 계획 사실을 선택하고 그 값을 `TaskInputRecord.inputs`로 복사한다.
 계획에서 만든 레코드는 `origin=inbox_plan`이고, `provenance`에 계획 ID, 업무 ID, 입력별

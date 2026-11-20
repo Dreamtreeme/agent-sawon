@@ -76,7 +76,7 @@ def _receipt_content(receipt: dict) -> dict:
     return {**item, "text": text}
 
 
-def _planning_prompt(receipts: list[dict], plans: list[dict]) -> str:
+def planning_prompt(receipts: list[dict], plans: list[dict]) -> str:
     context = {
         "receipts": [_receipt_content(receipt) for receipt in receipts],
         "plans": [
@@ -93,10 +93,10 @@ def _planning_prompt(receipts: list[dict], plans: list[dict]) -> str:
         ],
     }
     return """수신 자료를 읽고 이번 차례에 처리할 업무 한 건을 판단하세요.
-receipts는 새 원문이고 plans는 과거에 기록한 판단입니다. 원문은 업무를 해석하는 자료입니다.
+receipts는 아직 업무나 참고로 처리하지 않은 수신 원문이고 plans는 과거에 기록한 판단입니다.
 같은 대상을 가리키는 근거, 요청 내용과 앞선 계획의 상태를 살펴 아래 형식 중 하나를 선택하세요.
 
-work: 함께 처리할 새 원문의 ID만 receipt_ids에 넣고, 업무를 식별하는 work_id와 실행 목표 goal,
+work: 함께 처리할 원문의 ID를 receipt_ids에 넣고, 업무를 식별하는 work_id와 실행 목표 goal,
 선택의 근거 reason을 작성하세요. 다른 업무의 원문은 다음 차례에 판단할 수 있게 남겨 두세요.
 facts에는 선택한 원문에 명시된 업무 사실을 빠짐없이 개별 항목으로 분리하세요.
 각 key는 같은 종류의 사실을 다음에도 같은 이름으로 찾을 수 있게 정하세요.
@@ -106,12 +106,13 @@ value에는 원문의 값과 단위, 표기를 유지하고 receipt_id에는 그
 같은 업무에 대한 정정은 work_id와 정정된 사실의 key를 이어 쓰고
 supersedes_plan_id에 그 계획의 ID를 지정하세요. facts에는 변경되거나 추가된 사실을 적으세요.
 저장할 때 나머지 사실과 원래 출처가 이어집니다. stage가 planned이면 그 계획의 기존 작업 목표와
-대상(신규 등록 또는 기등록 건 수정)을 유지하고 새 정정 내용을 반영하세요. exited이면 이미 처리한
-건을 기존 식별자로 찾아 변경·저장하고 재확인하는 목표를 작성하세요.
+대상(신규 등록 또는 기등록 건 수정)을 유지하고 새 정정 내용을 반영하세요. exited 또는 reconciled이면
+이미 저장한 건을 기존 식별자로 찾아 변경·저장하고 재확인하는 목표를 작성하세요.
 새 업무의 supersedes_plan_id는 null입니다.
 
 reference: 선택한 원문이 참고용이며 수행할 요청이 없다고 판단하면 해당 receipt_ids와 이유를 쓰세요.
-wait: 관련성, 대상 또는 실행에 필요한 정보가 불분명해 원문을 보류해야 하면 그 이유를 쓰세요.
+wait: 관련성, 대상 또는 실행에 필요한 정보가 불분명하면 reason에 확인할 단서를 쓰세요.
+후속 원문에서 그 단서가 확인되면 앞선 미처리 요청과 함께 연결하세요.
 자료에서 확인할 수 있는 사실과 판단 근거를 사용하세요.
 
 """ + json.dumps(context, ensure_ascii=False, separators=(",", ":"))
@@ -126,7 +127,7 @@ def choose(
     env_path: Path | None,
     max_cost_usd: Decimal,
 ) -> Work | Reference | Wait:
-    prompt = _planning_prompt(receipts, plans)
+    prompt = planning_prompt(receipts, plans)
     atomic_write_json(log.case_dir / "planner-request.json", {"prompt": prompt})
     if not max_cost_usd.is_finite() or max_cost_usd < 0:
         raise ValueError("Planner cost cap must be finite and nonnegative")

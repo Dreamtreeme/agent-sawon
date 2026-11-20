@@ -1,5 +1,6 @@
 import base64
 import json
+from datetime import date, datetime
 from io import StringIO
 from unittest.mock import Mock
 
@@ -79,3 +80,15 @@ def test_incomplete_connector_original_rolls_back_partial_poll(tmp_path):
         with pytest.raises(ValueError):
             collect(db, originals)
         assert db.execute("SELECT count(*) FROM receipts").fetchone()[0] == 0
+
+
+def test_discovery_uses_receiving_day_and_requires_provider_receipt_metadata():
+    scope = gmail_inbox.MailScope(None, "supplier@example.org", date(2026, 11, 19))
+    start = int(datetime.fromisoformat("2026-11-19T00:00:00+09:00").timestamp())
+    end = int(datetime.fromisoformat("2026-11-20T00:00:00+09:00").timestamp())
+    assert scope.query() == f'in:inbox from:"supplier@example.org" after:{start - 1} before:{end}'
+    message, _ = gmail_original(1)
+    with pytest.raises(ValueError, match="internalDate and labelIds"):
+        list(
+            gmail_inbox.connector_gmail_items(StringIO(json.dumps([message])), "desk", scope=scope)
+        )

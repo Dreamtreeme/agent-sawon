@@ -8,9 +8,8 @@ import sqlite3
 import sys
 from collections.abc import Iterable, Iterator
 from contextlib import closing, contextmanager
+from datetime import date
 from decimal import Decimal
-from email import policy
-from email.parser import BytesHeaderParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TextIO
@@ -45,6 +44,18 @@ def desktop_turn(state: Path) -> Iterator[sqlite3.Connection]:
             CREATE TABLE IF NOT EXISTS inbox_references (
                 receipt_id INTEGER PRIMARY KEY REFERENCES receipts(id), reason TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS inbox_wait (
+                id INTEGER PRIMARY KEY CHECK(id=1), prompt_sha256 TEXT NOT NULL,
+                reason TEXT NOT NULL, run_id TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS inbox_reconciliations (
+                plan_id INTEGER PRIMARY KEY REFERENCES plans(id), case_dir TEXT NOT NULL,
+                saved_number TEXT NOT NULL
+            );
+            CREATE VIEW IF NOT EXISTS inbox_plan_state AS
+                SELECT p.*, CASE WHEN r.plan_id IS NULL THEN p.stage ELSE 'reconciled' END
+                    AS effective_stage
+                FROM plans p LEFT JOIN inbox_reconciliations r ON r.plan_id=p.id;
         """)
         yield db
 
@@ -94,7 +105,7 @@ def collect_live(
     db: sqlite3.Connection, args: argparse.Namespace, *, gmail_stream: TextIO | None = None
 ) -> dict:
     from brain.relay import HttpRelay
-    from pipeline.gmail_inbox import connector_gmail_items, gmail_items
+    from pipeline.gmail_inbox import MailScope, connector_gmail_items, gmail_items
     from pipeline.inbox_sources import chat_messages
     from pipeline.kakao_inbox import export_kakao_chat
     from pipeline.ocr import PaddleOcrEngine
@@ -118,18 +129,19 @@ def collect_live(
             "new_receipt_ids": added,
         }
 
-    query = 'in:inbox subject:"' + args.mail_subject.replace('"', " ") + '"'
+    day = getattr(args, "on_date", None)
+    if args.chat_marker is None and day is None:
+        raise ValueError("Supply --on-date when collecting a room without --chat-marker")
+    scope = MailScope(args.mail_subject, getattr(args, "mail_from", None), day)
+    query = scope.query()
     mail = (
-        connector_gmail_items(sys.stdin if gmail_stream is None else gmail_stream, args.mailbox)
+        connector_gmail_items(
+            sys.stdin if gmail_stream is None else gmail_stream, args.mailbox, scope=scope
+        )
         if args.gmail_raw_stdin
-        else gmail_items(args.gmail_token, query, args.mailbox)
+        else gmail_items(args.gmail_token, query, args.mailbox, scope=scope)
     )
-    headers = BytesHeaderParser(policy=policy.default)
-    gmail_result = save(
-        item
-        for item in mail
-        if str(headers.parsebytes(item.raw).get("Subject", "")) == args.mail_subject
-    )
+    gmail_result = save(mail)
     relay = HttpRelay(args.relay_url, os.environ.get("SAWON_RELAY_TOKEN", ""))
     relay.health()
     # The whole-room export and OCR captures live only inside this private turn.
@@ -139,15 +151,20 @@ def collect_live(
         export_kakao_chat(relay, args.room_title, destination, ocr=ocr, self_chat=args.self_chat)
         kakao_result = save(
             chat_messages(
-                destination, room_title=args.room_title, channel=args.room, marker=args.chat_marker
+                destination,
+                room_title=args.room_title,
+                channel=args.room,
+                marker=args.chat_marker,
+                on_date=day,
             )
         )
     return {"gmail": gmail_result, "kakao": kakao_result}
 
 
 _REVISION_CANDIDATES = """
-    SELECT p.id, p.stage, p.decision FROM plans AS p
-     WHERE (p.stage='planned' OR (p.stage='exited' AND p.worker_exit=0))
+    SELECT p.id, p.effective_stage AS stage, p.decision FROM inbox_plan_state AS p
+     WHERE (p.effective_stage IN ('planned', 'reconciled')
+            OR (p.stage='exited' AND p.worker_exit=0))
        AND NOT EXISTS (
            SELECT 1 FROM plans AS next
             WHERE json_extract(next.decision, '$.supersedes_plan_id')=p.id
@@ -166,7 +183,7 @@ def record_plan(db: sqlite3.Connection, ids: list[int], decision: dict) -> int:
                 raise ValueError("supersedes_plan_id must be an integer")
             prior = db.execute(_REVISION_CANDIDATES + " AND p.id=?", (previous,)).fetchone()
             if prior is None:
-                raise ValueError("A revision needs the current planned or successfully exited plan")
+                raise ValueError("A revision needs the current planned, reconciled or exited plan")
             if prior["stage"] == "planned":
                 db.execute("UPDATE plans SET stage='superseded' WHERE id=?", (previous,))
         plan = db.execute("INSERT INTO plans(decision) VALUES(?)", (encoded,))
@@ -182,18 +199,38 @@ def record_plan(db: sqlite3.Connection, ids: list[int], decision: dict) -> int:
 
 def plan_next(db: sqlite3.Connection, args: argparse.Namespace) -> dict:
     """Record one model decision against the same locked snapshot it was given."""
+    interrupted = db.execute(
+        "SELECT id FROM inbox_plan_state WHERE effective_stage='started' ORDER BY id LIMIT 1"
+    ).fetchone()
+    if interrupted:
+        return {
+            "status": "recovery_required",
+            "interrupted_plan_id": interrupted["id"],
+            "plan_id": None,
+            "model_calls": 0,
+        }
     receipts = pending(db)
     if not receipts:
         return {"status": "empty", "plan_id": None, "model_calls": 0}
 
     from models.accounting import read_model_accounting
-    from pipeline.inbox_planning import Reference, Wait, choose
+    from pipeline.inbox_planning import Reference, Wait, choose, planning_prompt
     from sawon_runtime.storage import RunLog
 
     current = [
         {"id": row["id"], "stage": row["stage"], "decision": json.loads(row["decision"])}
         for row in db.execute(_REVISION_CANDIDATES + " ORDER BY p.id")
     ]
+    digest = hashlib.sha256(planning_prompt(receipts, current).encode("utf-8")).hexdigest()
+    waiting = db.execute("SELECT * FROM inbox_wait WHERE id=1").fetchone()
+    if waiting and waiting["prompt_sha256"] == digest:
+        return {
+            "status": "wait",
+            "plan_id": None,
+            "model_calls": 0,
+            "reason": waiting["reason"],
+            "waiting_run_id": waiting["run_id"],
+        }
     run_id = uuid4().hex
     log = RunLog(args.state / "planning" / run_id, case_id=run_id, agent_id="inbox-planner")
     selection = choose(
@@ -210,7 +247,15 @@ def plan_next(db: sqlite3.Connection, args: argparse.Namespace) -> dict:
         "model_calls": read_model_accounting(log).model_calls,
     }
     if isinstance(selection, Wait):
+        with db:
+            db.execute(
+                "INSERT OR REPLACE INTO inbox_wait(id,prompt_sha256,reason,run_id) VALUES(1,?,?,?)",
+                (digest, selection.reason, run_id),
+            )
         return {**result, "status": "wait", "reason": selection.reason}
+    if waiting:
+        with db:
+            db.execute("DELETE FROM inbox_wait WHERE id=1")
     ids = selection.receipt_ids
     selected = set(ids)
     if not ids or len(selected) != len(ids) or not selected <= {r["id"] for r in receipts}:
@@ -231,7 +276,7 @@ def plan_next(db: sqlite3.Connection, args: argparse.Namespace) -> dict:
             (p["decision"] for p in current if p["id"] == selection.supersedes_plan_id), None
         )
         if prior is None:
-            raise ValueError("A revision needs the current planned or successfully exited plan")
+            raise ValueError("A revision needs the current planned, reconciled or exited plan")
         if prior.get("work_id"):
             decision["work_id"] = prior["work_id"]
         if isinstance(prior.get("facts"), list):
@@ -293,8 +338,9 @@ def _bind_worker_inputs(
     if decision.get("supersedes_plan_id") is not None:
         applied = db.execute(
             _PLAN_LINEAGE
-            + """SELECT id, worker_args FROM plans JOIN lineage USING(id)
-                  WHERE id!=? AND stage='exited' AND worker_exit=0
+            + """SELECT id, worker_args FROM inbox_plan_state JOIN lineage USING(id)
+                  WHERE id!=? AND (effective_stage='reconciled'
+                                   OR (stage='exited' AND worker_exit=0))
                     AND json_extract(decision, '$.work_id')=?
                   ORDER BY id DESC""",
             (plan, plan, decision.get("work_id")),
@@ -390,11 +436,18 @@ def add_live_arguments(live: argparse.ArgumentParser) -> None:
         "--gmail-raw-stdin", action="store_true", help="Read fresh connector id/raw JSON"
     )
     live.add_argument("--mailbox", required=True, help="Stable name of the receiving mailbox")
-    live.add_argument("--mail-subject", required=True, help="Exact subject of the target mail")
+    mail = live.add_mutually_exclusive_group(required=True)
+    mail.add_argument("--mail-subject", help="Exact subject of the target mail")
+    mail.add_argument("--mail-from", help="Discover inbox mail from this address on --on-date")
+    live.add_argument(
+        "--on-date", type=date.fromisoformat, help="Collection date in Korea (YYYY-MM-DD)"
+    )
     live.add_argument("--room", required=True, help="Stable name of the designated conversation")
     live.add_argument("--room-title", required=True, help="KakaoTalk's actual chat window title")
     live.add_argument("--self-chat", action="store_true", help="Allow the self-profile navigation")
-    live.add_argument("--chat-marker", required=True, help="Text identifying requested messages")
+    live.add_argument(
+        "--chat-marker", help="Message filter; omit to read the named room on --on-date"
+    )
     live.add_argument("--relay-url", required=True)
     live.add_argument("--ocr-config", type=Path, required=True)
 
@@ -470,7 +523,7 @@ def main() -> int:
             output = plan_next(db, args)
         elif args.command == "plans":
             output = []
-            for row in db.execute("SELECT * FROM plans ORDER BY id"):
+            for row in db.execute("SELECT * FROM inbox_plan_state ORDER BY id"):
                 receipts = db.execute(
                     "SELECT id FROM receipts WHERE plan_id=? ORDER BY id", (row["id"],)
                 )

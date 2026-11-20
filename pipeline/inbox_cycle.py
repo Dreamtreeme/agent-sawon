@@ -31,6 +31,7 @@ def run_cycles(
     interval_seconds: float,
     receive: Callable[[sqlite3.Connection], dict],
     dispatch: Callable[[int], int],
+    recover: Callable[[sqlite3.Connection, int], dict] | None = None,
 ) -> Iterator[dict]:
     """Collect and plan under desktop_turn; dispatch owns its normal worker turn."""
     if cycles < 1 or not math.isfinite(interval_seconds) or interval_seconds < 0:
@@ -44,6 +45,11 @@ def run_cycles(
             with desktop_turn(args.state) as db:
                 collection = receive(db)
                 decision = plan_next(db, args)
+                recovery = None
+                if decision["status"] == "recovery_required" and recover is not None:
+                    recovery = recover(db, decision["interrupted_plan_id"])
+                    if recovery["status"] == "reconciled":
+                        decision = plan_next(db, args)
                 plan = decision["plan_id"]
                 if decision["status"] == "empty":
                     # The prior run may have stopped after committing a plan, before dispatch.
@@ -58,8 +64,9 @@ def run_cycles(
                 "decision": decision,
                 "plan_id": plan,
                 "worker_exit": code,
+                **({"recovery": recovery} if recovery is not None else {}),
             }
-            if code not in (None, 0):
+            if code not in (None, 0) or decision["status"] == "recovery_required":
                 return
 
 
@@ -75,6 +82,7 @@ def main() -> int:
     parser.add_argument("--interval-seconds", type=float, default=0, help="Pause between PC turns")
     parser.add_argument("--task", type=Path, required=True, help="Task education for new work")
     parser.add_argument("--after-dispatch-task", type=Path, help="Task education for revisions")
+    parser.add_argument("--reconcile-task", type=Path, help="Lookup education for interrupted work")
     parser.add_argument("--config", type=Path, required=True, help="GUI worker configuration")
     parser.add_argument("--erp-relay-url", help="ERP relay URL; defaults to --relay-url")
     args = parser.parse_args()
@@ -84,13 +92,8 @@ def main() -> int:
         packet = StringIO(sys.stdin.readline()) if args.gmail_raw_stdin else None
         return collect_live(db, args, gmail_stream=packet)
 
-    def dispatch(plan: int) -> int:
-        case_dir = args.state / "cases" / f"plan-{plan}-{uuid4().hex}"
-        command = [
-            "--case-dir",
-            str(case_dir),
-            "--task",
-            str(args.task),
+    def worker_options() -> list[str]:
+        options = [
             "--relay-url",
             args.erp_relay_url or args.relay_url,
             "--config",
@@ -103,7 +106,24 @@ def main() -> int:
             str(args.max_cost_usd),
         ]
         if args.env_path is not None:
-            command += ["--env-path", str(args.env_path)]
+            options += ["--env-path", str(args.env_path)]
+        return options
+
+    def recover(db: sqlite3.Connection, plan: int) -> dict:
+        from pipeline.inbox_recovery import recover_started
+
+        with redirect_stdout(sys.stderr):
+            return recover_started(
+                db,
+                plan,
+                state=args.state,
+                lookup_task=args.reconcile_task,
+                worker_options=worker_options(),
+            )
+
+    def dispatch(plan: int) -> int:
+        case_dir = args.state / "cases" / f"plan-{plan}-{uuid4().hex}"
+        command = [*worker_options(), "--case-dir", str(case_dir), "--task", str(args.task)]
         with desktop_turn(args.state) as db, redirect_stdout(sys.stderr):
             return run_worker(
                 db,
@@ -119,8 +139,11 @@ def main() -> int:
         interval_seconds=args.interval_seconds,
         receive=receive,
         dispatch=dispatch,
+        recover=recover if args.reconcile_task else None,
     ):
         print(json.dumps(result, ensure_ascii=False), flush=True)
+        if result["decision"]["status"] == "recovery_required":
+            return 1
         if result["worker_exit"]:
             return result["worker_exit"]
     return 0

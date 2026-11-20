@@ -47,6 +47,14 @@ Gmail 인증은 다음 두 방식 중 하나를 사용한다.
 
 같은 상태 경로와 조건으로 두 번 실행한다. 각 출처의 `read`는 이번에 읽은 대상 건수, `source_key_hashes`는 식별자의 해시, `raw_sha256`은 이번에 읽은 원문 바이트의 해시, `new_receipt_ids`는 새로 저장된 행이다. 두 번째 점검에서 같은 식별자와 원문이 읽히고 추가 행이 0건인지 확인한다. Gmail 저장 후 카톡 단계가 중단되면 이미 저장된 메일은 유지되며 다음 점검이 이어받는다. 로컬 `collect`의 카톡 이력은 방 전체 스냅샷이고 `collect-live`의 카톡 이력은 개별 메시지다. 두 방식의 카톡 행 개수는 별도로 비교한다.
 
+### 제목을 모르는 새 자료 찾기
+
+`--mail-from <시험 발신 주소> --on-date YYYY-MM-DD --room <방 ID> --room-title <전용 시험방>`으로
+지정한 날의 자료를 수집할 수 있다. 이때 제목과 카톡 본문 표식을 생략한다. Gmail의 받은편지함
+라벨, 원문 From 주소, Gmail 수신 시각의 한국 날짜를 대조한다. 카톡은 내보내기 파일의 실제 방
+제목과 메시지 날짜를 대조한다. 커넥터의 날짜 검색 패킷은 메시지마다 `id/raw/internalDate/labelIds`가
+필요하다. 전용 방에 보이는 지정 날짜의 메시지 전체가 판단 대상이 된다.
+
 ## 한 번 시작해 여러 차례 확인하기
 
 `pipeline.inbox_cycle`은 매 차례 같은 수신 범위에서 Gmail과 카카오톡을 새로 읽고, 기존 계획기가 선택한 업무 한 건을 ERP 작업자에게 전달한다. ERP 작업이 끝나면 지정한 간격 후 다음 수집을 시작한다. 같은 원문만 있고 실행을 기다리는 계획도 없으면 그 차례의 계획 모델 호출과 ERP 실행은 모두 0회다.
@@ -57,6 +65,7 @@ Gmail 인증은 다음 두 방식 중 하나를 사용한다.
 & $py -m pipeline.inbox_cycle --state $state @sources `
   --gmail-token .\cases\desk\credentials\gmail-authorized-user.json `
   --task .\examples\shipment-user-taught-task.json --after-dispatch-task .\examples\shipment-quantity-correction-task.json `
+  --reconcile-task .\examples\shipment-save-lookup-task.json `
   --config .\config\brain.visual.toml --env-path .\.env --cycles 3 --interval-seconds 30
 ```
 
@@ -77,7 +86,9 @@ $state = '.\cases\desk\state'
 
 ### 모델로 다음 업무 계획하기
 
-`collect` 또는 `collect-live`가 끝난 뒤 같은 상태 경로에서 `plan-next`를 실행한다. 모델은 미처리 원문을 기존 업무의 최신 계획과 대조한다. 비교 대상에는 실행 전 계획과 작업자가 정상 종료한 계획이 들어간다. 미처리 원문이 없으면 모델 호출 없이 끝난다. 모델이 추가 자료를 기다리기로 하면 원문을 미처리 상태로 남긴다.
+`collect` 또는 `collect-live`가 끝난 뒤 같은 상태 경로에서 `plan-next`를 실행한다. 모델은 미처리 원문을
+실행 전 계획, 정상 종료 계획, 중단 후 저장을 재확인한 계획과 대조한다. 보류 원문은 다음 판단에 남는다.
+같은 자료와 후보를 다시 확인하면 모델 호출 없이 원래 보류 사유를 반환한다. 새 메일·카톡이나 후보 상태 변화가 있으면 다시 판단한다.
 
 ```powershell
 & $py -m pipeline.inbox --state $state plan-next --env-path .\.env
@@ -111,7 +122,12 @@ $state = '.\cases\desk\state'
 
 입력 키와 계획 사실 키가 같으면 바로 연결한다. 명칭이 다른 입력은 모델이 교육의 필드 이름을 보고 기존 사실 키를 고른다. 코드는 선택된 원래 값과 출처를 복사하고 교육의 숫자·단위 형식을 적용할 수 있는지 확인한다. `<state>/worker-inputs/<실행 ID>/input-provenance.json`에는 원문 값과 실행값이 나란히 남는다. 작업자 case의 `record.json`에는 같은 입력과 사실별 원문 ID가 보존된다. 미리 만든 레코드를 전달할 때는 기존 `worker --plan <ID> -- --record ...` 형식을 쓴다.
 
-입력 결합이 끝난 뒤 계획을 `started`로 기록하고 작업자를 호출한다. 정상 복귀하면 종료 코드를 기록한다. 중단돼 `started`가 남은 계획은 `plans`의 case 경로와 실제 저장 결과를 대조해 후속 계획을 정한다. ERP 저장 성공은 독립 채점과 재조회로 확인한다. [작업자 CLI](../brain/run.py)
+입력 결합이 끝난 뒤 계획을 `started`로 기록하고 작업자를 호출한다. 정상 복귀하면 종료 코드를 기록한다.
+중단돼 `started`가 남으면 순차 실행기는 새 원문을 보관하고 우선 저장 결과를 확인한다. `--reconcile-task`에는
+해당 ERP의 조회 교육을 지정한다. 조회 작업자에게는 원래 식별값만 전달한다. 한 행·저장번호와 상세의 실제 값을
+읽으면 코드가 당시 보낸 입력과 대조한다. 일치하면 자동으로 후속 정정을 계획하며 원래 종료 기록은 보존한다.
+조회 교육이 없거나 증거가 불충분하면 `recovery_required`로 멈춘다. 조회 시도별 결과는
+`<state>/reconciliation/`에 남는다. [조회 교육](../examples/shipment-save-lookup-task.json) · [작업자 CLI](../brain/run.py)
 
 등록 후 포장 수량 정정까지 처리하는 시험에서는 같은 작업자 명령에 두 교육을 지정한다. `$planId`에는 이번 `plan-next`가 반환한 계획 번호를 넣고 매 실행마다 새 `$caseDir`을 사용한다.
 
@@ -123,7 +139,7 @@ $state = '.\cases\desk\state'
   --visual-ocr-config .\config\pipeline.toml --env-path .\.env --max-cost-usd 3
 ```
 
-처음 등록하거나 아직 등록을 실행하기 전에 정정이 오면 기본 교육을 쓴다. 앞선 버전에 정상 종료 이력이 있으면 정정 교육으로 House B/L을 조회해 기존 한 행의 수량을 바꾸고 같은 건을 다시 연다. 이 예제 교육의 수정 대상은 포장 수량이다. 다른 종류의 정정은 해당 업무용 교육이 필요하다. [포장 수량 정정 교육](../examples/shipment-quantity-correction-task.json)
+처음 등록하거나 아직 등록을 실행하기 전에 정정이 오면 기본 교육을 쓴다. 앞선 버전이 정상 종료했거나 저장 결과를 재확인했으면 정정 교육으로 House B/L을 조회해 기존 한 행의 수량을 바꾸고 같은 건을 다시 연다. 이 예제 교육의 수정 대상은 포장 수량이다. 다른 종류의 정정은 해당 업무용 교육이 필요하다. [포장 수량 정정 교육](../examples/shipment-quantity-correction-task.json)
 
 별도 발신 계정에서 보낸 메시지의 실제 도착은 본인 채팅방 예약 시험과 별도로 검증한다.
 
