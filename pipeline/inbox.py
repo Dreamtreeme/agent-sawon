@@ -13,6 +13,7 @@ from email import policy
 from email.parser import BytesHeaderParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import TextIO
 from uuid import uuid4
 
 import portalocker
@@ -89,7 +90,9 @@ def pending(db: sqlite3.Connection) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def collect_live(db: sqlite3.Connection, args: argparse.Namespace) -> dict:
+def collect_live(
+    db: sqlite3.Connection, args: argparse.Namespace, *, gmail_stream: TextIO | None = None
+) -> dict:
     from brain.relay import HttpRelay
     from pipeline.gmail_inbox import connector_gmail_items, gmail_items
     from pipeline.inbox_sources import chat_messages
@@ -117,7 +120,7 @@ def collect_live(db: sqlite3.Connection, args: argparse.Namespace) -> dict:
 
     query = 'in:inbox subject:"' + args.mail_subject.replace('"', " ") + '"'
     mail = (
-        connector_gmail_items(sys.stdin, args.mailbox)
+        connector_gmail_items(sys.stdin if gmail_stream is None else gmail_stream, args.mailbox)
         if args.gmail_raw_stdin
         else gmail_items(args.gmail_token, query, args.mailbox)
     )
@@ -380,6 +383,28 @@ def run_worker(
     return code
 
 
+def add_live_arguments(live: argparse.ArgumentParser) -> None:
+    auth = live.add_mutually_exclusive_group(required=True)
+    auth.add_argument("--gmail-token", type=Path, help="Authorized-user Gmail read-only OAuth file")
+    auth.add_argument(
+        "--gmail-raw-stdin", action="store_true", help="Read fresh connector id/raw JSON"
+    )
+    live.add_argument("--mailbox", required=True, help="Stable name of the receiving mailbox")
+    live.add_argument("--mail-subject", required=True, help="Exact subject of the target mail")
+    live.add_argument("--room", required=True, help="Stable name of the designated conversation")
+    live.add_argument("--room-title", required=True, help="KakaoTalk's actual chat window title")
+    live.add_argument("--self-chat", action="store_true", help="Allow the self-profile navigation")
+    live.add_argument("--chat-marker", required=True, help="Text identifying requested messages")
+    live.add_argument("--relay-url", required=True)
+    live.add_argument("--ocr-config", type=Path, required=True)
+
+
+def add_planner_arguments(planner: argparse.ArgumentParser) -> None:
+    planner.add_argument("--model-config", type=Path, default=Path("config/models.toml"))
+    planner.add_argument("--env-path", type=Path, help="Explicit .env for a paid model")
+    planner.add_argument("--max-cost-usd", type=Decimal, default=Decimal("3"))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True, help="Private directory for this PC")
@@ -395,27 +420,13 @@ def main() -> int:
     live = commands.add_parser(
         "collect-live", help="Read scoped Gmail originals, then export a chat"
     )
-    auth = live.add_mutually_exclusive_group(required=True)
-    auth.add_argument("--gmail-token", type=Path, help="Authorized-user Gmail read-only OAuth file")
-    auth.add_argument(
-        "--gmail-raw-stdin", action="store_true", help="Read fresh connector id/raw JSON"
-    )
-    live.add_argument("--mailbox", required=True, help="Stable name of the receiving mailbox")
-    live.add_argument("--mail-subject", required=True, help="Exact subject of the target mail")
-    live.add_argument("--room", required=True, help="Stable name of the designated conversation")
-    live.add_argument("--room-title", required=True, help="KakaoTalk's actual chat window title")
-    live.add_argument("--self-chat", action="store_true", help="Allow the self-profile navigation")
-    live.add_argument("--chat-marker", required=True, help="Text identifying requested messages")
-    live.add_argument("--relay-url", required=True)
-    live.add_argument("--ocr-config", type=Path, required=True)
+    add_live_arguments(live)
     commands.add_parser("pending", help="Show unplanned text and source IDs")
     commands.add_parser("plans", help="Show recorded decisions, source IDs and worker status")
     planner = commands.add_parser(
         "plan-next", help="Use pending source texts to plan one work item"
     )
-    planner.add_argument("--model-config", type=Path, default=Path("config/models.toml"))
-    planner.add_argument("--env-path", type=Path, help="Explicit .env for a paid model")
-    planner.add_argument("--max-cost-usd", type=Decimal, default=Decimal("3"))
+    add_planner_arguments(planner)
     link = commands.add_parser("record-plan", help="Associate source IDs with a JSON decision")
     link.add_argument("--receipts", nargs="+", type=int, required=True)
     link.add_argument("--file", type=Path, required=True)

@@ -47,6 +47,21 @@ Gmail 인증은 다음 두 방식 중 하나를 사용한다.
 
 같은 상태 경로와 조건으로 두 번 실행한다. 각 출처의 `read`는 이번에 읽은 대상 건수, `source_key_hashes`는 식별자의 해시, `raw_sha256`은 이번에 읽은 원문 바이트의 해시, `new_receipt_ids`는 새로 저장된 행이다. 두 번째 점검에서 같은 식별자와 원문이 읽히고 추가 행이 0건인지 확인한다. Gmail 저장 후 카톡 단계가 중단되면 이미 저장된 메일은 유지되며 다음 점검이 이어받는다. 로컬 `collect`의 카톡 이력은 방 전체 스냅샷이고 `collect-live`의 카톡 이력은 개별 메시지다. 두 방식의 카톡 행 개수는 별도로 비교한다.
 
+## 한 번 시작해 여러 차례 확인하기
+
+`pipeline.inbox_cycle`은 매 차례 같은 수신 범위에서 Gmail과 카카오톡을 새로 읽고, 기존 계획기가 선택한 업무 한 건을 ERP 작업자에게 전달한다. ERP 작업이 끝나면 지정한 간격 후 다음 수집을 시작한다. 같은 원문만 있고 실행을 기다리는 계획도 없으면 그 차례의 계획 모델 호출과 ERP 실행은 모두 0회다.
+
+위에서 설정한 `$py`, `$state`, `$sources`와 실행 중인 relay를 사용한다. 아래 예시는 세 차례 확인한다. ERP 전용 relay를 따로 운영하면 `--erp-relay-url`로 주소를 지정한다. CLI가 사용하는 relay에는 현재 환경의 `SAWON_RELAY_TOKEN`으로 접근할 수 있어야 한다.
+
+```powershell
+& $py -m pipeline.inbox_cycle --state $state @sources `
+  --gmail-token .\cases\desk\credentials\gmail-authorized-user.json `
+  --task .\examples\shipment-user-taught-task.json --after-dispatch-task .\examples\shipment-quantity-correction-task.json `
+  --config .\config\brain.visual.toml --env-path .\.env --cycles 3 --interval-seconds 30
+```
+
+인증된 Gmail 커넥터를 쓰면 `--gmail-raw-stdin`을 선택하고, 호스트가 매 수집 차례에 새로 조회한 JSON 배열을 한 줄씩 공급한다. 실행기는 각 차례의 수집 건수, 판단, 계획 번호, 작업자 종료 코드를 JSON 한 줄로 출력한다. 같은 상태 경로로 다시 시작하면 이미 정상 종료한 계획과 처리한 원문 기록을 이어 쓴다. 작업자가 오류로 종료되면 해당 차례의 결과와 종료 코드를 남기고 멈춘다.
+
 ## 한 차례 실행
 
 한 PC에서는 아래 명령에 같은 `--state` 경로를 사용한다. 이 경로의 잠금은 수집, 계획 기록, 작업자 한 건이 겹치는 것을 막는다. 별도 실행한 bench나 일반 GUI 프로그램까지 통제하지는 않는다. 입력 폴더에는 대상 메일만 두고, 한 방의 내보내기 파일을 늘 같은 `--room` 이름으로 연결한다.
@@ -110,7 +125,7 @@ $state = '.\cases\desk\state'
 
 처음 등록하거나 아직 등록을 실행하기 전에 정정이 오면 기본 교육을 쓴다. 앞선 버전에 정상 종료 이력이 있으면 정정 교육으로 House B/L을 조회해 기존 한 행의 수량을 바꾸고 같은 건을 다시 연다. 이 예제 교육의 수정 대상은 포장 수량이다. 다른 종류의 정정은 해당 업무용 교육이 필요하다. [포장 수량 정정 교육](../examples/shipment-quantity-correction-task.json)
 
-주기 실행과 별도 발신 계정에서 보낸 메시지의 실제 도착은 별도 검증 대상이다.
+별도 발신 계정에서 보낸 메시지의 실제 도착은 본인 채팅방 예약 시험과 별도로 검증한다.
 
 같은 거래처의 미전송 선적 두 건을 열어 둔 상태에서 신규 메일, 수량 정정, 참고 카톡을 함께 처리하는 시험이 있다. 업무 연결, 실제 ERP 쓰기, 재조회와 중복 수집을 각각 채점한다. [시험 원문과 실행 조건](../tests/fixtures/mixed_inbox/README.md) · [합격 기준](../tests/fixtures/mixed_inbox/RUBRIC.md)
 
